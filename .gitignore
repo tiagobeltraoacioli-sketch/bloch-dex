@@ -1,5 +1,10 @@
 /out/
 /cache/
 /broadcast/
-/node_modules/
+node_modules/
 /lcov.info
+/frontend/dist/
+/frontend/coverage/
+/frontend/.env
+/frontend/.env.*
+!/frontend/.env.example
