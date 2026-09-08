@@ -1,8 +1,33 @@
 # PosternDEX
 
 V2 constant-product AMM contracts, an execution router, an immutable treasury
-collector and a read-only integration lens. Protocol fees start **disabled**.
-This repository contains no frontend and no live deployment configuration.
+collector and a read-only integration lens, with a responsive React/TypeScript
+frontend. Protocol fees start **disabled**. The frontend is an interactive
+**sample-data preview**; this repository asserts no live deployment.
+
+## Frontend
+
+[`frontend/`](frontend/) implements the approved graphite, ivory and lime design
+for **Trade**, **Pools** and **Portfolio**, with all UI copy in English.
+
+- Trade: token selection, exact-integer V2 demo quotes, route comparison,
+  slippage limits and a calculation review.
+- Pools: search, sorting, a device-local watchlist and pool details.
+- Portfolio: sample composition and history, with deposit and withdrawal previews.
+- Optional browser wallet discovery and account identification; connecting never
+  replaces sample positions with real balances and never requests a signature.
+
+With Node 24 installed:
+
+```sh
+cd frontend
+npm ci --ignore-scripts
+npm run dev
+```
+
+Run `npm test` and `npm run build` for interaction/arithmetic checks and the
+production static bundle. See [the frontend guide](frontend/README.md) for the
+current boundary, validation limits and live-integration requirements.
 
 ## Execution and security boundary
 
