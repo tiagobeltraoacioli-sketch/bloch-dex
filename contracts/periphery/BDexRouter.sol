@@ -7,54 +7,15 @@ import {IUniswapV2Factory} from "../interfaces/IUniswapV2Factory.sol";
 import {IUniswapV2Pair} from "../interfaces/IUniswapV2Pair.sol";
 import {BDexLibrary} from "./BDexLibrary.sol";
 
-/// @title BDexRouter — Router02-equivalent periphery over the Bloch DEX core,
-///        authorial 0.8.24 port of the canonical UniswapV2Router02
-///        (v2-periphery, solc 0.6.6).
-///
-/// STATUS: UNAUDITED REFERENCE, NOT DEPLOYED — same footing as the core
-///         (contracts/dex/UniswapV2Factory.sol header).
-///
-/// DESIGN RULES this file must keep true:
-///   * STATELESS. The only storage-shaped members are the two immutables
-///     (factory, WBLCH). The Router holds NO balances between transactions,
-///     keeps NO per-pair accounting, and owns NO privileged switch. This is
-///     load-bearing twice over: (a) canonical Router02 semantics — anyone can
-///     deploy a competing router against the same Factory; and (b) an earlier
-///     review round found that per-pair accounting in a periphery contract is
-///     corruptible by the LP-token-as-pool-token aliasing trick (a Pair IS an
-///     ERC-20, so pair2 = Pair(LP1, WBLCH) is legal and permissionless) — a
-///     class of bug that cannot exist where there is no accounting to corrupt.
-///     test/BDexRouterBLCH.t.sol keeps a canary test trading exactly that
-///     aliased pair through this Router end-to-end.
-///   * NONE of the protocol-fee machinery lives here. The fee switch and its
-///     policy (ships OFF; if ever ON, treasury-only) are the Factory's — see
-///     contracts/dex/UniswapV2Factory.sol's FEE GOVERNANCE header and
-///     docs/specs/POSTERNDEX-AMM-DESIGN.md:56-60. The Router neither reads
-///     feeTo nor routes a single wei differently because of it.
-///   * PAIR RESOLUTION goes through the Factory registry, never a hardcoded
-///     CREATE2 hash (BDexLibrary.sol PORT NOTE 1) — the 0.8.24 init-code hash
-///     differs from canonical, so the canonical constant would address
-///     nonexistent pairs and every "transfer to the pair" would strand funds.
-///
-/// PORT NOTES (deviations from canonical Router02, each deliberate):
-///   1. Naming: *ETH functions become *BLCH; the native asset is BLCH wrapped
-///      by WBLCH (contracts/wblch/WBLCH.sol, WETH9-equivalent, byte-parity
-///      pinned by test/WblchParity.t.sol).
-///   2. receive() requires msg.sender == WBLCH (canonical uses a bare
-///      assert). The Router accepts native ONLY as the return leg of a
-///      WBLCH.withdraw unwrap; any other native send is a user error and
-///      reverts loudly ("BDEX: NATIVE_ONLY_FROM_WBLCH") instead of silently
-///      donating to whoever sweeps next.
-///   3. SafeMath is gone (0.8 checked arithmetic); TransferHelper is inlined
-///      as the _safeTransfer* private helpers, same low-level-call semantics:
-///      missing-return tokens (USDT class) succeed, false-returning or
-///      reverting tokens fail the whole transaction.
-///   4. Exact-OUT fee-on-transfer variants DO NOT EXIST — see the note above
-///      the Supporting section: with a transfer tax the amount that ARRIVES
-///      differs from the amount SENT, so "exact output" cannot be promised
-///      without iterating (unbounded) over tax rates. Canonical Router02 made
-///      the same cut; we keep it and document it instead of shipping a
-///      variant that lies.
+/// @title BDexRouter
+/// @notice V2 periphery with explicit deadlines, output bounds and native wrapping.
+/// @dev Factory and wrapper are immutable. No fee authority or pool accounting
+///      lives here. Native method names use BLCH; deployments must independently
+///      verify that the configured wrapper represents their chosen native asset.
+///      Supporting-fee-on-transfer methods promise exact input only. Liquidity
+///      removal checks the final recipient's net tokens after both transfer legs.
+///      Keep approvals on the router, never on BDexLens. See README.md.
+
 contract BDexRouter is IBDexRouter {
     /// @notice The one Factory this Router serves. Immutable: a Router is a
     ///         throwaway convenience shell around a Factory, never a steward
@@ -76,17 +37,18 @@ contract BDexRouter is IBDexRouter {
     }
 
     constructor(address _factory, address _WBLCH) {
+        require(_factory.code.length > 0 && _WBLCH.code.length > 0, "BDEX: NOT_A_CONTRACT");
         factory = _factory;
         WBLCH = _WBLCH;
     }
 
-    /// @dev PORT NOTE 2: native only as the WBLCH.withdraw return leg.
+    /// @dev Native only as the WBLCH.withdraw return leg.
     receive() external payable {
         require(msg.sender == WBLCH, "BDEX: NATIVE_ONLY_FROM_WBLCH");
     }
 
     // =========================================================================
-    // Safe-transfer helpers (canonical TransferHelper, inlined — PORT NOTE 3)
+    // Safe-transfer helpers (canonical TransferHelper, inlined)
     // =========================================================================
 
     /// @dev Tolerates empty returndata (missing-return tokens) but treats an
@@ -108,7 +70,7 @@ contract BDexRouter is IBDexRouter {
     ///      constant of the EVM. Reverts on failure — a refund that cannot be
     ///      delivered must fail the transaction, not vanish.
     function _safeTransferNative(address to, uint256 value) private {
-        (bool success, ) = to.call{value: value}("");
+        (bool success,) = to.call{value: value}("");
         require(success, "BDEX: NATIVE_TRANSFER_FAILED");
     }
 
@@ -153,6 +115,10 @@ contract BDexRouter is IBDexRouter {
                 (amountA, amountB) = (amountAOptimal, amountBDesired);
             }
         }
+        // Enforce both user bounds, including a fresh pool and the side that
+        // was not scaled by quote(). A desired amount is not a minimum.
+        require(amountA >= amountAMin, "BDEX: INSUFFICIENT_A_AMOUNT");
+        require(amountB >= amountBMin, "BDEX: INSUFFICIENT_B_AMOUNT");
     }
 
     function addLiquidity(
@@ -174,8 +140,7 @@ contract BDexRouter is IBDexRouter {
 
     /// @notice Native-side add: wraps exactly the BLCH the ratio calls for and
     ///         REFUNDS the rest of msg.value (dust refund — asserted with an
-    ///         execution counter in test/BDexRouterBLCH.t.sol so the refund
-    ///         branch provably runs).
+    ///         amount that the pool actually consumes).
     function addLiquidityBLCH(
         address token,
         uint256 amountTokenDesired,
@@ -184,7 +149,8 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external payable ensure(deadline) returns (uint256 amountToken, uint256 amountBLCH, uint256 liquidity) {
-        (amountToken, amountBLCH) = _addLiquidity(token, WBLCH, amountTokenDesired, msg.value, amountTokenMin, amountBLCHMin);
+        (amountToken, amountBLCH) =
+            _addLiquidity(token, WBLCH, amountTokenDesired, msg.value, amountTokenMin, amountBLCHMin);
         address pair = BDexLibrary.pairFor(factory, token, WBLCH);
         _safeTransferFrom(token, msg.sender, pair, amountToken);
         IWBLCH(WBLCH).deposit{value: amountBLCH}();
@@ -208,9 +174,9 @@ contract BDexRouter is IBDexRouter {
         // The Pair is itself the LP ERC-20; shares must sit in the Pair before
         // burn() (UniswapV2Pair.sol burn header). "burn" here = redeem LP
         // SHARES — the canonical pool primitive, nothing to do with BLCH.
-        IUniswapV2Pair(pair).transferFrom(msg.sender, pair, liquidity);
+        require(IUniswapV2Pair(pair).transferFrom(msg.sender, pair, liquidity), "BDEX: LP_TRANSFER_FAILED");
         (uint256 amount0, uint256 amount1) = IUniswapV2Pair(pair).burn(to);
-        (address token0, ) = BDexLibrary.sortTokens(tokenA, tokenB);
+        (address token0,) = BDexLibrary.sortTokens(tokenA, tokenB);
         (amountA, amountB) = tokenA == token0 ? (amount0, amount1) : (amount1, amount0);
         require(amountA >= amountAMin, "BDEX: INSUFFICIENT_A_AMOUNT");
         require(amountB >= amountBMin, "BDEX: INSUFFICIENT_B_AMOUNT");
@@ -226,14 +192,15 @@ contract BDexRouter is IBDexRouter {
     ) public returns (uint256 amountToken, uint256 amountBLCH) {
         // Redeem to the Router first: the Pair pays WBLCH, the user wants
         // native. removeLiquidity carries the ensure(deadline) check.
-        (amountToken, amountBLCH) = removeLiquidity(token, WBLCH, liquidity, amountTokenMin, amountBLCHMin, address(this), deadline);
+        (amountToken, amountBLCH) =
+            removeLiquidity(token, WBLCH, liquidity, amountTokenMin, amountBLCHMin, address(this), deadline);
         _safeTransfer(token, to, amountToken);
         IWBLCH(WBLCH).withdraw(amountBLCH); // unwrap 1:1; native arrives via receive()
         _safeTransferNative(to, amountBLCH);
     }
 
     /// @notice Permit variant: the LP token is EIP-2612 (dynamic-chainid
-    ///         domain — UniswapV2ERC20.sol PORT NOTE 2), so removal needs no
+    ///         domain in UniswapV2ERC20.sol), so removal needs no
     ///         prior approve transaction. approveMax mirrors canonical:
     ///         type(uint256).max engages the LP token's infinite-allowance
     ///         fast path (never decremented again).
@@ -288,9 +255,14 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) public returns (uint256 amountBLCH) {
-        (, amountBLCH) = removeLiquidity(token, WBLCH, liquidity, amountTokenMin, amountBLCHMin, address(this), deadline);
-        // Forward what ACTUALLY landed here, not what burn() reported.
-        _safeTransfer(token, to, _balanceOf(token, address(this)));
+        require(to != address(this), "BDEX: INVALID_TO");
+        uint256 routerBefore = _balanceOf(token, address(this));
+        uint256 recipientBefore = _balanceOf(token, to);
+        (, amountBLCH) = removeLiquidity(token, WBLCH, liquidity, 0, amountBLCHMin, address(this), deadline);
+        // Only forward this redemption's delta; pre-existing donations cannot
+        // subsidize a taxed withdrawal or another caller's minimum.
+        _safeTransfer(token, to, _balanceOf(token, address(this)) - routerBefore);
+        require(_balanceOf(token, to) - recipientBefore >= amountTokenMin, "BDEX: INSUFFICIENT_A_AMOUNT");
         IWBLCH(WBLCH).withdraw(amountBLCH);
         _safeTransferNative(to, amountBLCH);
     }
@@ -310,7 +282,9 @@ contract BDexRouter is IBDexRouter {
         address pair = BDexLibrary.pairFor(factory, token, WBLCH);
         uint256 value = approveMax ? type(uint256).max : liquidity;
         IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
-        amountBLCH = removeLiquidityBLCHSupportingFeeOnTransferTokens(token, liquidity, amountTokenMin, amountBLCHMin, to, deadline);
+        amountBLCH = removeLiquidityBLCHSupportingFeeOnTransferTokens(
+            token, liquidity, amountTokenMin, amountBLCHMin, to, deadline
+        );
     }
 
     // =========================================================================
@@ -324,9 +298,10 @@ contract BDexRouter is IBDexRouter {
     function _swap(uint256[] memory amounts, address[] memory path, address _to) private {
         for (uint256 i; i < path.length - 1; i++) {
             (address input, address output) = (path[i], path[i + 1]);
-            (address token0, ) = BDexLibrary.sortTokens(input, output);
+            (address token0,) = BDexLibrary.sortTokens(input, output);
             uint256 amountOut = amounts[i + 1];
-            (uint256 amount0Out, uint256 amount1Out) = input == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
+            (uint256 amount0Out, uint256 amount1Out) =
+                input == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
             address to = i < path.length - 2 ? BDexLibrary.pairFor(factory, output, path[i + 2]) : _to;
             IUniswapV2Pair(BDexLibrary.pairFor(factory, input, output)).swap(amount0Out, amount1Out, to, "");
         }
@@ -340,8 +315,7 @@ contract BDexRouter is IBDexRouter {
         uint256 deadline
     ) external ensure(deadline) returns (uint256[] memory amounts) {
         amounts = BDexLibrary.getAmountsOut(factory, amountIn, path);
-        // amountOutMin is the ONLY sandwich defense a swapper has — see
-        // test/DexSwapSandwich.t.sol for the attack this bound prevents.
+        // Enforce the user's signed execution bound at inclusion time.
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
         _swap(amounts, path, to);
@@ -360,17 +334,19 @@ contract BDexRouter is IBDexRouter {
         _swap(amounts, path, to);
     }
 
-    function swapExactBLCHForTokens(
-        uint256 amountOutMin,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external payable ensure(deadline) returns (uint256[] memory amounts) {
+    function swapExactBLCHForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline)
+        external
+        payable
+        ensure(deadline)
+        returns (uint256[] memory amounts)
+    {
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsOut(factory, msg.value, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         IWBLCH(WBLCH).deposit{value: amounts[0]}();
-        require(IWBLCH(WBLCH).transfer(BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]), "BDEX: TRANSFER_FAILED");
+        require(
+            IWBLCH(WBLCH).transfer(BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]), "BDEX: TRANSFER_FAILED"
+        );
         _swap(amounts, path, to);
     }
 
@@ -407,19 +383,20 @@ contract BDexRouter is IBDexRouter {
     }
 
     /// @notice Exact-OUT native-in swap: wraps only what the math requires and
-    ///         refunds the rest of msg.value (dust refund, counter-asserted in
-    ///         test/BDexRouterBLCH.t.sol like addLiquidityBLCH's).
-    function swapBLCHForExactTokens(
-        uint256 amountOut,
-        address[] calldata path,
-        address to,
-        uint256 deadline
-    ) external payable ensure(deadline) returns (uint256[] memory amounts) {
+    ///         refunds the rest of msg.value to the caller.
+    function swapBLCHForExactTokens(uint256 amountOut, address[] calldata path, address to, uint256 deadline)
+        external
+        payable
+        ensure(deadline)
+        returns (uint256[] memory amounts)
+    {
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= msg.value, "BDEX: EXCESSIVE_INPUT_AMOUNT");
         IWBLCH(WBLCH).deposit{value: amounts[0]}();
-        require(IWBLCH(WBLCH).transfer(BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]), "BDEX: TRANSFER_FAILED");
+        require(
+            IWBLCH(WBLCH).transfer(BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]), "BDEX: TRANSFER_FAILED"
+        );
         _swap(amounts, path, to);
         if (msg.value > amounts[0]) _safeTransferNative(msg.sender, msg.value - amounts[0]);
     }
@@ -432,8 +409,7 @@ contract BDexRouter is IBDexRouter {
     // A taxed token delivers LESS than sent, so the standard variants' pre-
     // computed amounts[] overstate the pair's input and the Pair's K check
     // correctly reverts ("BDEX: K") — failing CLOSED, never silently short-
-    // changing (proven in test/BDexRouterFoT.t.sol with the Supporting
-    // variant as the control). These variants instead measure the pair's REAL
+    // changing. These variants instead measure the pair's REAL
     // balance delta before quoting each hop, and enforce amountOutMin on the
     // RECIPIENT's real balance delta.
     //
@@ -453,18 +429,19 @@ contract BDexRouter is IBDexRouter {
     function _swapSupportingFeeOnTransferTokens(address[] memory path, address _to) private {
         for (uint256 i; i < path.length - 1; i++) {
             (address input, address output) = (path[i], path[i + 1]);
-            (address token0, ) = BDexLibrary.sortTokens(input, output);
+            (address token0,) = BDexLibrary.sortTokens(input, output);
             IUniswapV2Pair pair = IUniswapV2Pair(BDexLibrary.pairFor(factory, input, output));
             uint256 amountInput;
             uint256 amountOutput;
             {
-                (uint112 reserve0, uint112 reserve1, ) = pair.getReserves();
+                (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
                 (uint256 reserveInput, uint256 reserveOutput) =
                     input == token0 ? (uint256(reserve0), uint256(reserve1)) : (uint256(reserve1), uint256(reserve0));
                 amountInput = _balanceOf(input, address(pair)) - reserveInput;
                 amountOutput = BDexLibrary.getAmountOut(amountInput, reserveInput, reserveOutput);
             }
-            (uint256 amount0Out, uint256 amount1Out) = input == token0 ? (uint256(0), amountOutput) : (amountOutput, uint256(0));
+            (uint256 amount0Out, uint256 amount1Out) =
+                input == token0 ? (uint256(0), amountOutput) : (amountOutput, uint256(0));
             address to = i < path.length - 2 ? BDexLibrary.pairFor(factory, output, path[i + 2]) : _to;
             pair.swap(amount0Out, amount1Out, to, "");
         }
@@ -482,7 +459,9 @@ contract BDexRouter is IBDexRouter {
         _swapSupportingFeeOnTransferTokens(path, to);
         // The slippage bound is enforced on what the RECIPIENT actually
         // received — the only number that means anything under transfer taxes.
-        require(_balanceOf(path[path.length - 1], to) - balanceBefore >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
+        require(
+            _balanceOf(path[path.length - 1], to) - balanceBefore >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT"
+        );
     }
 
     function swapExactBLCHForTokensSupportingFeeOnTransferTokens(
@@ -494,10 +473,14 @@ contract BDexRouter is IBDexRouter {
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         uint256 amountIn = msg.value;
         IWBLCH(WBLCH).deposit{value: amountIn}();
-        require(IWBLCH(WBLCH).transfer(BDexLibrary.pairFor(factory, path[0], path[1]), amountIn), "BDEX: TRANSFER_FAILED");
+        require(
+            IWBLCH(WBLCH).transfer(BDexLibrary.pairFor(factory, path[0], path[1]), amountIn), "BDEX: TRANSFER_FAILED"
+        );
         uint256 balanceBefore = _balanceOf(path[path.length - 1], to);
         _swapSupportingFeeOnTransferTokens(path, to);
-        require(_balanceOf(path[path.length - 1], to) - balanceBefore >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
+        require(
+            _balanceOf(path[path.length - 1], to) - balanceBefore >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT"
+        );
     }
 
     function swapExactTokensForBLCHSupportingFeeOnTransferTokens(

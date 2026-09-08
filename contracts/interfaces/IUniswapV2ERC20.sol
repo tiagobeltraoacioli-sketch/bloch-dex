@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title IUniswapV2ERC20 — the LP-share token interface (ERC-20 + EIP-2612).
-/// @notice One deliberate deviation from the canonical interface: this L2's
-///         chain id is still a placeholder (700771, marked "placeholder
-///         pending" in l2/bloch-l2-evm/src/chainspec.rs:5), so
-///         DOMAIN_SEPARATOR() is a `view` computed from block.chainid rather
-///         than a value frozen at construction. See UniswapV2ERC20.sol for
-///         the full rationale.
+/// @title IUniswapV2ERC20
+/// @notice LP ERC-20 and EIP-2612 interface. Permit domains use the live EVM chainid.
 interface IUniswapV2ERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
     event Transfer(address indexed from, address indexed to, uint256 value);
@@ -27,5 +22,6 @@ interface IUniswapV2ERC20 {
     function PERMIT_TYPEHASH() external pure returns (bytes32);
     function nonces(address owner) external view returns (uint256);
 
-    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+        external;
 }

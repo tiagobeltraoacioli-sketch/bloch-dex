@@ -1,0 +1,28 @@
+name: Contracts
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09
+        with:
+          version: v1.7.1
+      - name: Check formatting
+        run: forge fmt --check
+      - name: Compile and check deployment size limits
+        run: forge build --sizes --skip test
+      - name: Unit, fuzz and stateful invariant tests
+        run: forge test -vv

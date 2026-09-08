@@ -8,50 +8,15 @@ import {IERC20} from "./interfaces/IERC20.sol";
 import {IUniswapV2Factory} from "./interfaces/IUniswapV2Factory.sol";
 import {IUniswapV2Callee} from "./interfaces/IUniswapV2Callee.sol";
 
-/// @title UniswapV2Pair — constant-product AMM pool, authorial 0.8.24 port of
-///        the canonical UniswapV2Pair (v2-core, solc 0.5.16), line-for-line
-///        semantics preserved.
-///
-/// STATUS: UNAUDITED REFERENCE, NOT DEPLOYED. There is no live Bloch EVM L2
-///         to deploy to (the prover is a self-declared scaffold,
-///         l2/bloch-l2-prover/src/lib.rs:3) — these sources exist so the DEX
-///         core is pinned, tested and diffable against canonical Uniswap V2
-///         before anything real launches. Tests run only in the local Foundry
-///         harness (contracts/foundry.toml).
-///
-/// FEE MODEL (unchanged from canonical — THE point of this port):
-///   * Swaps pay 0.30%, enforced implicitly by the adjusted k-check in
-///     swap(): balanceAdjusted = balance*1000 - amountIn*3.
-///   * If the Factory's feeTo is set, 1/6 of the GROWTH of sqrt(k) is minted
-///     to feeTo as LP shares (_mintFee) — i.e. the protocol cut is 0.05% of
-///     volume, the remaining 0.25% accrues to LPs. LP economics are untouched
-///     BY CONSTRUCTION: the cut only dilutes by the protocol's fraction of
-///     fee-driven k growth, never touches LP principal.
-///   * PROTOCOL FEE DESTINATION, per the governing product docs
-///     (docs/specs/POSTERNDEX-AMM-DESIGN.md:56-60 and
-///     docs/specs/POSTERNDEX-BRIDGE-DESIGN.md:219-223): the switch ships
-///     DEFAULT OFF (feeTo == address(0), all fees to LPs). If the founder
-///     ever turns it ON — a deliberate later act, after which the docs are
-///     amended — feeTo points at TreasuryFeeCollector.sol and the cut is
-///     fiat-equivalent utility revenue for operating the frontend/L2. It is
-///     never a mechanism that returns value to the BLCH token, and no copy
-///     may frame it as one. The destination is Postern's OPERATIONS treasury
-///     (utility revenue), NOT the mined L1 treasury balance and NOT the
-///     consensus-locked premine. No line of collector logic lives in the
-///     Pair.
-///
-/// KNOWN CANONICAL LIMITATIONS (inherited on purpose, do not "fix" silently):
-///   * Rebasing / fee-on-transfer tokens break pro-rata accounting: a
-///     negative rebase strands LP value, a positive one is skimmable by
-///     anyone. Mitigation belongs in the Router (supporting-fee swap
-///     variants), not here.
-///   * Reserves are uint112-bounded; tokens whose pool-side balance exceeds
-///     2^112-1 (~5.19e15 tokens at 18 dp) lock _update with "BDEX: OVERFLOW".
-///     The 100B BLCH G4 hard cap fits with ~4 orders of magnitude of slack.
-///     Boundary is pinned in test/UniswapV2Pair.t.sol (limit passes, +1
-///     reverts).
-///   * The raw Pair offers NO slippage/deadline protection — that is the
-///     Router's job. No UI should ever point users at the bare core.
+/// @title UniswapV2Pair
+/// @notice V2 constant-product AMM with a 0.30% swap fee and locked minimum LP.
+/// @dev Optimistic transfers and flash callbacks are checked against actual
+///      balances after the callback. A storage latch guards every pool mutation.
+///      Cumulative prices and uint32 timestamps intentionally wrap; consumers
+///      must use modular differences over windows shorter than 2^32 seconds.
+///      Reserve balances are bounded to uint112. Taxed/rebasing tokens require
+///      explicit integration handling and are not made safe by the invariant.
+
 contract UniswapV2Pair is UniswapV2ERC20 {
     using UQ112x112 for uint224;
 
@@ -65,7 +30,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///      the loot. This bounds, but does not eliminate, donation griefing
     ///      against integrators that skip min-amount checks; the Router owes
     ///      users amountMin/deadline guards. Quantified in
-    ///      test/FirstDepositorAttack.t.sol.
+    ///      test/Core.t.sol.
     uint256 public constant MINIMUM_LIQUIDITY = 10 ** 3;
 
     /// @dev transfer(address,uint256) selector for the raw-call transfer path.
@@ -100,14 +65,8 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     uint256 public kLast;
 
     // --- reentrancy lock -------------------------------------------------
-    // Canonical storage lock kept over EIP-1153 transient storage
-    // (tstore/tload IS available at cancun — chainspec.rs:65 pins
-    // SpecId::CANCUN): parity with the battle-tested canonical core is worth
-    // more than the gas delta on a self-operated L2, and the storage lock's
-    // behaviour under nested calls is exactly what the V2 audit history
-    // covers. `unlocked` is set in the constructor (this contract is
-    // factory-deployed at runtime, NOT a genesis predeploy, so unlike
-    // L2BlochBridge its constructor genuinely runs).
+    // A storage lock avoids a dependency on Cancun transient-storage opcodes.
+    // The constructor runs during factory deployment and initializes this latch.
     uint256 private unlocked = 1;
 
     modifier lock() {
@@ -140,15 +99,13 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///         the salt does (Factory.createPair).
     function initialize(address _token0, address _token1) external {
         require(msg.sender == factory, "BDEX: FORBIDDEN");
+        require(token0 == address(0) && token1 == address(0), "BDEX: ALREADY_INITIALIZED");
+        require(_token0 != address(0) && _token0 < _token1, "BDEX: INVALID_TOKENS");
         token0 = _token0;
         token1 = _token1;
     }
 
-    function getReserves()
-        public
-        view
-        returns (uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast)
-    {
+    function getReserves() public view returns (uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast) {
         _reserve0 = reserve0;
         _reserve1 = reserve1;
         _blockTimestampLast = blockTimestampLast;
@@ -179,8 +136,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///           overflow uint256 by design; TWAP consumers subtract two
     ///           observations modularly and the difference stays correct.
     ///      Checked equivalents would brick every pool at the first wrap.
-    ///      Pinned in test/UniswapV2Pair.t.sol (test_twap_survives_uint32_wrap
-    ///      and the accumulator-near-max test).
+    ///      Timestamp rollover is exercised in test/Treasury.t.sol.
     function _update(uint256 balance0, uint256 balance1, uint112 _reserve0, uint112 _reserve1) private {
         require(balance0 <= type(uint112).max && balance1 <= type(uint112).max, "BDEX: OVERFLOW");
         unchecked {
@@ -216,10 +172,9 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///      Because it dilutes only fee-driven GROWTH, the LP principal and
     ///      the LPs' 0.25% share of volume are untouched by construction —
     ///      this is the property the treasury-collector design depends on
-    ///      (header note; enforced by test — test/TreasuryFeeCollector.t.sol —
-    ///      not just asserted in prose).
-    ///      Turning feeTo off zeroes kLast so a later re-enable does not
-    ///      retroactively charge fees accrued while off.
+    ///      The pending dilution is checked against redemption in test/Lens.t.sol.
+    ///      A liquidity event while feeTo is off zeroes kLast. Toggling off
+    ///      and back on WITHOUT such an event does not reset the baseline.
     function _mintFee(uint112 _reserve0, uint112 _reserve1) private returns (bool feeOn) {
         address feeTo = IUniswapV2Factory(factory).feeTo();
         feeOn = feeTo != address(0);
@@ -263,10 +218,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
             liquidity = Math.sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY;
             _mint(address(0), MINIMUM_LIQUIDITY); // permanently locked
         } else {
-            liquidity = Math.min(
-                (amount0 * _totalSupply) / _reserve0,
-                (amount1 * _totalSupply) / _reserve1
-            );
+            liquidity = Math.min((amount0 * _totalSupply) / _reserve0, (amount1 * _totalSupply) / _reserve1);
         }
         require(liquidity > 0, "BDEX: INSUFFICIENT_LIQUIDITY_MINTED");
         _mint(to, liquidity);
@@ -354,10 +306,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
             // against r0*r1*1e6 < 2^244; no overflow in the honest range.
             uint256 balance0Adjusted = balance0 * 1000 - amount0In * 3;
             uint256 balance1Adjusted = balance1 * 1000 - amount1In * 3;
-            require(
-                balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * _reserve1 * (1000 ** 2),
-                "BDEX: K"
-            );
+            require(balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * _reserve1 * (1000 ** 2), "BDEX: K");
         }
 
         _update(balance0, balance1, _reserve0, _reserve1);
@@ -381,11 +330,6 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///         after a negative rebase, reserves overstate holdings and every
     ///         path that trusts them misprices — sync re-anchors them.
     function sync() external lock {
-        _update(
-            IERC20(token0).balanceOf(address(this)),
-            IERC20(token1).balanceOf(address(this)),
-            reserve0,
-            reserve1
-        );
+        _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), reserve0, reserve1);
     }
 }

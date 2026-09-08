@@ -10,12 +10,16 @@ pragma solidity ^0.8.24;
 ///         the canonical constant, or they will compute addresses of pairs
 ///         that do not exist and send funds into the void. The equality of
 ///         predicted vs. actually-created addresses is pinned by
-///         test/UniswapV2Factory.t.sol.
+///         test/Core.t.sol.
 interface IUniswapV2Factory {
     event PairCreated(address indexed token0, address indexed token1, address pair, uint256);
+    event FeeToUpdated(address indexed previousFeeTo, address indexed newFeeTo);
+    event FeeToSetterTransferStarted(address indexed currentSetter, address indexed pendingSetter);
+    event FeeToSetterTransferred(address indexed previousSetter, address indexed newSetter);
 
     function feeTo() external view returns (address);
     function feeToSetter() external view returns (address);
+    function pendingFeeToSetter() external view returns (address);
 
     function getPair(address tokenA, address tokenB) external view returns (address pair);
     function allPairs(uint256) external view returns (address pair);
@@ -27,4 +31,6 @@ interface IUniswapV2Factory {
 
     function setFeeTo(address) external;
     function setFeeToSetter(address) external;
+    function acceptFeeToSetter() external;
+    function cancelFeeToSetterTransfer() external;
 }

@@ -1,28 +1,106 @@
 # PosternDEX
 
-Uniswap-V2-lineage AMM contracts for the Bloch ecosystem: `UniswapV2Factory`,
-`UniswapV2Pair`, `UniswapV2ERC20`, the periphery (router/library), and a
-`TreasuryFeeCollector` that routes protocol fees to the treasury. Solidity
-`^0.8.24`, MIT-licensed, integrated from the three PosternDEX lineages of the
-legacy repository into one tree.
+V2 constant-product AMM contracts, an execution router, an immutable treasury
+collector and a read-only integration lens. Protocol fees start **disabled**.
+This repository contains no frontend and no live deployment configuration.
 
-## Status — read this first
+## Execution and security boundary
 
-**There is no EVM execution layer operating on Bloch Genesis-4 today.** Chain
-id 8400 refers to a retired legacy scaffold; the successor ("EVM at L1",
-ADR-040, alongside the Ustav token charter) is an explicit draft with no live
-code on either track. These contracts therefore have **no live Bloch network
-to deploy to** — they are prepared, reviewed source awaiting that decision.
-Do not deploy against chain id 8400 expecting a current network, and do not
-represent this repository as a live product.
+These contracts require an explicitly selected **EVM environment**, including
+the intended Bloch L2 integration. They do not add EVM execution to Bloch L1.
+EVM accounts and LP-token EIP-2612 permits use ECDSA; that compatibility must
+not be advertised as post-quantum authorization. Bloch L1 fund movement remains
+a separate PQ boundary. A bridge or wrapped representation has its own trust
+and settlement assumptions, outside these contracts.
 
-The retired swap front-end (`swap-posterndex`) stays in the legacy repo's
-attic on purpose; this repository is contracts only.
+No production network, factory, router or wrapped-native address is asserted
+here. Chain ID 8400 is a retired scaffold, not a deployment target. The wrapped
+native token is supplied externally; `test/TestBase.sol` contains only a local
+fixture. There has been no independent audit or production qualification.
 
-No audit is claimed. See https://blochprotocol.dev for the current state of
-the chain and its developer surface.
+## Build and validate
 
-## Layout
+Use Foundry **v1.7.1**. `foundry.toml` pins Solidity **0.8.24**, optimizer 200
+runs, the **Paris** EVM target and metadata settings. No runtime contract or
+test-library dependency is downloaded from a floating branch.
 
-- `contracts/` — core pair/factory/ERC20, `interfaces/`, `libraries/`,
-  `periphery/`, `TreasuryFeeCollector.sol`
+```sh
+forge fmt --check
+forge build --sizes --skip test
+forge test -vv
+```
+
+CI runs these commands. Tests cover actual swaps and redemptions, flash-swap
+repayment/reentrancy, permit replay across nonces and chain IDs, treasury TWAP
+windows, taxed-token withdrawal bounds, CREATE2 identity, route execution
+parity, protocol-fee dilution and stateful liquidity invariants. Fuzz tests run
+512 cases each; the invariant campaign runs 128 sequences of 64 operations
+with unexpected reverts treated as failures.
+
+## Contracts
+
+| Contract | Purpose |
+|---|---|
+| `UniswapV2Factory` | Canonical pair registry, CREATE2 deployment and two-step fee-authority transfer |
+| `UniswapV2Pair` | 0.30% swaps, LP mint/burn, flash swaps and cumulative prices |
+| `UniswapV2ERC20` | LP shares with a dynamic-chain-ID EIP-2612 domain |
+| `BDexRouter` | Atomic swaps, liquidity operations and wrapped-native paths |
+| `TreasuryFeeCollector` | Direct LP redemption to a fixed treasury; optional TWAP-guarded conversion |
+| `BDexLens` | Paginated pool snapshots, LP position estimates and bounded route comparison |
+
+### Integrate the lens
+
+`pools(cursor, limit)` returns up to 64 pools, the next cursor and total count.
+It reads canonical pool state without invoking arbitrary token metadata.
+
+`position(pair, owner)` estimates the owner's reserve shares after accounting
+for pending protocol-fee dilution. Donations, rebases and transfer taxes can
+make actual redemption differ from reserve-based estimates.
+
+`quoteExactInput(amountIn, path, slippageBps)` returns amounts, per-hop execution
+loss versus the marginal reserve ratio, an explicit availability flag, the
+quote's block/time and a rounded-down minimum output. `bestExactInput` compares
+up to eight caller-supplied routes of at most four hops, with matching endpoints
+and no repeated tokens. Missing or empty pools are marked unavailable; if no
+candidate is usable, `bestIndex` is `uint256.max`.
+
+This is comparison of supplied candidates, not global route discovery or
+split-route optimization. Read `available` before interpreting a quote. Spot
+reserves are manipulable; the lens is **not a price oracle**. Taxed/rebasing
+tokens are not modeled. Re-quote near submission, select a deadline and submit
+the minimum to the router. Only approve the executing router, never the lens.
+
+### Treasury policy
+
+`sweep(pair)` is the default: LP shares redeem directly to the immutable
+treasury, without a swap. `convertViaTwap` is an optional wrapped-native
+conversion requiring a caller-owned observation aged 30 minutes to 6 hours.
+Empty pools cannot initialize observations. Conversion refuses zero/dust
+floors and nonstandard redemption deltas; it does not use unrelated donated
+balances to subsidize a taxed redemption.
+
+The 1% TWAP discount bound includes the conversion's own price impact. A
+large conversion can therefore revert. A TWAP is not immune to sustained
+manipulation, and shallow markets must not be treated as reliable collateral
+oracles. There is no rescue key. Unrelated tokens sent to the collector or
+router may remain unrecoverable.
+
+## Compatibility changes in this revision
+
+- `setFeeToSetter(next)` **proposes** a transfer. `next` must call
+  `acceptFeeToSetter`; the current authority may cancel before acceptance.
+  Update administrative integrations that assumed immediate transfer.
+- Factories reject non-contract token addresses, and pair initialization is
+  explicitly one-time. Create the token contracts before creating their pair.
+- Liquidity additions enforce both user minimums, including the first deposit.
+  Taxed-token native removals enforce the final recipient's net token minimum
+  and forward only that withdrawal's balance delta.
+- Pair creation bytecode changed. Read `INIT_CODE_PAIR_HASH()` from the actual
+  factory; never hardcode canonical Uniswap or an earlier Postern hash. Existing
+  deployments cannot be upgraded by changing these source files.
+- Fee arithmetic remains V2's lazy 1/6 share of `sqrt(k)` growth. A liquidity
+  event while `feeTo` is off resets `kLast`; toggling off and on between
+  liquidity events does not clear that baseline.
+
+See [the focused review](docs/SECURITY-REVIEW-2026-09-08.md) for reproduced
+defects, validation evidence and work still required before production.
