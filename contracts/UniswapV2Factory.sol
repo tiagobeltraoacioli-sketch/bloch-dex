@@ -4,50 +4,24 @@ pragma solidity ^0.8.24;
 import {IUniswapV2Factory} from "./interfaces/IUniswapV2Factory.sol";
 import {UniswapV2Pair} from "./UniswapV2Pair.sol";
 
-/// @title UniswapV2Factory — permissionless pair deployer, authorial 0.8.24
-///        port of the canonical UniswapV2Factory (v2-core, solc 0.5.16).
-///
-/// STATUS: UNAUDITED REFERENCE, NOT DEPLOYED. No live Bloch EVM L2 exists
-///         (prover self-declares SCAFFOLD — l2/bloch-l2-prover/src/lib.rs:3);
-///         this is the reviewable, tested core awaiting a real chain.
-///
-/// FEE GOVERNANCE (read before wiring anything to feeTo):
-///   * feeTo/feeToSetter are EXACTLY canonical: feeToSetter (an operator key
-///     today — there is no on-chain governance) may enable the protocol cut
-///     by pointing feeTo at a collector, or disable it with address(0). The
-///     cut itself is 1/6 of swap-fee growth, settled lazily in
-///     UniswapV2Pair._mintFee. LP PRINCIPAL is untouched; the cut dilutes
-///     only fee-driven growth. Said that way on purpose: "LP economics are
-///     untouched" is what this line read before, and it is a sentence that
-///     survives being quoted on its own while being false — with the cut on,
-///     LPs take 5/6 of fee growth rather than 6/6. The precise claim is the
-///     one _mintFee's own comment makes, and the one the tests measure.
-///   * DEFAULT OFF IS THE PRODUCT CONTRACT, not an implementation accident.
-///     The governing docs (docs/specs/POSTERNDEX-AMM-DESIGN.md:56-60,
-///     docs/specs/POSTERNDEX-BRIDGE-DESIGN.md:219-223) require the switch to
-///     ship with feeTo == address(0) — all fees to LPs — and this
-///     constructor honors that by setting ONLY feeToSetter. Turning the fee
-///     on is a deliberate later act of the founder
-///     (setFeeTo(TreasuryFeeCollector)), and only then are the docs amended.
-///   * IF EVER ON, the destination is Postern's OPERATIONS treasury and the
-///     framing is fiat-equivalent utility revenue for running the
-///     frontend/L2 — never a value-return mechanism for the BLCH token, and
-///     no user-facing copy may pitch it as one. That treasury is distinct
-///     from the mined L1 treasury balance and from the consensus-locked
-///     premine; comments and copy must not conflate the three.
-///   * Note the L2's EIP-1559 basefee separately routes to BASE_FEE_VAULT
-///     and is deliberately preserved (l2/bloch-l2-evm/src/chainspec.rs:16-21
-///     — bridged BLCH always stays claimable so the L1 escrow balances).
-///     The DEX protocol fee keeps that symmetry: nothing here removes BLCH
-///     from circulation.
+/// @title UniswapV2Factory
+/// @notice Permissionless V2 pair deployment with explicit fee governance.
+/// @dev Protocol fees start disabled. When enabled, the canonical lazy fee
+///      mints 1/6 of sqrt(k) growth as LP shares; it does not debit LP deposits.
+///      feeTo is operator-controlled and should point to an operations treasury.
+///      Authority transfer is proposed with setFeeToSetter and completed by
+///      acceptFeeToSetter. Read README.md for compatibility and deployment status.
+
 contract UniswapV2Factory is IUniswapV2Factory {
     address public feeTo;
     address public feeToSetter;
+    address public pendingFeeToSetter;
 
     mapping(address => mapping(address => address)) public getPair;
     address[] public allPairs;
 
     constructor(address _feeToSetter) {
+        require(_feeToSetter != address(0), "BDEX: ZERO_ADDRESS");
         feeToSetter = _feeToSetter;
     }
 
@@ -56,14 +30,14 @@ contract UniswapV2Factory is IUniswapV2Factory {
     }
 
     /// @notice keccak256 of the Pair CREATION CODE — the third CREATE2 input.
-    /// @dev This port compiles with solc 0.8.24/cancun, so this hash is NOT
+    /// @dev This port compiles with the pinned Solidity/EVM settings, so this hash is NOT
     ///      the canonical 0x96e8ac4277198ff8b6f785478aa9a39f403cb768dd02cbee
     ///      326c3e7da348845f, and it changes whenever UniswapV2Pair (or the
-    ///      compiler settings in contracts/foundry.toml) change. Off-chain
+    ///      compiler settings in foundry.toml) change. Off-chain
     ///      pairFor computations MUST source it from here; hardcoding the
     ///      canonical constant addresses pairs that DO NOT EXIST (classic
     ///      fork bug — funds sent to empty addresses). Equality of predicted
-    ///      vs. created addresses is pinned in test/UniswapV2Factory.t.sol.
+    ///      vs. created addresses is pinned in test/Core.t.sol.
     function INIT_CODE_PAIR_HASH() external pure returns (bytes32) {
         return keccak256(type(UniswapV2Pair).creationCode);
     }
@@ -81,6 +55,7 @@ contract UniswapV2Factory is IUniswapV2Factory {
         require(tokenA != tokenB, "BDEX: IDENTICAL_ADDRESSES");
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         require(token0 != address(0), "BDEX: ZERO_ADDRESS");
+        require(token0.code.length > 0 && token1.code.length > 0, "BDEX: NOT_A_TOKEN");
         require(getPair[token0][token1] == address(0), "BDEX: PAIR_EXISTS"); // single check is sufficient
         bytes32 salt = keccak256(abi.encodePacked(token0, token1));
         pair = address(new UniswapV2Pair{salt: salt}());
@@ -95,11 +70,29 @@ contract UniswapV2Factory is IUniswapV2Factory {
     /// @dev Operator-keyed today; see the header's honest-label requirement.
     function setFeeTo(address _feeTo) external {
         require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
+        emit FeeToUpdated(feeTo, _feeTo);
         feeTo = _feeTo;
     }
 
+    /// @notice Propose a new fee authority. The current authority retains
+    ///         control until the nominated address explicitly accepts.
     function setFeeToSetter(address _feeToSetter) external {
         require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
-        feeToSetter = _feeToSetter;
+        require(_feeToSetter != address(0), "BDEX: ZERO_ADDRESS");
+        pendingFeeToSetter = _feeToSetter;
+        emit FeeToSetterTransferStarted(feeToSetter, _feeToSetter);
+    }
+
+    function acceptFeeToSetter() external {
+        require(msg.sender == pendingFeeToSetter, "BDEX: FORBIDDEN");
+        emit FeeToSetterTransferred(feeToSetter, msg.sender);
+        feeToSetter = msg.sender;
+        pendingFeeToSetter = address(0);
+    }
+
+    function cancelFeeToSetterTransfer() external {
+        require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
+        emit FeeToSetterTransferStarted(feeToSetter, address(0));
+        pendingFeeToSetter = address(0);
     }
 }

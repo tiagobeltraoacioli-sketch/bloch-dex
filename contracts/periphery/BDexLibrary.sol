@@ -4,61 +4,26 @@ pragma solidity ^0.8.24;
 import {IUniswapV2Factory} from "../interfaces/IUniswapV2Factory.sol";
 import {IUniswapV2Pair} from "../interfaces/IUniswapV2Pair.sol";
 
-/// @title BDexLibrary — quoting + pair-resolution helpers for the Router,
-///        authorial 0.8.24 port of the canonical UniswapV2Library (v2-periphery,
-///        solc 0.6.6).
-///
-/// STATUS: UNAUDITED REFERENCE, NOT DEPLOYED — same footing as the core it
-///         serves (see contracts/dex/UniswapV2Factory.sol header).
-///
-/// PORT NOTES (deviations from canonical, each deliberate):
-///   1. NO HARDCODED INIT-CODE HASH. Canonical pairFor derives the CREATE2
-///      address with the magic constant 0x96e8ac42... That constant is WRONG
-///      for this core: the authorial 0.8.24 port produces different creation
-///      bytecode, so the canonical hash would address pairs that DO NOT EXIST
-///      and any transfer "to the pair" would land on an empty account —
-///      exactly the failure mode the Factory header warns integrators about
-///      (contracts/dex/UniswapV2Factory.sol, INIT_CODE_PAIR_HASH note).
-///      Instead pairFor asks the Factory's own registry (getPair, a staticcall)
-///      and reverts "BDEX: PAIR_NOT_FOUND" when no pair exists. This trades
-///      ~2600 gas (cold SLOAD via call) per resolution for the impossibility
-///      of the wrong-address class of bug. Off-chain code that wants the
-///      cheap derivation reads factory.INIT_CODE_PAIR_HASH() — the equality
-///      of derived vs. registry addresses is pinned in
-///      test/BDexLibrary.t.sol.
-///   2. SafeMath is gone; solc 0.8 checked arithmetic reverts where SafeMath
-///      did. getAmountIn adds an EXPLICIT amountOut < reserveOut require so
-///      draining requests fail with a named error instead of a bare 0x11
-///      panic (canonical 0.6.6 reverted inside SafeMath.sub with no name
-///      either — strictly more informative, never more permissive).
-///
-/// Every math function is the exact canonical formula — the 0.30% fee lives
-/// in the 997/1000 factors and MUST match UniswapV2Pair's adjusted k-check
-/// (UniswapV2Pair.sol swap()) or the Router will quote outputs the Pair
-/// rejects. Parity is proven with canonical unit vectors in
-/// test/BDexLibrary.t.sol.
+/// @title BDexLibrary
+/// @notice V2 quoting formulas and factory-registry pair resolution.
+/// @dev The 997/1000 factors must match the pair invariant. Missing pools revert;
+///      no canonical Uniswap creation-code hash is assumed. getAmountIn rounds
+///      up according to the V2 formula. These spot quotes are not price oracles.
+
 library BDexLibrary {
     /// @dev Canonical token ordering: pairs store token0 < token1, so every
     ///      caller must sort before touching reserves or the registry.
-    function sortTokens(address tokenA, address tokenB)
-        internal
-        pure
-        returns (address token0, address token1)
-    {
+    function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
         require(tokenA != tokenB, "BDEX: IDENTICAL_ADDRESSES");
         (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         require(token0 != address(0), "BDEX: ZERO_ADDRESS");
     }
 
-    /// @dev Resolve the pair through the Factory REGISTRY (see PORT NOTE 1).
+    /// @dev Resolve the pair through the factory registry.
     ///      Reverting here — instead of returning a derived-but-possibly-empty
     ///      address — is what turns "swap on a nonexistent pair" from a silent
     ///      token transfer into a named failure.
-    function pairFor(address factory, address tokenA, address tokenB)
-        internal
-        view
-        returns (address pair)
-    {
+    function pairFor(address factory, address tokenA, address tokenB) internal view returns (address pair) {
         (address token0, address token1) = sortTokens(tokenA, tokenB);
         pair = IUniswapV2Factory(factory).getPair(token0, token1);
         require(pair != address(0), "BDEX: PAIR_NOT_FOUND");
@@ -71,18 +36,15 @@ library BDexLibrary {
         view
         returns (uint256 reserveA, uint256 reserveB)
     {
-        (address token0, ) = sortTokens(tokenA, tokenB);
-        (uint112 reserve0, uint112 reserve1, ) = IUniswapV2Pair(pairFor(factory, tokenA, tokenB)).getReserves();
-        (reserveA, reserveB) = tokenA == token0 ? (uint256(reserve0), uint256(reserve1)) : (uint256(reserve1), uint256(reserve0));
+        (address token0,) = sortTokens(tokenA, tokenB);
+        (uint112 reserve0, uint112 reserve1,) = IUniswapV2Pair(pairFor(factory, tokenA, tokenB)).getReserves();
+        (reserveA, reserveB) =
+            tokenA == token0 ? (uint256(reserve0), uint256(reserve1)) : (uint256(reserve1), uint256(reserve0));
     }
 
     /// @notice Given an amount of one asset and pair reserves, the equivalent
     ///         value of the other — NO fee (this prices deposits, not swaps).
-    function quote(uint256 amountA, uint256 reserveA, uint256 reserveB)
-        internal
-        pure
-        returns (uint256 amountB)
-    {
+    function quote(uint256 amountA, uint256 reserveA, uint256 reserveB) internal pure returns (uint256 amountB) {
         require(amountA > 0, "BDEX: INSUFFICIENT_AMOUNT");
         require(reserveA > 0 && reserveB > 0, "BDEX: INSUFFICIENT_LIQUIDITY");
         amountB = (amountA * reserveB) / reserveA;
@@ -108,7 +70,7 @@ library BDexLibrary {
 
     /// @notice Minimum input for an exact output, 0.30% fee included.
     /// @dev The +1 rounds UP so the pool never comes up short (canonical).
-    ///      PORT NOTE 2: the amountOut < reserveOut require is explicit here —
+    ///      The amountOut < reserveOut require is explicit here —
     ///      asking for the whole reserve (or more) is impossible by the
     ///      constant-product math (denominator hits zero / negative) and now
     ///      fails with a named error instead of an arithmetic panic.

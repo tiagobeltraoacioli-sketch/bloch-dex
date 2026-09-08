@@ -4,77 +4,18 @@ pragma solidity ^0.8.24;
 import {IUniswapV2Factory} from "./interfaces/IUniswapV2Factory.sol";
 import {IUniswapV2Pair} from "./interfaces/IUniswapV2Pair.sol";
 import {UQ112x112} from "./libraries/UQ112x112.sol";
+import {IERC20} from "./interfaces/IERC20.sol";
 
-/// @title TreasuryFeeCollector — keyless, stateless destination for the
-///        optional Uniswap-V2 protocol fee.
-///
-/// STATUS: UNAUDITED REFERENCE, NOT DEPLOYED (no live Bloch EVM L2 — the
-///         prover self-declares SCAFFOLD, l2/bloch-l2-prover/src/lib.rs:3).
-///
-/// PRODUCT CONTRACT (governing docs, read them before touching this file):
-///   docs/specs/POSTERNDEX-AMM-DESIGN.md:56-60 and
-///   docs/specs/POSTERNDEX-BRIDGE-DESIGN.md:219-223.
-///   The protocol fee switch ships DEFAULT OFF (Factory.feeTo == address(0),
-///   all fees to LPs). IF the founder ever turns it on — a deliberate later
-///   act (factory.setFeeTo(address(this))), after which the docs are amended
-///   — the 1/6-of-sqrt(k)-growth cut minted by UniswapV2Pair._mintFee lands
-///   here as LP shares, and everything this contract does forwards that value
-///   to ONE fixed destination: `treasury`. That destination is Postern's
-///   OPERATIONS treasury — fiat-equivalent utility revenue for running the
-///   frontend/L2. It is NOT the mined L1 treasury balance, NOT the
-///   consensus-locked premine, and this contract is NEVER a mechanism that
-///   returns value to the BLCH token. No copy may frame it as one.
-///
-/// WHY KEYLESS: every function here is permissionless and every parameter of
-///   the safety guards is a compile-time constant or immutable. There is no
-///   owner, no setter, no pause, no upgrade hook — so a compromised
-///   operational key CANNOT weaken the slippage/TWAP guards or redirect the
-///   proceeds: there is no key to compromise. Changing anything means
-///   deploying a NEW collector and pointing Factory.feeTo at it, which is the
-///   same single, auditable feeToSetter act that enables the fee in the first
-///   place. (Residual risk, stated honestly: the canonical feeToSetter key
-///   itself can redirect FUTURE fees to any address; that power lives in
-///   UniswapV2Factory and no collector design can remove it.)
-///
-/// WHY STATELESS (no per-pair accounting): a prior design that tracked
-///   per-pair balances was broken by LP-token aliasing — a Uniswap pair IS an
-///   ERC-20, so pair2 = (LP-of-pair1, WBLCH) is itself a canonical pair and
-///   any per-pair delta bookkeeping can be cross-contaminated until it
-///   underflows. This contract keeps NO balance accounting at all: the only
-///   storage is per-caller TWAP checkpoints. LP-of-a-pair arriving as an
-///   UNDERLYING of another pair degrades harmlessly into "the treasury
-///   receives that LP token as a plain ERC-20" (proven in
-///   test/TreasuryFeeCollector.t.sol, alias case).
-///
-/// THE DEFAULT PATH HAS NO SWAP LEG (sweep): pair.burn() redeems LP shares
-///   pro-rata — it reduces depth (k) but PRESERVES the reserve ratio, i.e.
-///   the spot price does not move. `sweep` therefore sends the collector's LP
-///   back to the pair and burns it straight TO the treasury: both underlying
-///   tokens reach the treasury in the same transaction, the collector never
-///   custodies them, and there is no price-moving leg for a sandwich to feed
-///   on — the MEV surface is eliminated by construction, not bounded by a
-///   parameter. (The sandwich economics of a swap leg, and why an unguarded
-///   one loses money, are demonstrated in test/DexTreasurySandwich.t.sol.)
-///
-/// THE OPTIONAL SWAP PATH IS TWAP-GUARDED (convertViaTwap): if the treasury
-///   prefers to receive WBLCH only, the non-WBLCH underlying can be sold into
-///   the pair — that leg DOES move price and IS a sandwich target, so its
-///   minimum-out is computed ON-CHAIN from the pair's own cumulative-price
-///   TWAP over a caller-recorded window bounded by [MIN_TWAP_WINDOW,
-///   MAX_TWAP_WINDOW], discounted by at most MAX_SLIPPAGE_BPS. The caller
-///   supplies NO price and NO minimum; a front-run that pushes the realized
-///   output below the TWAP floor makes the whole call revert. Checkpoints are
-///   keyed per caller so a griefer refreshing their own checkpoint cannot
-///   reset anyone else's window. A conversion larger than the pool can absorb
-///   within the discount simply reverts — the caller retries with a smaller
-///   lpAmount; there is deliberately no automated chunking machinery here.
-///
-/// WEIRD TOKENS: fee-on-transfer / rebasing underlyings mean the treasury
-///   receives "whatever actually arrives" (pair.burn pushes directly). With
-///   no internal accounting there is no state to corrupt; the treasury
-///   accepts the gross result. Tokens stranded here by mistake (anything that
-///   is not LP of a canonical pair) are unrecoverable — the price of having
-///   no rescue key is paid knowingly.
+/// @title TreasuryFeeCollector
+/// @notice Immutable treasury destination for optional V2 protocol LP fees.
+/// @dev sweep redeems LP directly to the treasury. convertViaTwap additionally
+///      sells the non-wrapped leg of a wrapped-native pair, using a caller-owned
+///      observation aged 30 minutes to 6 hours and a 1% price discount limit.
+///      Checkpoints require nonzero reserves. A mature TWAP is not manipulation
+///      proof: sustained displacement in shallow markets can still be profitable.
+///      Conversion requires exact redemption deltas; direct sweep is available
+///      for taxed tokens. There is no rescue key or arbitrary recipient argument.
+
 contract TreasuryFeeCollector {
     using UQ112x112 for uint224;
 
@@ -90,8 +31,7 @@ contract TreasuryFeeCollector {
 
     /// @notice The single, fixed destination of every unit of value that
     ///         flows through this contract: Postern's OPERATIONS treasury
-    ///         (fiat-equivalent utility revenue for running the frontend/L2 —
-    ///         docs/specs/POSTERNDEX-AMM-DESIGN.md:56-60). Immutable on
+    ///         for operating the application. Immutable on
     ///         purpose: redirecting proceeds requires a new deployment plus a
     ///         feeToSetter act, never a quiet setter call.
     address public immutable treasury;
@@ -106,8 +46,7 @@ contract TreasuryFeeCollector {
     // ------------------------------------------------------------------ //
 
     /// @dev A TWAP window shorter than this is too easy to manipulate with
-    ///      sustained pressure (a single-block spike already contributes ~0 —
-    ///      see test/DexTwapFlashloan.t.sol — but a short window lowers the
+    ///      sustained pressure. A short window lowers the
     ///      cost of holding the price displaced across it).
     uint256 public constant MIN_TWAP_WINDOW = 30 minutes;
 
@@ -128,7 +67,7 @@ contract TreasuryFeeCollector {
     struct Observation {
         uint256 price0Cumulative; // pair.price0CumulativeLast, counterfactually advanced
         uint256 price1Cumulative; // pair.price1CumulativeLast, counterfactually advanced
-        uint256 timestamp;        // full-width block.timestamp of the observation
+        uint256 timestamp; // full-width block.timestamp of the observation
     }
 
     /// @dev Keyed caller => pair => observation. WHY per-caller: checkpoint()
@@ -142,8 +81,7 @@ contract TreasuryFeeCollector {
     ///      be meaningfully corrupted by reentry (there are no balances), but
     ///      convertViaTwap transiently custodies tokens between burn and
     ///      swap, and underlyings with transfer hooks are exactly the "weird
-    ///      token" class test/DexWeirdTokens.t.sol exists for. Belt and
-    ///      braces, same pattern as UniswapV2Pair.lock.
+    ///      token" class. Use the same pattern as UniswapV2Pair.lock.
     uint256 private unlocked = 1;
 
     modifier lock() {
@@ -173,8 +111,7 @@ contract TreasuryFeeCollector {
     /// @dev Permissionless: anyone may crank it; the destination is fixed, so
     ///      the caller can steer nothing. No swap leg exists — pair.burn
     ///      removes reserves pro-rata, preserving reserve0/reserve1 and hence
-    ///      the spot price, so a sandwich has nothing to bite (asserted in
-    ///      test/TreasuryFeeCollector.t.sol::test_T4_*). Note that burn()
+    ///      the reserve ratio for standard tokens. Note that burn()
     ///      itself runs _mintFee first, so calling sweep also CRYSTALLIZES
     ///      the protocol cut accrued since kLast without waiting for an LP
     ///      liquidity event — the freshly minted shares (minted to this
@@ -200,6 +137,9 @@ contract TreasuryFeeCollector {
     ///         caller's convertViaTwap.
     function checkpoint(address pair) external {
         _requireCanonicalPair(pair);
+        // An empty interval is not a price observation: accepting it would
+        // dilute the eventual average to zero after a just-in-time first mint.
+        _requireLiquidity(pair);
         (uint256 p0, uint256 p1) = _currentCumulatives(pair);
         observations[msg.sender][pair] = Observation(p0, p1, block.timestamp);
         emit Checkpoint(msg.sender, pair, block.timestamp);
@@ -214,7 +154,7 @@ contract TreasuryFeeCollector {
     ///      parameters are constants; there is no code path that relaxes
     ///      them. A front-run that moves the realized output below
     ///      TWAP*(1 - MAX_SLIPPAGE_BPS) reverts the whole call (attack and
-    ///      control halves in test/TreasuryFeeCollector.t.sol::test_T5_*).
+    ///      control tests in test/Treasury.t.sol).
     ///      If the pool is too shallow for `lpAmount` within the discount,
     ///      the call reverts and the caller retries smaller — deliberately no
     ///      automated chunking. Sustained (multi-block, fee-paying) TWAP
@@ -232,10 +172,7 @@ contract TreasuryFeeCollector {
 
         // --- Redeem the LP (price-neutral, ratio preserved) ------------- //
         require(lpAmount > 0, "TFC: ZERO_LP");
-        // Reverts if the collector's balance is short; bool checked for lint.
-        require(IUniswapV2Pair(pair).transfer(pair, lpAmount), "TFC: LP_TRANSFER");
-        (uint256 a0, uint256 a1) = IUniswapV2Pair(pair).burn(address(this));
-        (uint256 amtNonWblch, uint256 amtWblch) = wblchIs0 ? (a1, a0) : (a0, a1);
+        (uint256 amtNonWblch, uint256 amtWblch) = _redeemExact(pair, lpAmount, wblchIs0);
 
         // --- Guarded sell of the non-WBLCH side, all WBLCH to treasury --- //
         uint256 out = _sellNonWblchGuarded(pair, wblchIs0, amtNonWblch, avgPriceQ112);
@@ -243,9 +180,28 @@ contract TreasuryFeeCollector {
         emit ConvertViaTwap(pair, lpAmount, amtNonWblch, out + amtWblch);
     }
 
+    /// @dev Conversion supports ordinary transfer semantics only. Never use
+    ///      unrelated balances held here to make up a taxed/rebased redemption.
+    ///      sweep() remains the direct-to-treasury path for other token types.
+    function _redeemExact(address pair, uint256 lpAmount, bool wblchIs0)
+        private
+        returns (uint256 nonWblchAmount, uint256 wblchAmount)
+    {
+        address token0 = IUniswapV2Pair(pair).token0();
+        address token1 = IUniswapV2Pair(pair).token1();
+        uint256 before0 = IERC20(token0).balanceOf(address(this));
+        uint256 before1 = IERC20(token1).balanceOf(address(this));
+        require(IUniswapV2Pair(pair).transfer(pair, lpAmount), "TFC: LP_TRANSFER");
+        (uint256 a0, uint256 a1) = IUniswapV2Pair(pair).burn(address(this));
+        require(IERC20(token0).balanceOf(address(this)) - before0 == a0, "TFC: NONSTANDARD_REDEMPTION");
+        require(IERC20(token1).balanceOf(address(this)) - before1 == a1, "TFC: NONSTANDARD_REDEMPTION");
+        return wblchIs0 ? (a1, a0) : (a0, a1);
+    }
+
     /// @dev Window-checked TWAP (UQ112x112) of the non-WBLCH token priced in
     ///      WBLCH, from the caller's own checkpoint to now.
     function _twapPriceNonWblch(address pair, bool wblchIs0) private view returns (uint256 avgPriceQ112) {
+        _requireLiquidity(pair);
         Observation memory obs = observations[msg.sender][pair];
         require(obs.timestamp != 0, "TFC: NO_CHECKPOINT");
         uint256 elapsed = block.timestamp - obs.timestamp;
@@ -261,6 +217,7 @@ contract TreasuryFeeCollector {
             //   wblch == token1  =>  price of token0 in token1  => price0Cum
             avgPriceQ112 = (wblchIs0 ? p1Now - obs.price1Cumulative : p0Now - obs.price0Cumulative) / elapsed;
         }
+        require(avgPriceQ112 > 0, "TFC: ZERO_TWAP");
     }
 
     /// @dev Sell `amtNonWblch` into the pair with the TWAP floor enforced;
@@ -272,7 +229,8 @@ contract TreasuryFeeCollector {
         // Checked multiplication on purpose: if avg*amount overflows uint256
         // the market is so degenerate that reverting IS the guard.
         uint256 minOut = ((avgPriceQ112 * amtNonWblch) >> 112) * (BPS - MAX_SLIPPAGE_BPS) / BPS;
-        (uint112 r0, uint112 r1, ) = IUniswapV2Pair(pair).getReserves(); // post-burn: ratio unchanged
+        require(minOut > 0, "TFC: DUST_CONVERSION");
+        (uint112 r0, uint112 r1,) = IUniswapV2Pair(pair).getReserves(); // post-burn: ratio unchanged
         (uint256 rNon, uint256 rW) = wblchIs0 ? (uint256(r1), uint256(r0)) : (uint256(r0), uint256(r1));
         out = _getAmountOut(amtNonWblch, rNon, rW);
         require(out >= minOut, "TFC: TWAP_SLIPPAGE");
@@ -297,6 +255,11 @@ contract TreasuryFeeCollector {
         require(factory.getPair(t0, t1) == pair, "TFC: NOT_A_PAIR");
     }
 
+    function _requireLiquidity(address pair) private view {
+        (uint112 reserve0, uint112 reserve1,) = IUniswapV2Pair(pair).getReserves();
+        require(reserve0 != 0 && reserve1 != 0, "TFC: NO_LIQUIDITY");
+    }
+
     /// @dev Counterfactually advance the pair's cumulative prices to NOW, the
     ///      canonical UniswapV2OracleLibrary idiom: if no swap has touched
     ///      the pair this block, its stored accumulators lag; add the current
@@ -319,11 +282,7 @@ contract TreasuryFeeCollector {
 
     /// @dev Canonical v2 exact-in output with the 0.30% fee — must stay in
     ///      lockstep with UniswapV2Pair's adjusted k-check.
-    function _getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut)
-        private
-        pure
-        returns (uint256)
-    {
+    function _getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) private pure returns (uint256) {
         uint256 amountInWithFee = amountIn * 997;
         return (amountInWithFee * reserveOut) / (reserveIn * 1000 + amountInWithFee);
     }
