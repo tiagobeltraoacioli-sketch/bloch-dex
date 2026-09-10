@@ -26,6 +26,12 @@ hosting under a subdirectory without server-side route rewriting. Serve the
 bundle over HTTP(S); opening `index.html` directly from disk is not supported.
 No site or contract deployment is performed by these commands or by CI.
 
+## September 2026 release
+
+The Develop route (`#/develop`) connects the DEX to the EVM/SVM developer kit,
+Bloch Bridge and Bloch Builders. Its dated status describes the current preview
+and the work needed before transactions can open. Bridge links use the active custom domain, `https://blochbridge.com/`.
+
 ## Implemented interactions
 
 | Screen    | Behavior                                                                                                                                                               |

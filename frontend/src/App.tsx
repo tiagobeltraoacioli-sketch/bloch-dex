@@ -7,11 +7,18 @@ import LiquidityDialog from './LiquidityDialog';
 import Pools from './Pools';
 import Portfolio from './Portfolio';
 import Trade from './Trade';
+import Develop from './Develop';
 import { useWallet } from './useWallet';
 import type { LiquidityAction, Page, Pool } from './model';
 
 const pageFromHash = (): Page =>
-  location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
+  location.hash === '#/develop'
+    ? 'develop'
+    : location.hash === '#/pools'
+      ? 'pools'
+      : location.hash === '#/portfolio'
+        ? 'portfolio'
+        : 'trade';
 function storedSlippage() {
   try {
     const value = Number(localStorage.getItem('postern.slippage.v1') ?? 50);
@@ -115,7 +122,7 @@ function Application() {
     return () => window.removeEventListener('hashchange', change);
   }, []);
   useEffect(() => {
-    document.title = `PosternDEX — ${page === 'trade' ? 'Trade' : page === 'pools' ? 'Pools' : 'Portfolio'}`;
+    document.title = `PosternDEX — ${page === 'trade' ? 'Trade' : page === 'pools' ? 'Pools' : page === 'portfolio' ? 'Portfolio' : 'Develop'}`;
   }, [page]);
   function saveSlippage(value: number) {
     setSlippage(value);
@@ -149,9 +156,15 @@ function Application() {
             <span>POSTERN</span>
           </a>
           <nav className="main-nav" aria-label="Main navigation">
-            {(['trade', 'pools', 'portfolio'] as Page[]).map((p) => (
+            {(['trade', 'pools', 'portfolio', 'develop'] as Page[]).map((p) => (
               <a key={p} href={`#/${p}`} aria-current={page === p ? 'page' : undefined}>
-                {p === 'trade' ? 'Trade' : p === 'pools' ? 'Pools' : 'Portfolio'}
+                {p === 'trade'
+                  ? 'Trade'
+                  : p === 'pools'
+                    ? 'Pools'
+                    : p === 'portfolio'
+                      ? 'Portfolio'
+                      : 'Develop'}
               </a>
             ))}
           </nav>
@@ -184,6 +197,7 @@ function Application() {
           />
         )}
         {page === 'portfolio' && <Portfolio onLiquidity={openLiquidity} />}
+        {page === 'develop' && <Develop />}
       </main>
       <footer className="footer">
         <div className="footer-inner">
@@ -193,9 +207,10 @@ function Application() {
           </span>
           <div>
             <button onClick={() => setModal('guide')}>Docs</button>
-            <a href="#/pools">Analytics</a>
+            <a href="#/develop">Integration status</a>
+            <a href="https://blochbridge.com/">Bridge</a>
             <button onClick={() => setModal('settings')}>Settings</button>
-            <span className="footer-version">v0.1</span>
+            <span className="footer-version">v0.2</span>
           </div>
         </div>
       </footer>
