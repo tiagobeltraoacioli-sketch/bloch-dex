@@ -208,7 +208,7 @@ function Application() {
           <div>
             <button onClick={() => setModal('guide')}>Docs</button>
             <a href="#/develop">Integration status</a>
-            <a href="https://blochbridge.pages.dev/">Bridge</a>
+            <a href="https://blochbridge.com/">Bridge</a>
             <button onClick={() => setModal('settings')}>Settings</button>
             <span className="footer-version">v0.2</span>
           </div>

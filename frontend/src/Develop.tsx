@@ -80,7 +80,7 @@ export default function Develop() {
             Follow the bridge architecture and delivery status. Asset transfers will require a
             completed, reviewed settlement integration before they can open.
           </p>
-          <ExternalLink href="https://blochbridge.pages.dev/">Explore Bloch Bridge</ExternalLink>
+          <ExternalLink href="https://blochbridge.com/">Explore Bloch Bridge</ExternalLink>
         </article>
       </section>
       <section className="develop-bottom">
