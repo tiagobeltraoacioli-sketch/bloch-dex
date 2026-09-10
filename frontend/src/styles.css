@@ -2176,7 +2176,155 @@
 
 @layer base {
   /* Postern Labs ecosystem standard — retain the approved trading interface. */
-  :root { --radius: 10px; }
-  body { font-size: 16px; }
-  h1 { font-weight: 500; }
+  :root {
+    --radius: 10px;
+  }
+  body {
+    font-size: 16px;
+  }
+  h1 {
+    font-weight: 500;
+  }
+}
+
+@layer components {
+  .develop-page {
+    display: grid;
+    gap: 38px;
+    padding-bottom: 20px;
+  }
+  .develop-intro {
+    padding: 28px 0 12px;
+    max-width: 780px;
+  }
+  .develop-intro h1 {
+    margin: 22px 0;
+    font-size: clamp(38px, 5vw, 68px);
+  }
+  .develop-intro > p {
+    color: var(--muted);
+    max-width: 630px;
+    font-size: 17px;
+  }
+  .develop-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 24px;
+    margin-top: 28px;
+  }
+  .develop-status {
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+  }
+  .develop-status h2 {
+    margin: 14px 0;
+  }
+  .develop-status > p {
+    color: var(--muted);
+    max-width: 800px;
+  }
+  .release-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 24px;
+    margin: 28px 0 0;
+  }
+  .release-grid div {
+    border-top: 1px solid var(--line);
+    padding-top: 16px;
+  }
+  .release-grid dt {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .release-grid dd {
+    margin: 7px 0 0;
+  }
+  .develop-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
+  }
+  .develop-grid article {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 28px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+  .develop-grid article > svg {
+    color: var(--accent);
+    margin-bottom: 24px;
+  }
+  .develop-grid h2,
+  .develop-bottom h2 {
+    margin-bottom: 14px;
+  }
+  .develop-grid p,
+  .develop-bottom p {
+    color: var(--muted);
+    margin-bottom: 22px;
+  }
+  .develop-grid article > a {
+    margin-top: auto;
+  }
+  .develop-bottom {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 48px;
+    border-top: 1px solid var(--line);
+    padding-top: 32px;
+  }
+  .develop-bottom pre {
+    padding: 20px;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    font-size: 12px;
+    line-height: 1.8;
+  }
+  .develop-bottom article {
+    min-width: 0;
+  }
+  .develop-links {
+    display: grid;
+    gap: 16px;
+    margin-bottom: 24px;
+    justify-items: start;
+  }
+}
+@layer responsive {
+  @media (max-width: 1180px) {
+    .main-nav {
+      gap: 20px;
+    }
+  }
+  @media (max-width: 960px) {
+    .release-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+    .develop-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+  @media (max-width: 720px) {
+    .develop-bottom {
+      grid-template-columns: 1fr;
+      gap: 28px;
+    }
+    .develop-status,
+    .develop-grid article {
+      padding: 22px;
+    }
+  }
+  @media (max-width: 380px) {
+    .release-grid {
+      grid-template-columns: 1fr;
+    }
+  }
 }
