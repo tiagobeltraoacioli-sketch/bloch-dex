@@ -6,7 +6,7 @@ and genesis hash obtained from a separately trusted deployment configuration:
 ```sh
 python3 frontend/ops/probe_rpc.py --endpoint https://YOUR_RPC_HOST \
   --expected-chain-id 84001 \
-  --expected-genesis 0xd696c34e864365fffdfe5c758c271e50666e5023d44f036143f20d5f1c8147bb
+  --expected-genesis 0x81e8a274272183bd17f71ece585d03bb7c74d82bd3e7a03b396182c1b0d56edf
 python3 -m unittest discover -s frontend/ops/tests -v
 ```
 

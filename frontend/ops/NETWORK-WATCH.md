@@ -18,7 +18,7 @@ Create an explicit configuration (the endpoint is an operator placeholder):
       "name": "dex-testnet-84001",
       "endpoint": "https://YOUR_RPC_HOST",
       "expected_chain_id": 84001,
-      "expected_genesis": "0xd696c34e864365fffdfe5c758c271e50666e5023d44f036143f20d5f1c8147bb"
+      "expected_genesis": "0x81e8a274272183bd17f71ece585d03bb7c74d82bd3e7a03b396182c1b0d56edf"
     }
   ]
 }
@@ -33,13 +33,19 @@ identities and files above 16 KiB are rejected. HTTPS is required except for
 loopback IP literals. No authentication or secrets are supported: do not place
 tokens in paths. Reports and logs omit source URLs and remote error text.
 
-The service calls the unchanged `probe_rpc.py`: only `eth_chainId` and
+The service calls the shared `probe_rpc.py`: only `eth_chainId` and
 `eth_getBlockByNumber` for genesis/latest. Targets run sequentially in disposable
 worker processes; each has an overall deadline of `3 * timeout_seconds + 2`
 seconds (17 seconds maximum), in addition to the probe's socket timeouts. The
 interval begins after a cycle completes, so slow sources never create overlapping
 cycles or an increasing worker queue. There is no automatic transaction or
 bridge recovery action.
+
+The shared probe explicitly identifies itself as `PosternNetworkMonitor/1.0`.
+The default Python user agent received HTTP 403 at the public edge; the explicit
+service identity restores transport compatibility without changing expected
+chain/genesis, TLS checks, redirect refusal or response limits. No browser Origin
+is forged and no access token is used.
 
 ```sh
 python3 frontend/ops/monitor_networks.py --config /path/to/config.json \

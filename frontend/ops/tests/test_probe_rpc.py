@@ -79,6 +79,7 @@ class TransportTests(unittest.TestCase):
             def do_POST(self):
                 request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 cls.requests.append(request)
+                cls.user_agents.append(self.headers.get("User-Agent"))
                 time.sleep(cls.delay)
                 self.send_response(cls.status)
                 self.send_header("Content-Type", cls.content_type)
@@ -103,6 +104,7 @@ class TransportTests(unittest.TestCase):
 
     def setUp(self):
         type(self).requests = []
+        type(self).user_agents = []
         type(self).body = b'{"jsonrpc":"2.0","id":1,"result":"0x14821"}'
         type(self).content_type = "application/json"
         type(self).status = 200
@@ -114,6 +116,7 @@ class TransportTests(unittest.TestCase):
     def test_valid_transport(self):
         self.assertEqual(self.call(), hex(84001))
         self.assertEqual(self.requests[0]["method"], "eth_chainId")
+        self.assertEqual(self.user_agents, ["PosternNetworkMonitor/1.0"])
 
     def test_malformed_http_protocol_is_sanitized(self):
         with patch.object(probe.urllib.request, "build_opener") as opener:

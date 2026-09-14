@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 
 MAX_RESPONSE = 262144
+USER_AGENT = "PosternNetworkMonitor/1.0"
 HASH = re.compile(r"0x[0-9a-fA-F]{64}\Z")
 QUANTITY = re.compile(r"0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)\Z")
 
@@ -65,7 +66,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def rpc(endpoint, method, params, request_id, timeout):
     request = urllib.request.Request(endpoint, data=json.dumps({
         "jsonrpc": "2.0", "id": request_id, "method": method, "params": params
-    }).encode(), headers={"Content-Type": "application/json", "Accept": "application/json"})
+    }).encode(), headers={"Content-Type": "application/json", "Accept": "application/json",
+                         "User-Agent": USER_AGENT})
     # Disable implicit environment proxies, credential handlers and redirects.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect(),
                                         urllib.request.HTTPSHandler(context=ssl.create_default_context()))
