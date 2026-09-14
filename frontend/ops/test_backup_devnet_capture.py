@@ -40,6 +40,16 @@ class BackupTest(unittest.TestCase):
         self.assertEqual(manifest, repeated)
         self.assertEqual(len(list(self.destination.glob('capture-*.zip'))), 1)
 
+    def test_repeated_older_capture_is_retained_when_limit_shrinks(self):
+        first, _ = preserve(self.source, self.destination)
+        (self.source / 'state.json').write_bytes(b'other evidence')
+        second, _ = preserve(self.source, self.destination)
+        (self.source / 'state.json').write_bytes(b'')
+        repeated, _ = preserve(self.source, self.destination, keep=1)
+        self.assertEqual(first, repeated)
+        self.assertTrue(first.exists())
+        self.assertFalse(second.exists())
+
     def test_symlink_and_corrupt_sqlite_rejected(self):
         path = self.source / 'state.json'
         path.unlink()

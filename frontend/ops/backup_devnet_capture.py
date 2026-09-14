@@ -111,7 +111,7 @@ def preserve(source, destination, keep=7):
         sync_directory(destination)
     # Retain only this tool's verified captures in its dedicated directory.
     captures = sorted((p for p in destination.iterdir() if PATTERN.fullmatch(p.name) and not p.is_symlink()),
-                      key=lambda p: p.stat().st_mtime_ns, reverse=True)
+                      key=lambda p: (p == target, p.stat().st_mtime_ns), reverse=True)
     for old in captures[keep:]:
         verify(old)
         if hashlib.sha256(old.read_bytes()).hexdigest() != old.stem[8:]:
