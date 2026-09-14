@@ -9,6 +9,7 @@ import Portfolio from './Portfolio';
 import Trade from './Trade';
 import Develop from './Develop';
 import { useWallet } from './useWallet';
+import { isMetaMaskWallet, METAMASK_MOBILE_URL } from './wallet';
 import type { LiquidityAction, Page, Pool } from './model';
 
 const pageFromHash = (): Page =>
@@ -107,12 +108,18 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
 
 function Application() {
   const [page, setPage] = useState<Page>(pageFromHash);
-  const [modal, setModal] = useState<'wallet' | 'network' | 'guide' | 'settings' | null>(null);
+  const [modal, setModal] = useState<'wallet' | 'network' | 'guide' | 'settings' | null>(() =>
+    new URLSearchParams(location.search).get('connect') === 'metamask' ? 'wallet' : null,
+  );
   const [pool, setPool] = useState<Pool | null>(null);
   const [liquidity, setLiquidity] = useState<LiquidityAction | null>(null);
   const [slippage, setSlippage] = useState(storedSlippage);
   const main = useRef<HTMLElement>(null);
   const wallet = useWallet();
+  const [mobileOpened, setMobileOpened] = useState(false);
+  useEffect(() => {
+    if (modal === 'wallet') window.dispatchEvent(new Event('postern:discover-wallets'));
+  }, [modal]);
   useEffect(() => {
     const change = () => {
       setPage(pageFromHash());
@@ -249,6 +256,10 @@ function Application() {
             </>
           ) : (
             <>
+              <p className="microcopy">
+                Allow Postern to view your selected account address. Approve the connection in your
+                wallet.
+              </p>
               <div className="wallet-options">
                 {wallet.wallets.map((w) => (
                   <button
@@ -263,7 +274,7 @@ function Application() {
                     </span>
                     <span>
                       <strong>{w.name}</strong>
-                      <small>Browser extension</small>
+                      <small>Connect in this browser</small>
                     </span>
                     {wallet.pending ? (
                       <LoaderCircle className="spin" size={20} />
@@ -272,15 +283,56 @@ function Application() {
                     )}
                   </button>
                 ))}
+                {!wallet.wallets.some(isMetaMaskWallet) && (
+                  <a
+                    className="wallet-option"
+                    href={wallet.pending ? undefined : METAMASK_MOBILE_URL}
+                    aria-label="Open MetaMask Mobile"
+                    aria-disabled={wallet.pending}
+                    referrerPolicy="no-referrer"
+                    onClick={(event) => {
+                      if (wallet.pending) event.preventDefault();
+                      else setMobileOpened(true);
+                    }}
+                  >
+                    <span className="wallet-option-icon">
+                      <Wallet size={23} />
+                    </span>
+                    <span>
+                      <strong>MetaMask</strong>
+                      <small>Open the MetaMask app to connect</small>
+                    </span>
+                    <ArrowRight size={19} />
+                  </a>
+                )}
               </div>
+              {mobileOpened && (
+                <p role="status" className="notice">
+                  Continue in MetaMask: select Connect MetaMask and approve account access. If the
+                  app did not open, open MetaMask yourself, choose its browser and enter
+                  blochdex.com.
+                </p>
+              )}
               {wallet.wallets.length === 0 && (
                 <div className="wallet-empty">
                   <Wallet size={32} />
-                  <h3>No browser wallet detected</h3>
+                  <h3>Open your wallet app to connect</h3>
                   <p>
-                    Open Postern in a browser with MetaMask or another compatible wallet extension.
-                    You can explore every demo screen without connecting.
+                    On iPhone Safari, tap MetaMask above to open the app. Then select Connect
+                    MetaMask inside the app to approve account access. Safari alone does not provide
+                    the wallet connection used here.
                   </p>
+                  <p>
+                    If the app does not open, open MetaMask, choose its browser and enter{' '}
+                    <strong>blochdex.com</strong>. On desktop, use a compatible wallet extension.
+                  </p>
+                  <button
+                    className="button secondary full-width"
+                    disabled={wallet.pending}
+                    onClick={() => window.dispatchEvent(new Event('postern:discover-wallets'))}
+                  >
+                    Check for wallet again
+                  </button>
                 </div>
               )}
               {wallet.pending && (

@@ -1398,9 +1398,13 @@
     border-radius: 8px;
     margin: 9px 0;
   }
-  .wallet-option:hover:not(:disabled) {
+  .wallet-option:hover:not(:disabled):not([aria-disabled='true']) {
     background: #c8fa7208;
     border-color: var(--subtle);
+  }
+  .wallet-option[aria-disabled='true'] {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
   .wallet-option-icon {
     width: 42px;

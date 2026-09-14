@@ -2,6 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import {
   connectAccount,
+  isMetaMaskWallet,
+  METAMASK_MOBILE_URL,
   discoverWallets,
   validAddress,
   validChain,
@@ -43,6 +45,27 @@ function fixture(
 }
 
 describe('wallet identification boundary', () => {
+  it('keeps mobile destinations fixed regardless of untrusted provider metadata', () => {
+    const f = fixture();
+    expect(isMetaMaskWallet({ ...f.wallet, name: 'MetaMask', rdns: 'evil.io.metamask' })).toBe(
+      false,
+    );
+    expect(isMetaMaskWallet({ ...f.wallet, rdns: 'io.metamask' })).toBe(true);
+    expect(
+      isMetaMaskWallet({ ...f.wallet, provider: { ...f.wallet.provider, isMetaMask: true } }),
+    ).toBe(false);
+    expect(
+      isMetaMaskWallet({
+        ...f.wallet,
+        id: 'legacy-injected',
+        provider: { ...f.wallet.provider, isMetaMask: true },
+      }),
+    ).toBe(true);
+    expect(METAMASK_MOBILE_URL).toBe(
+      'https://metamask.app.link/dapp/blochdex.com/?connect=metamask',
+    );
+    expect(f.request).not.toHaveBeenCalled();
+  });
   it('requests only accounts and chain ID after explicit connection', async () => {
     const f = fixture();
     expect(await connectAccount(f.wallet)).toEqual({
@@ -85,6 +108,107 @@ describe('wallet identification boundary', () => {
     stop();
     announce({ info: { uuid: id, name: 'After cleanup' }, provider: fixture().wallet.provider });
     expect(found).toHaveBeenCalledTimes(1);
+  });
+  it.each([true, false])('discovers delayed mobile injection (event: %s) without RPC', (event) => {
+    vi.useFakeTimers();
+    const original = window.ethereum;
+    delete window.ethereum;
+    const found = vi.fn();
+    const f = fixture();
+    const stop = discoverWallets(found);
+    try {
+      vi.advanceTimersByTime(750);
+      expect(found).not.toHaveBeenCalled();
+      window.ethereum = { ...f.wallet.provider, isMetaMask: true };
+      if (event) window.dispatchEvent(new Event('ethereum#initialized'));
+      else vi.advanceTimersByTime(250);
+      expect(found).toHaveBeenCalledTimes(1);
+      expect(found.mock.calls[0][0].name).toBe('MetaMask');
+      vi.advanceTimersByTime(6000);
+      window.dispatchEvent(new Event('ethereum#initialized'));
+      expect(found).toHaveBeenCalledTimes(1);
+      expect(f.request).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stop();
+      window.ethereum = original;
+      vi.useRealTimers();
+    }
+  });
+  it.each(['focus', 'pageshow', 'postern:discover-wallets'])(
+    'rescans on %s after retries expire and cleans up every discovery path',
+    (event) => {
+      vi.useFakeTimers();
+      const original = window.ethereum;
+      delete window.ethereum;
+      const found = vi.fn();
+      const requested = vi.fn();
+      const f = fixture();
+      window.addEventListener('eip6963:requestProvider', requested);
+      const stop = discoverWallets(found);
+      try {
+        vi.advanceTimersByTime(6000);
+        window.ethereum = f.wallet.provider;
+        window.dispatchEvent(new Event(event));
+        expect(found).toHaveBeenCalledTimes(1);
+        expect(requested).toHaveBeenCalledTimes(2);
+        stop();
+        window.ethereum = fixture().wallet.provider;
+        for (const name of [
+          'focus',
+          'pageshow',
+          'postern:discover-wallets',
+          'ethereum#initialized',
+        ]) {
+          window.dispatchEvent(new Event(name));
+        }
+        window.dispatchEvent(
+          new CustomEvent('eip6963:announceProvider', {
+            detail: { info: { uuid: id, name: 'Late' }, provider: window.ethereum },
+          }),
+        );
+        vi.runAllTimers();
+        expect(found).toHaveBeenCalledTimes(1);
+        expect(requested).toHaveBeenCalledTimes(2);
+        expect(f.request).not.toHaveBeenCalled();
+      } finally {
+        stop();
+        window.removeEventListener('eip6963:requestProvider', requested);
+        window.ethereum = original;
+        vi.useRealTimers();
+      }
+    },
+  );
+  it('keeps the announcement grace period, caps legacy discoveries and cancels pending retries', () => {
+    vi.useFakeTimers();
+    const original = window.ethereum;
+    const f = fixture();
+    window.ethereum = f.wallet.provider;
+    const found = vi.fn();
+    const stop = discoverWallets(found);
+    try {
+      window.dispatchEvent(new Event('ethereum#initialized'));
+      expect(found).not.toHaveBeenCalled();
+      for (let index = 0; index < 20; index++) {
+        window.dispatchEvent(
+          new CustomEvent('eip6963:announceProvider', {
+            detail: { info: { uuid: id, name: 'Wallet' }, provider: fixture().wallet.provider },
+          }),
+        );
+      }
+      vi.advanceTimersByTime(250);
+      expect(found).toHaveBeenCalledTimes(20);
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+      stop();
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(6000);
+      expect(found).toHaveBeenCalledTimes(20);
+      expect(f.request).not.toHaveBeenCalled();
+    } finally {
+      stop();
+      window.ethereum = original;
+      vi.useRealTimers();
+    }
   });
   it('handles account changes, network changes and disconnect', async () => {
     const f = fixture();

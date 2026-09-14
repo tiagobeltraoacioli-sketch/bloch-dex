@@ -1,10 +1,23 @@
 export type Provider = {
+  isMetaMask?: boolean;
   request(args: { method: string; params?: unknown[] }): Promise<unknown>;
   on?(event: string, listener: (...args: unknown[]) => void): void;
   removeListener?(event: string, listener: (...args: unknown[]) => void): void;
 };
-export type WalletOption = { id: string; name: string; provider: Provider };
+export type WalletOption = { id: string; name: string; provider: Provider; rdns?: string };
 export type WalletAccount = { address: string; chainId: string; name: string };
+
+// Fixed first-party destination: never forward query strings, wallet metadata,
+// arbitrary return URLs or a preview host to a mobile wallet.
+export const METAMASK_MOBILE_URL = 'https://metamask.app.link/dapp/blochdex.com/?connect=metamask';
+
+/** Presentation hint only. Injected wallet metadata is not authenticated. */
+export function isMetaMaskWallet(wallet: WalletOption): boolean {
+  return (
+    wallet.rdns === 'io.metamask' ||
+    (wallet.id === 'legacy-injected' && wallet.provider.isMetaMask === true)
+  );
+}
 
 declare global {
   interface Window {
@@ -26,7 +39,7 @@ export function discoverWallets(onWallet: (wallet: WalletOption) => void): () =>
     const detail: unknown = (event as CustomEvent<unknown>).detail;
     if (!detail || typeof detail !== 'object') return;
     const { info, provider } = detail as {
-      info?: { uuid?: unknown; name?: unknown };
+      info?: { uuid?: unknown; name?: unknown; rdns?: unknown };
       provider?: Provider;
     };
     if (
@@ -44,21 +57,53 @@ export function discoverWallets(onWallet: (wallet: WalletOption) => void): () =>
     )
       return;
     seen.add(provider);
-    onWallet({ id: info.uuid, name: info.name.slice(0, 60) || 'Browser wallet', provider });
+    onWallet({
+      id: info.uuid,
+      name: info.name.slice(0, 60) || 'Browser wallet',
+      provider,
+      rdns: typeof info.rdns === 'string' ? info.rdns.slice(0, 253) : undefined,
+    });
   };
-  window.addEventListener('eip6963:announceProvider', announce);
-  window.dispatchEvent(new Event('eip6963:requestProvider'));
-  // A short grace period gives multi-wallet announcements precedence over the legacy slot.
-  const timer = window.setTimeout(() => {
+  let graceComplete = false;
+  const scanLegacy = () => {
+    if (!graceComplete) return;
     const provider = window.ethereum;
-    if (provider && typeof provider.request === 'function' && !seen.has(provider)) {
+    if (
+      provider &&
+      typeof provider.request === 'function' &&
+      !seen.has(provider) &&
+      seen.size < 20
+    ) {
       seen.add(provider);
-      onWallet({ id: 'legacy-injected', name: 'Browser wallet', provider });
+      onWallet({
+        id: 'legacy-injected',
+        name: provider.isMetaMask === true ? 'MetaMask' : 'Browser wallet',
+        provider,
+      });
     }
-  }, 250);
+  };
+  const rediscover = () => {
+    window.dispatchEvent(new Event('eip6963:requestProvider'));
+    scanLegacy();
+  };
+  const discoveryEvents = ['pageshow', 'focus', 'postern:discover-wallets'];
+  window.addEventListener('eip6963:announceProvider', announce);
+  window.addEventListener('ethereum#initialized', scanLegacy);
+  discoveryEvents.forEach((event) => window.addEventListener(event, rediscover));
+  window.dispatchEvent(new Event('eip6963:requestProvider'));
+  // Preserve announcement precedence, then cover asynchronous mobile injection.
+  // Retries are bounded; returning to the page or explicitly retrying can rescan later.
+  const timers = [250, 500, 1000, 2000, 3000, 5000].map((delay) =>
+    window.setTimeout(() => {
+      graceComplete = true;
+      scanLegacy();
+    }, delay),
+  );
   return () => {
-    window.clearTimeout(timer);
+    timers.forEach((timer) => window.clearTimeout(timer));
     window.removeEventListener('eip6963:announceProvider', announce);
+    window.removeEventListener('ethereum#initialized', scanLegacy);
+    discoveryEvents.forEach((event) => window.removeEventListener(event, rediscover));
   };
 }
 

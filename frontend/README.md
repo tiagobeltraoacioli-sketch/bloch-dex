@@ -75,9 +75,39 @@ actual diluted estimate. Sample activity is not wallet transaction history.
 Discovery follows [EIP-6963](https://eips.ethereum.org/EIPS/eip-6963), with a
 legacy injected-provider fallback. Provider names are untrusted text, discovery
 is bounded and provider-supplied icons are not loaded. UUIDs and names do not
-prove a wallet's identity. MetaMask and other compatible **browser extensions**
-can be selected; WalletConnect, mobile deep links and hardware-wallet-specific
-flows are not included.
+prove a wallet's identity. MetaMask and other compatible injected wallets can be
+selected, including the provider inside MetaMask Mobile's browser. When MetaMask
+is not detected, an explicit **Open MetaMask Mobile** link opens the canonical
+`https://blochdex.com/?connect=metamask` in its app browser, where the user selects the wallet and
+approves account access. The link follows MetaMask's
+[documented dapp deep-link format](https://github.com/MetaMask/metamask-deeplinks/blob/master/js/index.js).
+The controlled `connect=metamask` marker opens the destination connection dialog
+without requesting accounts. It never forwards the current host, user-supplied
+query parameters, hashes or wallet metadata;
+preview builds also open that canonical production URL. No redirect happens on
+page load. The handoff is disabled during a pending browser connection request.
+If app opening fails, the UI provides the URL to open manually in MetaMask's
+browser. WalletConnect and hardware-wallet-specific flows are not included.
+
+On iPhone Safari the application must first be opened in MetaMask's own browser;
+the injected-provider connection here does not pair Safari directly with the app.
+Discovery listens for MetaMask's asynchronous `ethereum#initialized` event,
+performs bounded retries for five seconds and rescans on focus, pageshow and an
+explicit wallet check. Opening the connection dialog also triggers rediscovery.
+None of these scans request accounts or signatures. An already-authorized
+account can reconnect without another wallet approval prompt.
+
+Publication check on 2026-09-14: the public site referenced
+`assets/index-DGP4G7Mx.js`, which included the empty-wallet message but no MetaMask
+mobile deep link. That bundle also differs from this local preview's feature set.
+Do not replace that deployment with this preview build without reconciling its
+source and release process. The separately built [mobile delivery adapter](edge/README.md)
+preserves the current Pages application while adding the mobile connection fix.
+Its release verification is independent of this preview build.
+
+Account access identifies the selected address to this browser session; it does
+not authenticate a backend session or prove ownership through a signed message.
+The app does not request a signature or permissions to move assets.
 
 After an explicit click, the client uses only `eth_requestAccounts` and
 `eth_chainId` from [EIP-1193](https://eips.ethereum.org/EIPS/eip-1193). It observes
@@ -97,6 +127,7 @@ Vitest covers exact amounts, the reserve product, route/rounding bounds, wallet
 lifecycle/cancellation, preview interactions, filters, preferences and error
 states. Tests use jsdom with a minimal native-dialog shim. They **do not validate
 rendered geometry, contrast, native focus containment or a real wallet extension**.
+Real-device iOS/Android MetaMask handoff and approval have not been executed.
 Desktop/mobile browser and assistive-technology review remain release checks.
 
 Before enabling real transactions, implement and review all of the following:

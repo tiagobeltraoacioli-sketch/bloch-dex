@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
+    "build:mobile-hotfix": "vite build --config vite.mobile.config.ts && node scripts/package-mobile-hotfix.mjs",
+    "test:mobile-edge": "node --test edge/worker.check.mjs",
     "preview": "vite preview --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
