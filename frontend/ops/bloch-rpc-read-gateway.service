@@ -1,0 +1,34 @@
+[Unit]
+Description=Bloch read-only RPC gateway (single primary, no consensus)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/opt/bloch-rpc-read-gateway
+EnvironmentFile=/etc/bloch-rpc-read-gateway.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 /opt/bloch-rpc-read-gateway/rpc_read_gateway.py --upstream ${BLOCH_RPC_UPSTREAM} --expected-chain-id ${BLOCH_RPC_CHAIN_ID} --expected-genesis ${BLOCH_RPC_GENESIS} --bind 127.0.0.1 --port 18601 --interval 30
+Restart=on-failure
+RestartSec=10
+MemoryMax=128M
+CPUQuota=20%
+TasksMax=16
+LimitNOFILE=64
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

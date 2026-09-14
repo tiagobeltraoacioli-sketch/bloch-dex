@@ -1,0 +1,46 @@
+[Unit]
+Description=Postern read-only network identity and health monitor
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=postern-watch
+Group=postern-watch
+WorkingDirectory=/opt/postern-network-watch
+ExecStart=/usr/bin/python3 /opt/postern-network-watch/monitor_networks.py --config /etc/postern-network-watch/config.json --report /var/lib/postern-network-watch/latest.json --serve
+Restart=on-failure
+RestartSec=30
+StateDirectory=postern-network-watch
+StateDirectoryMode=0750
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONUNBUFFERED=1
+MemoryMax=128M
+CPUQuota=10%
+TasksMax=16
+LimitNOFILE=128
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/postern-network-watch
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
