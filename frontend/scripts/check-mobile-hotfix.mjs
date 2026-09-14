@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { createMobileWalletWorker } from '../edge/worker.mjs';
+import { createMobileWalletWorker, RECOVERY_PINS } from '../edge/worker.mjs';
 
 const { webkit, devices } = await import(process.env.POSTERN_PLAYWRIGHT_MODULE || 'playwright');
 const release = JSON.parse(
@@ -57,14 +57,16 @@ try {
       return route.fulfill({ status: 404, body: 'Fixture not found' });
     const data = await readFile(join(captured, path));
     assert.equal(createHash('sha256').update(data).digest('hex'), hashes[path]);
-    if (path === '/index.html') {
+    if (path === '/index.html' || (release.recovery && Object.hasOwn(RECOVERY_PINS, path))) {
       const worker = createMobileWalletWorker(
         browserScript,
         release.scriptPath,
-        () => new Response(data, { headers: { 'Content-Type': 'text/html' } }),
+        () => new Response(data, { headers: { 'Content-Type': path === '/index.html' ? 'text/html' : mime[path.slice(path.lastIndexOf('.'))] } }),
+        release.recovery,
       );
       const response = await worker.fetch(new Request(url));
-      assert.equal(response.headers.get('X-Postern-Mobile-Hotfix'), '1');
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get(path === '/index.html' ? 'X-Postern-Mobile-Hotfix' : 'X-Postern-Testnet-Recovery'), '1');
       return route.fulfill({
         status: response.status,
         headers: Object.fromEntries(response.headers),

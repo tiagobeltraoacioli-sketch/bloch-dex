@@ -1,0 +1,35 @@
+[Unit]
+Description=Bloch DEX experimental testnet (bounded Anvil runtime)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=bloch-dex-dev
+Group=bloch-dex-dev
+WorkingDirectory=/var/lib/bloch-dex-devnet-v2
+ExecStart=/opt/bloch-dex-devnet/bin/anvil --host 127.0.0.1 --port 8547 --chain-id 84001 --accounts 0 --hardfork cancun --timestamp 1789344000 --load-state /var/lib/bloch-dex-devnet-v2/state.json --prune-history 64 --transaction-block-keeper 1000 --threads 2 --quiet
+Restart=on-failure
+RestartSec=15
+MemoryMax=2G
+CPUQuota=100%
+TasksMax=64
+LimitNOFILE=4096
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/bloch-dex-devnet-v2
+
+[Install]
+WantedBy=multi-user.target

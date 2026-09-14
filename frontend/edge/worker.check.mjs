@@ -2,10 +2,59 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { createMobileWalletWorker, EXPECTED_SHELL_SHA256 } from './worker.mjs';
+import { createMobileWalletWorker, EXPECTED_SHELL_SHA256, PREVIOUS_GENESIS, validateRecovery } from './worker.mjs';
 
 const scriptPath = '/__postern/mobile-wallet-0123456789abcdef.js';
 const script = '/* test handoff script */';
+const recovery = { version: 1, chainId: 84001, previousGenesisHash: PREVIOUS_GENESIS, genesisHash: '0x' + 'ab'.repeat(32) };
+
+test('recovery is opt-in, immutable and restricted to one explicit genesis transition', async () => {
+  assert.equal(validateRecovery(null), null);
+  const frozen = validateRecovery(recovery);
+  assert.ok(Object.isFrozen(frozen));
+  for (const invalid of [{}, [], { ...recovery, chainId: 8400 },
+    { ...recovery, genesisHash: PREVIOUS_GENESIS }, { ...recovery, genesisHash: '0x' + '00'.repeat(32) },
+    { ...recovery, rpc: 'https://attacker.test' }, { ...recovery, previousGenesisHash: recovery.genesisHash }]) {
+    assert.throws(() => validateRecovery(invalid));
+  }
+  const untouched = new Response('old deployment');
+  const worker = createMobileWalletWorker(script, scriptPath, () => untouched);
+  assert.equal(await worker.fetch(new Request('https://blochdex.com/deployment.json?genesis=attacker')), untouched);
+});
+
+test('recovery fails closed for unknown assets, partial responses or unavailable origin', async () => {
+  for (const response of [new Response('unreviewed'), new Response('partial', { status: 206 }), new Response('', { status: 502 })]) {
+    const worker = createMobileWalletWorker(script, scriptPath, () => response, recovery);
+    assert.equal((await worker.fetch(new Request('https://blochdex.com/assets/index-DGP4G7Mx.js'))).status, 503);
+  }
+  const worker = createMobileWalletWorker(script, scriptPath, () => { throw new Error('secret'); }, recovery);
+  assert.equal((await worker.fetch(new Request('https://blochdex.com/deployment.json'))).status, 503);
+  assert.equal((await worker.fetch(new Request('https://blochdex.com/deployment.json', { method: 'POST' }))).status, 405);
+});
+
+test('pinned recovery changes only genesis and busts the browser bundle cache', { skip: !process.env.POSTERN_RELEASE_DIR }, async () => {
+  for (const path of ['/assets/index-DGP4G7Mx.js', '/deployment.json']) {
+    const original = await readFile(process.env.POSTERN_RELEASE_DIR + path, 'utf8');
+    const worker = createMobileWalletWorker(script, scriptPath, (request) => {
+      assert.equal(request.method, 'GET');
+      for (const name of ['Range', 'If-None-Match', 'If-Modified-Since', 'If-Range']) assert.equal(request.headers.get(name), null);
+      return new Response(original, { headers: { ETag: 'old', 'Content-Length': '12', 'Content-Type': 'text/plain' } });
+    }, recovery);
+    const response = await worker.fetch(new Request('https://blochdex.com' + path + '?recovery=untrusted', { headers: { Range: 'bytes=0-5', 'If-None-Match': 'old' } }));
+    const changed = await response.text();
+    assert.equal(response.status, 200);
+    assert.equal(changed.replace(recovery.genesisHash, PREVIOUS_GENESIS), original);
+    assert.equal(changed.includes(PREVIOUS_GENESIS), false);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    assert.equal(response.headers.get('ETag'), null);
+    assert.equal(await (await worker.fetch(new Request('https://blochdex.com' + path, { method: 'HEAD' }))).text(), '');
+  }
+  const shell = await readFile(process.env.POSTERN_RELEASE_DIR + '/index.html', 'utf8');
+  const worker = createMobileWalletWorker(script, scriptPath, () => new Response(shell, { headers: { 'Content-Type': 'text/html' } }), recovery);
+  const html = await (await worker.fetch(new Request('https://blochdex.com/'))).text();
+  assert.ok(html.includes(`index-DGP4G7Mx.js?recovery=${recovery.genesisHash.slice(2)}`));
+  assert.ok(html.includes('data-postern-mobile-hotfix="1"'));
+});
 
 test('serves only the versioned script and respects HEAD and method restrictions', async () => {
   const worker = createMobileWalletWorker(script, scriptPath, () =>

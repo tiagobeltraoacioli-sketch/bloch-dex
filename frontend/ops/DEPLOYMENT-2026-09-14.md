@@ -25,6 +25,7 @@ They do not replicate chain state or remove that primary's failure dependency.
 They are not bridge attesters or L2 consensus nodes. All bridge, mainnet and
 finality readiness flags remain false.
 
-Validation: 35 monitor/probe/gateway tests and four snapshot converter tests
-passed before deployment. See the individual component documents and the
+Validation: 35 monitor/probe/gateway tests, four snapshot converter tests and
+six backup tests passed. Backup retention includes a regression check that
+reselecting an older capture cannot delete the selected archive. See the individual component documents and the
 [recovery evidence](RECOVERY-2026-09-14.md) for remaining restoration limits.

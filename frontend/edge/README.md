@@ -13,6 +13,32 @@ including API calls and immutable assets, retains the original response.
 Unknown future shells pass through unchanged. No signing, transaction, RPC,
 liquidity, network or contract behavior is added.
 
+An optional, separately authorized **testnet genesis recovery** now permits a
+single identity change on chain 84001. It is disabled by default. The original
+production JavaScript embeds its deployment configuration and does not fetch
+`deployment.json`; changing that JSON file alone cannot recover the application.
+With an explicit operator artifact, the Worker verifies SHA-256 of both original
+assets and substitutes only the previous genesis literal. Factory, router,
+token/pool addresses, runtime-code pins, settlement and transaction validation
+remain byte-for-byte intact. Unknown asset bytes or origin failures return 503.
+The verified HTML adds a genesis-specific query to the script URL so an old
+immutable browser cache cannot silently keep the previous identity.
+
+Set `POSTERN_RECOVERY_ARTIFACT` while running `npm run build:mobile-hotfix` to a
+reviewed JSON file containing exactly `version: 1`, `chainId: 84001`,
+`previousGenesisHash` (the previous published genesis), and `genesisHash` (the
+new independently verified nonzero lowercase 32-byte hash). No placeholder is
+enabled or supplied by default. The packaging step validates and embeds this
+artifact, records it in generated `release.json`, and never accepts overrides
+from browser queries, runtime requests or external URLs. Before publication,
+verify all recovered contract runtime hashes against the existing deployment
+and verify the new genesis on the actual primary. This transition represents a
+new testnet history, not restored history or native-USDT/bridge readiness.
+
+Set both `POSTERN_RELEASE_DIR` and `POSTERN_RELEASE_SHELL` when running edge
+tests to verify exact captured production assets, single-literal replacement,
+unchanged contract configuration, cache busting and the preserved mobile fix.
+
 The script adds a MetaMask Mobile link inside the existing connection dialog,
 announces asynchronously injected providers to the existing discovery handler,
 and opens only the connection dialog for the controlled `connect=metamask`

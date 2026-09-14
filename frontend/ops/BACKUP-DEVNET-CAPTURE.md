@@ -35,3 +35,29 @@ validate chain identity and missing history; these backups alone cannot restore
 the published chain. No operator SSH private key is copied to the backup host.
 A scheduled backup requires separately provisioned, restricted credentials and
 monitoring before it can be advertised as operational.
+
+## Verified incident preservation record
+
+On 2026-09-14, the selected capture was uploaded to a separate backup host under
+`/var/lib/postern-backups` (0700), with archive and verifier mode 0600. Its archive
+is `capture-4b045c3ae6989b11acb97b92658df8734eebec1bd859eb93728d3a5fc952164b.zip`
+(5,085,259 bytes). Remote verification checked every manifest member and SQLite
+integrity, followed by filesystem synchronization. A full download back to the
+operator workstation matched archive SHA256
+`4b045c3ae6989b11acb97b92658df8734eebec1bd859eb93728d3a5fc952164b`
+and passed member verification again.
+
+| Member | Bytes | SHA256 |
+| --- | ---: | --- |
+| latest.json | 4,741,378 | `2e9229091108c872297374a0d85633c85784b63fbb89dd096b233f08fa3671e5` |
+| previous.json | 4,741,300 | `fd794dc00ba7c726bed556c36821b35dab59acfe37b03f421a881621d13e9f0f` |
+| state.json | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| faucet.sqlite | 12,288 | `711c4cd4249c5d4c5b51a45f3614b91fde800a0d738b74b4d6a04d4fd5bedab0` |
+
+The deployed verifier source SHA256 is
+`56dad20136e11960889cb606087efa7413fa965c15a0f84eb20920ab792ea3df`.
+Its six unit tests include round-trip validation, private-file exclusion,
+symlink/corruption rejection, scoped retention, idempotence, and preservation of
+an older capture when it becomes the current verified target again.
+This record attests a single incident backup, not an ongoing scheduler or a
+complete-chain recovery. It excludes the separate full-source archive.

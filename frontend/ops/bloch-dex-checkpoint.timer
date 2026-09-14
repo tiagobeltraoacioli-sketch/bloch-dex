@@ -1,0 +1,11 @@
+[Unit]
+Description=Checkpoint the Bloch DEX experimental testnet every minute
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+AccuracySec=1
+Unit=bloch-dex-checkpoint.service
+
+[Install]
+WantedBy=timers.target
