@@ -29,10 +29,21 @@ describe('native L1 wallet account access', () => {
     render(<App />);
     await userEvent.setup().click(screen.getByRole('link', { name: 'Bloch L1' }));
     act(() => window.dispatchEvent(new HashChangeEvent('hashchange')));
-    await screen.findByRole('heading', { name: 'Native BLCH / USDT' });
+    await screen.findByRole('heading', { name: 'Bloch L1 markets' });
     expect(request).not.toHaveBeenCalled();
     expect(evm).not.toHaveBeenCalled();
     expect(screen.getByText(/Deposits, pool launch and trading are not enabled/)).toBeTruthy();
+    for (const pair of ['bETH / BLCH', 'bBTC / BLCH', 'bSOL / BLCH']) {
+      expect(screen.getByRole('heading', { name: pair })).toBeTruthy();
+    }
+  });
+  it('keeps the native launch list free of stablecoins and deposit actions', () => {
+    const request = install();
+    const { container } = render(<NativeMarket />);
+    expect(container.textContent).not.toMatch(/USDT|USDC/);
+    expect(screen.getAllByText('Bridge integration pending')).toHaveLength(3);
+    expect(screen.queryByRole('button', { name: /deposit|trade|swap|add liquidity/i })).toBeNull();
+    expect(request).not.toHaveBeenCalled();
   });
   it('uses the native string-method protocol only after user action and refreshes explicitly', async () => {
     const request = install();

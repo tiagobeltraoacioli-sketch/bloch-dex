@@ -384,7 +384,7 @@ function Application() {
           </p>
           <p className="muted">
             {page === 'native'
-              ? 'The Bloch L1 page uses the native Postern provider for account access. The EVM wallet control is separate. Neither connection enables a native pool or USDT deposits.'
+              ? 'The Bloch L1 page uses the native Postern provider for account access. The initial markets are bETH / BLCH, bBTC / BLCH and bSOL / BLCH. Wallet connection does not enable deposits or trading.'
               : 'Connect your wallet to choose Ethereum, Arbitrum One or Base. Network switching does not enable trading; deployment verification is still pending.'}
           </p>
           {wallet.account && (

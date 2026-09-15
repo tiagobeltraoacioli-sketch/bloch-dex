@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Detail } from './components';
 import { nativeProvider, reportedNativeAccount, type NativeProvider } from './nativeWallet';
+import { NATIVE_LAUNCH_MARKETS } from './nativeMarkets';
 
 export default function NativeMarket({
   developmentHref = '#/develop',
@@ -104,11 +105,31 @@ export default function NativeMarket({
     <div className="develop-page">
       <section className="develop-intro">
         <span className="badge">Bloch L1 · Integration in progress</span>
-        <h1>Native BLCH / USDT</h1>
+        <h1>Bloch L1 markets</h1>
         <p>
           Connect your native Postern Wallet to view its selected L1 account. Deposits, pool launch
           and trading are not enabled on this page.
         </p>
+      </section>
+      <section aria-labelledby="native-markets-heading">
+        <h2 id="native-markets-heading">Initial markets</h2>
+        <p className="microcopy">
+          Each bridged asset is planned to be backed by its source coin, with BLCH as the pool's
+          other asset. These markets are not open for deposits or trading yet.
+        </p>
+        <div className="develop-grid">
+          {NATIVE_LAUNCH_MARKETS.map((market) => (
+            <article key={market.symbol}>
+              <h2>
+                {market.symbol} / {market.quote}
+              </h2>
+              <p>
+                {market.sourceAsset} from {market.sourceNetwork}, represented on Bloch L1.
+              </p>
+              <span className="badge">Bridge integration pending</span>
+            </article>
+          ))}
+        </div>
       </section>
       <section className="develop-status" aria-labelledby="native-wallet-heading">
         <h2 id="native-wallet-heading">Postern Wallet · Bloch L1</h2>
@@ -125,7 +146,7 @@ export default function NativeMarket({
             </Detail>
             <p className="microcopy">
               This identifies the wallet account. It does not verify a DEX deployment or provide a
-              USDT deposit destination.
+              bridge deposit destination.
             </p>
           </>
         )}
@@ -172,8 +193,8 @@ export default function NativeMarket({
         <h2>Before deposits and pool launch</h2>
         <p>
           The local executor has passed an import, liquidity, trade and redemption rehearsal. Live
-          L1 execution, native DEX signing and the external USDT bridge still need to be connected
-          and verified.
+          L1 execution, native DEX signing, and custody and redemption for each source coin still
+          need to be connected and verified.
         </p>
         <a href={developmentHref}>View integration status</a>
       </section>

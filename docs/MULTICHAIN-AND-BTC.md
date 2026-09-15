@@ -22,15 +22,40 @@ Sources checked on 2026-09-15:
 - [Arbitrum chain information](https://docs.arbitrum.io/for-devs/dev-tools-and-resources/chain-info)
 - [Base RPC overview](https://docs.base.org/base-chain/api-reference/rpc-overview)
 
-## BTC as the Bloch market quote asset
+## Initial Bloch L1 markets
 
-The requested direction is BTC-denominated Bloch markets, including BLCH/BTC and
-USDT/BTC. This is a product direction, not an enabled asset or existing bridge.
-The current native paired-custody executor fixes BLCH as one pool leg. BLCH/BTC
-can use that model after a backed BTC representation exists. Arbitrary token/BTC
-markets require a separately reviewed two-native-asset custody/execution path,
-including LP accounting, fees in BLCH, wallet intent review and atomic settlement.
-The displayed BTC market price must not imply that trading happens on Bitcoin.
+The initial launch scope is **bETH/BLCH, bBTC/BLCH and bSOL/BLCH**. USDT and USDC
+are excluded from that scope. The native page lists these three markets as
+pending bridge integration, with no funded pool or deposit action.
+
+BLCH remains one leg of each pool, matching the current paired-custody executor.
+The `b` symbols name proposed Bloch representations backed by ETH, BTC and SOL;
+they are not issuer-native deployments, staking receipts, or existing registered
+asset IDs. Each needs a distinct authenticated native registration and source
+route, custody, reserves, finality handling and burn-to-payout replay protection.
+Symbols alone must never select an asset or authorize a deposit.
+
+Start bETH with native ETH on Ethereum, bBTC with Bitcoin and bSOL with native SOL
+on Solana. Additional Ethereum-origin routes through Arbitrum or Base need their
+own chain identity, escrow and settlement checks before sharing the bETH supply.
+Do not treat token transfer logs as evidence of native ETH or SOL custody, reuse
+the six-decimal USDT route ABI for native coins, or relabel an old route's asset.
+
+Amounts need an explicit representation policy before registration. In
+particular, the reference native token ledger uses uint64 amounts: copying ETH's
+18-decimal units would cap the representable total below 19 ETH. Review a scaled
+native denomination or a wider amount type, exact conversion, dust refusal,
+withdrawal symmetry and aggregate route caps before enabling bETH. BTC/SOL also
+need their own checked native-unit mappings. Display names do not settle this.
+
+A later candidate is **bLTC/BLCH**, subject to a dedicated Litecoin custody and
+validation adapter. This is an engineering suggestion, not an enabled fourth
+market; concentrate initial liquidity and testing on the three selected pairs.
+
+Native-asset references:
+- [Ethereum: ETH](https://ethereum.org/what-is-ether/)
+- [Solana account balances](https://solana.com/docs/core/accounts)
+- [Litecoin Core](https://github.com/litecoin-project/litecoin)
 
 A Bitcoin bridge must identify deposits by Bitcoin network plus txid/vout and
 validate amount, locking script, inclusion and confirmations against a validated
