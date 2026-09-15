@@ -1,3 +1,4 @@
+import { networkError, switchEvmNetwork } from './networks';
 import { useEffect, useRef, useState } from 'react';
 import { connectAccount, discoverWallets, validAddress, validChain, walletError } from './wallet';
 import type { WalletAccount, WalletOption } from './wallet';
@@ -7,6 +8,8 @@ export function useWallet() {
   const [account, setAccount] = useState<WalletAccount | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const active = useRef<WalletOption | null>(null);
+  const reportedChain = useRef<string | null>(null);
   const generation = useRef(0);
   const busy = useRef(false);
   const cleanup = useRef<() => void>(() => {});
@@ -27,6 +30,8 @@ export function useWallet() {
   }, []);
 
   function disconnect() {
+    active.current = null;
+    reportedChain.current = null;
     generation.current++;
     busy.current = false;
     cleanup.current();
@@ -40,6 +45,8 @@ export function useWallet() {
     if (busy.current) return;
     busy.current = true;
     const attempt = ++generation.current;
+    active.current = null;
+    reportedChain.current = null;
     cleanup.current();
     setAccount(null);
     setPending(true);
@@ -68,6 +75,7 @@ export function useWallet() {
         return;
       }
       const chainId = latestChain;
+      reportedChain.current = chainId;
       setAccount((current) => (current ? { ...current, chainId } : null));
     };
     const onDisconnect = () => {
@@ -96,6 +104,8 @@ export function useWallet() {
         result.chainId = latestChain;
       }
       initializing = false;
+      active.current = wallet;
+      reportedChain.current = result.chainId;
       setAccount(result);
     } catch (failure) {
       if (attempt !== generation.current) return;
@@ -108,5 +118,29 @@ export function useWallet() {
       }
     }
   }
-  return { wallets, account, pending, error, connect, disconnect };
+  async function switchNetwork(chainId: string) {
+    const selected = active.current;
+    if (!selected || !account || busy.current) return;
+    busy.current = true;
+    setPending(true);
+    setError('');
+    reportedChain.current = null;
+    const attempt = generation.current;
+    try {
+      const verified = await switchEvmNetwork(selected.provider, chainId);
+      if (attempt !== generation.current || active.current !== selected) return;
+      if (reportedChain.current !== null && BigInt(reportedChain.current) !== BigInt(verified)) {
+        throw new Error('Network changed during verification.');
+      }
+      setAccount((current) => (current ? { ...current, chainId: verified } : null));
+    } catch (failure) {
+      if (attempt === generation.current) setError(networkError(failure));
+    } finally {
+      if (attempt === generation.current) {
+        busy.current = false;
+        setPending(false);
+      }
+    }
+  }
+  return { wallets, account, pending, error, connect, disconnect, switchNetwork };
 }

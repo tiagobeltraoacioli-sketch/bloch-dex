@@ -1,3 +1,4 @@
+import { EVM_NETWORKS, evmNetwork } from './networks';
 import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, ChevronDown, Info, LoaderCircle, Wallet } from 'lucide-react';
 import { parseAmount } from './amm';
@@ -184,7 +185,9 @@ function Application() {
             <button className="network-button" onClick={() => setModal('network')}>
               <span className="status-dot" />
               <span>
-                {page === 'native' ? 'Bloch L1' : 'Bloch L2'}{' '}
+                {page === 'native'
+                  ? 'Bloch L1'
+                  : (evmNetwork(wallet.account?.chainId)?.name ?? 'Bloch L2')}{' '}
                 <span className="muted">· Preview</span>
               </span>
               <ChevronDown size={15} />
@@ -369,7 +372,12 @@ function Application() {
       )}
       {modal === 'network' && (
         <Modal title="Network preview" onClose={() => setModal(null)}>
-          <span className="badge">{page === 'native' ? 'Bloch L1' : 'Bloch L2'} · Preview</span>
+          <span className="badge">
+            {page === 'native'
+              ? 'Bloch L1'
+              : (evmNetwork(wallet.account?.chainId)?.name ?? 'Bloch L2')}{' '}
+            · Preview
+          </span>
           <p className="notice">
             No live network or contract deployment is configured. All market data, positions and
             operation previews are illustrative.
@@ -377,12 +385,33 @@ function Application() {
           <p className="muted">
             {page === 'native'
               ? 'The Bloch L1 page uses the native Postern provider for account access. The EVM wallet control is separate. Neither connection enables a native pool or USDT deposits.'
-              : 'Wallet connection identifies an EVM account. It does not enable trading or change your wallet network.'}
+              : 'Connect your wallet to choose Ethereum, Arbitrum One or Base. Network switching does not enable trading; deployment verification is still pending.'}
           </p>
           {wallet.account && (
             <Detail label="Connected wallet chain ID">
               {BigInt(wallet.account.chainId).toString()}
             </Detail>
+          )}
+          {page !== 'native' && (
+            <div className="evm-network-options" aria-label="EVM networks">
+              {EVM_NETWORKS.map((network) => (
+                <button
+                  key={network.chainId}
+                  className="button full-width"
+                  disabled={!wallet.account || wallet.pending}
+                  onClick={() => void wallet.switchNetwork(network.chainId)}
+                >
+                  {network.name}
+                  {evmNetwork(wallet.account?.chainId)?.chainId === network.chainId
+                    ? ' · Connected'
+                    : ''}
+                </button>
+              ))}
+              {wallet.pending && (
+                <p role="status">Check your wallet to confirm the network change.</p>
+              )}
+              {wallet.error && <p role="alert">{wallet.error}</p>}
+            </div>
           )}
           <button className="button primary full-width" onClick={() => setModal(null)}>
             Got it

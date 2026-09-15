@@ -2343,3 +2343,9 @@
     .main-nav a { min-width: 0; flex: 1; }
   }
 }
+
+.evm-network-options {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}

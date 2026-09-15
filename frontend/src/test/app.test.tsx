@@ -246,3 +246,16 @@ describe('Postern preview workflows', () => {
     expect(screen.getByText('Showing 4 of 4 pools')).toBeTruthy();
   });
 });
+
+it('shows the three EVM networks without requesting wallet access on opening', async () => {
+  const user = userEvent.setup();
+  history.replaceState(null, '', '/');
+  render(<App />);
+  await user.click(screen.getByRole('button', { name: /Bloch L2.*Preview/ }));
+  const dialog = screen.getByRole('dialog');
+  for (const name of ['Ethereum', 'Arbitrum One', 'Base']) {
+    const button = within(dialog).getByRole('button', { name }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  }
+  expect(within(dialog).getByText(/deployment verification is still pending/)).toBeTruthy();
+});

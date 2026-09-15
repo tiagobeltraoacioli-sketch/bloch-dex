@@ -286,3 +286,67 @@ describe('wallet identification boundary', () => {
     expect(walletError({ code: 4900 })).toMatch(/offline/);
   });
 });
+
+it('switches the connected provider and verifies the network', async () => {
+  const f = fixture();
+  const { result } = renderHook(() => useWallet());
+  await act(async () => {
+    await result.current.connect(f.wallet);
+  });
+  f.request.mockImplementation(async ({ method }) =>
+    method === 'wallet_switchEthereumChain' ? null : '0x2105',
+  );
+  await act(async () => {
+    await result.current.switchNetwork('0x2105');
+  });
+  expect(result.current.account?.chainId).toBe('0x2105');
+  expect(result.current.pending).toBe(false);
+});
+
+it('ignores a network switch after local disconnect', async () => {
+  const f = fixture();
+  const { result } = renderHook(() => useWallet());
+  await act(async () => {
+    await result.current.connect(f.wallet);
+  });
+  let resolve!: (value: unknown) => void;
+  f.request.mockImplementation(async ({ method }) =>
+    method === 'wallet_switchEthereumChain'
+      ? new Promise((r) => {
+          resolve = r;
+        })
+      : '0x2105',
+  );
+  let switching!: Promise<void>;
+  act(() => {
+    switching = result.current.switchNetwork('0x2105');
+  });
+  act(() => {
+    result.current.disconnect();
+  });
+  await act(async () => {
+    resolve(null);
+    await switching;
+  });
+  expect(result.current.account).toBeNull();
+});
+
+it('rejects conflicting chain events during verification', async () => {
+  const f = fixture();
+  const { result } = renderHook(() => useWallet());
+  await act(async () => {
+    await result.current.connect(f.wallet);
+  });
+  f.request.mockImplementation(async ({ method }) => {
+    if (method === 'wallet_switchEthereumChain') {
+      f.emit('chainChanged', '0xa4b1');
+      return null;
+    }
+    return '0x2105';
+  });
+  await act(async () => {
+    await result.current.switchNetwork('0x2105');
+  });
+  expect(result.current.account?.chainId).toBe('0xa4b1');
+  expect(result.current.error).toContain('Could not verify');
+});
