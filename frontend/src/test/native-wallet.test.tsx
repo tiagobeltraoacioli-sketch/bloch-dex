@@ -33,15 +33,16 @@ describe('native L1 wallet account access', () => {
     expect(request).not.toHaveBeenCalled();
     expect(evm).not.toHaveBeenCalled();
     expect(screen.getByText(/Deposits, pool launch and trading are not enabled/)).toBeTruthy();
-    for (const pair of ['bETH / BLCH', 'bBTC / BLCH', 'bSOL / BLCH']) {
+    for (const pair of ['bETH / BLCH', 'bBTC / BLCH', 'bSOL / BLCH', 'bUSDT / BLCH', 'bUSDC / BLCH']) {
       expect(screen.getByRole('heading', { name: pair })).toBeTruthy();
     }
   });
-  it('keeps the native launch list free of stablecoins and deposit actions', () => {
+  it('lists bridged stablecoins without enabling deposit actions', () => {
     const request = install();
-    const { container } = render(<NativeMarket />);
-    expect(container.textContent).not.toMatch(/USDT|USDC/);
-    expect(screen.getAllByText('Bridge integration pending')).toHaveLength(3);
+    render(<NativeMarket />);
+    expect(screen.getByRole('heading', { name: 'bUSDT / BLCH' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'bUSDC / BLCH' })).toBeTruthy();
+    expect(screen.getAllByText('Bridge integration pending')).toHaveLength(5);
     expect(screen.queryByRole('button', { name: /deposit|trade|swap|add liquidity/i })).toBeNull();
     expect(request).not.toHaveBeenCalled();
   });

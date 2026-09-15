@@ -24,8 +24,27 @@ Sources checked on 2026-09-15:
 
 ## Initial Bloch L1 markets
 
-The initial launch scope is **bETH/BLCH, bBTC/BLCH and bSOL/BLCH**. USDT and USDC
-are excluded from that scope. The native page lists these three markets as
+### Bridged asset naming
+
+Every asset represented on Bloch from another network must use a lowercase `b`
+prefix followed by its registered source symbol: BTC → bBTC, ETH → bETH,
+SOL → bSOL, USDC → bUSDC, USDT → bUSDT and LTC → bLTC. BLCH retains its native
+symbol. This naming rule applies consistently to wallet, DEX and bridge display
+metadata; source-network assets keep their original symbols on the source side.
+The launch catalog derives the display symbol from the source asset symbol.
+
+The prefix does not grant issuer approval, establish reserves or change the
+underlying asset's controls. bUSDC and bUSDT are included in the development scope; their naming does not
+activate deposits or establish an issuer-native deployment. Asset selection still requires the registered native asset
+ID and an authenticated source chain, token identity and custody route. Assets
+with the same ticker must not be merged; display their network and route when
+needed to distinguish them. Existing protocol identifiers and signed payloads
+must not be renamed by a display-symbol migration.
+
+### Launch scope
+
+The initial launch scope is **bETH/BLCH, bBTC/BLCH, bSOL/BLCH, bUSDT/BLCH and
+bUSDC/BLCH**. The native page lists these five markets as
 pending bridge integration, with no funded pool or deposit action.
 
 BLCH remains one leg of each pool, matching the current paired-custody executor.
@@ -41,6 +60,12 @@ own chain identity, escrow and settlement checks before sharing the bETH supply.
 Do not treat token transfer logs as evidence of native ETH or SOL custody, reuse
 the six-decimal USDT route ABI for native coins, or relabel an old route's asset.
 
+Start bUSDT and bUSDC with separately registered Ethereum ERC-20 custody routes.
+Each route must bind the source chain, exact token contract, decimals, escrow
+and destination asset ID. Never interpret a USDC event through a USDT route or
+share replay keys across token identities. Source token controls still apply to
+custodied tokens; the prefix does not remove freeze or blacklist capabilities.
+
 Amounts need an explicit representation policy before registration. In
 particular, the reference native token ledger uses uint64 amounts: copying ETH's
 18-decimal units would cap the representable total below 19 ETH. Review a scaled
@@ -49,8 +74,8 @@ withdrawal symmetry and aggregate route caps before enabling bETH. BTC/SOL also
 need their own checked native-unit mappings. Display names do not settle this.
 
 A later candidate is **bLTC/BLCH**, subject to a dedicated Litecoin custody and
-validation adapter. This is an engineering suggestion, not an enabled fourth
-market; concentrate initial liquidity and testing on the three selected pairs.
+validation adapter. This is an engineering suggestion, not an enabled additional
+market; concentrate initial liquidity and testing on the selected pairs.
 
 Native-asset references:
 - [Ethereum: ETH](https://ethereum.org/what-is-ether/)

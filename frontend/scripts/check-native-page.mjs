@@ -46,10 +46,10 @@ try {
     assert.equal(await page.locator('nav[aria-label="Main navigation"] a').count(),4);
     await native.click();
     await page.getByRole('heading',{name:'Bloch L1 markets',exact:true}).waitFor();
-    for (const asset of ['bETH','bBTC','bSOL']) {
+    for (const asset of ['bETH','bBTC','bSOL','bUSDT','bUSDC']) {
       await page.getByRole('heading',{name:`${asset} / BLCH`,exact:true}).waitFor();
     }
-    assert.equal(await page.getByText(/USDT|USDC/).count(),0);
+    assert.equal(await page.getByText('Bridge integration pending',{exact:true}).count(),5);
     assert.equal(new URL(page.url()).pathname,'/l1/');
     assert.equal(await page.getByRole('link',{name:'Back to EVM testnet'}).getAttribute('href'),'/#/onchain');
     if (!mobile) assert.deepEqual(await page.evaluate(()=>window.__nativeCalls),[]);

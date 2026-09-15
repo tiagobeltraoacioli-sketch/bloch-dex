@@ -114,7 +114,7 @@ export default function NativeMarket({
       <section aria-labelledby="native-markets-heading">
         <h2 id="native-markets-heading">Initial markets</h2>
         <p className="microcopy">
-          Each bridged asset is planned to be backed by its source coin, with BLCH as the pool's
+          Each bridged asset is planned to be backed by its source asset, with BLCH as the pool's
           other asset. These markets are not open for deposits or trading yet.
         </p>
         <div className="develop-grid">
@@ -193,7 +193,7 @@ export default function NativeMarket({
         <h2>Before deposits and pool launch</h2>
         <p>
           The local executor has passed an import, liquidity, trade and redemption rehearsal. Live
-          L1 execution, native DEX signing, and custody and redemption for each source coin still
+          L1 execution, native DEX signing, and custody and redemption for each source asset still
           need to be connected and verified.
         </p>
         <a href={developmentHref}>View integration status</a>
