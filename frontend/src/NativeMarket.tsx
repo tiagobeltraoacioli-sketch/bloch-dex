@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { Detail } from './components';
 import { nativeProvider, reportedNativeAccount, type NativeProvider } from './nativeWallet';
 
-export default function NativeMarket() {
+export default function NativeMarket({
+  developmentHref = '#/develop',
+}: {
+  developmentHref?: string;
+}) {
   const [address, setAddress] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState('');
@@ -171,7 +175,7 @@ export default function NativeMarket() {
           L1 execution, native DEX signing and the external USDT bridge still need to be connected
           and verified.
         </p>
-        <a href="#/develop">View integration status</a>
+        <a href={developmentHref}>View integration status</a>
       </section>
     </div>
   );

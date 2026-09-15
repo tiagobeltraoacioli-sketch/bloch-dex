@@ -26,7 +26,7 @@ async function sha256(bytes) {
     .map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function createMobileWalletWorker(browserScript, scriptPath, upstream = fetch, recovery = null) {
+export function createMobileWalletWorker(browserScript, scriptPath, upstream = fetch, recovery = null, nativeAssets = null) {
   recovery = validateRecovery(recovery);
   if (!/^\/__postern\/mobile-wallet-[a-f0-9]{16}\.js$/.test(scriptPath)) {
     throw new Error('Invalid versioned mobile script path');
@@ -36,6 +36,24 @@ export function createMobileWalletWorker(browserScript, scriptPath, upstream = f
       const url = new URL(request.url);
       if (!['blochdex.com', 'www.blochdex.com'].includes(url.hostname)) {
         return new Response('Not found', { status: 404 });
+      }
+      if (nativeAssets && (url.pathname === '/l1' || url.pathname.startsWith('/l1/') || url.pathname.startsWith('/__postern/native/'))) {
+        if (!['GET', 'HEAD'].includes(request.method)) {
+          return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
+        }
+        if (url.pathname === '/l1') return new Response(null, { status: 308, headers: { Location: '/l1/', 'Cache-Control': 'no-store' } });
+        const asset = Object.hasOwn(nativeAssets, url.pathname) ? nativeAssets[url.pathname] : null;
+        if (!asset) return new Response('Not found', { status: 404, headers: { 'Cache-Control': 'no-store' } });
+        const headers = {
+          'Content-Type': asset.type,
+          'Cache-Control': url.pathname === '/l1/' ? 'no-store' : 'public, max-age=31536000, immutable',
+          'X-Content-Type-Options': 'nosniff',
+          'Referrer-Policy': 'no-referrer',
+          'X-Postern-Native-Page': '1',
+        };
+        if (url.pathname === '/l1/') headers['Content-Security-Policy'] = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+        const body = request.method === 'HEAD' ? null : Uint8Array.from(atob(asset.base64), c => c.charCodeAt(0));
+        return new Response(body, { headers });
       }
       if (recovery && Object.hasOwn(RECOVERY_PINS, url.pathname)) {
         if (!['GET', 'HEAD'].includes(request.method)) {
@@ -106,6 +124,7 @@ export function createMobileWalletWorker(browserScript, scriptPath, upstream = f
         'src="./assets/index-DGP4G7Mx.js"',
         `src="./assets/index-DGP4G7Mx.js?recovery=${recovery.genesisHash.slice(2)}"`,
       );
+      if (nativeAssets) html = html.replace('</head>', '<meta name="postern-native-page" content="/l1/">\n</head>');
       const headers = new Headers(response.headers);
       for (const name of ['Content-Length', 'Content-Encoding', 'ETag', 'Last-Modified']) {
         headers.delete(name);

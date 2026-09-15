@@ -167,3 +167,46 @@ test(
     assert.equal(response.headers.get('Content-Length'), null);
   },
 );
+
+const nativeAssets = {
+  '/l1/': { type: 'text/html; charset=utf-8', base64: btoa('<html>Native account only</html>') },
+  '/__postern/native/assets/app-abc.js': { type: 'text/javascript; charset=utf-8', base64: btoa('/* native */') },
+};
+test('native delivery is opt-in and strictly confined to packaged read-only routes', async () => {
+  const original = new Response('origin');
+  const disabled = createMobileWalletWorker(script, scriptPath, () => original);
+  assert.equal(await disabled.fetch(new Request('https://blochdex.com/l1/')), original);
+  const worker = createMobileWalletWorker(script, scriptPath, () => assert.fail('Unexpected upstream'), null, nativeAssets);
+  for (const host of ['blochdex.com', 'www.blochdex.com']) {
+    const response = await worker.fetch(new Request(`https://${host}/l1/?asset=https://attacker.test`));
+    assert.equal(await response.text(), '<html>Native account only</html>');
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    assert.ok(response.headers.get('Content-Security-Policy').includes("connect-src 'none'"));
+    assert.ok(response.headers.get('Content-Security-Policy').includes("frame-ancestors 'none'"));
+  }
+  for (const path of Object.keys(nativeAssets)) {
+    assert.equal(await (await worker.fetch(new Request('https://blochdex.com'+path, {method:'HEAD'}))).text(), '');
+    const denied = await worker.fetch(new Request('https://blochdex.com'+path, {method:'POST', body:'ignored'}));
+    assert.equal(denied.status,405);
+    assert.equal(denied.headers.get('Allow'),'GET, HEAD');
+  }
+  for (const path of ['/l1/constructor','/l1/__proto__','/__postern/native/missing.js']) {
+    assert.equal((await worker.fetch(new Request('https://blochdex.com'+path))).status,404);
+  }
+  const redirect = await worker.fetch(new Request('https://blochdex.com/l1?next=https://attacker.test'));
+  assert.equal(redirect.status,308);
+  assert.equal(redirect.headers.get('Location'),'/l1/');
+  assert.equal((await worker.fetch(new Request('https://attacker.test/l1/'))).status,404);
+  const asset = await worker.fetch(new Request('https://blochdex.com/__postern/native/assets/app-abc.js'));
+  assert.equal(await asset.text(),'/* native */');
+  assert.ok(asset.headers.get('Cache-Control').includes('immutable'));
+});
+test('native menu marker is limited to the pinned shell', {skip: !process.env.POSTERN_RELEASE_SHELL}, async () => {
+  const shell = await readFile(process.env.POSTERN_RELEASE_SHELL,'utf8');
+  for (const [html, expected] of [[shell,true],['<html><head></head><body>new release</body></html>',false]]) {
+    const worker = createMobileWalletWorker(script,scriptPath,()=>new Response(html,{headers:{'Content-Type':'text/html'}}),recovery,nativeAssets);
+    const result = await (await worker.fetch(new Request('https://blochdex.com/'))).text();
+    assert.equal(result.includes('name="postern-native-page" content="/l1/"'),expected);
+    if (!expected) assert.equal(result,html);
+  }
+});
