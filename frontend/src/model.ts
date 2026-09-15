@@ -17,7 +17,7 @@ export type Pool = {
   fees: number;
 };
 export type Period = '1H' | '24H' | '1W' | '1M';
-export type Page = 'trade' | 'pools' | 'portfolio' | 'develop';
+export type Page = 'trade' | 'pools' | 'portfolio' | 'develop' | 'native';
 export type Quote = {
   path: Symbol[];
   amounts: bigint[];

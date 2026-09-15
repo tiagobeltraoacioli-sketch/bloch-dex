@@ -8,18 +8,21 @@ import Pools from './Pools';
 import Portfolio from './Portfolio';
 import Trade from './Trade';
 import Develop from './Develop';
+import NativeMarket from './NativeMarket';
 import { useWallet } from './useWallet';
 import { isMetaMaskWallet, METAMASK_MOBILE_URL } from './wallet';
 import type { LiquidityAction, Page, Pool } from './model';
 
 const pageFromHash = (): Page =>
-  location.hash === '#/develop'
-    ? 'develop'
-    : location.hash === '#/pools'
-      ? 'pools'
-      : location.hash === '#/portfolio'
-        ? 'portfolio'
-        : 'trade';
+  location.hash === '#/native'
+    ? 'native'
+    : location.hash === '#/develop'
+      ? 'develop'
+      : location.hash === '#/pools'
+        ? 'pools'
+        : location.hash === '#/portfolio'
+          ? 'portfolio'
+          : 'trade';
 function storedSlippage() {
   try {
     const value = Number(localStorage.getItem('postern.slippage.v1') ?? 50);
@@ -129,7 +132,7 @@ function Application() {
     return () => window.removeEventListener('hashchange', change);
   }, []);
   useEffect(() => {
-    document.title = `PosternDEX — ${page === 'trade' ? 'Trade' : page === 'pools' ? 'Pools' : page === 'portfolio' ? 'Portfolio' : 'Develop'}`;
+    document.title = `PosternDEX — ${page === 'native' ? 'Bloch L1' : page === 'trade' ? 'Trade' : page === 'pools' ? 'Pools' : page === 'portfolio' ? 'Portfolio' : 'Develop'}`;
   }, [page]);
   function saveSlippage(value: number) {
     setSlippage(value);
@@ -163,15 +166,17 @@ function Application() {
             <span>POSTERN</span>
           </a>
           <nav className="main-nav" aria-label="Main navigation">
-            {(['trade', 'pools', 'portfolio', 'develop'] as Page[]).map((p) => (
+            {(['trade', 'pools', 'portfolio', 'native', 'develop'] as Page[]).map((p) => (
               <a key={p} href={`#/${p}`} aria-current={page === p ? 'page' : undefined}>
-                {p === 'trade'
-                  ? 'Trade'
-                  : p === 'pools'
-                    ? 'Pools'
-                    : p === 'portfolio'
-                      ? 'Portfolio'
-                      : 'Develop'}
+                {p === 'native'
+                  ? 'Bloch L1'
+                  : p === 'trade'
+                    ? 'Trade'
+                    : p === 'pools'
+                      ? 'Pools'
+                      : p === 'portfolio'
+                        ? 'Portfolio'
+                        : 'Develop'}
               </a>
             ))}
           </nav>
@@ -179,7 +184,8 @@ function Application() {
             <button className="network-button" onClick={() => setModal('network')}>
               <span className="status-dot" />
               <span>
-                Bloch L2 <span className="muted">· Preview</span>
+                {page === 'native' ? 'Bloch L1' : 'Bloch L2'}{' '}
+                <span className="muted">· Preview</span>
               </span>
               <ChevronDown size={15} />
             </button>
@@ -188,7 +194,9 @@ function Application() {
               <span>
                 {wallet.account
                   ? `${wallet.account.address.slice(0, 6)}…${wallet.account.address.slice(-4)}`
-                  : 'Connect wallet'}
+                  : page === 'native'
+                    ? 'EVM wallet'
+                    : 'Connect wallet'}
               </span>
             </button>
           </div>
@@ -205,6 +213,7 @@ function Application() {
         )}
         {page === 'portfolio' && <Portfolio onLiquidity={openLiquidity} />}
         {page === 'develop' && <Develop />}
+        {page === 'native' && <NativeMarket />}
       </main>
       <footer className="footer">
         <div className="footer-inner">
@@ -360,14 +369,15 @@ function Application() {
       )}
       {modal === 'network' && (
         <Modal title="Network preview" onClose={() => setModal(null)}>
-          <span className="badge">Bloch L2 · Preview</span>
+          <span className="badge">{page === 'native' ? 'Bloch L1' : 'Bloch L2'} · Preview</span>
           <p className="notice">
             No live network or contract deployment is configured. All market data, positions and
             operation previews are illustrative.
           </p>
           <p className="muted">
-            Wallet connection identifies an EVM account. It does not enable trading or change your
-            wallet network.
+            {page === 'native'
+              ? 'The Bloch L1 page uses the native Postern provider for account access. The EVM wallet control is separate. Neither connection enables a native pool or USDT deposits.'
+              : 'Wallet connection identifies an EVM account. It does not enable trading or change your wallet network.'}
           </p>
           {wallet.account && (
             <Detail label="Connected wallet chain ID">

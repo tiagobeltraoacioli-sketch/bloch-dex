@@ -2332,3 +2332,14 @@
     }
   }
 }
+/* Native addresses remain readable on narrow screens without horizontal overflow. */
+.native-account {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+@layer responsive {
+  @media (max-width: 720px) {
+    .main-nav { gap: 0; }
+    .main-nav a { min-width: 0; flex: 1; }
+  }
+}

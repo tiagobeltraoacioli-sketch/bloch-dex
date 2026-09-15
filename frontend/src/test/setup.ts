@@ -17,5 +17,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   delete window.ethereum;
+  delete window.bloch;
   document.body.style.overflow = '';
 });
