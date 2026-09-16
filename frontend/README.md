@@ -109,17 +109,28 @@ Account access identifies the selected address to this browser session; it does
 not authenticate a backend session or prove ownership through a signed message.
 The app does not request a signature or permissions to move assets.
 
-After an explicit click, the client uses only `eth_requestAccounts` and
-`eth_chainId` from [EIP-1193](https://eips.ethereum.org/EIPS/eip-1193). It observes
+After an explicit connection click, the EVM client requests `eth_requestAccounts`
+and `eth_chainId` through the injected provider. A separate, explicit network
+selection requests `wallet_switchEthereumChain` for Ethereum, Arbitrum One or
+Base, then verifies the returned `eth_chainId`. Network selection does not verify
+a DEX deployment or enable transactions. The client observes
 account changes, network changes and disconnects, validates responses, ignores
 cancelled requests and removes event listeners. Disconnect clears this app's
 connection state; users manage the extension's permissions in the wallet.
 
-There is no sign, approve, send, add-chain or switch-chain call in this frontend.
+There is no sign, approve, send or add-chain call in this frontend.
 The connected wallet's network is displayed separately from the Bloch L2 preview
 label. There is no assumed production chain ID, RPC, router, factory, lens or
 wrapped-native token address. EVM account compatibility does not imply PQ
 authorization on Bloch L1.
+
+The separate Bloch L1 page discovers the native Postern provider and requests
+`bloch_connect` followed by `bloch_getAccount` only after an explicit click.
+Disconnect uses `bloch_disconnect`. Provider metadata and the reported account
+are not authenticated network or deployment proofs. The planned bETH, bBTC,
+bSOL, bUSDT and bUSDC markets remain disabled; this page supplies no deposit
+destination or native signing flow. Native L1 connection in iPhone Safari still
+requires a compatible mobile wallet integration.
 
 ## Validation and remaining integration
 
