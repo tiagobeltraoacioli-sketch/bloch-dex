@@ -6,6 +6,15 @@ export function installNativePageLink(): () => void {
     return () => {};
   }
   const update = () => {
+    if (document.querySelector('meta[name="postern-preview-page"]')?.getAttribute('content') === '/preview/') {
+      const nav = document.querySelector('nav[aria-label="Main navigation"]');
+      if (nav && !nav.querySelector('a[href="/preview/"]')) {
+        const preview = document.createElement('a');
+        preview.href = '/preview/';
+        preview.textContent = 'Latest preview';
+        nav.append(preview);
+      }
+    }
     const link = document.querySelector<HTMLAnchorElement>(
       'nav[aria-label="Main navigation"] a[href="#/native"]',
     );

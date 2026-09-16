@@ -43,7 +43,7 @@ try {
     await page.goto('https://blochdex.com/');
     const native = page.locator('nav[aria-label="Main navigation"] a[href="/l1/"]');
     await native.waitFor();
-    assert.equal(await page.locator('nav[aria-label="Main navigation"] a').count(),4);
+    assert.equal(await page.locator('nav[aria-label="Main navigation"] a').count(),process.env.POSTERN_PREVIEW_PAGE === '1' ? 5 : 4);
     await native.click();
     await page.getByRole('heading',{name:'Bloch L1 markets',exact:true}).waitFor();
     for (const asset of ['bETH','bBTC','bSOL','bUSDT','bUSDC']) {
@@ -62,6 +62,19 @@ try {
     assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
     assert.deepEqual(errors,[]);
     await page.screenshot({path:`/tmp/postern-native-route-${mobile?'iphone':'desktop'}.png`,fullPage:true});
+    if (process.env.POSTERN_PREVIEW_PAGE === '1') {
+      await page.goto('https://blochdex.com/preview/');
+      await page.locator('.footer-status').waitFor();
+      await page.waitForFunction(()=>[...document.images].every(image=>image.complete&&image.naturalWidth>0));
+      if (!mobile) {
+      await page.locator('.network-button').click();
+      await page.getByRole('heading',{name:'Network preview',exact:true}).waitFor();
+      for(const network of ['Ethereum','Arbitrum One','Base']) await page.getByRole('button',{name:network,exact:true}).waitFor();
+      }
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth));
+      assert.deepEqual(errors,[]);
+      await page.screenshot({path:`/tmp/postern-preview-${mobile?'iphone':'desktop'}.png`,fullPage:true});
+    }
     await context.close();
     console.log(`Packaged Worker: ${mobile?'iPhone without provider':'desktop with mock native provider'} passed`);
   }
