@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import App from '../App';
 
 function navigate(page: string) {
@@ -11,6 +11,105 @@ function navigate(page: string) {
 }
 
 describe('Postern preview workflows', () => {
+  it('continues a mobile handoff with a dialog, but requests accounts only after selection', async () => {
+    history.replaceState(null, '', '/?connect=metamask');
+    const user = userEvent.setup();
+    const request = vi.fn(async ({ method }: { method: string }) =>
+      method === 'eth_requestAccounts' ? ['0x' + '12'.repeat(20)] : '0x1',
+    );
+    render(<App />);
+    expect(screen.getByRole('heading', { name: 'Connect a wallet' })).toBeTruthy();
+    expect(screen.getByText(/On iPhone Safari/)).toBeTruthy();
+    expect(request).not.toHaveBeenCalled();
+    act(() => {
+      window.ethereum = { isMetaMask: true, request };
+      window.dispatchEvent(new Event('ethereum#initialized'));
+    });
+    const connect = await screen.findByRole('button', { name: 'Connect MetaMask' });
+    expect(request).not.toHaveBeenCalled();
+    await user.click(connect);
+    await screen.findByRole('heading', { name: 'Connected wallet' });
+    expect(request.mock.calls.map(([args]) => args.method)).toEqual([
+      'eth_requestAccounts',
+      'eth_chainId',
+    ]);
+  });
+  it('allows explicit rediscovery without asking for accounts or opening the app', async () => {
+    const user = userEvent.setup();
+    const rescan = vi.fn();
+    window.addEventListener('postern:discover-wallets', rescan);
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Connect wallet' }));
+    expect(rescan).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Check for wallet again' }));
+    expect(rescan).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/Continue in MetaMask:/)).toBeNull();
+    window.removeEventListener('postern:discover-wallets', rescan);
+  });
+  it('offers an explicit mobile link without forwarding page parameters or connecting', async () => {
+    history.replaceState(null, '', '/?returnUrl=https://evil.example&account=secret#/trade');
+    const user = userEvent.setup();
+    render(<App />);
+    expect(screen.queryByRole('link', { name: 'Open MetaMask Mobile' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Connect wallet' }));
+    const link = screen.getByRole('link', { name: 'Open MetaMask Mobile' });
+    expect(link.getAttribute('href')).toBe(
+      'https://metamask.app.link/dapp/blochdex.com/?connect=metamask',
+    );
+    expect(link.getAttribute('referrerpolicy')).toBe('no-referrer');
+    expect(screen.getByText(/Allow Postern to view your selected account address/)).toBeTruthy();
+    expect(screen.queryByText(/Continue in MetaMask:/)).toBeNull();
+    // Suppress jsdom navigation while exercising the user-triggered handoff status.
+    link.addEventListener('click', (event) => event.preventDefault());
+    await user.click(link);
+    expect(screen.getByText(/Continue in MetaMask:/)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Connected wallet' })).toBeNull();
+  });
+  it('prefers an injected MetaMask provider and requests access only on selection', async () => {
+    const request = vi.fn(async ({ method }: { method: string }) =>
+      method === 'eth_requestAccounts' ? ['0x' + '12'.repeat(20)] : '0x1',
+    );
+    window.ethereum = { isMetaMask: true, request };
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Connect wallet' }));
+    const connect = await screen.findByRole('button', { name: 'Connect MetaMask' });
+    expect(screen.queryByRole('link', { name: 'Open MetaMask Mobile' })).toBeNull();
+    expect(request).not.toHaveBeenCalled();
+    await user.click(connect);
+    await screen.findByRole('heading', { name: 'Connected wallet' });
+    expect(request.mock.calls.map(([args]) => args.method)).toEqual([
+      'eth_requestAccounts',
+      'eth_chainId',
+    ]);
+  });
+  it('disables the mobile handoff while browser permission is pending', async () => {
+    let resolveAccounts!: (value: unknown) => void;
+    const accounts = new Promise((resolve) => {
+      resolveAccounts = resolve;
+    });
+    const request = vi.fn(async ({ method }: { method: string }) =>
+      method === 'eth_requestAccounts' ? accounts : '0x1',
+    );
+    window.ethereum = { request };
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Connect wallet' }));
+    await user.click(await screen.findByRole('button', { name: 'Connect Browser wallet' }));
+    const handoff = screen.getByLabelText('Open MetaMask Mobile');
+    expect(handoff.getAttribute('aria-disabled')).toBe('true');
+    expect(handoff.hasAttribute('href')).toBe(false);
+    await user.click(handoff);
+    expect(screen.queryByText(/Continue in MetaMask:/)).toBeNull();
+    expect(request.mock.calls.map(([args]) => args.method)).toEqual(['eth_requestAccounts']);
+    await user.click(screen.getByRole('button', { name: 'Continue exploring' }));
+    await act(async () => {
+      resolveAccounts(['0x' + '12'.repeat(20)]);
+      await accounts;
+    });
+    expect(screen.getByRole('button', { name: 'Connect wallet' })).toBeTruthy();
+  });
+
   it('calculates swap previews and blocks invalid and dust inputs', async () => {
     const user = userEvent.setup();
     render(<App />);

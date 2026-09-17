@@ -97,8 +97,9 @@ contract BDexRouter is IBDexRouter {
             IUniswapV2Factory(factory).createPair(tokenA, tokenB);
         }
         (uint256 reserveA, uint256 reserveB) = BDexLibrary.getReserves(factory, tokenA, tokenB);
-        if (reserveA == 0 && reserveB == 0) {
-            // Fresh pool: the caller's ratio IS the opening price.
+        if (IUniswapV2Pair(BDexLibrary.pairFor(factory, tokenA, tokenB)).totalSupply() == 0) {
+            // Donations followed by sync must not block the first LP mint.
+            // Existing donations remain part of the opening pool balances.
             (amountA, amountB) = (amountADesired, amountBDesired);
         } else {
             uint256 amountBOptimal = BDexLibrary.quote(amountADesired, reserveA, reserveB);
@@ -219,7 +220,7 @@ contract BDexRouter is IBDexRouter {
     ) external returns (uint256 amountA, uint256 amountB) {
         address pair = BDexLibrary.pairFor(factory, tokenA, tokenB);
         uint256 value = approveMax ? type(uint256).max : liquidity;
-        IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
+        try IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s) {} catch {}
         (amountA, amountB) = removeLiquidity(tokenA, tokenB, liquidity, amountAMin, amountBMin, to, deadline);
     }
 
@@ -237,7 +238,7 @@ contract BDexRouter is IBDexRouter {
     ) external returns (uint256 amountToken, uint256 amountBLCH) {
         address pair = BDexLibrary.pairFor(factory, token, WBLCH);
         uint256 value = approveMax ? type(uint256).max : liquidity;
-        IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
+        try IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s) {} catch {}
         (amountToken, amountBLCH) = removeLiquidityBLCH(token, liquidity, amountTokenMin, amountBLCHMin, to, deadline);
     }
 
@@ -281,7 +282,7 @@ contract BDexRouter is IBDexRouter {
     ) external returns (uint256 amountBLCH) {
         address pair = BDexLibrary.pairFor(factory, token, WBLCH);
         uint256 value = approveMax ? type(uint256).max : liquidity;
-        IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s);
+        try IUniswapV2Pair(pair).permit(msg.sender, address(this), value, deadline, v, r, s) {} catch {}
         amountBLCH = removeLiquidityBLCHSupportingFeeOnTransferTokens(
             token, liquidity, amountTokenMin, amountBLCHMin, to, deadline
         );
@@ -491,11 +492,12 @@ contract BDexRouter is IBDexRouter {
         uint256 deadline
     ) external ensure(deadline) {
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
+        uint256 wrappedBefore = IWBLCH(WBLCH).balanceOf(address(this));
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amountIn);
         _swapSupportingFeeOnTransferTokens(path, address(this));
-        // WBLCH itself is NOT fee-on-transfer (WblchParity-pinned wrapper), so
-        // the Router's own balance is exactly the final hop's output.
-        uint256 amountOut = IWBLCH(WBLCH).balanceOf(address(this));
+        // Only this swap's output may satisfy the signed minimum. A wrapper
+        // must be verified separately for the selected deployment network.
+        uint256 amountOut = IWBLCH(WBLCH).balanceOf(address(this)) - wrappedBefore;
         require(amountOut >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         IWBLCH(WBLCH).withdraw(amountOut);
         _safeTransferNative(to, amountOut);

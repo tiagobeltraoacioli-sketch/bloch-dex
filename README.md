@@ -51,11 +51,13 @@ test-library dependency is downloaded from a floating branch.
 
 ```sh
 forge fmt --check
-forge build --sizes --skip test
+forge build
+forge build --sizes --skip test --skip script
 forge test -vv
 ```
 
-CI runs these commands. Tests cover actual swaps and redemptions, flash-swap
+CI runs these commands. Size limits apply to on-chain contracts; local deployment
+scripts embed creation code and are compiled separately. Tests cover actual swaps and redemptions, flash-swap
 repayment/reentrancy, permit replay across nonces and chain IDs, treasury TWAP
 windows, taxed-token withdrawal bounds, CREATE2 identity, route execution
 parity, protocol-fee dilution and stateful liquidity invariants. Fuzz tests run
@@ -63,6 +65,15 @@ parity, protocol-fee dilution and stateful liquidity invariants. Fuzz tests run
 with unexpected reverts treated as failures.
 
 ## Contracts
+
+Fixed-supply EVM asset issuance is available through
+[`BlochAsset`](contracts/assets/BlochAsset.sol), with a separate deployment
+rehearsal script. See [asset issuance](docs/ASSET-ISSUANCE.md) for configuration,
+security boundaries and pool integration. No production asset has been issued.
+
+Canonical pair creation has an idempotent, chain/hash-pinned rehearsal script.
+See [pair support](docs/PAIR-SUPPORT.md) for its configuration, existing-pair
+checks and the distinction between native L1 assets and wrapped EVM tokens.
 
 | Contract | Purpose |
 |---|---|
@@ -74,6 +85,9 @@ with unexpected reverts treated as failures.
 | `BDexLens` | Paginated pool snapshots, LP position estimates and bounded route comparison |
 
 ### Integrate the lens
+
+`poolFor(tokenA, tokenB)` looks up one pair in either token order and distinguishes
+missing pairs from existing empty pools. Reserves follow sorted token order.
 
 `pools(cursor, limit)` returns up to 64 pools, the next cursor and total count.
 It reads canonical pool state without invoking arbitrary token metadata.

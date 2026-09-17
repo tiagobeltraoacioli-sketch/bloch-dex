@@ -1,0 +1,12 @@
+{
+  "name": "blochdex-mobile-wallet",
+  "account_id": "4e44d592d0229f8faa3fdb2f139c611c",
+  "main": "../dist/mobile-hotfix/worker.mjs",
+  "compatibility_date": "2026-09-14",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "blochdex.com/*", "zone_id": "c74e9b228dd2b166986837e699f7ebbb" },
+    { "pattern": "www.blochdex.com/*", "zone_id": "c74e9b228dd2b166986837e699f7ebbb" },
+  ],
+}

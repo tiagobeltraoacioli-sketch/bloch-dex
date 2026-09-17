@@ -19,3 +19,6 @@ fail_on_revert = true
 
 [fmt]
 line_length = 120
+
+[rpc_endpoints]
+bloch_l2 = "${BLOCH_L2_RPC_URL}"

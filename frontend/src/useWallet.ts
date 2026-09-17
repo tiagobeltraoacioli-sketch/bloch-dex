@@ -81,6 +81,7 @@ export function useWallet() {
     ] as const;
     cleanup.current = () => {
       for (const [event, listener] of listeners) provider.removeListener?.(event, listener);
+      if (wallet.id === 'postern-walletconnect') provider.disconnect?.();
     };
     try {
       for (const [event, listener] of listeners) provider.on?.(event, listener);

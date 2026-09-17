@@ -53,6 +53,16 @@ contract BDexLens {
         factory = IUniswapV2Factory(factory_);
     }
 
+    /// @notice Look up one canonical pair without scanning the pool registry.
+    /// @dev Snapshot reserves follow sorted token0/token1 order, regardless of
+    ///      input order. Existence does not imply liquidity or quote availability.
+    function poolFor(address tokenA, address tokenB) external view returns (bool exists, PoolSnapshot memory snapshot) {
+        (address token0, address token1) = BDexLibrary.sortTokens(tokenA, tokenB);
+        address pair = factory.getPair(token0, token1);
+        if (pair == address(0)) return (false, snapshot);
+        return (true, _pool(pair));
+    }
+
     function pools(uint256 cursor, uint256 limit)
         external
         view

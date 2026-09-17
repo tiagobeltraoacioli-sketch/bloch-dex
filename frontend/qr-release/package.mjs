@@ -1,0 +1,15 @@
+import {readFile,writeFile,mkdir,cp} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {resolve} from 'node:path';
+const previous=process.argv[2], output=process.argv[3];
+if(!previous||!output)throw Error('Usage: node package.mjs verified-previous-worker output-directory');
+const bytes=await readFile(previous);
+const sha=createHash('sha256').update(bytes).digest('hex');
+if(sha !== '7bc2e7effd496d4d976d0236282fbdcaf869b74c4fd0966c7d6f0593750562fe')throw Error('Previous worker does not match the inspected deployment artifact');
+const directory=resolve(output);await mkdir(directory,{recursive:false});
+await writeFile(directory+'/previous-worker.mjs',bytes);
+await cp(new URL('./worker.mjs',import.meta.url),directory+'/worker.mjs');
+await cp(new URL('../dist/',import.meta.url),directory+'/public',{recursive:true});
+await writeFile(directory+'/release.json',JSON.stringify({previousWorkerSha256:sha,previousVersion:'4c73a2c4-c003-4bb7-9f2f-cd9cd9306945',status:'connection-only-preview'},null,2));
+await writeFile(directory+'/wrangler.jsonc',JSON.stringify({name:'blochdex-mobile-wallet',account_id:'4e44d592d0229f8faa3fdb2f139c611c',main:'worker.mjs',compatibility_date:'2026-09-16',workers_dev:false,preview_urls:false,routes:[{pattern:'blochdex.com/*',zone_id:'c74e9b228dd2b166986837e699f7ebbb'},{pattern:'www.blochdex.com/*',zone_id:'c74e9b228dd2b166986837e699f7ebbb'}],assets:{directory:'./public',binding:'QR_ASSETS',run_worker_first:true,html_handling:'none',not_found_handling:'none'}},null,2));
+console.log(directory);

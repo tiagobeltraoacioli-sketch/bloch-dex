@@ -97,6 +97,7 @@ contract TreasuryFeeCollector {
 
     constructor(address _factory, address _treasury, address _wblch) {
         require(_factory != address(0) && _treasury != address(0) && _wblch != address(0), "TFC: ZERO_ADDR");
+        require(_factory.code.length > 0 && _wblch.code.length > 0, "TFC: NOT_A_CONTRACT");
         factory = IUniswapV2Factory(_factory);
         treasury = _treasury;
         wblch = _wblch;
