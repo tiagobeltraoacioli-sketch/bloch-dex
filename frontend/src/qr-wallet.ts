@@ -1,4 +1,4 @@
-import type { WalletOption, Provider } from './wallet';
+import { walletDisplayName, type WalletOption, type Provider } from './wallet';
 import type SignClientType from '@walletconnect/sign-client';
 const projectId = 'e263eead656b6d61ecdee75a71e100bb';
 let client: SignClientType | undefined;
@@ -56,6 +56,6 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
       disconnect(){active=false;c.off('session_delete',deleted);c.off('session_expire',deleted);void c.disconnect({topic:session.topic,reason:{code:6000,message:'User disconnected'}}).catch(()=>{});}
     };
     await appkit.close();
-    return {id:'postern-walletconnect',name:session.peer.metadata.name.slice(0,60)||'Mobile wallet',provider};
+    return {id:'postern-walletconnect',name:walletDisplayName(session.peer.metadata.name,'Mobile wallet'),provider};
   } finally {unsubscribe();signal.removeEventListener('abort',cancel);await appkit.close();}
 }

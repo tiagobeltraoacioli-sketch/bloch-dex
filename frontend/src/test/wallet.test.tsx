@@ -7,6 +7,7 @@ import {
   discoverWallets,
   validAddress,
   validChain,
+  walletDisplayName,
   walletError,
   type Provider,
   type WalletOption,
@@ -45,6 +46,12 @@ function fixture(
 }
 
 describe('wallet identification boundary', () => {
+  it('normalizes untrusted wallet names without display controls or split Unicode', () => {
+    expect(walletDisplayName('  Safe\u202eemaN\n Wallet  ')).toBe('Safe emaN Wallet');
+    expect(walletDisplayName('\u2066\u2069', 'Mobile wallet')).toBe('Mobile wallet');
+    expect(walletDisplayName('😀'.repeat(61))).toBe('😀'.repeat(60));
+    expect(walletDisplayName(null)).toBe('Browser wallet');
+  });
   it('keeps mobile destinations fixed regardless of untrusted provider metadata', () => {
     const f = fixture();
     expect(isMetaMaskWallet({ ...f.wallet, name: 'MetaMask', rdns: 'evil.io.metamask' })).toBe(
@@ -99,11 +106,12 @@ describe('wallet identification boundary', () => {
     const stop = discoverWallets(found);
     const announce = (detail: unknown) =>
       window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail }));
-    announce({ info: { uuid: id, name: 'Example' }, provider: f.wallet.provider });
+    announce({ info: { uuid: id, name: 'Example\u202e\n wallet' }, provider: f.wallet.provider });
     announce({ info: { uuid: id, name: 'Duplicate' }, provider: f.wallet.provider });
     announce({ info: { uuid: 'invalid', name: 'Invalid' }, provider: {} });
     announce(null);
     expect(found).toHaveBeenCalledTimes(1);
+    expect(found.mock.calls[0][0].name).toBe('Example wallet');
     expect(f.request).not.toHaveBeenCalled();
     stop();
     announce({ info: { uuid: id, name: 'After cleanup' }, provider: fixture().wallet.provider });

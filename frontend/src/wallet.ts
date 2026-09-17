@@ -8,6 +8,15 @@ export type Provider = {
 export type WalletOption = { id: string; name: string; provider: Provider; rdns?: string };
 export type WalletAccount = { address: string; chainId: string; name: string };
 
+const DISPLAY_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
+
+/** Bound untrusted EIP-6963 and WalletConnect names before displaying them. */
+export function walletDisplayName(value: unknown, fallback = 'Browser wallet'): string {
+  if (typeof value !== 'string') return fallback;
+  const cleaned = value.normalize('NFKC').replace(DISPLAY_CONTROLS, ' ').replace(/\s+/gu, ' ').trim();
+  return Array.from(cleaned).slice(0, 60).join('') || fallback;
+}
+
 // Fixed first-party destination: never forward query strings, wallet metadata,
 // arbitrary return URLs or a preview host to a mobile wallet.
 export const METAMASK_MOBILE_URL = 'https://metamask.app.link/dapp/blochdex.com/?connect=metamask';
@@ -60,7 +69,7 @@ export function discoverWallets(onWallet: (wallet: WalletOption) => void): () =>
     seen.add(provider);
     onWallet({
       id: info.uuid,
-      name: info.name.slice(0, 60) || 'Browser wallet',
+      name: walletDisplayName(info.name),
       provider,
       rdns: typeof info.rdns === 'string' ? info.rdns.slice(0, 253) : undefined,
     });
@@ -114,7 +123,7 @@ export async function connectAccount(wallet: WalletOption): Promise<WalletAccoun
     throw new Error('The wallet did not return a valid account.');
   const chainId = await wallet.provider.request({ method: 'eth_chainId' });
   if (!validChain(chainId)) throw new Error('The wallet did not return a valid network.');
-  return { address: accounts[0], chainId, name: wallet.name };
+  return { address: accounts[0], chainId, name: walletDisplayName(wallet.name) };
 }
 
 export function walletError(error: unknown): string {

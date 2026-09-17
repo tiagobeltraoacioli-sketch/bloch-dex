@@ -74,7 +74,9 @@ actual diluted estimate. Sample activity is not wallet transaction history.
 
 Discovery follows [EIP-6963](https://eips.ethereum.org/EIPS/eip-6963), with a
 legacy injected-provider fallback. Provider names are untrusted text, discovery
-is bounded and provider-supplied icons are not loaded. UUIDs and names do not
+is bounded and provider-supplied icons are not loaded. Browser and WalletConnect
+names are Unicode-normalized, length-bounded and stripped of control and
+bidirectional-formatting characters before display. UUIDs and names do not
 prove a wallet's identity. MetaMask and other compatible injected wallets can be
 selected, including the provider inside MetaMask Mobile's browser. When MetaMask
 is not detected, an explicit **Open MetaMask Mobile** link opens the canonical
@@ -87,7 +89,9 @@ query parameters, hashes or wallet metadata;
 preview builds also open that canonical production URL. No redirect happens on
 page load. The handoff is disabled during a pending browser connection request.
 If app opening fails, the UI provides the URL to open manually in MetaMask's
-browser. WalletConnect and hardware-wallet-specific flows are not included.
+browser. The separate QR entry uses WalletConnect only for account and chain
+identity on the experimental Bloch L2 preview; its provider rejects every
+transaction or signing method. Hardware-wallet-specific flows are not included.
 
 On iPhone Safari the application must first be opened in MetaMask's own browser;
 the injected-provider connection here does not pair Safari directly with the app.
