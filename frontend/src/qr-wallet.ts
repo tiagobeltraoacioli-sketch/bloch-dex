@@ -7,6 +7,7 @@ const CHAIN = 'eip155:84001';
 const CHAIN_HEX = '0x14821';
 
 type SessionEvent = {topic?:unknown;params?:{chainId?:unknown;event?:{name?:unknown;data?:unknown}}};
+type SessionUpdate = {topic?:unknown;params?:{namespaces?:{eip155?:{accounts?:unknown}}}};
 export function normalizeWalletSessionEvent(message:SessionEvent,topic:string) {
   if(message?.topic!==topic)return null;
   const chain=message.params?.chainId,event=message.params?.event;
@@ -22,6 +23,15 @@ export function normalizeWalletSessionEvent(message:SessionEvent,topic:string) {
     return supported?{disconnect:false,event:'chainChanged',value:CHAIN_HEX}:{disconnect:true,event:'chainChanged',value};
   }
   return null;
+}
+export function normalizeWalletSessionUpdate(message:SessionUpdate,topic:string,currentAddress:string) {
+  if(message?.topic!==topic)return null;
+  const accounts=message.params?.namespaces?.eip155?.accounts;
+  if(!Array.isArray(accounts))return {disconnect:true,event:'accountsChanged',value:[]};
+  const caip=accounts.find(value=>typeof value==='string'&&/^eip155:84001:0x[a-fA-F0-9]{40}$/.test(value));
+  if(typeof caip!=='string')return {disconnect:true,event:'accountsChanged',value:[]};
+  const address=caip.split(':')[2];
+  return address.toLowerCase()===currentAddress.toLowerCase()?null:{disconnect:false,event:'accountsChanged',value:[address],address};
 }
 async function createModal() {
   const { createAppKit } = await import('@reown/appkit/core');
@@ -70,8 +80,15 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
       emit(update.event,update.value);
       if(update.disconnect)void c.disconnect({topic:session.topic,reason:{code:6000,message:'Unsupported session update'}}).catch(()=>{});
     };
+    const updated=(message:SessionUpdate)=>{
+      const update=normalizeWalletSessionUpdate(message,session.topic,address);if(!update)return;
+      if('address' in update&&typeof update.address==='string')address=update.address;
+      if(update.disconnect)active=false;
+      emit(update.event,update.value);
+      if(update.disconnect)void c.disconnect({topic:session.topic,reason:{code:6000,message:'Unsupported session update'}}).catch(()=>{});
+    };
     c.on('session_delete',deleted);c.on('session_expire',deleted);
-    c.on('session_event',changed);
+    c.on('session_event',changed);c.on('session_update',updated);
     const provider:Provider={
       async request({method}) {
         if(!active || session.expiry*1000<=Date.now())throw Error('Session expired');
@@ -81,7 +98,7 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
       },
       on(event,fn){if(!listeners.has(event))listeners.set(event,new Set());listeners.get(event)!.add(fn);},
       removeListener(event,fn){listeners.get(event)?.delete(fn);},
-      disconnect(){active=false;c.off('session_delete',deleted);c.off('session_expire',deleted);c.off('session_event',changed);void c.disconnect({topic:session.topic,reason:{code:6000,message:'User disconnected'}}).catch(()=>{});}
+      disconnect(){active=false;c.off('session_delete',deleted);c.off('session_expire',deleted);c.off('session_event',changed);c.off('session_update',updated);void c.disconnect({topic:session.topic,reason:{code:6000,message:'User disconnected'}}).catch(()=>{});}
     };
     await appkit.close();
     return {id:'postern-walletconnect',name:walletDisplayName(session.peer.metadata.name,'Mobile wallet'),provider};

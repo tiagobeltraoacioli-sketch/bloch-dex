@@ -93,8 +93,9 @@ browser. The separate QR entry uses WalletConnect only for account and chain
 identity on the experimental Bloch L2 preview; its provider rejects every
 transaction or signing method. Account and chain events are accepted only from
 the approved session topic and Bloch L2 namespace; unsupported changes terminate
-the local session instead of leaving a stale identity. Hardware-wallet-specific
-flows are not included.
+the local session instead of leaving a stale identity. Namespace updates apply
+the same topic, CAIP-2 and CAIP-10 checks. Hardware-wallet-specific flows are not
+included.
 
 On iPhone Safari the application must first be opened in MetaMask's own browser;
 the injected-provider connection here does not pair Safari directly with the app.
