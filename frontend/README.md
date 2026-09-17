@@ -91,7 +91,10 @@ page load. The handoff is disabled during a pending browser connection request.
 If app opening fails, the UI provides the URL to open manually in MetaMask's
 browser. The separate QR entry uses WalletConnect only for account and chain
 identity on the experimental Bloch L2 preview; its provider rejects every
-transaction or signing method. Hardware-wallet-specific flows are not included.
+transaction or signing method. Account and chain events are accepted only from
+the approved session topic and Bloch L2 namespace; unsupported changes terminate
+the local session instead of leaving a stale identity. Hardware-wallet-specific
+flows are not included.
 
 On iPhone Safari the application must first be opened in MetaMask's own browser;
 the injected-provider connection here does not pair Safari directly with the app.
