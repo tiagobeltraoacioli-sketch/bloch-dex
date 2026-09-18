@@ -98,6 +98,17 @@ describe('wallet identification boundary', () => {
       'eth_chainId',
     ]);
   });
+  it('snapshots the validated account before requesting the network', async () => {
+    const accounts = [address];
+    const f = fixture(
+      vi.fn(async ({ method }) => {
+        if (method === 'eth_requestAccounts') return accounts;
+        accounts[0] = 'invalid';
+        return '0x1';
+      }),
+    );
+    expect((await connectAccount(f.wallet)).address).toBe(address);
+  });
   it('rejects malformed accounts and network IDs', async () => {
     expect(validAddress('0x123')).toBe(false);
     expect(validAddress('0x' + '00'.repeat(20))).toBe(false);

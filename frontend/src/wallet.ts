@@ -151,9 +151,11 @@ export async function connectAccount(wallet: WalletOption): Promise<WalletAccoun
   const accounts = await wallet.provider.request({ method: 'eth_requestAccounts' });
   if (!validAccounts(accounts))
     throw new Error('The wallet did not return a valid account.');
+  // Providers own their response arrays and may mutate them during the next request.
+  const address = accounts[0];
   const chainId = await wallet.provider.request({ method: 'eth_chainId' });
   if (!validChain(chainId)) throw new Error('The wallet did not return a valid network.');
-  return { address: accounts[0], chainId, name: walletDisplayName(wallet.name) };
+  return { address, chainId, name: walletDisplayName(wallet.name) };
 }
 
 export function walletError(error: unknown): string {
