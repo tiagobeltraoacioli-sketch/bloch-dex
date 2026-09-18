@@ -49,6 +49,7 @@ export function useWallet() {
     let disposed = false;
     let latestAccounts: string[] | null | undefined;
     let latestChain: unknown;
+    let receivedChain = false;
     const onAccounts = (...args: unknown[]) => {
       if (disposed || attempt !== generation.current) return;
       latestAccounts = validAccounts(args[0]) ? [args[0][0]] : null;
@@ -63,6 +64,7 @@ export function useWallet() {
     const onChain = (...args: unknown[]) => {
       if (disposed || attempt !== generation.current) return;
       latestChain = args[0];
+      receivedChain = true;
       if (initializing) return;
       if (!validChain(latestChain)) {
         disconnect();
@@ -104,7 +106,7 @@ export function useWallet() {
         if (!latestAccounts) throw new Error('Account unavailable.');
         result.address = latestAccounts[0];
       }
-      if (latestChain !== undefined) {
+      if (receivedChain) {
         if (!validChain(latestChain)) throw new Error('Network unavailable.');
         result.chainId = latestChain;
       }

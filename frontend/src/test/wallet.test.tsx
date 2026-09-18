@@ -364,6 +364,23 @@ describe('wallet identification boundary', () => {
     expect(result.current.account).toBeNull();
     expect(result.current.pending).toBe(false);
   });
+  it.each([undefined, null, 'invalid'])('refuses a malformed pending network event (%s)', async (chain) => {
+    let resolveAccounts!: (value: unknown) => void;
+    const accounts = new Promise((resolve) => { resolveAccounts = resolve; });
+    const f = fixture(vi.fn(async ({ method }) =>
+      method === 'eth_requestAccounts' ? accounts : '0x1',
+    ));
+    const { result } = renderHook(() => useWallet());
+    let connection!: Promise<void>;
+    act(() => {
+      connection = result.current.connect(f.wallet);
+      f.emit('chainChanged', chain);
+    });
+    await act(async () => { resolveAccounts([address]); await connection; });
+    expect(result.current.account).toBeNull();
+    expect(result.current.pending).toBe(false);
+    expect(result.current.error).toMatch(/Could not connect/);
+  });
   it('deduplicates synchronous connection attempts and reconciles pending account changes', async () => {
     let resolveAccounts!: (value: unknown) => void;
     const pendingAccounts = new Promise((resolve) => {
