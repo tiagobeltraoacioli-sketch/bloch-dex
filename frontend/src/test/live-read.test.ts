@@ -7,7 +7,7 @@ import {
   type Address,
   type Hex,
 } from 'viem';
-import { LiveReadAdapter, parseDeploymentRegistry } from '../live-read';
+import { LatestReadGate, LiveReadAdapter, parseDeploymentRegistry } from '../live-read';
 import type { Provider } from '../wallet';
 
 const addresses = {
@@ -43,15 +43,33 @@ const routerAbi = parseAbi([
 const lensAbi = parseAbi([
   'function factory() view returns (address)',
   'function poolFor(address tokenA, address tokenB) view returns (bool exists, (address pair, address token0, address token1, uint112 reserve0, uint112 reserve1, uint32 reserveTimestamp, uint256 totalSupply) snapshot)',
+  'function pools(uint256 cursor, uint256 limit) view returns ((address pair, address token0, address token1, uint112 reserve0, uint112 reserve1, uint32 reserveTimestamp, uint256 totalSupply)[] page, uint256 nextCursor, uint256 total)',
+  'function quoteExactInput(uint256 amountIn, address[] path, uint256 slippageBps) view returns ((bool available, uint256 blockNumber, uint256 timestamp, uint256 amountOut, uint256 minimumOut, uint256[] amounts, uint256[] executionLossBps))',
 ]);
 const collectorAbi = parseAbi([
   'function factory() view returns (address)',
   'function wblch() view returns (address)',
 ]);
+const tokenAbi = parseAbi(['function balanceOf(address owner) view returns (uint256)']);
 const poolSelector = encodeFunctionData({
   abi: lensAbi,
   functionName: 'poolFor',
   args: [addresses.tokenA, addresses.tokenB],
+}).slice(0, 10);
+const poolsSelector = encodeFunctionData({
+  abi: lensAbi,
+  functionName: 'pools',
+  args: [0n, 10n],
+}).slice(0, 10);
+const quoteSelector = encodeFunctionData({
+  abi: lensAbi,
+  functionName: 'quoteExactInput',
+  args: [10n, [addresses.tokenA, addresses.tokenB], 50n],
+}).slice(0, 10);
+const balanceSelector = encodeFunctionData({
+  abi: tokenAbi,
+  functionName: 'balanceOf',
+  args: [addresses.tokenA],
 }).slice(0, 10);
 
 function registry() {
@@ -89,6 +107,9 @@ function fixture(
     code?: Hex;
     routerFactory?: Address;
     reorg?: boolean;
+    quoteAvailable?: boolean;
+    poolExists?: boolean;
+    pausePools?: Promise<void>;
   } = {},
 ) {
   const requests: Array<{ method: string; params?: unknown[] }> = [];
@@ -116,6 +137,7 @@ function fixture(
       );
       if (name) return overrides.code && name === 'router' ? overrides.code : codes[name];
     }
+    if (args.method === 'eth_getBalance') return '0x2a';
     if (args.method === 'eth_call') {
       const call = params[0] as { to: Address; data: Hex };
       const signature = call.data.slice(0, 10);
@@ -155,23 +177,81 @@ function fixture(
           functionName: 'INIT_CODE_PAIR_HASH',
           result: pairInitCodeHash,
         });
-      if (call.to === addresses.lens && signature === poolSelector)
+      if (call.to === addresses.lens && signature === poolSelector) {
+        const exists = overrides.poolExists ?? true;
         return encodeFunctionResult({
           abi: lensAbi,
           functionName: 'poolFor',
+          result: exists
+            ? [
+                true,
+                {
+                  pair: addresses.pair,
+                  token0: addresses.tokenA,
+                  token1: addresses.tokenB,
+                  reserve0: 100n,
+                  reserve1: 200n,
+                  reserveTimestamp: 123,
+                  totalSupply: 50n,
+                },
+              ]
+            : [
+                false,
+                {
+                  pair: '0x0000000000000000000000000000000000000000',
+                  token0: '0x0000000000000000000000000000000000000000',
+                  token1: '0x0000000000000000000000000000000000000000',
+                  reserve0: 0n,
+                  reserve1: 0n,
+                  reserveTimestamp: 0,
+                  totalSupply: 0n,
+                },
+              ],
+        });
+      }
+      if (call.to === addresses.lens && signature === poolsSelector) {
+        await overrides.pausePools;
+        return encodeFunctionResult({
+          abi: lensAbi,
+          functionName: 'pools',
           result: [
-            true,
-            {
-              pair: addresses.pair,
-              token0: addresses.tokenA,
-              token1: addresses.tokenB,
-              reserve0: 100n,
-              reserve1: 200n,
-              reserveTimestamp: 123,
-              totalSupply: 50n,
-            },
+            [
+              {
+                pair: addresses.pair,
+                token0: addresses.tokenA,
+                token1: addresses.tokenB,
+                reserve0: 100n,
+                reserve1: 200n,
+                reserveTimestamp: 123,
+                totalSupply: 50n,
+              },
+            ],
+            1n,
+            1n,
           ],
         });
+      }
+      if (call.to === addresses.lens && signature === quoteSelector) {
+        const available = overrides.quoteAvailable ?? true;
+        return encodeFunctionResult({
+          abi: lensAbi,
+          functionName: 'quoteExactInput',
+          result: {
+            available,
+            blockNumber: 32n,
+            timestamp: 1_000n,
+            amountOut: available ? 9n : 0n,
+            minimumOut: available ? 8n : 0n,
+            amounts: [10n, available ? 9n : 0n],
+            executionLossBps: [1_000n],
+          },
+        });
+      }
+      if (
+        (call.to === addresses.tokenA || call.to === addresses.tokenB) &&
+        signature === balanceSelector
+      )
+        return encodeFunctionResult({ abi: tokenAbi, functionName: 'balanceOf', result: 99n });
     }
     throw new Error(`unexpected ${args.method}`);
   });
@@ -239,5 +319,81 @@ describe('fail-closed live deployment reads', () => {
       'pool tokens',
     );
     expect(f.request).toHaveBeenCalledTimes(count);
+  });
+
+  it('reads paginated reserves, quotes and explicit balances at the bound snapshot', async () => {
+    const f = fixture();
+    const adapter = await LiveReadAdapter.connect(f.provider, registry());
+    const page = await adapter.pools(0n, 10);
+    expect(page).toMatchObject({
+      available: true,
+      value: { blockNumber: 32n, blockHash: snapshotHash, nextCursor: 1n, total: 1n },
+    });
+    if (page.available)
+      expect(page.value.pools[0]).toMatchObject({ reserve0: 100n, reserve1: 200n });
+
+    const quote = await adapter.quoteExactInput(10n, [addresses.tokenA, addresses.tokenB], 50);
+    expect(quote).toMatchObject({
+      available: true,
+      value: { amountOut: 9n, minimumOut: 8n, blockNumber: 32n, blockHash: snapshotHash },
+    });
+    const balances = await adapter.balances(addresses.tokenA, [addresses.tokenA, addresses.tokenB]);
+    expect(balances).toMatchObject({
+      available: true,
+      value: {
+        owner: addresses.tokenA,
+        nativeBalance: 42n,
+        tokens: [
+          { token: addresses.tokenA, balance: 99n },
+          { token: addresses.tokenB, balance: 99n },
+        ],
+      },
+    });
+    expect(
+      f.requests
+        .filter(({ method }) => method === 'eth_call' || method === 'eth_getBalance')
+        .every(({ params }) => params?.[1] === '0x20'),
+    ).toBe(true);
+  });
+
+  it('reports missing pools and unavailable quotes without falling back', async () => {
+    const missingFixture = fixture({ poolExists: false });
+    const missingAdapter = await LiveReadAdapter.connect(missingFixture.provider, registry());
+    await expect(missingAdapter.readPool(addresses.tokenA, addresses.tokenB)).resolves.toEqual({
+      available: false,
+      reason: 'missing-pool',
+    });
+
+    const quoteFixture = fixture({ quoteAvailable: false });
+    const quoteAdapter = await LiveReadAdapter.connect(quoteFixture.provider, registry());
+    await expect(
+      quoteAdapter.quoteExactInput(10n, [addresses.tokenA, addresses.tokenB], 50),
+    ).resolves.toEqual({ available: false, reason: 'quote-unavailable' });
+  });
+
+  it('marks aborted and superseded reads unavailable even when an old RPC resolves later', async () => {
+    let release = () => {};
+    const pausePools = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const f = fixture({ pausePools });
+    const adapter = await LiveReadAdapter.connect(f.provider, registry());
+    const gate = new LatestReadGate();
+    const pending = adapter.pools(0n, 10, gate.begin());
+    await vi.waitFor(() =>
+      expect(f.requests.some(({ method }) => method === 'eth_call')).toBe(true),
+    );
+    gate.begin();
+    release();
+    await expect(pending).resolves.toEqual({ available: false, reason: 'stale' });
+
+    const controller = new AbortController();
+    controller.abort();
+    const before = f.request.mock.calls.length;
+    await expect(adapter.pools(0n, 10, gate.begin(controller.signal))).resolves.toEqual({
+      available: false,
+      reason: 'cancelled',
+    });
+    expect(f.request).toHaveBeenCalledTimes(before);
   });
 });

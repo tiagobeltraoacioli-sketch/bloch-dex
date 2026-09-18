@@ -179,13 +179,23 @@ ID, genesis hash and deployment block hash; verifies the runtime code hash of
 the factory, router, lens, collector and wrapped-native contract; and reads the
 immutable/canonical factory and wrapper links plus the pair init-code hash. All
 code and contract calls use one explicit snapshot block. Its hash is confirmed
-after binding and after each pool read so a reorganization cannot silently mix
-states. The adapter exposes only lens `poolFor` snapshots and makes only
-`eth_chainId`, `eth_getBlockByNumber`, `eth_getCode` and `eth_call` requests.
+after binding and after each live read so a reorganization cannot silently mix
+states. The adapter exposes bounded lens pool pagination, `poolFor`, exact-input
+quotes and raw native/ERC-20 balances. Every response carries the bound block
+number/hash; missing or empty pools, unavailable quotes, invalid requests and
+provider failures are explicit unavailable states. `LatestReadGate` lets each
+future UI query stream reject aborted or superseded results even when an older
+provider request completes later. Pagination remains capped at 64 pools, paths
+at four hops and balance batches at 32 unique tokens.
+
+These helpers make only `eth_chainId`, `eth_getBlockByNumber`, `eth_getCode`,
+`eth_getBalance` and `eth_call` requests. Balance owners must be supplied
+explicitly; the adapter never discovers or requests a wallet account. Token
+balances are integer base units without metadata or policy assumptions.
 
 The adapter is intentionally not imported by `App.tsx`: sample data remains the
 only UI data source, and no registry is bundled because none has been approved.
 It does not fetch an RPC URL, request accounts, approve tokens, sign, submit a
 transaction or enable liquidity. A future live UI must additionally implement
-bounded pagination/quotes, stale-request cancellation, explicit unavailable
-states and the remaining confirmation/receipt controls listed above.
+an approved registry/provider, token metadata and policy, live history, and the
+remaining transaction confirmation/receipt controls listed above.

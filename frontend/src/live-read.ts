@@ -41,6 +41,64 @@ export type LivePoolSnapshot = {
   totalSupply: bigint;
 };
 
+export type LivePoolPage = {
+  blockNumber: bigint;
+  blockHash: Hex;
+  pools: ReadonlyArray<Omit<LivePoolSnapshot, 'exists' | 'blockNumber' | 'blockHash'>>;
+  nextCursor: bigint;
+  total: bigint;
+};
+
+export type LiveQuote = {
+  blockNumber: bigint;
+  blockHash: Hex;
+  timestamp: bigint;
+  amountOut: bigint;
+  minimumOut: bigint;
+  amounts: readonly bigint[];
+  executionLossBps: readonly bigint[];
+};
+
+export type LiveBalances = {
+  blockNumber: bigint;
+  blockHash: Hex;
+  owner: Address;
+  nativeBalance: bigint;
+  tokens: ReadonlyArray<{ token: Address; balance: bigint }>;
+};
+
+export type LiveReadUnavailableReason =
+  | 'cancelled'
+  | 'stale'
+  | 'invalid-request'
+  | 'missing-pool'
+  | 'empty-pool'
+  | 'quote-unavailable'
+  | 'provider-unavailable';
+
+export type LiveReadState<T> =
+  | { available: true; value: T }
+  | { available: false; reason: LiveReadUnavailableReason };
+
+export type LiveReadRequest = {
+  readonly signal?: AbortSignal;
+  readonly current: () => boolean;
+};
+
+/** One gate per UI query stream rejects responses superseded by a newer request. */
+export class LatestReadGate {
+  #generation = 0;
+
+  begin(signal?: AbortSignal): LiveReadRequest {
+    const generation = ++this.#generation;
+    return { signal, current: () => generation === this.#generation };
+  }
+
+  invalidate(): void {
+    this.#generation += 1;
+  }
+}
+
 type BlockIdentity = { number: Hex; hash: Hex };
 
 const HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -57,11 +115,16 @@ const routerAbi = parseAbi([
 const lensAbi = parseAbi([
   'function factory() view returns (address)',
   'function poolFor(address tokenA, address tokenB) view returns (bool exists, (address pair, address token0, address token1, uint112 reserve0, uint112 reserve1, uint32 reserveTimestamp, uint256 totalSupply) snapshot)',
+  'function pools(uint256 cursor, uint256 limit) view returns ((address pair, address token0, address token1, uint112 reserve0, uint112 reserve1, uint32 reserveTimestamp, uint256 totalSupply)[] page, uint256 nextCursor, uint256 total)',
+  'function quoteExactInput(uint256 amountIn, address[] path, uint256 slippageBps) view returns ((bool available, uint256 blockNumber, uint256 timestamp, uint256 amountOut, uint256 minimumOut, uint256[] amounts, uint256[] executionLossBps))',
 ]);
 const collectorAbi = parseAbi([
   'function factory() view returns (address)',
   'function wblch() view returns (address)',
 ]);
+const tokenAbi = parseAbi(['function balanceOf(address owner) view returns (uint256)']);
+const MAX_UINT112 = (1n << 112n) - 1n;
+const MAX_UINT256 = (1n << 256n) - 1n;
 
 function fail(message: string): never {
   throw new Error(`Live deployment unavailable: ${message}`);
@@ -190,8 +253,18 @@ async function call(provider: Provider, to: Address, data: Hex, blockNumber: Hex
     typeof result === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(result),
     'eth_call returned malformed data',
   );
-  requireValue(result.length <= 16_386, 'eth_call returned excessive data');
+  requireValue(result.length <= 65_538, 'eth_call returned excessive data');
   return result as Hex;
+}
+
+function requestUnavailable(request?: LiveReadRequest): LiveReadUnavailableReason | undefined {
+  if (request?.signal?.aborted) return 'cancelled';
+  if (request && !request.current()) return 'stale';
+  return undefined;
+}
+
+function unavailable<T>(reason: LiveReadUnavailableReason): LiveReadState<T> {
+  return { available: false, reason };
 }
 
 async function readFunction<T>(
@@ -414,5 +487,241 @@ export class LiveReadAdapter {
       reserveTimestamp,
       totalSupply,
     };
+  }
+
+  async readPool(
+    tokenA: string,
+    tokenB: string,
+    readRequest?: LiveReadRequest,
+  ): Promise<LiveReadState<LivePoolSnapshot>> {
+    const blocked = requestUnavailable(readRequest);
+    if (blocked) return unavailable(blocked);
+    if (
+      !validAddress(tokenA) ||
+      !validAddress(tokenB) ||
+      tokenA.toLowerCase() === tokenB.toLowerCase()
+    )
+      return unavailable('invalid-request');
+    try {
+      const pool = await this.poolFor(tokenA, tokenB);
+      const after = requestUnavailable(readRequest);
+      if (after) return unavailable(after);
+      if (!pool.exists) return unavailable('missing-pool');
+      if (pool.totalSupply === 0n || pool.reserve0 === 0n || pool.reserve1 === 0n)
+        return unavailable('empty-pool');
+      return { available: true, value: pool };
+    } catch {
+      return unavailable(requestUnavailable(readRequest) ?? 'provider-unavailable');
+    }
+  }
+
+  async pools(
+    cursor: bigint,
+    limit: number,
+    readRequest?: LiveReadRequest,
+  ): Promise<LiveReadState<LivePoolPage>> {
+    const blocked = requestUnavailable(readRequest);
+    if (blocked) return unavailable(blocked);
+    if (
+      cursor < 0n ||
+      cursor > MAX_UINT256 ||
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 64
+    )
+      return unavailable('invalid-request');
+    try {
+      const result = await readFunction<
+        readonly [
+          ReadonlyArray<{
+            pair: Address;
+            token0: Address;
+            token1: Address;
+            reserve0: bigint;
+            reserve1: bigint;
+            reserveTimestamp: number;
+            totalSupply: bigint;
+          }>,
+          bigint,
+          bigint,
+        ]
+      >(this.#provider, this.registry.deployment.lens.address, lensAbi, 'pools', this.#blockTag, [
+        cursor,
+        BigInt(limit),
+      ]);
+      const afterCall = requestUnavailable(readRequest);
+      if (afterCall) return unavailable(afterCall);
+      await confirmBlock(this.#provider, { number: this.#blockTag, hash: this.blockHash });
+      const afterConfirm = requestUnavailable(readRequest);
+      if (afterConfirm) return unavailable(afterConfirm);
+      const [page, nextCursor, total] = result;
+      requireValue(page.length <= limit && nextCursor <= total, 'lens returned invalid pagination');
+      requireValue(
+        cursor >= total
+          ? page.length === 0 && nextCursor === total
+          : nextCursor === cursor + BigInt(page.length),
+        'lens returned inconsistent pagination',
+      );
+      const seen = new Set<string>();
+      for (const pool of page) {
+        requireValue(
+          validAddress(pool.pair) &&
+            validAddress(pool.token0) &&
+            validAddress(pool.token1) &&
+            pool.token0.toLowerCase() < pool.token1.toLowerCase() &&
+            !seen.has(pool.pair.toLowerCase()),
+          'lens returned an inconsistent pool page',
+        );
+        seen.add(pool.pair.toLowerCase());
+      }
+      return {
+        available: true,
+        value: {
+          blockNumber: this.blockNumber,
+          blockHash: this.blockHash,
+          pools: page,
+          nextCursor,
+          total,
+        },
+      };
+    } catch {
+      return unavailable(requestUnavailable(readRequest) ?? 'provider-unavailable');
+    }
+  }
+
+  async quoteExactInput(
+    amountIn: bigint,
+    path: readonly string[],
+    slippageBps: number,
+    readRequest?: LiveReadRequest,
+  ): Promise<LiveReadState<LiveQuote>> {
+    const blocked = requestUnavailable(readRequest);
+    if (blocked) return unavailable(blocked);
+    if (
+      amountIn < 1n ||
+      amountIn > MAX_UINT112 ||
+      path.length < 2 ||
+      path.length > 5 ||
+      !Number.isSafeInteger(slippageBps) ||
+      slippageBps < 0 ||
+      slippageBps > 10_000 ||
+      path.some((token) => !validAddress(token))
+    )
+      return unavailable('invalid-request');
+    const edges = new Set<string>();
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const left = path[index].toLowerCase();
+      const right = path[index + 1].toLowerCase();
+      if (left === right) return unavailable('invalid-request');
+      const edge = left < right ? `${left}:${right}` : `${right}:${left}`;
+      if (edges.has(edge)) return unavailable('invalid-request');
+      edges.add(edge);
+    }
+    try {
+      const quote = await readFunction<{
+        available: boolean;
+        blockNumber: bigint;
+        timestamp: bigint;
+        amountOut: bigint;
+        minimumOut: bigint;
+        amounts: readonly bigint[];
+        executionLossBps: readonly bigint[];
+      }>(
+        this.#provider,
+        this.registry.deployment.lens.address,
+        lensAbi,
+        'quoteExactInput',
+        this.#blockTag,
+        [amountIn, path, BigInt(slippageBps)],
+      );
+      const afterCall = requestUnavailable(readRequest);
+      if (afterCall) return unavailable(afterCall);
+      await confirmBlock(this.#provider, { number: this.#blockTag, hash: this.blockHash });
+      const afterConfirm = requestUnavailable(readRequest);
+      if (afterConfirm) return unavailable(afterConfirm);
+      requireValue(
+        quote.blockNumber === this.blockNumber &&
+          quote.amounts.length === path.length &&
+          quote.executionLossBps.length === path.length - 1 &&
+          quote.amounts[0] === amountIn,
+        'lens returned an inconsistent quote',
+      );
+      if (!quote.available) return unavailable('quote-unavailable');
+      requireValue(
+        quote.amountOut > 0n &&
+          quote.minimumOut > 0n &&
+          quote.minimumOut <= quote.amountOut &&
+          quote.amounts[path.length - 1] === quote.amountOut,
+        'lens returned an invalid available quote',
+      );
+      return {
+        available: true,
+        value: {
+          blockNumber: quote.blockNumber,
+          blockHash: this.blockHash,
+          timestamp: quote.timestamp,
+          amountOut: quote.amountOut,
+          minimumOut: quote.minimumOut,
+          amounts: quote.amounts,
+          executionLossBps: quote.executionLossBps,
+        },
+      };
+    } catch {
+      return unavailable(requestUnavailable(readRequest) ?? 'provider-unavailable');
+    }
+  }
+
+  async balances(
+    owner: string,
+    tokens: readonly string[],
+    readRequest?: LiveReadRequest,
+  ): Promise<LiveReadState<LiveBalances>> {
+    const blocked = requestUnavailable(readRequest);
+    if (blocked) return unavailable(blocked);
+    if (
+      !validAddress(owner) ||
+      tokens.length > 32 ||
+      tokens.some((token) => !validAddress(token)) ||
+      new Set(tokens.map((token) => token.toLowerCase())).size !== tokens.length
+    )
+      return unavailable('invalid-request');
+    try {
+      const native = await request(this.#provider, 'eth_getBalance', [owner, this.#blockTag]);
+      requireValue(
+        typeof native === 'string' && QUANTITY.test(native),
+        'native balance is invalid',
+      );
+      const tokenBalances: Array<{ token: Address; balance: bigint }> = [];
+      for (const token of tokens) {
+        const interrupted = requestUnavailable(readRequest);
+        if (interrupted) return unavailable(interrupted);
+        const balance = await readFunction<bigint>(
+          this.#provider,
+          token as Address,
+          tokenAbi,
+          'balanceOf',
+          this.#blockTag,
+          [owner],
+        );
+        tokenBalances.push({ token: token as Address, balance });
+      }
+      const afterCall = requestUnavailable(readRequest);
+      if (afterCall) return unavailable(afterCall);
+      await confirmBlock(this.#provider, { number: this.#blockTag, hash: this.blockHash });
+      const afterConfirm = requestUnavailable(readRequest);
+      if (afterConfirm) return unavailable(afterConfirm);
+      return {
+        available: true,
+        value: {
+          blockNumber: this.blockNumber,
+          blockHash: this.blockHash,
+          owner: owner as Address,
+          nativeBalance: BigInt(native),
+          tokens: tokenBalances,
+        },
+      };
+    } catch {
+      return unavailable(requestUnavailable(readRequest) ?? 'provider-unavailable');
+    }
   }
 }
