@@ -167,14 +167,33 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
     telemetryEnabled: false,
     logger: 'silent',
   });
+  if (signal.aborted) throw Error('Connection cancelled');
   const c = client;
   appkit ??= await createModal();
   if (signal.aborted) throw Error('Connection cancelled');
   const { uri, approval } = await c.connect({
     requiredNamespaces: { eip155: { chains: [CHAIN], methods: METHODS, events: EVENTS } },
   });
+  if (signal.aborted) throw Error('Connection cancelled');
   if (!uri) throw Error('No pairing QR returned');
-  await appkit.open({ uri });
+  const modal = appkit;
+  const closeModal = async () => {
+    try {
+      await modal.close();
+    } catch {
+      /* Modal cleanup cannot restore or authorize a cancelled session. */
+    }
+  };
+  try {
+    await modal.open({ uri });
+  } catch (failure) {
+    await closeModal();
+    throw failure;
+  }
+  if (signal.aborted) {
+    await closeModal();
+    throw Error('Connection cancelled');
+  }
   let cancelled: boolean = Boolean(signal.aborted);
   let rejectCancelled: (error: Error) => void = () => {};
   const cancellation = new Promise<never>((_, reject) => {
@@ -183,12 +202,12 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
   const cancel = () => {
     cancelled = true;
     rejectCancelled(Error('Connection cancelled'));
-    void appkit?.close();
+    void closeModal();
   };
   signal.addEventListener('abort', cancel, { once: true });
   let unsubscribe = () => {};
   try {
-    unsubscribe = appkit.subscribeState((state) => {
+    unsubscribe = modal.subscribeState((state) => {
       if (!state.open) cancel();
     });
     const approved = approval();
@@ -249,6 +268,12 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
       listeners.clear();
       return true;
     };
+    const expire = () => {
+      if (deactivate(true))
+        void c
+          .disconnect({ topic, reason: { code: 6000, message: 'Session expired' } })
+          .catch(() => {});
+    };
     const deleted = (message: { topic?: unknown }) => {
       if (message?.topic === topic) deactivate(true);
     };
@@ -294,19 +319,11 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
     c.on('session_expire', deleted);
     c.on('session_event', changed);
     c.on('session_update', updated);
-    expiryTimer = window.setTimeout(
-      () => {
-        if (deactivate(true))
-          void c
-            .disconnect({ topic, reason: { code: 6000, message: 'Session expired' } })
-            .catch(() => {});
-      },
-      Math.max(0, expiry * 1000 - Date.now()),
-    );
+    expiryTimer = window.setTimeout(expire, Math.max(0, expiry * 1000 - Date.now()));
     const provider: Provider = {
       async request({ method }) {
         if (!active || expiry * 1000 <= Date.now()) {
-          deactivate(true);
+          expire();
           throw Error('Session expired');
         }
         if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [address];
@@ -329,7 +346,7 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
             .catch(() => {});
       },
     };
-    await appkit.close();
+    await closeModal();
     return {
       id: 'postern-walletconnect',
       name: walletDisplayName(approvedSession.name, 'Mobile wallet'),
@@ -338,6 +355,6 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
   } finally {
     unsubscribe();
     signal.removeEventListener('abort', cancel);
-    await appkit.close();
+    await closeModal();
   }
 }

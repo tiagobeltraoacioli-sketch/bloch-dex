@@ -212,6 +212,36 @@ describe('Postern preview workflows', () => {
     await user.click(screen.getByRole('button', { name: 'Watchlist' }));
     expect(screen.getByRole('heading', { name: 'Your watchlist starts here.' })).toBeTruthy();
   });
+  it('reconciles bounded preferences changed by another tab', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    act(() =>
+      window.dispatchEvent(
+        new StorageEvent('storage', { key: 'postern.slippage.v1', newValue: '125' }),
+      ),
+    );
+    expect(screen.getByRole('button', { name: '1.25%' })).toBeTruthy();
+    navigate('pools');
+    act(() =>
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'postern.watchlist.v1',
+          newValue: JSON.stringify(['blch-usdc', 'weth-usdc', 'unknown', 'blch-usdc']),
+        }),
+      ),
+    );
+    await user.click(screen.getByRole('button', { name: /Watchlist/ }));
+    expect(screen.getByText('Showing 2 of 4 pools')).toBeTruthy();
+    act(() =>
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'postern.watchlist.v1',
+          newValue: JSON.stringify(Array(1000).fill('blch-usdc')),
+        }),
+      ),
+    );
+    expect(screen.getByRole('heading', { name: 'Your watchlist starts here.' })).toBeTruthy();
+  });
   it('previews a proportional withdrawal and keeps the sample portfolio unchanged', async () => {
     const user = userEvent.setup();
     render(<App />);

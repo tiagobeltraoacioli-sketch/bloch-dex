@@ -190,6 +190,50 @@ describe('WalletConnect session adapter', () => {
     );
   });
 
+  it('closes an expired remote session when a throttled timer has not fired', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-17T12:00:00Z'));
+    const disconnect = vi.fn().mockResolvedValue(undefined),
+      session = {
+        topic: 'fa'.repeat(32),
+        expiry: Math.floor(Date.now() / 1000) + 1,
+        namespaces: {
+          eip155: {
+            accounts: ['eip155:84001:0x' + '12'.repeat(20)],
+            chains: ['eip155:84001'],
+            methods: ['eth_accounts', 'eth_chainId'],
+            events: ['accountsChanged', 'chainChanged'],
+          },
+        },
+      },
+      client = {
+        connect: vi.fn().mockResolvedValue({ uri: 'wc:test', approval: async () => session }),
+        on: vi.fn(),
+        off: vi.fn(),
+        disconnect,
+      },
+      modal = {
+        open: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        subscribeState: vi.fn(() => vi.fn()),
+      };
+    vi.doMock('@walletconnect/sign-client', () => ({
+      default: { init: vi.fn().mockResolvedValue(client) },
+    }));
+    vi.doMock('@reown/appkit/core', () => ({ createAppKit: () => modal }));
+    vi.doMock('@reown/appkit/networks', () => ({ defineChain: (value: unknown) => value }));
+    const { connectQrWallet } = await import('../qr-wallet');
+    const wallet = await connectQrWallet(new AbortController().signal);
+    vi.setSystemTime(new Date('2026-09-17T12:00:02Z'));
+    await expect(wallet.provider.request({ method: 'eth_accounts' })).rejects.toThrow(
+      'Session expired',
+    );
+    expect(disconnect).toHaveBeenCalledWith({
+      topic: session.topic,
+      reason: { code: 6000, message: 'Session expired' },
+    });
+  });
+
   it('cleans modal subscriptions when approval creation throws synchronously', async () => {
     const unsubscribe = vi.fn(),
       client = {
@@ -218,5 +262,66 @@ describe('WalletConnect session adapter', () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(modal.close).toHaveBeenCalled();
     expect(client.on).not.toHaveBeenCalled();
+  });
+
+  it('does not open a QR after cancellation while session creation is pending', async () => {
+    let finishConnect!: (value: unknown) => void;
+    const approval = vi.fn(),
+      client = {
+        connect: vi.fn(() => new Promise((resolve) => (finishConnect = resolve))),
+        on: vi.fn(),
+        off: vi.fn(),
+        disconnect: vi.fn(),
+      },
+      modal = {
+        open: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        subscribeState: vi.fn(() => vi.fn()),
+      };
+    vi.doMock('@walletconnect/sign-client', () => ({
+      default: { init: vi.fn().mockResolvedValue(client) },
+    }));
+    vi.doMock('@reown/appkit/core', () => ({ createAppKit: () => modal }));
+    vi.doMock('@reown/appkit/networks', () => ({ defineChain: (value: unknown) => value }));
+    const { connectQrWallet } = await import('../qr-wallet');
+    const controller = new AbortController(),
+      pending = connectQrWallet(controller.signal);
+    await vi.waitFor(() => expect(client.connect).toHaveBeenCalledOnce());
+    controller.abort();
+    finishConnect({ uri: 'wc:test', approval });
+    await expect(pending).rejects.toThrow('Connection cancelled');
+    expect(modal.open).not.toHaveBeenCalled();
+    expect(approval).not.toHaveBeenCalled();
+  });
+
+  it('closes a QR cancelled while the modal is still opening', async () => {
+    let finishOpen!: () => void;
+    const approval = vi.fn(),
+      client = {
+        connect: vi.fn().mockResolvedValue({ uri: 'wc:test', approval }),
+        on: vi.fn(),
+        off: vi.fn(),
+        disconnect: vi.fn(),
+      },
+      modal = {
+        open: vi.fn(() => new Promise<void>((resolve) => (finishOpen = resolve))),
+        close: vi.fn().mockResolvedValue(undefined),
+        subscribeState: vi.fn(() => vi.fn()),
+      };
+    vi.doMock('@walletconnect/sign-client', () => ({
+      default: { init: vi.fn().mockResolvedValue(client) },
+    }));
+    vi.doMock('@reown/appkit/core', () => ({ createAppKit: () => modal }));
+    vi.doMock('@reown/appkit/networks', () => ({ defineChain: (value: unknown) => value }));
+    const { connectQrWallet } = await import('../qr-wallet');
+    const controller = new AbortController(),
+      pending = connectQrWallet(controller.signal);
+    await vi.waitFor(() => expect(modal.open).toHaveBeenCalledOnce());
+    controller.abort();
+    finishOpen();
+    await expect(pending).rejects.toThrow('Connection cancelled');
+    expect(modal.close).toHaveBeenCalledOnce();
+    expect(modal.subscribeState).not.toHaveBeenCalled();
+    expect(approval).not.toHaveBeenCalled();
   });
 });

@@ -14,13 +14,14 @@ import type { LiquidityAction, Page, Pool } from './model';
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
+function parseStoredSlippage(raw: string | null) {
+  if (raw === null || !/^(?:[1-9][0-9]{0,2})$/.test(raw)) return 50;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 1 && value <= 500 ? value : 50;
+}
 function storedSlippage() {
   try {
-    const raw = localStorage.getItem('postern.slippage.v1');
-    if (raw === null) return 50;
-    if (!/^(?:[1-9][0-9]{0,2})$/.test(raw)) return 50;
-    const value = Number(raw);
-    return Number.isInteger(value) && value >= 1 && value <= 500 ? value : 50;
+    return parseStoredSlippage(localStorage.getItem('postern.slippage.v1'));
   } catch {
     return 50;
   }
@@ -130,6 +131,13 @@ function Application() {
   useEffect(() => {
     document.title = `PosternDEX — ${page === 'trade' ? 'Trade' : page === 'pools' ? 'Pools' : 'Portfolio'}`;
   }, [page]);
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === 'postern.slippage.v1') setSlippage(parseStoredSlippage(event.newValue));
+    };
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, []);
   function saveSlippage(value: number) {
     setSlippage(value);
     try {

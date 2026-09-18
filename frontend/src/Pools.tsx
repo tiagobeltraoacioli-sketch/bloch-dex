@@ -5,9 +5,9 @@ import { Chart } from './Chart';
 import { EmptyState, PairIcons, Stat } from './components';
 import type { Pool } from './model';
 
-function readWatchlist(): string[] {
+function parseWatchlist(raw: string | null): string[] {
   try {
-    const raw = localStorage.getItem('postern.watchlist.v1') ?? '[]';
+    raw ??= '[]';
     if (raw.length > 4096) return [];
     const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
@@ -19,6 +19,13 @@ function readWatchlist(): string[] {
           ),
         ].slice(0, POOLS.length)
       : [];
+  } catch {
+    return [];
+  }
+}
+function readWatchlist(): string[] {
+  try {
+    return parseWatchlist(localStorage.getItem('postern.watchlist.v1'));
   } catch {
     return [];
   }
@@ -44,6 +51,13 @@ export default function Pools({
       /* Device-local preferences are optional. */
     }
   }, [watchlist]);
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === 'postern.watchlist.v1') setWatchlist(parseWatchlist(event.newValue));
+    };
+    window.addEventListener('storage', sync);
+    return () => window.removeEventListener('storage', sync);
+  }, []);
   const shown = useMemo(
     () =>
       POOLS.filter(
