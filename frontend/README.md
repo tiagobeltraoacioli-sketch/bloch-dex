@@ -16,6 +16,8 @@ servers bind to loopback by default.
 npm ci --ignore-scripts
 npm run dev
 npm test
+npm run test:mobile-edge
+npm run test:qr-release
 npm run build
 npm run preview
 ```
