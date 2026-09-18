@@ -88,11 +88,16 @@ describe('wallet identification boundary', () => {
   });
   it('rejects malformed accounts and network IDs', async () => {
     expect(validAddress('0x123')).toBe(false);
+    expect(validAddress('0x' + '00'.repeat(20))).toBe(false);
     expect(validAccounts([address, secondAddress])).toBe(true);
     expect(validAccounts([address, 'invalid'])).toBe(false);
     expect(validAccounts(Array(21).fill(address))).toBe(false);
     expect(validChain('1')).toBe(false);
     expect(validChain('0x0')).toBe(false);
+    expect(validChain('0x01')).toBe(false);
+    expect(validChain('0X1')).toBe(false);
+    expect(validChain('0x' + 'f'.repeat(65))).toBe(false);
+    expect(validChain('0x' + 'f'.repeat(64))).toBe(true);
     await expect(connectAccount(fixture(vi.fn(async () => ['0x123'])).wallet)).rejects.toThrow(
       'valid account',
     );

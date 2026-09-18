@@ -36,13 +36,17 @@ declare global {
 }
 
 export function validAddress(value: unknown): value is string {
-  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
+  return (
+    typeof value === 'string' &&
+    /^0x[0-9a-fA-F]{40}$/.test(value) &&
+    !/^0x0{40}$/i.test(value)
+  );
 }
 export function validAccounts(value: unknown): value is string[] {
   return Array.isArray(value) && value.length >= 1 && value.length <= 20 && value.every(validAddress);
 }
 export function validChain(value: unknown): value is string {
-  return typeof value === 'string' && /^0x[0-9a-fA-F]{1,64}$/.test(value) && BigInt(value) > 0n;
+  return typeof value === 'string' && /^0x[1-9a-fA-F][0-9a-fA-F]{0,63}$/.test(value);
 }
 
 /** Discover providers without requesting accounts. Names are untrusted text; icons are not loaded. */
