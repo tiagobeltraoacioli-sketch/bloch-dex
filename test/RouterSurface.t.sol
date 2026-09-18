@@ -225,6 +225,52 @@ contract RouterSurfaceTest is TestBase {
         assertEq(tokenB.balanceOf(address(router)), 0);
     }
 
+    function testQuotesRejectPathsThatReuseAPool() public {
+        address[] memory path = new address[](3);
+        path[0] = address(tokenA);
+        path[1] = address(tokenB);
+        path[2] = address(tokenA);
+
+        vm.expectRevert(bytes("BDEX: CYCLIC_PATH"));
+        router.getAmountsOut(1 ether, path);
+        vm.expectRevert(bytes("BDEX: CYCLIC_PATH"));
+        router.getAmountsIn(1 ether, path);
+    }
+
+    function testRepeatedPoolPathRevertsBeforeTakingInput() public {
+        address[] memory path = new address[](3);
+        path[0] = address(tokenA);
+        path[1] = address(tokenB);
+        path[2] = address(tokenA);
+        uint256 balanceBefore = tokenA.balanceOf(address(this));
+
+        vm.expectRevert(bytes("BDEX: CYCLIC_PATH"));
+        router.swapExactTokensForTokens(1 ether, 0, path, address(this), block.timestamp);
+        vm.expectRevert(bytes("BDEX: CYCLIC_PATH"));
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            1 ether, 0, path, address(this), block.timestamp
+        );
+
+        assertEq(tokenA.balanceOf(address(this)), balanceBefore);
+    }
+
+    function testDistinctPoolCycleRemainsSupported() public {
+        address[] memory path = new address[](4);
+        path[0] = address(tokenA);
+        path[1] = address(tokenB);
+        path[2] = address(wrapped);
+        path[3] = address(tokenA);
+
+        uint256 input = 1 ether;
+        uint256 balanceBefore = tokenA.balanceOf(address(this));
+        uint256[] memory amounts = router.getAmountsOut(input, path);
+        assertEq(amounts.length, path.length);
+        assertTrue(amounts[amounts.length - 1] > 0);
+
+        router.swapExactTokensForTokens(input, amounts[amounts.length - 1], path, address(this), block.timestamp);
+        assertEq(tokenA.balanceOf(address(this)), balanceBefore - input + amounts[amounts.length - 1]);
+    }
+
     function _path(address a, address b) private pure returns (address[] memory path) {
         path = new address[](2);
         path[0] = a;

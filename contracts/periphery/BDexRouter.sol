@@ -341,6 +341,7 @@ contract BDexRouter is IBDexRouter {
         ensure(deadline)
         returns (uint256[] memory amounts)
     {
+        require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsOut(factory, msg.value, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
@@ -358,6 +359,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) returns (uint256[] memory amounts) {
+        require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= amountInMax, "BDEX: EXCESSIVE_INPUT_AMOUNT");
@@ -374,6 +376,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) returns (uint256[] memory amounts) {
+        require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsOut(factory, amountIn, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
@@ -391,6 +394,7 @@ contract BDexRouter is IBDexRouter {
         ensure(deadline)
         returns (uint256[] memory amounts)
     {
+        require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= msg.value, "BDEX: EXCESSIVE_INPUT_AMOUNT");
@@ -455,6 +459,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) {
+        BDexLibrary.validatePath(path);
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amountIn);
         uint256 balanceBefore = _balanceOf(path[path.length - 1], to);
         _swapSupportingFeeOnTransferTokens(path, to);
@@ -471,6 +476,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external payable ensure(deadline) {
+        BDexLibrary.validatePath(path);
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         uint256 amountIn = msg.value;
         IWBLCH(WBLCH).deposit{value: amountIn}();
@@ -491,6 +497,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) {
+        BDexLibrary.validatePath(path);
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
         uint256 wrappedBefore = IWBLCH(WBLCH).balanceOf(address(this));
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amountIn);

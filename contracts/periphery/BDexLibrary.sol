@@ -11,6 +11,27 @@ import {IUniswapV2Pair} from "../interfaces/IUniswapV2Pair.sol";
 ///      up according to the V2 formula. These spot quotes are not price oracles.
 
 library BDexLibrary {
+    /// @dev Reject malformed paths and any route that touches the same pool
+    ///      twice. Quotes read every reserve before execution, so a repeated
+    ///      pool would make a later hop execute against state changed by an
+    ///      earlier hop. Comparing unordered token edges still permits a
+    ///      token to reappear when each hop uses a distinct pool.
+    function validatePath(address[] memory path) internal pure {
+        require(path.length >= 2, "BDEX: INVALID_PATH");
+        for (uint256 i; i < path.length - 1; i++) {
+            address tokenA = path[i];
+            address tokenB = path[i + 1];
+            require(
+                tokenA != address(0) && tokenB != address(0) && tokenA != tokenB, "BDEX: INVALID_PATH"
+            );
+            for (uint256 j; j < i; j++) {
+                bool sameDirection = tokenA == path[j] && tokenB == path[j + 1];
+                bool reverseDirection = tokenA == path[j + 1] && tokenB == path[j];
+                require(!sameDirection && !reverseDirection, "BDEX: CYCLIC_PATH");
+            }
+        }
+    }
+
     /// @dev Canonical token ordering: pairs store token0 < token1, so every
     ///      caller must sort before touching reserves or the registry.
     function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
@@ -93,7 +114,7 @@ library BDexLibrary {
         view
         returns (uint256[] memory amounts)
     {
-        require(path.length >= 2, "BDEX: INVALID_PATH");
+        validatePath(path);
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
         for (uint256 i; i < path.length - 1; i++) {
@@ -108,7 +129,7 @@ library BDexLibrary {
         view
         returns (uint256[] memory amounts)
     {
-        require(path.length >= 2, "BDEX: INVALID_PATH");
+        validatePath(path);
         amounts = new uint256[](path.length);
         amounts[amounts.length - 1] = amountOut;
         for (uint256 i = path.length - 1; i > 0; i--) {

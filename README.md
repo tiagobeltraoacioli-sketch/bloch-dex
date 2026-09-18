@@ -84,6 +84,11 @@ checks and the distinction between native L1 assets and wrapped EVM tokens.
 | `TreasuryFeeCollector` | Direct LP redemption to a fixed treasury; optional TWAP-guarded conversion |
 | `BDexLens` | Paginated pool snapshots, LP position estimates and bounded route comparison |
 
+Router quotes and swaps reject paths that reuse the same canonical pool. A
+later hop through an already-mutated pool cannot be represented by the static
+reserve quote computed before execution. Cycles that use a different pool on
+every hop remain valid; ordinary direct and multi-hop routes are unchanged.
+
 ### Integrate the lens
 
 `poolFor(tokenA, tokenB)` looks up one pair in either token order and distinguishes
