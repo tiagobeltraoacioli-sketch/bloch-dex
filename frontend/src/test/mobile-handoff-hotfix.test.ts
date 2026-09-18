@@ -104,6 +104,19 @@ describe('pinned production mobile handoff', () => {
     expect(dialog.querySelector('[data-postern-mobile-handoff]')).toBeNull();
     expect(dialog.open).toBe(true);
   });
+  it('ignores accessor-backed provider metadata that throws', async () => {
+    vi.useFakeTimers();
+    const dialog = modal();
+    window.ethereum = Object.defineProperty({ request: vi.fn() }, 'isMetaMask', {
+      get: () => {
+        throw Error('hostile provider metadata');
+      },
+    });
+    cleanups.push(installMobileHandoffHotfix());
+    await vi.runAllTimersAsync();
+    await flush();
+    expect(dialog.querySelector('a')!.getAttribute('aria-disabled')).toBe('false');
+  });
   it('survives React replacement and removes nodes, events and timers on cleanup', async () => {
     vi.useFakeTimers();
     const dialog = modal();

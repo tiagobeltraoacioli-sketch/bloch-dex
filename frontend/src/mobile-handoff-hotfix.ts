@@ -7,10 +7,21 @@ export function installMobileHandoffHotfix(): () => void {
   let stopped = false;
   let landingHandled = new URLSearchParams(location.search).get('connect') !== 'metamask';
 
+  const injectedWallet = () => {
+    try {
+      const provider = window.ethereum;
+      if (!provider || typeof provider.request !== 'function') return null;
+      return { provider, isMetaMask: provider.isMetaMask === true };
+    } catch {
+      return null;
+    }
+  };
+
   const announce = () => {
     if (stopped) return;
-    const provider = window.ethereum;
-    if (!provider || typeof provider.request !== 'function') return;
+    const injected = injectedWallet();
+    if (!injected) return;
+    const { provider, isMetaMask } = injected;
     let uuid = identities.get(provider);
     if (!uuid) {
       uuid = crypto.randomUUID();
@@ -21,9 +32,9 @@ export function installMobileHandoffHotfix(): () => void {
         detail: {
           info: {
             uuid,
-            name: provider.isMetaMask === true ? 'MetaMask' : 'Browser wallet',
+            name: isMetaMask ? 'MetaMask' : 'Browser wallet',
             // Provider identity is a presentation hint, not authenticated identity.
-            rdns: provider.isMetaMask === true ? 'io.metamask' : 'local.injected',
+            rdns: isMetaMask ? 'io.metamask' : 'local.injected',
             icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
           },
           provider,
@@ -71,7 +82,7 @@ export function installMobileHandoffHotfix(): () => void {
         link.href = METAMASK_MOBILE_URL;
         link.textContent = 'Open MetaMask';
         link.addEventListener('click', (event) => {
-          if (isPending(dialog) || window.ethereum?.isMetaMask === true) event.preventDefault();
+          if (isPending(dialog) || injectedWallet()?.isMetaMask) event.preventDefault();
         });
         const instructions = document.createElement('p');
         instructions.className = 'microcopy';
@@ -95,7 +106,8 @@ export function installMobileHandoffHotfix(): () => void {
       }
       const pending = isPending(dialog);
       const link = container.querySelector('a')!;
-      const disabled = pending || window.ethereum?.isMetaMask === true;
+      const hasMetaMask = injectedWallet()?.isMetaMask === true;
+      const disabled = pending || hasMetaMask;
       if (link.getAttribute('aria-disabled') !== String(disabled)) {
         link.setAttribute('aria-disabled', String(disabled));
         link.tabIndex = disabled ? -1 : 0;
@@ -104,7 +116,7 @@ export function installMobileHandoffHotfix(): () => void {
       if (retry.disabled !== pending) retry.disabled = pending;
       const instructions = container.querySelector('p')!;
       const text =
-        window.ethereum?.isMetaMask === true
+        hasMetaMask
           ? 'MetaMask is available. Select it above to request connection, then approve in the app.'
           : 'On iPhone Safari, open MetaMask, then select the wallet in this connection window and approve in the app. If the link does not open, use the MetaMask app browser to visit blochdex.com.';
       if (instructions.textContent !== text) instructions.textContent = text;
