@@ -104,4 +104,28 @@ contract LaunchRegressionTest is DexFixture {
         );
         assertEq(pair.balanceOf(address(this)), liquidity);
     }
+
+    function testInvalidNativeRecipientRollsBackPermitAndLiquidity() public {
+        (UniswapV2Pair pair, uint256 liquidity) = seed();
+        uint256 shares = liquidity / 10;
+        address owner = vm.addr(0x5678);
+        pair.transfer(owner, shares);
+        bytes32 message =
+            keccak256(abi.encode(pair.PERMIT_TYPEHASH(), owner, address(router), shares, 0, block.timestamp));
+        PermitSignature memory sig;
+        (sig.v, sig.r, sig.s) =
+            vm.sign(0x5678, keccak256(abi.encodePacked(hex"1901", pair.DOMAIN_SEPARATOR(), message)));
+
+        vm.prank(owner);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.removeLiquidityBLCHWithPermit(
+            address(token), shares, 0, 0, address(0), block.timestamp, false, sig.v, sig.r, sig.s
+        );
+
+        assertEq(pair.nonces(owner), 0);
+        assertEq(pair.allowance(owner, address(router)), 0);
+        assertEq(pair.balanceOf(owner), shares);
+        assertEq(wrapped.balanceOf(address(router)), 0);
+        assertEq(address(router).balance, 0);
+    }
 }
