@@ -49,6 +49,13 @@ describe('exact token arithmetic', () => {
     expect(quoteRoute(100n, ['BLCH', 'USDC'], POOLS, 50.5)).toBeNull();
     expect(quoteRoute(100n, ['BLCH', 'USDC'], POOLS, 501)).toBeNull();
   });
+  it('rejects swaps that would exceed the pair reserve capacity', () => {
+    const maximum = (1n << 112n) - 1n;
+    expect(amountOut(1000n, maximum - 1000n, maximum)).toBeGreaterThan(0n);
+    expect(amountOut(1001n, maximum - 1000n, maximum)).toBe(0n);
+    expect(amountOut(1000n, 10000n, maximum + 1n)).toBe(0n);
+    expect(findQuotes(maximum, 'BLCH', 'USDC', POOLS, 50)).toEqual([]);
+  });
   it('compares direct and multi-hop routes with conservative minimum output', () => {
     const quotes = findQuotes(parseAmount('1000', 18)!, 'BLCH', 'USDC', POOLS, 50);
     expect(quotes).toHaveLength(2);

@@ -134,4 +134,21 @@ contract LensTest is TestBase {
         assertEq(amount1, pos.reserveShare1);
         assertEq(pair.balanceOf(address(0xFEE)), pos.pendingProtocolLiquidity);
     }
+
+    function testQuoteRejectsReserveOverflowButAllowsExactCapacity() public {
+        address[] memory path = path2(address(a), address(b));
+        uint256 capacity = uint256(type(uint112).max) - 100 ether;
+        a.mint(address(this), capacity + 1);
+        BDexLens.RouteQuote memory tooLarge = lens.quoteExactInput(capacity + 1, path, 50);
+        assertTrue(!tooLarge.available);
+        vm.expectRevert(bytes("BDEX: OVERFLOW"));
+        router.swapExactTokensForTokens(capacity + 1, 0, path, address(this), block.timestamp);
+
+        BDexLens.RouteQuote memory fits = lens.quoteExactInput(capacity, path, 50);
+        assertTrue(fits.available);
+        uint256 before = b.balanceOf(address(this));
+        router.swapExactTokensForTokens(capacity, fits.minimumOut, path, address(this), block.timestamp);
+        assertEq(b.balanceOf(address(this)) - before, fits.amountOut);
+        assertEq(a.balanceOf(factory.getPair(address(a), address(b))), type(uint112).max);
+    }
 }

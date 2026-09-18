@@ -1,6 +1,7 @@
 import type { Pool, Quote, Symbol } from './model';
 
 export const MAX_UINT256 = (1n << 256n) - 1n;
+const MAX_RESERVE = (1n << 112n) - 1n;
 
 /** Parse a user amount without floating point rounding, exponent syntax or truncation. */
 export function parseAmount(input: string, decimals: number): bigint | null {
@@ -27,6 +28,8 @@ export function formatAmount(amount: bigint, decimals: number, places = decimals
 
 export function amountOut(input: bigint, reserveIn: bigint, reserveOut: bigint): bigint {
   if (input <= 0n || reserveIn <= 0n || reserveOut <= 0n || input > MAX_UINT256) return 0n;
+  // Pair._update stores uint112 balances; mirror BDexLens's execution bound.
+  if (reserveOut > MAX_RESERVE || reserveIn + input > MAX_RESERVE) return 0n;
   // Matches BDexLibrary.getAmountOut; intermediate overflow would revert on-chain.
   const withFee = input * 997n;
   const numerator = withFee * reserveOut;
