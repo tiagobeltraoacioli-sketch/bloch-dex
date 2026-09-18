@@ -191,6 +191,9 @@ contract WrappedNativeTest is TestBase {
         router.swapExactTokensForBLCHSupportingFeeOnTransferTokens(
             1_000 * 1e6, exactInputQuote[1], path, address(wrapped), block.timestamp
         );
+        uint256 zeroBalanceBefore = address(0).balance;
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactTokensForBLCH(1_000 * 1e6, exactInputQuote[1], path, address(0), block.timestamp);
 
         UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(token), address(wrapped)));
         pair.approve(address(router), liquidity);
@@ -203,6 +206,7 @@ contract WrappedNativeTest is TestBase {
 
         assertEq(wrapped.balanceOf(address(router)), 0);
         assertEq(address(router).balance, 0);
+        assertEq(address(0).balance, zeroBalanceBefore);
         assertEq(pair.balanceOf(address(this)), liquidity);
     }
 

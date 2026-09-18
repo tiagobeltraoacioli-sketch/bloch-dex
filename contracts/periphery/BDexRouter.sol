@@ -74,12 +74,11 @@ contract BDexRouter is IBDexRouter {
         require(success, "BDEX: NATIVE_TRANSFER_FAILED");
     }
 
-    /// @dev Sending unwrapped native currency back to WBLCH invokes its
-    ///      receive/deposit path and credits the Router, not the intended
-    ///      recipient. Reject that destination before moving user funds so
-    ///      native output cannot become stranded as Router-owned WBLCH.
+    /// @dev Sending unwrapped native currency to zero burns it. Sending it
+    ///      back to WBLCH invokes receive/deposit and credits the Router, not
+    ///      the intended recipient. Reject both before moving user funds.
     function _ensureNativeRecipient(address to) private view {
-        require(to != WBLCH, "BDEX: INVALID_TO");
+        require(to != address(0) && to != WBLCH, "BDEX: INVALID_TO");
     }
 
     // =========================================================================
