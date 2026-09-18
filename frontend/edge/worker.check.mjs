@@ -99,6 +99,32 @@ test('bounded shell inspection preserves oversized, stalled and encoded origin r
   assert.equal(await encoded.text(), 'encoded');
 });
 
+test('bounded shell inspection rejects oversized metadata and excessive fragmentation', async () => {
+  const oversizedMetadata = new Response('original', {
+    headers: {
+      'Content-Type': 'text/html',
+      'Content-Length': '9'.repeat(100_000),
+    },
+  });
+  let worker = createMobileWalletWorker(script, scriptPath, () => oversizedMetadata);
+  assert.equal(await worker.fetch(new Request('https://blochdex.com/')), oversizedMetadata);
+  assert.equal(await oversizedMetadata.text(), 'original');
+
+  let chunks = 0;
+  const fragmented = new Response(
+    new ReadableStream({
+      pull(controller) {
+        if (chunks++ < 4097) controller.enqueue(Uint8Array.of(120));
+        else controller.close();
+      },
+    }),
+    { headers: { 'Content-Type': 'text/html' } },
+  );
+  worker = createMobileWalletWorker(script, scriptPath, () => fragmented);
+  assert.equal(await worker.fetch(new Request('https://blochdex.com/')), fragmented);
+  assert.equal((await fragmented.arrayBuffer()).byteLength, 4097);
+});
+
 // This optional integration check runs against the independently captured release.
 // The generated Pages shell is kept outside version control, per AGENTS.md.
 test(

@@ -2,12 +2,17 @@
 // Keep the existing Pages application, API handlers and asset bytes unchanged.
 export const EXPECTED_SHELL_SHA256 =
   '9c0774cff12d1546d7e851bec85efb11f7a7bcb3b61c9328441e93181704f7a2';
+const MAX_SHELL_BYTES = 2 * 1024 * 1024;
+const MAX_CONTENT_LENGTH_DIGITS = String(MAX_SHELL_BYTES).length;
+const MAX_SHELL_CHUNKS = 4096;
 
 async function boundedClone(response, timeoutMs) {
   const declared = response.headers.get('Content-Length');
   if (
     declared !== null &&
-    (!/^(0|[1-9][0-9]*)$/.test(declared) || BigInt(declared) > 2n * 1024n * 1024n)
+    (declared.length > MAX_CONTENT_LENGTH_DIGITS ||
+      !/^(0|[1-9][0-9]*)$/.test(declared) ||
+      Number(declared) > MAX_SHELL_BYTES)
   )
     return null;
   const reader = response.clone().body?.getReader();
@@ -23,7 +28,8 @@ async function boundedClone(response, timeoutMs) {
       const { done, value } = await Promise.race([reader.read(), timeout]);
       if (done) break;
       length += value.byteLength;
-      if (length > 2 * 1024 * 1024) throw Error('Shell scan exceeds bound');
+      if (length > MAX_SHELL_BYTES || chunks.length >= MAX_SHELL_CHUNKS)
+        throw Error('Shell scan exceeds bound');
       chunks.push(value);
     }
     const bytes = new Uint8Array(length);
