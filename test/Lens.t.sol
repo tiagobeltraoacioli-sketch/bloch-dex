@@ -131,6 +131,18 @@ contract LensTest is TestBase {
         assertEq(quote.amountOut, expected[1]);
         assertEq(quote.minimumOut, expected[1] * (10_000 - slippage) / 10_000);
         assertTrue(quote.executionLossBps[0] <= 10_000);
+
+        path = new address[](3);
+        path[0] = address(a);
+        path[1] = address(c);
+        path[2] = address(b);
+        quote = lens.quoteExactInput(input, path, slippage);
+        expected = router.getAmountsOut(input, path);
+        assertTrue(quote.available);
+        assertEq(quote.amountOut, expected[2]);
+        assertEq(quote.minimumOut, expected[2] * (10_000 - slippage) / 10_000);
+        assertTrue(quote.executionLossBps[0] <= 10_000);
+        assertTrue(quote.executionLossBps[1] <= 10_000);
     }
 
     function testPositionIncludesPendingProtocolFeeDilution() public {

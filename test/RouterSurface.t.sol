@@ -231,6 +231,38 @@ contract RouterSurfaceTest is TestBase {
         assertEq(tokenB.balanceOf(address(this)), outputBefore);
     }
 
+    function testFuzzAdverseReserveMutationCannotConsumeExactInput(uint96 targetSeed, uint96 mutationSeed) public {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256 amountIn = uint256(targetSeed) % 9 ether + 1 ether;
+        uint256 mutation = uint256(mutationSeed) % 99 ether + 1 ether;
+        uint256[] memory staleQuote = router.getAmountsOut(amountIn, path);
+        router.swapExactTokensForTokens(mutation, 0, path, address(this), block.timestamp);
+        assertTrue(router.getAmountsOut(amountIn, path)[1] < staleQuote[1]);
+        uint256 inputBefore = tokenA.balanceOf(address(this));
+
+        vm.expectRevert(bytes("BDEX: INSUFFICIENT_OUTPUT_AMOUNT"));
+        router.swapExactTokensForTokens(amountIn, staleQuote[1], path, address(this), block.timestamp);
+
+        assertEq(tokenA.balanceOf(address(this)), inputBefore);
+    }
+
+    function testFuzzAdverseReserveMutationCannotExceedExactOutputMaximum(uint96 outputSeed, uint96 mutationSeed)
+        public
+    {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256 amountOut = uint256(outputSeed) % 9 ether + 1 ether;
+        uint256 mutation = uint256(mutationSeed) % 99 ether + 1 ether;
+        uint256[] memory staleQuote = router.getAmountsIn(amountOut, path);
+        router.swapExactTokensForTokens(mutation, 0, path, address(this), block.timestamp);
+        assertTrue(router.getAmountsIn(amountOut, path)[0] > staleQuote[0]);
+        uint256 inputBefore = tokenA.balanceOf(address(this));
+
+        vm.expectRevert(bytes("BDEX: EXCESSIVE_INPUT_AMOUNT"));
+        router.swapTokensForExactTokens(amountOut, staleQuote[0], path, address(this), block.timestamp);
+
+        assertEq(tokenA.balanceOf(address(this)), inputBefore);
+    }
+
     function testExpiredQuoteCannotMoveFunds() public {
         address[] memory path = _path(address(tokenA), address(tokenB));
         uint256[] memory quote = router.getAmountsOut(10 ether, path);
