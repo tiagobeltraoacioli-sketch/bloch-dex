@@ -88,6 +88,8 @@ Router quotes and swaps reject paths that reuse the same canonical pool. A
 later hop through an already-mutated pool cannot be represented by the static
 reserve quote computed before execution. Cycles that use a different pool on
 every hop remain valid; ordinary direct and multi-hop routes are unchanged.
+Paths are capped at four hops, matching the lens and frontend and bounding the
+router's quadratic repeated-pool validation before any token movement.
 Quote helpers also reject inputs that would push a pair balance beyond its
 `uint112` reserve capacity, instead of returning an amount that cannot execute.
 

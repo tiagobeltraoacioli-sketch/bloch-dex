@@ -11,13 +11,15 @@ import {IUniswapV2Pair} from "../interfaces/IUniswapV2Pair.sol";
 ///      up according to the V2 formula. These spot quotes are not price oracles.
 
 library BDexLibrary {
+    uint256 private constant MAX_PATH_LENGTH = 5;
+
     /// @dev Reject malformed paths and any route that touches the same pool
     ///      twice. Quotes read every reserve before execution, so a repeated
     ///      pool would make a later hop execute against state changed by an
     ///      earlier hop. Comparing unordered token edges still permits a
     ///      token to reappear when each hop uses a distinct pool.
     function validatePath(address[] memory path) internal pure {
-        require(path.length >= 2, "BDEX: INVALID_PATH");
+        require(path.length >= 2 && path.length <= MAX_PATH_LENGTH, "BDEX: INVALID_PATH");
         for (uint256 i; i < path.length - 1; i++) {
             address tokenA = path[i];
             address tokenB = path[i + 1];
