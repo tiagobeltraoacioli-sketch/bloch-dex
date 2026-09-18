@@ -195,6 +195,57 @@ contract RouterSurfaceTest is TestBase {
         assertEq(address(this).balance - nativeBefore, amountOut);
     }
 
+    function testStaleExactInputQuoteRevertsAfterAdverseReserveMutation() public {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256 amountIn = 10 ether;
+        uint256[] memory staleQuote = router.getAmountsOut(amountIn, path);
+
+        router.swapExactTokensForTokens(100 ether, 0, path, address(this), block.timestamp);
+        uint256[] memory currentQuote = router.getAmountsOut(amountIn, path);
+        assertTrue(currentQuote[1] < staleQuote[1]);
+        uint256 inputBefore = tokenA.balanceOf(address(this));
+        uint256 outputBefore = tokenB.balanceOf(address(this));
+
+        vm.expectRevert(bytes("BDEX: INSUFFICIENT_OUTPUT_AMOUNT"));
+        router.swapExactTokensForTokens(amountIn, staleQuote[1], path, address(this), block.timestamp);
+
+        assertEq(tokenA.balanceOf(address(this)), inputBefore);
+        assertEq(tokenB.balanceOf(address(this)), outputBefore);
+    }
+
+    function testStaleExactOutputQuoteRevertsAfterAdverseReserveMutation() public {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256 amountOut = 5 ether;
+        uint256[] memory staleQuote = router.getAmountsIn(amountOut, path);
+
+        router.swapExactTokensForTokens(100 ether, 0, path, address(this), block.timestamp);
+        uint256[] memory currentQuote = router.getAmountsIn(amountOut, path);
+        assertTrue(currentQuote[0] > staleQuote[0]);
+        uint256 inputBefore = tokenA.balanceOf(address(this));
+        uint256 outputBefore = tokenB.balanceOf(address(this));
+
+        vm.expectRevert(bytes("BDEX: EXCESSIVE_INPUT_AMOUNT"));
+        router.swapTokensForExactTokens(amountOut, staleQuote[0], path, address(this), block.timestamp);
+
+        assertEq(tokenA.balanceOf(address(this)), inputBefore);
+        assertEq(tokenB.balanceOf(address(this)), outputBefore);
+    }
+
+    function testExpiredQuoteCannotMoveFunds() public {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256[] memory quote = router.getAmountsOut(10 ether, path);
+        uint256 deadline = block.timestamp;
+        uint256 inputBefore = tokenA.balanceOf(address(this));
+        uint256 outputBefore = tokenB.balanceOf(address(this));
+        vm.warp(deadline + 1);
+
+        vm.expectRevert(bytes("BDEX: EXPIRED"));
+        router.swapExactTokensForTokens(10 ether, quote[1], path, address(this), deadline);
+
+        assertEq(tokenA.balanceOf(address(this)), inputBefore);
+        assertEq(tokenB.balanceOf(address(this)), outputBefore);
+    }
+
     function testFeeOnTransferTokenPathUsesActualInputAndRecipientOutput() public {
         tokenA.setTax(1_000);
         tokenB.setTax(500);
