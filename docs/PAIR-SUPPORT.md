@@ -54,6 +54,41 @@ pairs must match the factory-derived CREATE2 address, have code, appear in
 both registry directions and report the expected factory and sorted tokens.
 Rehearsing an existing funded pair leaves its reserves and LP supply intact.
 
+## Validate an initial-liquidity configuration
+
+`script/InitialLiquidityPreflight.s.sol:InitialLiquidityPreflight` is a
+read-only rehearsal for the configuration that will receive the first deposit.
+It does not approve tokens, submit liquidity or broadcast a transaction. In
+addition to the pair variables above, supply independently reviewed values for:
+
+| Variable | Required value |
+| --- | --- |
+| `BDEX_ROUTER`, `BDEX_ROUTER_CODEHASH` | Router address and expected runtime-code hash |
+| `BDEX_LENS`, `BDEX_LENS_CODEHASH` | Lens address and expected runtime-code hash |
+| `WBLCH_ADDRESS`, `WBLCH_CODEHASH` | Wrapped-native address and expected runtime-code hash |
+| `FEE_TO_SETTER` | Expected current factory authority |
+| `PAIR_CODEHASH` | Expected pair runtime-code hash |
+
+Run it without `--broadcast`:
+
+```sh
+forge script script/InitialLiquidityPreflight.s.sol:InitialLiquidityPreflight --rpc-url bloch_l2
+```
+
+The preflight pins every runtime hash, proves the router and lens use the same
+factory, proves the router uses the reviewed wrapper, requires protocol fees
+to be disabled with no pending authority transfer, and checks the canonical
+pair identity in both registry directions. It is specifically for an initial
+deposit: the LP supply, reserves and raw token balances at the pair must all be
+zero. This catches donations that have not yet been included in reserves.
+
+The result is not an atomic reservation. Pair state, authority and code can
+change after an RPC read; proxies and mutable token policy need separate review.
+Re-run the preflight immediately before transaction simulation, bind the review
+to exact integer amounts/minimums/deadline/recipient, then revalidate chain and
+account at confirmation. This repository does not yet provide that live client
+or any production configuration.
+
 Hash pins are configuration guards, not audits: copying hashes from an
 untrusted RPC simply pins its claims. A proxy's runtime hash does not pin its
 implementation or mutable policy. Review upgradeability, transfer taxes,
@@ -79,3 +114,6 @@ execution, chain and code hash rejection, CREATE2 identity, asymmetric registry
 rejection and inconsistent pair factory/token reporting. Mocked responses in
 the adversarial tests exercise fail-closed configuration checks; they do not
 claim protection against an operator deliberately approving malicious code.
+`test/InitialLiquidityPreflight.t.sol` additionally rejects cross-deployment
+router/lens bindings, pending or enabled protocol fees, wrong hashes and pairs
+that are donated to, synced or already funded.
