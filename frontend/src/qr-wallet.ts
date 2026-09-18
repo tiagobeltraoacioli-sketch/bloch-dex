@@ -176,8 +176,29 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
   const { uri, approval } = await c.connect({
     requiredNamespaces: { eip155: { chains: [CHAIN], methods: METHODS, events: EVENTS } },
   });
-  if (signal.aborted) throw Error('Connection cancelled');
-  if (!uri) throw Error('No pairing QR returned');
+  const abandonApproval = () => {
+    // connect() already sent the proposal. Observe its result even if the UI
+    // never opens, so a late approval cannot leave an abandoned remote session.
+    void Promise.resolve()
+      .then(approval)
+      .then((session) => {
+        const topic = isRecord(session) && session.topic;
+        if (typeof topic === 'string' && /^[0-9a-f]{64}$/i.test(topic))
+          return c.disconnect({
+            topic,
+            reason: { code: 6000, message: 'Connection cancelled' },
+          });
+      })
+      .catch(() => {});
+  };
+  if (signal.aborted) {
+    abandonApproval();
+    throw Error('Connection cancelled');
+  }
+  if (!uri) {
+    abandonApproval();
+    throw Error('No pairing QR returned');
+  }
   const modal = appkit;
   const closeModal = async () => {
     try {
@@ -189,10 +210,12 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
   try {
     await modal.open({ uri });
   } catch (failure) {
+    abandonApproval();
     await closeModal();
     throw failure;
   }
   if (signal.aborted) {
+    abandonApproval();
     await closeModal();
     throw Error('Connection cancelled');
   }

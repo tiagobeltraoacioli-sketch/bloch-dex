@@ -291,7 +291,7 @@ describe('WalletConnect session adapter', () => {
     finishConnect({ uri: 'wc:test', approval });
     await expect(pending).rejects.toThrow('Connection cancelled');
     expect(modal.open).not.toHaveBeenCalled();
-    expect(approval).not.toHaveBeenCalled();
+    expect(approval).toHaveBeenCalledOnce();
   });
 
   it('closes a QR cancelled while the modal is still opening', async () => {
@@ -322,6 +322,50 @@ describe('WalletConnect session adapter', () => {
     await expect(pending).rejects.toThrow('Connection cancelled');
     expect(modal.close).toHaveBeenCalledOnce();
     expect(modal.subscribeState).not.toHaveBeenCalled();
-    expect(approval).not.toHaveBeenCalled();
+    expect(approval).toHaveBeenCalledOnce();
   });
+
+  it.each(['connect', 'open', 'open failure'])(
+    'disconnects late approval after abandoning a pending %s',
+    async (stage) => {
+      const controller = new AbortController();
+      let approve!: (value: unknown) => void;
+      const approved = new Promise((resolve) => { approve = resolve; });
+      const session = { topic: 'ac'.repeat(32) };
+      const approval = vi.fn(() => approved);
+      const client = {
+        connect: vi.fn(async () => {
+          if (stage === 'connect') controller.abort();
+          return { uri: 'wc:test', approval };
+        }),
+        on: vi.fn(),
+        off: vi.fn(),
+        disconnect: vi.fn().mockResolvedValue(undefined),
+      };
+      const modal = {
+        open: vi.fn(async () => {
+          if (stage === 'open failure') throw Error('modal failed');
+          controller.abort();
+        }),
+        close: vi.fn().mockResolvedValue(undefined),
+        subscribeState: vi.fn(() => vi.fn()),
+      };
+      vi.doMock('@walletconnect/sign-client', () => ({
+        default: { init: vi.fn().mockResolvedValue(client) },
+      }));
+      vi.doMock('@reown/appkit/core', () => ({ createAppKit: () => modal }));
+      vi.doMock('@reown/appkit/networks', () => ({ defineChain: (value: unknown) => value }));
+      const { connectQrWallet } = await import('../qr-wallet');
+      await expect(connectQrWallet(controller.signal)).rejects.toThrow(
+        stage === 'open failure' ? 'modal failed' : 'Connection cancelled',
+      );
+      approve(session);
+      await vi.waitFor(() => expect(client.disconnect).toHaveBeenCalledWith({
+        topic: session.topic,
+        reason: { code: 6000, message: 'Connection cancelled' },
+      }));
+      expect(approval).toHaveBeenCalledOnce();
+      expect(client.on).not.toHaveBeenCalled();
+    },
+  );
 });
