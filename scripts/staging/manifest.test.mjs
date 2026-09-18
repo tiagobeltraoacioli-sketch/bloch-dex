@@ -16,8 +16,16 @@ const contract = (suffix) => ({
   address: `0x${"00".repeat(19)}${suffix}`,
   runtimeCodeHash: H2,
 });
+const token = (suffix, symbol, wrappedNative = false) => ({
+  ...contract(suffix),
+  symbol,
+  name: `${symbol} token`,
+  decimals: 18,
+  wrappedNative,
+  policy: { feeOnTransfer: false, rebasing: false },
+});
 const valid = () => ({
-  schemaVersion: 1,
+  schemaVersion: 2,
   environment: "staging",
   host: "bloch-dex",
   frontendMode: "preview",
@@ -33,6 +41,7 @@ const valid = () => ({
     collector: contract("04"),
     wrappedNative: contract("05"),
   },
+  tokens: [token("05", "WBLCH", true), token("06", "ASSET")],
 });
 
 test("accepts a complete disabled-liquidity staging configuration", () => {
@@ -48,6 +57,8 @@ test("fails closed for every missing identity field", () => {
     (value) => (value.deployment.pairInitCodeHash = null),
     (value) => (value.deployment.factory.address = null),
     (value) => (value.deployment.router.runtimeCodeHash = null),
+    (value) => (value.tokens = null),
+    (value) => (value.tokens[1].runtimeCodeHash = null),
   ]) {
     const value = valid();
     mutate(value);
@@ -55,7 +66,7 @@ test("fails closed for every missing identity field", () => {
   }
 });
 
-test("refuses liquidity, live mode, insecure RPC and duplicate contracts", () => {
+test("refuses liquidity, live mode, insecure RPC and unsafe token policy", () => {
   const cases = [
     (value) => (value.liquidityEnabled = true),
     (value) => (value.frontendMode = "live"),
@@ -64,6 +75,10 @@ test("refuses liquidity, live mode, insecure RPC and duplicate contracts", () =>
     (value) => (value.chain.rpcUrl = "https://rpc.invalid/secret-key"),
     (value) =>
       (value.deployment.router.address = value.deployment.factory.address),
+    (value) => (value.tokens[1].address = value.tokens[0].address),
+    (value) => (value.tokens[1].policy.feeOnTransfer = true),
+    (value) => (value.tokens[1].policy.rebasing = true),
+    (value) => (value.tokens[0].wrappedNative = false),
   ];
   for (const mutate of cases) {
     const value = valid();

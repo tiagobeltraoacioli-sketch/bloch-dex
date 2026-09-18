@@ -172,7 +172,9 @@ The current code deliberately has no transaction submission path.
 activating it in the application. It accepts the staging artifact manifest's
 `deploymentConfiguration`, which must still declare `frontendMode: "preview"`
 and `liquidityEnabled: false`. Invalid or incomplete registry input is rejected
-before any provider request.
+before any provider request. Schema version 2 also pins the approved token
+addresses, code hashes, symbols, names and decimals, rejects taxed/rebasing
+policies and requires the wrapped-native token to match the deployment.
 
 `LiveReadAdapter.connect` binds a supplied read provider to the configured chain
 ID, genesis hash and deployment block hash; verifies the runtime code hash of
@@ -188,14 +190,20 @@ future UI query stream reject aborted or superseded results even when an older
 provider request completes later. Pagination remains capped at 64 pools, paths
 at four hops and balance batches at 32 unique tokens.
 
+Quotes, direct pool lookup and balances accept only registered tokens. Factory
+pagination still advances across permissionless unreviewed pools, but filters
+them from the returned display list and reports the filtered count so one such
+pool cannot block discovery of later reviewed pools. Token code hashes are
+rechecked at the same bound snapshot during adapter connection.
+
 These helpers make only `eth_chainId`, `eth_getBlockByNumber`, `eth_getCode`,
 `eth_getBalance` and `eth_call` requests. Balance owners must be supplied
 explicitly; the adapter never discovers or requests a wallet account. Token
-balances are integer base units without metadata or policy assumptions.
+balances are integer base units formatted only with registry-pinned metadata.
 
 The adapter is intentionally not imported by `App.tsx`: sample data remains the
 only UI data source, and no registry is bundled because none has been approved.
 It does not fetch an RPC URL, request accounts, approve tokens, sign, submit a
 transaction or enable liquidity. A future live UI must additionally implement
-an approved registry/provider, token metadata and policy, live history, and the
-remaining transaction confirmation/receipt controls listed above.
+an approved registry/provider, explicit read-only UI state, live history, and
+the remaining transaction confirmation/receipt controls listed above.

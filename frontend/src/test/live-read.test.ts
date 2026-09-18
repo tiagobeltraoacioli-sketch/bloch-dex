@@ -19,17 +19,17 @@ const addresses = {
   tokenA: `0x${'66'.repeat(20)}` as Address,
   tokenB: `0x${'77'.repeat(20)}` as Address,
   pair: `0x${'88'.repeat(20)}` as Address,
+  unregistered: `0x${'99'.repeat(20)}` as Address,
 };
-const codes: Record<
-  keyof Pick<typeof addresses, 'factory' | 'router' | 'lens' | 'collector' | 'wrappedNative'>,
-  Hex
-> = {
+const codes = {
   factory: '0x6001',
   router: '0x6002',
   lens: '0x6003',
   collector: '0x6004',
   wrappedNative: '0x6005',
-};
+  tokenA: '0x6006',
+  tokenB: '0x6007',
+} satisfies Partial<Record<keyof typeof addresses, Hex>>;
 const genesisHash = `0x${'aa'.repeat(32)}` as Hex;
 const deploymentHash = `0x${'bb'.repeat(32)}` as Hex;
 const snapshotHash = `0x${'cc'.repeat(32)}` as Hex;
@@ -74,7 +74,7 @@ const balanceSelector = encodeFunctionData({
 
 function registry() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
@@ -91,6 +91,35 @@ function registry() {
         ]),
       ),
     },
+    tokens: [
+      {
+        address: addresses.wrappedNative,
+        runtimeCodeHash: keccak256(codes.wrappedNative),
+        symbol: 'WBLCH',
+        name: 'Wrapped BLCH',
+        decimals: 18,
+        wrappedNative: true,
+        policy: { feeOnTransfer: false, rebasing: false },
+      },
+      {
+        address: addresses.tokenA,
+        runtimeCodeHash: keccak256(codes.tokenA),
+        symbol: 'TOKENA',
+        name: 'Token A',
+        decimals: 18,
+        wrappedNative: false,
+        policy: { feeOnTransfer: false, rebasing: false },
+      },
+      {
+        address: addresses.tokenB,
+        runtimeCodeHash: keccak256(codes.tokenB),
+        symbol: 'TOKENB',
+        name: 'Token B',
+        decimals: 6,
+        wrappedNative: false,
+        policy: { feeOnTransfer: false, rebasing: false },
+      },
+    ],
   };
 }
 
@@ -105,11 +134,13 @@ function fixture(
     chainId?: unknown;
     genesisHash?: Hex;
     code?: Hex;
+    tokenCode?: Hex;
     routerFactory?: Address;
     reorg?: boolean;
     quoteAvailable?: boolean;
     poolExists?: boolean;
     pausePools?: Promise<void>;
+    unsupportedPage?: boolean;
   } = {},
 ) {
   const requests: Array<{ method: string; params?: unknown[] }> = [];
@@ -135,7 +166,11 @@ function fixture(
       const name = (Object.keys(codes) as Array<keyof typeof codes>).find(
         (candidate) => addresses[candidate].toLowerCase() === address,
       );
-      if (name) return overrides.code && name === 'router' ? overrides.code : codes[name];
+      if (name) {
+        if (overrides.code && name === 'router') return overrides.code;
+        if (overrides.tokenCode && name === 'tokenA') return overrides.tokenCode;
+        return codes[name];
+      }
     }
     if (args.method === 'eth_getBalance') return '0x2a';
     if (args.method === 'eth_call') {
@@ -219,7 +254,7 @@ function fixture(
               {
                 pair: addresses.pair,
                 token0: addresses.tokenA,
-                token1: addresses.tokenB,
+                token1: overrides.unsupportedPage ? addresses.unregistered : addresses.tokenB,
                 reserve0: 100n,
                 reserve1: 200n,
                 reserveTimestamp: 123,
@@ -266,6 +301,14 @@ describe('fail-closed live deployment reads', () => {
     const f = fixture();
     await expect(LiveReadAdapter.connect(f.provider, enabled)).rejects.toThrow('liquidity');
     expect(f.request).not.toHaveBeenCalled();
+
+    const unsafeToken = registry();
+    unsafeToken.tokens[1].policy.feeOnTransfer = true;
+    const unsafeFixture = fixture();
+    await expect(LiveReadAdapter.connect(unsafeFixture.provider, unsafeToken)).rejects.toThrow(
+      'unsupported transfer policy',
+    );
+    expect(unsafeFixture.request).not.toHaveBeenCalled();
   });
 
   it('binds chain, genesis, deployment, code and contract identities at one block', async () => {
@@ -304,6 +347,7 @@ describe('fail-closed live deployment reads', () => {
     ['chain', { chainId: '0x1' }, 'provider chain'],
     ['genesis', { genesisHash: `0x${'ee'.repeat(32)}` as Hex }, 'genesis'],
     ['runtime code', { code: '0x6009' as Hex }, 'router code hash'],
+    ['token runtime code', { tokenCode: '0x6009' as Hex }, 'TOKENA token code hash'],
     ['router binding', { routerFactory: addresses.tokenA }, 'router factory'],
     ['snapshot reorganization', { reorg: true }, 'snapshot block changed'],
   ])('rejects a mismatched %s', async (_label, override, message) => {
@@ -318,6 +362,13 @@ describe('fail-closed live deployment reads', () => {
     await expect(adapter.poolFor(addresses.tokenA, addresses.tokenA)).rejects.toThrow(
       'pool tokens',
     );
+    await expect(
+      adapter.quoteExactInput(10n, [addresses.tokenA, addresses.unregistered], 50),
+    ).resolves.toEqual({ available: false, reason: 'invalid-request' });
+    await expect(adapter.balances(addresses.tokenA, [addresses.unregistered])).resolves.toEqual({
+      available: false,
+      reason: 'invalid-request',
+    });
     expect(f.request).toHaveBeenCalledTimes(count);
   });
 
@@ -369,6 +420,15 @@ describe('fail-closed live deployment reads', () => {
     await expect(
       quoteAdapter.quoteExactInput(10n, [addresses.tokenA, addresses.tokenB], 50),
     ).resolves.toEqual({ available: false, reason: 'quote-unavailable' });
+  });
+
+  it('advances permissionless pagination while filtering unreviewed token pools', async () => {
+    const f = fixture({ unsupportedPage: true });
+    const adapter = await LiveReadAdapter.connect(f.provider, registry());
+    await expect(adapter.pools(0n, 10)).resolves.toMatchObject({
+      available: true,
+      value: { pools: [], filteredUnsupported: 1, nextCursor: 1n, total: 1n },
+    });
   });
 
   it('marks aborted and superseded reads unavailable even when an old RPC resolves later', async () => {

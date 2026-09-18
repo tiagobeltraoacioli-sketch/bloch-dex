@@ -29,6 +29,14 @@ collector and wrapped-native contract. The target must remain `bloch-dex` in
 `preview` mode with liquidity explicitly disabled. It performs no RPC, SSH,
 wallet or deployment action.
 
+Schema version 2 also requires 2–64 reviewed token entries. Each pins a unique
+address, runtime-code hash, 2–12 character ASCII symbol, display name and 0–36
+decimals. Exactly one token must be the wrapped-native deployment identity.
+Fee-on-transfer and rebasing assets are rejected because the lens quote and
+balance model does not support them. Token addresses cannot alias deployment
+infrastructure. These fields are policy assertions by the reviewer, not facts
+discovered from untrusted token metadata calls.
+
 After the reviewed configuration exists and all tracked changes are committed,
 build a static bundle and a self-contained artifact manifest:
 

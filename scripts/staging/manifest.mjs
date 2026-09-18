@@ -40,12 +40,46 @@ function validateContract(value, field) {
   validateHash(value.runtimeCodeHash, `${field}.runtimeCodeHash`);
 }
 
+function validateToken(value, index) {
+  const field = `tokens[${index}]`;
+  validateContract(value, field);
+  required(
+    typeof value.symbol === "string" && /^[A-Z0-9]{2,12}$/.test(value.symbol),
+    `${field}.symbol is invalid`,
+  );
+  required(
+    typeof value.name === "string" &&
+      /^[A-Za-z0-9 ._-]{1,48}$/.test(value.name),
+    `${field}.name is invalid`,
+  );
+  required(
+    Number.isSafeInteger(value.decimals) &&
+      value.decimals >= 0 &&
+      value.decimals <= 36,
+    `${field}.decimals is invalid`,
+  );
+  required(
+    typeof value.wrappedNative === "boolean",
+    `${field}.wrappedNative is required`,
+  );
+  required(
+    value.policy &&
+      typeof value.policy === "object" &&
+      !Array.isArray(value.policy),
+    `${field}.policy is required`,
+  );
+  required(
+    value.policy.feeOnTransfer === false && value.policy.rebasing === false,
+    `${field} uses an unsupported transfer policy`,
+  );
+}
+
 export function validateStagingConfig(config) {
   required(
     config && typeof config === "object" && !Array.isArray(config),
     "configuration must be an object",
   );
-  required(config.schemaVersion === 1, "schemaVersion must equal 1");
+  required(config.schemaVersion === 2, "schemaVersion must equal 2");
   required(config.environment === "staging", "environment must equal staging");
   required(config.host === "bloch-dex", "host must equal bloch-dex");
   required(
@@ -104,6 +138,38 @@ export function validateStagingConfig(config) {
   required(
     new Set(addresses).size === addresses.length,
     "contract addresses must be unique",
+  );
+  required(
+    Array.isArray(config.tokens) &&
+      config.tokens.length >= 2 &&
+      config.tokens.length <= 64,
+    "tokens must contain between 2 and 64 reviewed assets",
+  );
+  config.tokens.forEach(validateToken);
+  const tokenAddresses = config.tokens.map((token) =>
+    token.address.toLowerCase(),
+  );
+  required(
+    new Set(tokenAddresses).size === tokenAddresses.length,
+    "token addresses must be unique",
+  );
+  const wrapped = config.tokens.filter((token) => token.wrappedNative);
+  required(
+    wrapped.length === 1 &&
+      wrapped[0].address.toLowerCase() ===
+        deployment.wrappedNative.address.toLowerCase() &&
+      wrapped[0].runtimeCodeHash.toLowerCase() ===
+        deployment.wrappedNative.runtimeCodeHash.toLowerCase(),
+    "wrapped-native token identity must match the deployment",
+  );
+  const reserved = new Set(
+    ["factory", "router", "lens", "collector"].map((name) =>
+      deployment[name].address.toLowerCase(),
+    ),
+  );
+  required(
+    tokenAddresses.every((address) => !reserved.has(address)),
+    "token address collides with deployment infrastructure",
   );
   return config;
 }

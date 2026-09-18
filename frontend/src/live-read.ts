@@ -9,8 +9,15 @@ import {
 import { validAddress, type Provider } from './wallet';
 
 type ContractIdentity = { address: Address; runtimeCodeHash: Hex };
+export type RegistryToken = ContractIdentity & {
+  symbol: string;
+  name: string;
+  decimals: number;
+  wrappedNative: boolean;
+  policy: { feeOnTransfer: false; rebasing: false };
+};
 export type DeploymentRegistry = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   environment: 'staging';
   host: 'bloch-dex';
   frontendMode: 'preview';
@@ -26,6 +33,7 @@ export type DeploymentRegistry = {
     collector: ContractIdentity;
     wrappedNative: ContractIdentity;
   };
+  tokens: readonly RegistryToken[];
 };
 
 export type LivePoolSnapshot = {
@@ -47,6 +55,7 @@ export type LivePoolPage = {
   pools: ReadonlyArray<Omit<LivePoolSnapshot, 'exists' | 'blockNumber' | 'blockHash'>>;
   nextCursor: bigint;
   total: bigint;
+  filteredUnsupported: number;
 };
 
 export type LiveQuote = {
@@ -149,11 +158,45 @@ function registryContract(value: unknown, field: string): ContractIdentity {
   };
 }
 
+function registryToken(value: unknown, index: number): RegistryToken {
+  const field = `tokens[${index}]`;
+  const identity = registryContract(value, field);
+  const input = value as Record<string, unknown>;
+  requireValue(
+    typeof input.symbol === 'string' && /^[A-Z0-9]{2,12}$/.test(input.symbol),
+    `${field}.symbol is invalid`,
+  );
+  requireValue(
+    typeof input.name === 'string' && /^[A-Za-z0-9 ._-]{1,48}$/.test(input.name),
+    `${field}.name is invalid`,
+  );
+  requireValue(
+    Number.isSafeInteger(input.decimals) &&
+      Number(input.decimals) >= 0 &&
+      Number(input.decimals) <= 36,
+    `${field}.decimals is invalid`,
+  );
+  requireValue(typeof input.wrappedNative === 'boolean', `${field}.wrappedNative is required`);
+  const policy = input.policy as Record<string, unknown> | undefined;
+  requireValue(
+    policy && policy.feeOnTransfer === false && policy.rebasing === false,
+    `${field} uses an unsupported transfer policy`,
+  );
+  return {
+    ...identity,
+    symbol: input.symbol,
+    name: input.name,
+    decimals: Number(input.decimals),
+    wrappedNative: input.wrappedNative,
+    policy: { feeOnTransfer: false, rebasing: false },
+  };
+}
+
 /** Copies and validates untrusted runtime registry JSON before any provider call. */
 export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
   requireValue(value && typeof value === 'object' && !Array.isArray(value), 'registry is missing');
   const input = value as Record<string, unknown>;
-  requireValue(input.schemaVersion === 1, 'registry schema is unsupported');
+  requireValue(input.schemaVersion === 2, 'registry schema is unsupported');
   requireValue(
     input.environment === 'staging' && input.host === 'bloch-dex',
     'target does not match staging',
@@ -204,9 +247,32 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
       CONTRACT_NAMES.length,
     'contract addresses are not unique',
   );
+  requireValue(
+    Array.isArray(input.tokens) && input.tokens.length >= 2 && input.tokens.length <= 64,
+    'token registry must contain between 2 and 64 assets',
+  );
+  const tokens = input.tokens.map(registryToken);
+  const tokenAddresses = tokens.map((token) => token.address.toLowerCase());
+  requireValue(new Set(tokenAddresses).size === tokens.length, 'token addresses are not unique');
+  const wrappedTokens = tokens.filter((token) => token.wrappedNative);
+  requireValue(
+    wrappedTokens.length === 1 &&
+      wrappedTokens[0].address.toLowerCase() === contracts.wrappedNative.address.toLowerCase() &&
+      wrappedTokens[0].runtimeCodeHash === contracts.wrappedNative.runtimeCodeHash,
+    'wrapped-native token identity does not match deployment',
+  );
+  const infrastructure = new Set(
+    (['factory', 'router', 'lens', 'collector'] as const).map((name) =>
+      contracts[name].address.toLowerCase(),
+    ),
+  );
+  requireValue(
+    tokenAddresses.every((address) => !infrastructure.has(address)),
+    'token collides with deployment infrastructure',
+  );
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
@@ -222,6 +288,7 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
       pairInitCodeHash: deployment.pairInitCodeHash.toLowerCase() as Hex,
       ...contracts,
     },
+    tokens,
   };
 }
 
@@ -305,6 +372,7 @@ export class LiveReadAdapter {
   readonly blockHash: Hex;
   readonly #provider: Provider;
   readonly #blockTag: Hex;
+  readonly #tokens: ReadonlySet<string>;
 
   private constructor(provider: Provider, registry: DeploymentRegistry, block: BlockIdentity) {
     this.#provider = provider;
@@ -312,6 +380,7 @@ export class LiveReadAdapter {
     this.#blockTag = block.number;
     this.blockNumber = BigInt(block.number);
     this.blockHash = block.hash;
+    this.#tokens = new Set(registry.tokens.map((token) => token.address.toLowerCase()));
   }
 
   static async connect(provider: Provider, registryValue: unknown): Promise<LiveReadAdapter> {
@@ -358,6 +427,19 @@ export class LiveReadAdapter {
       requireValue(
         keccak256(code as Hex).toLowerCase() === identity.runtimeCodeHash,
         `${name} code hash does not match registry`,
+      );
+    }
+    for (const token of registry.tokens) {
+      if (token.address.toLowerCase() === registry.deployment.wrappedNative.address.toLowerCase())
+        continue;
+      const code = await request(provider, 'eth_getCode', [token.address, snapshot.number]);
+      requireValue(
+        typeof code === 'string' && CODE.test(code) && code.length <= 49_154,
+        `${token.symbol} token code is invalid`,
+      );
+      requireValue(
+        keccak256(code as Hex).toLowerCase() === token.runtimeCodeHash,
+        `${token.symbol} token code hash does not match registry`,
       );
     }
 
@@ -435,7 +517,11 @@ export class LiveReadAdapter {
 
   async poolFor(tokenA: string, tokenB: string): Promise<LivePoolSnapshot> {
     requireValue(
-      validAddress(tokenA) && validAddress(tokenB) && tokenA.toLowerCase() !== tokenB.toLowerCase(),
+      validAddress(tokenA) &&
+        validAddress(tokenB) &&
+        tokenA.toLowerCase() !== tokenB.toLowerCase() &&
+        this.#tokens.has(tokenA.toLowerCase()) &&
+        this.#tokens.has(tokenB.toLowerCase()),
       'pool tokens are invalid',
     );
     const result = await readFunction<
@@ -499,7 +585,9 @@ export class LiveReadAdapter {
     if (
       !validAddress(tokenA) ||
       !validAddress(tokenB) ||
-      tokenA.toLowerCase() === tokenB.toLowerCase()
+      tokenA.toLowerCase() === tokenB.toLowerCase() ||
+      !this.#tokens.has(tokenA.toLowerCase()) ||
+      !this.#tokens.has(tokenB.toLowerCase())
     )
       return unavailable('invalid-request');
     try {
@@ -574,14 +662,20 @@ export class LiveReadAdapter {
         );
         seen.add(pool.pair.toLowerCase());
       }
+      const supported = page.filter(
+        (pool) =>
+          this.#tokens.has(pool.token0.toLowerCase()) &&
+          this.#tokens.has(pool.token1.toLowerCase()),
+      );
       return {
         available: true,
         value: {
           blockNumber: this.blockNumber,
           blockHash: this.blockHash,
-          pools: page,
+          pools: supported,
           nextCursor,
           total,
+          filteredUnsupported: page.length - supported.length,
         },
       };
     } catch {
@@ -605,7 +699,7 @@ export class LiveReadAdapter {
       !Number.isSafeInteger(slippageBps) ||
       slippageBps < 0 ||
       slippageBps > 10_000 ||
-      path.some((token) => !validAddress(token))
+      path.some((token) => !validAddress(token) || !this.#tokens.has(token.toLowerCase()))
     )
       return unavailable('invalid-request');
     const edges = new Set<string>();
@@ -681,7 +775,7 @@ export class LiveReadAdapter {
     if (
       !validAddress(owner) ||
       tokens.length > 32 ||
-      tokens.some((token) => !validAddress(token)) ||
+      tokens.some((token) => !validAddress(token) || !this.#tokens.has(token.toLowerCase())) ||
       new Set(tokens.map((token) => token.toLowerCase())).size !== tokens.length
     )
       return unavailable('invalid-request');

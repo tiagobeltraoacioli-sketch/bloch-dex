@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "environment": "staging",
   "host": "bloch-dex",
   "frontendMode": "preview",
@@ -18,5 +18,6 @@
     "lens": { "address": null, "runtimeCodeHash": null },
     "collector": { "address": null, "runtimeCodeHash": null },
     "wrappedNative": { "address": null, "runtimeCodeHash": null }
-  }
+  },
+  "tokens": null
 }
