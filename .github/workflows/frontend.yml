@@ -37,5 +37,7 @@ jobs:
         run: npm test
       - name: Mobile edge adapter tests
         run: npm run test:mobile-edge
+      - name: QR release adapter tests
+        run: npm run test:qr-release
       - name: Typecheck and compile production assets
         run: npm run build
