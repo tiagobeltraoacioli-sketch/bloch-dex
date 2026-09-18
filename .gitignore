@@ -8,6 +8,7 @@ node_modules/
 /lcov.info
 /frontend/dist/
 /frontend/coverage/
+/artifacts/
 /frontend/.env
 /frontend/.env.*
 !/frontend/.env.example

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "environment": "staging",
+  "host": "bloch-dex",
+  "frontendMode": "preview",
+  "liquidityEnabled": false,
+  "chain": {
+    "id": null,
+    "genesisHash": null,
+    "rpcUrl": null
+  },
+  "deployment": {
+    "blockNumber": null,
+    "blockHash": null,
+    "pairInitCodeHash": null,
+    "factory": { "address": null, "runtimeCodeHash": null },
+    "router": { "address": null, "runtimeCodeHash": null },
+    "lens": { "address": null, "runtimeCodeHash": null },
+    "collector": { "address": null, "runtimeCodeHash": null },
+    "wrappedNative": { "address": null, "runtimeCodeHash": null }
+  }
+}
