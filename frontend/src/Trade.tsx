@@ -34,9 +34,11 @@ export default function Trade({
   const error =
     input.trim() && inputUnits === null
       ? `Enter a valid amount with up to ${TOKENS[from].decimals} decimals.`
-      : inputUnits && !best
-        ? 'No usable route for this amount. Try another pair or amount.'
-        : '';
+      : input.trim() && inputUnits === 0n
+        ? 'Enter an amount greater than zero.'
+        : inputUnits && !best
+          ? 'No usable route for this amount. Try another pair or amount.'
+          : '';
   const displayOutput = best ? formatAmount(best.output, TOKENS[to].decimals, 6) : '0';
   const selectToken = (symbol: Symbol) => {
     if (picker === 'from') {

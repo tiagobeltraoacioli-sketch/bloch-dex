@@ -134,6 +134,9 @@ describe('Postern preview workflows', () => {
     expect(
       (screen.getByRole('button', { name: /Review demo swap/ }) as HTMLButtonElement).disabled,
     ).toBe(true);
+    await user.clear(screen.getByLabelText('You pay'));
+    await user.type(screen.getByLabelText('You pay'), '0');
+    expect(screen.getByRole('alert').textContent).toMatch(/greater than zero/);
   });
   it('changes token selection and reverses the pair without silently truncating amounts', async () => {
     const user = userEvent.setup();
