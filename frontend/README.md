@@ -165,3 +165,27 @@ Before enabling real transactions, implement and review all of the following:
 
 Do not implement live mode as a cosmetic toggle or by merely adding an RPC URL.
 The current code deliberately has no transaction submission path.
+
+### Read-only deployment binding
+
+`src/live-read.ts` implements the first fail-closed integration layer without
+activating it in the application. It accepts the staging artifact manifest's
+`deploymentConfiguration`, which must still declare `frontendMode: "preview"`
+and `liquidityEnabled: false`. Invalid or incomplete registry input is rejected
+before any provider request.
+
+`LiveReadAdapter.connect` binds a supplied read provider to the configured chain
+ID, genesis hash and deployment block hash; verifies the runtime code hash of
+the factory, router, lens, collector and wrapped-native contract; and reads the
+immutable/canonical factory and wrapper links plus the pair init-code hash. All
+code and contract calls use one explicit snapshot block. Its hash is confirmed
+after binding and after each pool read so a reorganization cannot silently mix
+states. The adapter exposes only lens `poolFor` snapshots and makes only
+`eth_chainId`, `eth_getBlockByNumber`, `eth_getCode` and `eth_call` requests.
+
+The adapter is intentionally not imported by `App.tsx`: sample data remains the
+only UI data source, and no registry is bundled because none has been approved.
+It does not fetch an RPC URL, request accounts, approve tokens, sign, submit a
+transaction or enable liquidity. A future live UI must additionally implement
+bounded pagination/quotes, stale-request cancellation, explicit unavailable
+states and the remaining confirmation/receipt controls listed above.
