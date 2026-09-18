@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { QrWalletButton } from '../QrWalletButton';
+import App from '../App';
 import {
   normalizeApprovedWalletSession,
   normalizeWalletNamespace,
@@ -178,5 +179,20 @@ describe('QR wallet entry', () => {
     resolve({ provider: { disconnect } });
     await waitFor(() => expect(disconnect).toHaveBeenCalled());
     expect(onConnect).not.toHaveBeenCalled();
+  });
+  it('restores the app dialog after the QR account becomes connected', async () => {
+    const provider = {
+      request: vi.fn(async ({ method }: { method: string }) =>
+        method === 'eth_chainId' ? '0x14821' : ['0x' + '12'.repeat(20)],
+      ),
+      disconnect: vi.fn(),
+    };
+    connect.mockResolvedValue({ id: 'postern-walletconnect', name: 'Postern', provider });
+    render(<App />);
+    await userEvent.click(screen.getByRole('button', { name: 'Connect wallet' }));
+    await userEvent.click(screen.getByRole('button', { name: /Connect with QR/ }));
+    await screen.findByRole('heading', { name: 'Connected wallet' });
+    expect(screen.getByRole('dialog').hasAttribute('open')).toBe(true);
+    expect(provider.disconnect).not.toHaveBeenCalled();
   });
 });
