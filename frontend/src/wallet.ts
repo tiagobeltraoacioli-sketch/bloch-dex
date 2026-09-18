@@ -29,10 +29,14 @@ export const METAMASK_MOBILE_URL = 'https://metamask.app.link/dapp/blochdex.com/
 
 /** Presentation hint only. Injected wallet metadata is not authenticated. */
 export function isMetaMaskWallet(wallet: WalletOption): boolean {
-  return (
-    wallet.rdns === 'io.metamask' ||
-    (wallet.id === 'legacy-injected' && wallet.provider.isMetaMask === true)
-  );
+  try {
+    return (
+      wallet.rdns === 'io.metamask' ||
+      (wallet.id === 'legacy-injected' && wallet.provider.isMetaMask === true)
+    );
+  } catch {
+    return false;
+  }
 }
 
 declare global {
@@ -60,50 +64,60 @@ export function discoverWallets(onWallet: (wallet: WalletOption) => void): () =>
   const seen = new Set<Provider>();
   const seenIds = new Set<string>();
   const announce = (event: Event) => {
-    const detail: unknown = (event as CustomEvent<unknown>).detail;
-    if (!detail || typeof detail !== 'object') return;
-    const { info, provider } = detail as {
-      info?: { uuid?: unknown; name?: unknown; rdns?: unknown };
-      provider?: Provider;
-    };
-    if (
-      !provider ||
-      typeof provider.request !== 'function' ||
-      !info ||
-      typeof info.uuid !== 'string' ||
-      typeof info.name !== 'string'
-    )
+    let wallet: WalletOption | undefined;
+    try {
+      const detail: unknown = (event as CustomEvent<unknown>).detail;
+      if (!detail || typeof detail !== 'object') return;
+      const { info, provider } = detail as {
+        info?: { uuid?: unknown; name?: unknown; rdns?: unknown };
+        provider?: Provider;
+      };
+      if (
+        !provider ||
+        typeof provider.request !== 'function' ||
+        !info ||
+        typeof info.uuid !== 'string' ||
+        typeof info.name !== 'string'
+      )
+        return;
+      const normalizedId = info.uuid.toLowerCase();
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalizedId) ||
+        seen.has(provider) ||
+        seenIds.has(normalizedId) ||
+        seen.size >= 20
+      )
+        return;
+      wallet = {
+        id: info.uuid,
+        name: walletDisplayName(info.name),
+        provider,
+        rdns: typeof info.rdns === 'string' ? info.rdns.slice(0, 253) : undefined,
+      };
+      seen.add(provider);
+      seenIds.add(normalizedId);
+    } catch {
       return;
-    if (
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(info.uuid) ||
-      seen.has(provider) ||
-      seenIds.has(info.uuid.toLowerCase()) ||
-      seen.size >= 20
-    )
-      return;
-    seen.add(provider);
-    seenIds.add(info.uuid.toLowerCase());
-    onWallet({
-      id: info.uuid,
-      name: walletDisplayName(info.name),
-      provider,
-      rdns: typeof info.rdns === 'string' ? info.rdns.slice(0, 253) : undefined,
-    });
+    }
+    onWallet(wallet);
   };
   let graceComplete = false;
   const scanLegacy = () => {
     if (!graceComplete) return;
-    const provider = window.ethereum;
-    if (
-      provider &&
-      typeof provider.request === 'function' &&
-      !seen.has(provider) &&
-      seen.size < 20
-    ) {
+    let provider: Provider | undefined;
+    let isMetaMask = false;
+    try {
+      provider = window.ethereum;
+      if (!provider || typeof provider.request !== 'function') return;
+      isMetaMask = provider.isMetaMask === true;
+    } catch {
+      return;
+    }
+    if (!seen.has(provider) && seen.size < 20) {
       seen.add(provider);
       onWallet({
         id: 'legacy-injected',
-        name: provider.isMetaMask === true ? 'MetaMask' : 'Browser wallet',
+        name: isMetaMask ? 'MetaMask' : 'Browser wallet',
         provider,
       });
     }

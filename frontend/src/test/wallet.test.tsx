@@ -70,6 +70,17 @@ describe('wallet identification boundary', () => {
         provider: { ...f.wallet.provider, isMetaMask: true },
       }),
     ).toBe(true);
+    expect(
+      isMetaMaskWallet({
+        ...f.wallet,
+        id: 'legacy-injected',
+        provider: Object.defineProperty({}, 'isMetaMask', {
+          get: () => {
+            throw Error('hostile provider metadata');
+          },
+        }) as Provider,
+      }),
+    ).toBe(false);
     expect(METAMASK_MOBILE_URL).toBe(
       'https://metamask.app.link/dapp/blochdex.com/?connect=metamask',
     );
@@ -129,6 +140,7 @@ describe('wallet identification boundary', () => {
       provider: fixture().wallet.provider,
     });
     announce({ info: { uuid: 'invalid', name: 'Invalid' }, provider: {} });
+    announce(new Proxy({}, { get: () => { throw Error('hostile announcement'); } }));
     announce(null);
     expect(found).toHaveBeenCalledTimes(1);
     expect(found.mock.calls[0][0].name).toBe('Example wallet');
