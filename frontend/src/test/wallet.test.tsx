@@ -281,6 +281,47 @@ describe('wallet identification boundary', () => {
     expect([...f.listeners.values()].every((handlers) => handlers.size === 0)).toBe(true);
     unmount();
   });
+  it.each(['call', 'accessor'])('clears local identity when listener removal throws (%s)', async (failure) => {
+    const f = fixture();
+    const removeListener = vi.fn(() => { throw Error('provider cleanup failed'); });
+    if (failure === 'accessor') {
+      Object.defineProperty(f.wallet.provider, 'removeListener', { get: removeListener });
+    } else f.wallet.provider.removeListener = removeListener;
+    const { result, unmount } = renderHook(() => useWallet());
+    await act(async () => result.current.connect(f.wallet));
+    expect(result.current.account?.address).toBe(address);
+    act(() => result.current.disconnect());
+    expect(result.current.account).toBeNull();
+    expect(result.current.pending).toBe(false);
+    expect(removeListener).toHaveBeenCalledTimes(3);
+    await act(async () => result.current.connect(fixture().wallet));
+    act(() => f.emit('accountsChanged', [secondAddress]));
+    expect(result.current.account?.address).toBe(address);
+    unmount();
+  });
+  it('still releases a QR provider when listener removal fails', async () => {
+    const f = fixture();
+    f.wallet.id = 'postern-walletconnect';
+    f.wallet.provider.removeListener = () => { throw Error('listener cleanup failed'); };
+    f.wallet.provider.disconnect = vi.fn(() => { throw Error('remote cleanup failed'); });
+    const { result, unmount } = renderHook(() => useWallet());
+    await act(async () => result.current.connect(f.wallet));
+    act(() => result.current.disconnect());
+    expect(result.current.account).toBeNull();
+    expect(f.wallet.provider.disconnect).toHaveBeenCalledOnce();
+    unmount();
+  });
+  it('preserves a connection error when failed cleanup leaves old listeners attached', async () => {
+    const f = fixture(vi.fn(async () => { throw { code: 4001 }; }));
+    f.wallet.provider.removeListener = () => { throw Error('listener cleanup failed'); };
+    const { result, unmount } = renderHook(() => useWallet());
+    await act(async () => result.current.connect(f.wallet));
+    expect(result.current.error).toMatch(/declined/);
+    expect(result.current.pending).toBe(false);
+    act(() => f.emit('disconnect'));
+    expect(result.current.error).toMatch(/declined/);
+    unmount();
+  });
   it('disconnects on malformed account lists and snapshots pending account events', async () => {
     let resolveAccounts!: (value: unknown) => void;
     const pendingAccounts = new Promise((resolve) => { resolveAccounts = resolve; });

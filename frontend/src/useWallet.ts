@@ -46,10 +46,11 @@ export function useWallet() {
     setError('');
     // Observe before requesting accounts so changes during an open prompt invalidate it.
     let initializing = true;
+    let disposed = false;
     let latestAccounts: string[] | null | undefined;
     let latestChain: unknown;
     const onAccounts = (...args: unknown[]) => {
-      if (attempt !== generation.current) return;
+      if (disposed || attempt !== generation.current) return;
       latestAccounts = validAccounts(args[0]) ? [args[0][0]] : null;
       if (initializing) return;
       if (!latestAccounts) {
@@ -60,7 +61,7 @@ export function useWallet() {
       setAccount((current) => (current ? { ...current, address } : null));
     };
     const onChain = (...args: unknown[]) => {
-      if (attempt !== generation.current) return;
+      if (disposed || attempt !== generation.current) return;
       latestChain = args[0];
       if (initializing) return;
       if (!validChain(latestChain)) {
@@ -71,7 +72,7 @@ export function useWallet() {
       setAccount((current) => (current ? { ...current, chainId } : null));
     };
     const onDisconnect = () => {
-      if (attempt === generation.current) disconnect();
+      if (!disposed && attempt === generation.current) disconnect();
     };
     const provider = wallet.provider;
     const listeners = [
@@ -80,8 +81,20 @@ export function useWallet() {
       ['disconnect', onDisconnect],
     ] as const;
     cleanup.current = () => {
-      for (const [event, listener] of listeners) provider.removeListener?.(event, listener);
-      if (wallet.id === 'postern-walletconnect') provider.disconnect?.();
+      if (disposed) return;
+      disposed = true;
+      for (const [event, listener] of listeners) {
+        try {
+          provider.removeListener?.(event, listener);
+        } catch {
+          // Local identity must clear even if an injected provider cannot clean up.
+        }
+      }
+      try {
+        if (wallet.id === 'postern-walletconnect') provider.disconnect?.();
+      } catch {
+        // A remote cleanup failure cannot keep the local account connected.
+      }
     };
     try {
       for (const [event, listener] of listeners) provider.on?.(event, listener);
