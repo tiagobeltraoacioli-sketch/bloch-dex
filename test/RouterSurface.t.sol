@@ -80,6 +80,42 @@ contract RouterSurfaceTest is TestBase {
         assertEq(wrapped.balanceOf(address(router)), 0);
     }
 
+    function testExactInputNativeReturnMatchesForwardQuote() public {
+        address[] memory path = _path(address(tokenA), address(wrapped));
+        uint256 amountIn = 10 ether;
+        uint256[] memory quote = router.getAmountsOut(amountIn, path);
+        uint256 nativeBefore = address(this).balance;
+        uint256 tokenBefore = tokenA.balanceOf(address(this));
+
+        uint256[] memory amounts =
+            router.swapExactTokensForBLCH(amountIn, quote[1], path, address(this), block.timestamp);
+
+        assertEq(amounts[0], amountIn);
+        assertEq(amounts[1], quote[1]);
+        assertEq(tokenBefore - tokenA.balanceOf(address(this)), amountIn);
+        assertEq(address(this).balance - nativeBefore, quote[1]);
+        assertEq(address(router).balance, 0);
+        assertEq(wrapped.balanceOf(address(router)), 0);
+    }
+
+    function testExactOutputTokenPathMatchesBackwardQuote() public {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256 amountOut = 5 ether;
+        uint256[] memory quote = router.getAmountsIn(amountOut, path);
+        uint256 inputBefore = tokenA.balanceOf(address(this));
+        uint256 outputBefore = tokenB.balanceOf(address(this));
+
+        uint256[] memory amounts =
+            router.swapTokensForExactTokens(amountOut, quote[0], path, address(this), block.timestamp);
+
+        assertEq(amounts[0], quote[0]);
+        assertEq(amounts[1], amountOut);
+        assertEq(inputBefore - tokenA.balanceOf(address(this)), quote[0]);
+        assertEq(tokenB.balanceOf(address(this)) - outputBefore, amountOut);
+        assertEq(tokenA.balanceOf(address(router)), 0);
+        assertEq(tokenB.balanceOf(address(router)), 0);
+    }
+
     function testExactOutputMultiHopMatchesBackwardQuote() public {
         address[] memory path = new address[](3);
         path[0] = address(tokenA);
