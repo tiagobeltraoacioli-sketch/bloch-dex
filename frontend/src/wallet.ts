@@ -52,6 +52,7 @@ export function validChain(value: unknown): value is string {
 /** Discover providers without requesting accounts. Names are untrusted text; icons are not loaded. */
 export function discoverWallets(onWallet: (wallet: WalletOption) => void): () => void {
   const seen = new Set<Provider>();
+  const seenIds = new Set<string>();
   const announce = (event: Event) => {
     const detail: unknown = (event as CustomEvent<unknown>).detail;
     if (!detail || typeof detail !== 'object') return;
@@ -70,10 +71,12 @@ export function discoverWallets(onWallet: (wallet: WalletOption) => void): () =>
     if (
       !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(info.uuid) ||
       seen.has(provider) ||
+      seenIds.has(info.uuid.toLowerCase()) ||
       seen.size >= 20
     )
       return;
     seen.add(provider);
+    seenIds.add(info.uuid.toLowerCase());
     onWallet({
       id: info.uuid,
       name: walletDisplayName(info.name),

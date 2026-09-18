@@ -123,6 +123,10 @@ describe('wallet identification boundary', () => {
       window.dispatchEvent(new CustomEvent('eip6963:announceProvider', { detail }));
     announce({ info: { uuid: id, name: 'Example\u202e\n wallet' }, provider: f.wallet.provider });
     announce({ info: { uuid: id, name: 'Duplicate' }, provider: f.wallet.provider });
+    announce({
+      info: { uuid: id.toUpperCase(), name: 'Duplicate ID' },
+      provider: fixture().wallet.provider,
+    });
     announce({ info: { uuid: 'invalid', name: 'Invalid' }, provider: {} });
     announce(null);
     expect(found).toHaveBeenCalledTimes(1);
@@ -213,9 +217,13 @@ describe('wallet identification boundary', () => {
       window.dispatchEvent(new Event('ethereum#initialized'));
       expect(found).not.toHaveBeenCalled();
       for (let index = 0; index < 20; index++) {
+        const uniqueId = `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`;
         window.dispatchEvent(
           new CustomEvent('eip6963:announceProvider', {
-            detail: { info: { uuid: id, name: 'Wallet' }, provider: fixture().wallet.provider },
+            detail: {
+              info: { uuid: uniqueId, name: 'Wallet' },
+              provider: fixture().wallet.provider,
+            },
           }),
         );
       }
