@@ -138,6 +138,24 @@ contract CoreTest is TestBase {
         if (input > 1) assertTrue(BDexLibrary.getAmountOut(input - 1, 1_000 ether, 1_000 ether) <= output);
     }
 
+    function testSkimRecoversBalanceAfterSyncOverflow() public {
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        TestToken token0 = TestToken(pair.token0());
+        uint256 surplus = uint256(type(uint112).max) - reserve0 + 1;
+        token0.mint(address(pair), surplus);
+
+        vm.expectRevert(bytes("BDEX: OVERFLOW"));
+        pair.sync();
+        uint256 recipientBefore = token0.balanceOf(address(this));
+        pair.skim(address(this));
+
+        (uint112 reserve0After, uint112 reserve1After,) = pair.getReserves();
+        assertEq(reserve0After, reserve0);
+        assertEq(reserve1After, reserve1);
+        assertEq(token0.balanceOf(address(pair)), reserve0);
+        assertEq(token0.balanceOf(address(this)) - recipientBefore, surplus);
+    }
+
     function testPermitCannotReplayAcrossNonceOrChain() public {
         UniswapV2ERC20 lp = new UniswapV2ERC20();
         address owner = vm.addr(0x1234);

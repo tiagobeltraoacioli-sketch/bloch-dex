@@ -14,6 +14,7 @@ contract LiquidityHandler {
     uint256 public swaps;
     uint256 public additions;
     uint256 public removals;
+    uint256 public reconciliations;
 
     constructor() {
         UniswapV2Factory factory = new UniswapV2Factory(address(this));
@@ -56,6 +57,19 @@ contract LiquidityHandler {
         require(pair.transfer(address(pair), shares));
         pair.burn(address(this));
         ++removals;
+    }
+
+    function reconcileDonation(bool synchronize, uint96 seed0, uint96 seed1) external {
+        uint256 amount0 = uint256(seed0) % 10 ether + 1;
+        uint256 amount1 = uint256(seed1) % 10 ether + 1;
+        token0.mint(address(pair), amount0);
+        token1.mint(address(pair), amount1);
+        if (synchronize) {
+            pair.sync();
+        } else {
+            pair.skim(address(this));
+        }
+        ++reconciliations;
     }
 }
 
