@@ -6,5 +6,10 @@ export default defineConfig({
   base: './',
   server: { host: '127.0.0.1' },
   build: { target: 'es2022', sourcemap: false },
-  test: { environment: 'jsdom', setupFiles: ['./src/test/setup.ts'], restoreMocks: true },
+  test: {
+    environment: 'jsdom',
+    environmentOptions: { jsdom: { url: 'https://dex.invalid/' } },
+    setupFiles: ['./src/test/setup.ts'],
+    restoreMocks: true,
+  },
 });

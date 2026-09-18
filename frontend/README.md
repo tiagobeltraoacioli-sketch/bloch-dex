@@ -201,12 +201,11 @@ These helpers make only `eth_chainId`, `eth_getBlockByNumber`, `eth_getCode`,
 explicitly; the adapter never discovers or requests a wallet account. Token
 balances are integer base units formatted only with registry-pinned metadata.
 
-The adapter is intentionally not imported by `App.tsx`: sample data remains the
-only UI data source, and no registry is bundled because none has been approved.
-It does not fetch an RPC URL, request accounts, approve tokens, sign, submit a
-transaction or enable liquidity. A future live UI must additionally implement
-an approved registry/provider, explicit read-only UI state, live history, and
-the remaining transaction confirmation/receipt controls listed above.
+No registry or RPC origin is bundled because none has been approved. Without an
+explicit host gate, sample data remains the only UI data source and no live
+request is made. The read adapter never requests accounts, approves tokens,
+signs, submits a transaction or enables liquidity. Transaction confirmation and
+receipt controls remain deliberately unimplemented.
 
 `src/LivePools.tsx` is the first isolated UI consumer. Given an already bound
 reader, it requests one bounded page and renders only registry-approved token
@@ -216,11 +215,8 @@ fixtures were not substituted. A per-component latest-read gate and abort signal
 prevent an older reader from overwriting a newer snapshot. The surface has no
 wallet, swap, approval, deposit or withdrawal control.
 
-`LivePools` is also deliberately not imported by `App.tsx`. Mounting it requires
-an approved registry and provider composition that this repository does not yet
-have. This keeps the published preview unchanged while allowing that future
-composition to be tested without adding a cosmetic or silently degraded live
-mode.
+`LivePools` is mounted only on the separate `#/live-pools` route after every
+read-only host gate passes. It never replaces the existing preview pool screen.
 
 `src/live-runtime.ts` supplies that composition boundary without selecting a
 deployment. It fetches a versioned staging artifact manifest only from a
@@ -234,9 +230,21 @@ oversized responses, and bounds requests with abortable timeouts.
 `LiveReaderFactory` reloads the manifest and creates a new provider and bound
 adapter for every refresh. `src/LivePoolsRuntime.tsx` owns and closes each such
 session, rejects late sessions after a refresh, and fails closed without fixture
-substitution. It remains a standalone surface and is not mounted by `App.tsx`:
-this repository still contains neither a reviewed artifact manifest nor an
-approved RPC-origin allowlist. Supplying and operationally reviewing both,
-including browser CORS and real-RPC behavior, is the next read-only integration
-gate. Same-origin delivery and a digest stored beside the configuration detect
-accidental mismatch but are not an independent signature or trust anchor.
+substitution.
+
+`src/live-gate.ts` requires the host to inject a non-executable
+`script#postern-live-read-config[type="application/json"]`. Its bounded schema
+requires version 1, `enabled: true`, `mode: "read-only"`, a same-origin manifest
+path and one to eight unique HTTPS RPC origins; the optional timeout is also
+bounded. Unknown capabilities, insecure/cross-origin URLs, queries, fragments
+and malformed or oversized input disable the gate. A valid gate adds a link to
+the isolated read-only route. Missing or invalid configuration leaves the
+preview unchanged, while directly visiting that route produces an explicit
+unavailable state rather than falling back to sample pools. The live route has
+no wallet, swap, approval or liquidity controls.
+
+The repository still contains neither the host element nor deployment values.
+Supplying and operationally reviewing the manifest and RPC allowlist, including
+browser CORS and real-RPC behavior, is the next integration gate. Same-origin
+delivery and a digest stored beside the configuration detect accidental mismatch
+but are not an independent signature or trust anchor.

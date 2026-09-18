@@ -5,12 +5,14 @@ import { parseAmount } from './amm';
 import { compactUsd, TOKENS, usd } from './data';
 import { Detail, ExternalLink, Modal, PairIcons } from './components';
 import LiquidityDialog from './LiquidityDialog';
+import LivePoolsRuntime from './LivePoolsRuntime';
 import Pools from './Pools';
 import Portfolio from './Portfolio';
 import Trade from './Trade';
 import { useWallet } from './useWallet';
 import { isMetaMaskWallet, METAMASK_MOBILE_URL } from './wallet';
 import type { LiquidityAction, Page, Pool } from './model';
+import { readLiveReadGate, type LiveReadGate } from './live-gate';
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
@@ -104,7 +106,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
   }
 }
 
-function Application() {
+function Application({ liveAvailable }: { liveAvailable: boolean }) {
   const [page, setPage] = useState<Page>(pageFromHash);
   const [modal, setModal] = useState<'wallet' | 'network' | 'guide' | 'settings' | null>(() =>
     ['metamask', 'qr'].includes(new URLSearchParams(location.search).get('connect') || '')
@@ -175,6 +177,7 @@ function Application() {
                 {p === 'trade' ? 'Trade' : p === 'pools' ? 'Pools' : 'Portfolio'}
               </a>
             ))}
+            {liveAvailable && <a href="#/live-pools">Live read</a>}
           </nav>
           <div className="header-actions">
             <button className="network-button" onClick={() => setModal('network')}>
@@ -443,10 +446,81 @@ function Application() {
   );
 }
 
+function LiveReadUnavailable({ invalid }: { invalid: boolean }) {
+  return (
+    <section className="panel pools-panel" aria-labelledby="live-read-unavailable-title">
+      <p className="eyebrow">READ-ONLY GATE</p>
+      <h1 id="live-read-unavailable-title">Live pool data is unavailable.</h1>
+      <p className="notice" role="alert">
+        {invalid
+          ? 'The host read-only configuration did not pass validation.'
+          : 'This host did not provide a reviewed read-only configuration.'}
+      </p>
+      <p className="microcopy">Preview fixtures were not substituted on this route.</p>
+      <a className="button secondary" href="#/trade">
+        Return to preview
+      </a>
+    </section>
+  );
+}
+
+function LiveReadApplication({ gate }: { gate: LiveReadGate }) {
+  useEffect(() => {
+    document.title = 'PosternDEX — Live read only';
+  }, []);
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <a className="brand" href="#/trade" aria-label="Postern preview home">
+            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
+            <span>POSTERN</span>
+          </a>
+          <nav className="main-nav" aria-label="Read-only navigation">
+            <a href="#/live-pools" aria-current="page">
+              Live pools
+            </a>
+            <a href="#/trade">Preview</a>
+          </nav>
+          <span className="badge">Read only · No wallet</span>
+        </div>
+      </header>
+      <main id="main-content" className="main-content">
+        {gate.available ? (
+          <LivePoolsRuntime factory={gate.factory} />
+        ) : (
+          <LiveReadUnavailable invalid={gate.reason === 'invalid'} />
+        )}
+      </main>
+      <footer className="footer">
+        <div className="footer-inner">
+          <span className="footer-status">Reviewed deployment reads only</span>
+          <span className="muted">No signing · No transactions · No fixture fallback</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+function ApplicationRouter() {
+  const [hash, setHash] = useState(location.hash);
+  const [gate] = useState(readLiveReadGate);
+  useEffect(() => {
+    const change = () => setHash(location.hash);
+    window.addEventListener('hashchange', change);
+    return () => window.removeEventListener('hashchange', change);
+  }, []);
+  return hash === '#/live-pools' ? (
+    <LiveReadApplication gate={gate} />
+  ) : (
+    <Application liveAvailable={gate.available} />
+  );
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
-      <Application />
+      <ApplicationRouter />
     </ErrorBoundary>
   );
 }
