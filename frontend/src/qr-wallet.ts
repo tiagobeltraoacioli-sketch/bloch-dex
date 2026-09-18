@@ -27,19 +27,21 @@ function exactPermissionList(value: unknown, required: string[]) {
 export function normalizeWalletNamespace(value: Namespace | undefined) {
   const accounts = value?.accounts,
     chains = value?.chains;
+  const account = Array.isArray(accounts) && accounts.length === 1 ? accounts[0] : null;
+  const address =
+    typeof account === 'string' && /^eip155:84001:0x[a-fA-F0-9]{40}$/.test(account)
+      ? account.split(':')[2]
+      : null;
   if (
-    !Array.isArray(accounts) ||
-    accounts.length !== 1 ||
-    !accounts.every(
-      (account) => typeof account === 'string' && /^eip155:84001:0x[a-fA-F0-9]{40}$/.test(account),
-    ) ||
+    !address ||
+    !validAccounts([address]) ||
     (chains !== undefined &&
       (!Array.isArray(chains) || chains.length !== 1 || chains[0] !== CHAIN)) ||
     !exactPermissionList(value?.methods, METHODS) ||
     !exactPermissionList(value?.events, EVENTS)
   )
     return null;
-  return { address: (accounts[0] as string).split(':')[2] };
+  return { address };
 }
 export function normalizeWalletSessionEvent(message: SessionEvent, topic: string) {
   if (message?.topic !== topic) return null;

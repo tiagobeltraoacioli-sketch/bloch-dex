@@ -112,6 +112,7 @@ describe('QR wallet entry', () => {
     expect(
       normalizeWalletNamespace(namespace(['eip155:84001:' + current, 'eip155:1:' + next])),
     ).toBeNull();
+    expect(normalizeWalletNamespace(namespace(['eip155:84001:0x' + '00'.repeat(20)]))).toBeNull();
     expect(
       normalizeWalletNamespace({
         ...namespace(['eip155:84001:' + current]),
