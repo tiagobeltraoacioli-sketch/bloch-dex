@@ -96,7 +96,8 @@ the approved session topic and Bloch L2 namespace; unsupported changes terminate
 the local session instead of leaving a stale identity. Namespace updates apply
 the same topic, CAIP-2 and CAIP-10 checks, exact read-only permissions and bounded
 account lists. Expired, excessively long-lived or mixed-chain approvals are
-closed before a provider is exposed. Hardware-wallet-specific flows are not included.
+closed before a provider is exposed. Approved sessions also expire locally on
+their bounded deadline even if a remote expiry event is missed. Hardware-wallet-specific flows are not included.
 
 On iPhone Safari the application must first be opened in MetaMask's own browser;
 the injected-provider connection here does not pair Safari directly with the app.

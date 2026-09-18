@@ -186,30 +186,35 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
     void appkit?.close();
   };
   signal.addEventListener('abort', cancel, { once: true });
-  const unsubscribe = appkit.subscribeState((state) => {
-    if (!state.open) cancel();
-  });
-  const approved = approval();
-  void approved.then(
-    (session) => {
-      if (cancelled)
-        void c
-          .disconnect({
-            topic: session.topic,
-            reason: { code: 6000, message: 'Connection cancelled' },
-          })
-          .catch(() => {});
-    },
-    () => {},
-  );
+  let unsubscribe = () => {};
   try {
+    unsubscribe = appkit.subscribeState((state) => {
+      if (!state.open) cancel();
+    });
+    const approved = approval();
+    void approved.then(
+      (session) => {
+        const topic = isRecord(session) && session.topic;
+        if (cancelled && typeof topic === 'string' && /^[0-9a-f]{64}$/i.test(topic))
+          void c
+            .disconnect({
+              topic,
+              reason: { code: 6000, message: 'Connection cancelled' },
+            })
+            .catch(() => {});
+      },
+      () => {},
+    );
     const session = await Promise.race([approved, cancellation]);
     unsubscribe();
+    unsubscribe = () => {};
     if (cancelled || signal.aborted) {
-      await c.disconnect({
-        topic: session.topic,
-        reason: { code: 6000, message: 'Connection cancelled' },
-      });
+      const topic = isRecord(session) && session.topic;
+      if (typeof topic === 'string' && /^[0-9a-f]{64}$/i.test(topic))
+        await c.disconnect({
+          topic,
+          reason: { code: 6000, message: 'Connection cancelled' },
+        });
       throw Error('Connection cancelled');
     }
     const now = Math.floor(Date.now() / 1000);
@@ -225,6 +230,7 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
     const { topic, expiry } = approvedSession;
     let address = approvedSession.address;
     let active = true;
+    let expiryTimer: number | undefined;
     const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
     const emit = (event: string, ...args: unknown[]) =>
       listeners.get(event)?.forEach((fn) => fn(...args));
@@ -238,6 +244,7 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
       if (!active) return false;
       active = false;
       detach();
+      if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
       if (notify) emit('disconnect');
       listeners.clear();
       return true;
@@ -253,6 +260,7 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
       if (update.disconnect) {
         active = false;
         detach();
+        if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
       }
       emit(update.event, update.value);
       if (update.disconnect) {
@@ -271,6 +279,7 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
       if (update.disconnect) {
         active = false;
         detach();
+        if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
       }
       emit(update.event, update.value);
       if (update.disconnect) {
@@ -285,6 +294,15 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
     c.on('session_expire', deleted);
     c.on('session_event', changed);
     c.on('session_update', updated);
+    expiryTimer = window.setTimeout(
+      () => {
+        if (deactivate(true))
+          void c
+            .disconnect({ topic, reason: { code: 6000, message: 'Session expired' } })
+            .catch(() => {});
+      },
+      Math.max(0, expiry * 1000 - Date.now()),
+    );
     const provider: Provider = {
       async request({ method }) {
         if (!active || expiry * 1000 <= Date.now()) {

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 describe('WalletConnect session adapter', () => {
-  beforeEach(() => vi.resetModules());
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.resetModules();
+  });
 
   it('forwards approved account updates and closes an out-of-scope chain change', async () => {
     const handlers = new Map<string, (value: any) => void>(),
@@ -133,6 +136,87 @@ describe('WalletConnect session adapter', () => {
       topic: session.topic,
       reason: { code: 6000, message: 'Unsupported session' },
     });
+    expect(client.on).not.toHaveBeenCalled();
+  });
+
+  it('expires an idle provider locally and closes its remote session', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-17T12:00:00Z'));
+    const handlers = new Map<string, (value: any) => void>(),
+      disconnect = vi.fn().mockResolvedValue(undefined),
+      session = {
+        topic: 'ef'.repeat(32),
+        expiry: Math.floor(Date.now() / 1000) + 1,
+        namespaces: {
+          eip155: {
+            accounts: ['eip155:84001:0x' + '12'.repeat(20)],
+            chains: ['eip155:84001'],
+            methods: ['eth_accounts', 'eth_chainId'],
+            events: ['accountsChanged', 'chainChanged'],
+          },
+        },
+      };
+    const client = {
+      connect: vi.fn().mockResolvedValue({ uri: 'wc:test', approval: async () => session }),
+      on: vi.fn((name: string, fn: (value: any) => void) => handlers.set(name, fn)),
+      off: vi.fn((name: string, fn: (value: any) => void) => {
+        if (handlers.get(name) === fn) handlers.delete(name);
+      }),
+      disconnect,
+    };
+    const modal = {
+      open: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      subscribeState: vi.fn(() => vi.fn()),
+    };
+    vi.doMock('@walletconnect/sign-client', () => ({
+      default: { init: vi.fn().mockResolvedValue(client) },
+    }));
+    vi.doMock('@reown/appkit/core', () => ({ createAppKit: () => modal }));
+    vi.doMock('@reown/appkit/networks', () => ({ defineChain: (value: unknown) => value }));
+    const { connectQrWallet } = await import('../qr-wallet');
+    const wallet = await connectQrWallet(new AbortController().signal),
+      expired = vi.fn();
+    wallet.provider.on?.('disconnect', expired);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(expired).toHaveBeenCalledOnce();
+    expect(handlers.size).toBe(0);
+    expect(disconnect).toHaveBeenCalledWith({
+      topic: session.topic,
+      reason: { code: 6000, message: 'Session expired' },
+    });
+    await expect(wallet.provider.request({ method: 'eth_accounts' })).rejects.toThrow(
+      'Session expired',
+    );
+  });
+
+  it('cleans modal subscriptions when approval creation throws synchronously', async () => {
+    const unsubscribe = vi.fn(),
+      client = {
+        connect: vi.fn().mockResolvedValue({
+          uri: 'wc:test',
+          approval: () => {
+            throw Error('approval failed');
+          },
+        }),
+        on: vi.fn(),
+        off: vi.fn(),
+        disconnect: vi.fn(),
+      },
+      modal = {
+        open: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        subscribeState: vi.fn(() => unsubscribe),
+      };
+    vi.doMock('@walletconnect/sign-client', () => ({
+      default: { init: vi.fn().mockResolvedValue(client) },
+    }));
+    vi.doMock('@reown/appkit/core', () => ({ createAppKit: () => modal }));
+    vi.doMock('@reown/appkit/networks', () => ({ defineChain: (value: unknown) => value }));
+    const { connectQrWallet } = await import('../qr-wallet');
+    await expect(connectQrWallet(new AbortController().signal)).rejects.toThrow('approval failed');
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(modal.close).toHaveBeenCalled();
     expect(client.on).not.toHaveBeenCalled();
   });
 });
