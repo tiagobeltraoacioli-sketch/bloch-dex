@@ -9,11 +9,17 @@ export type WalletOption = { id: string; name: string; provider: Provider; rdns?
 export type WalletAccount = { address: string; chainId: string; name: string };
 
 const DISPLAY_CONTROLS = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu;
+const MAX_RAW_WALLET_NAME_UNITS = 512;
 
 /** Bound untrusted EIP-6963 and WalletConnect names before displaying them. */
 export function walletDisplayName(value: unknown, fallback = 'Browser wallet'): string {
   if (typeof value !== 'string') return fallback;
-  const cleaned = value.normalize('NFKC').replace(DISPLAY_CONTROLS, ' ').replace(/\s+/gu, ' ').trim();
+  const cleaned = value
+    .slice(0, MAX_RAW_WALLET_NAME_UNITS)
+    .normalize('NFKC')
+    .replace(DISPLAY_CONTROLS, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
   return Array.from(cleaned).slice(0, 60).join('') || fallback;
 }
 

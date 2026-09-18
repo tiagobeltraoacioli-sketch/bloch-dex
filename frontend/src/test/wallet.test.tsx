@@ -51,6 +51,7 @@ describe('wallet identification boundary', () => {
     expect(walletDisplayName('  Safe\u202eemaN\n Wallet  ')).toBe('Safe emaN Wallet');
     expect(walletDisplayName('\u2066\u2069', 'Mobile wallet')).toBe('Mobile wallet');
     expect(walletDisplayName('😀'.repeat(61))).toBe('😀'.repeat(60));
+    expect(walletDisplayName('a'.repeat(1_000_000))).toBe('a'.repeat(60));
     expect(walletDisplayName(null)).toBe('Browser wallet');
   });
   it('keeps mobile destinations fixed regardless of untrusted provider metadata', () => {
