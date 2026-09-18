@@ -112,7 +112,7 @@ export default function Trade({
                   >
                     <div className="route-path">
                       {q.path.map((symbol, i) => (
-                        <span className="route-hop" key={symbol}>
+                        <span className="route-hop" key={`${symbol}-${i}`}>
                           {i > 0 && <ArrowRight size={14} />}
                           <TokenIcon symbol={symbol} small />
                           <span>{symbol}</span>
@@ -284,16 +284,22 @@ export default function Trade({
           <span className="badge">Simulation</span>
           <div className="review-amounts">
             <strong>
-              {formatAmount(review.amounts[0], TOKENS[from].decimals, 6)} {from}
+              {formatAmount(review.amounts[0], TOKENS[review.path[0]].decimals, 6)} {review.path[0]}
             </strong>
             <ArrowDown size={22} />
             <strong className="positive">
-              {formatAmount(review.output, TOKENS[to].decimals, 6)} {to}
+              {formatAmount(review.output, TOKENS[review.path[review.path.length - 1]].decimals, 6)}{' '}
+              {review.path[review.path.length - 1]}
             </strong>
           </div>
           <div className="review-details">
             <Detail label="Minimum received">
-              {formatAmount(review.minimum, TOKENS[to].decimals, 6)} {to}
+              {formatAmount(
+                review.minimum,
+                TOKENS[review.path[review.path.length - 1]].decimals,
+                6,
+              )}{' '}
+              {review.path[review.path.length - 1]}
             </Detail>
             <Detail label="Slippage">{(review.slippageBps / 100).toFixed(2)}%</Detail>
             <Detail label="Route">{review.path.join(' → ')}</Detail>

@@ -176,13 +176,32 @@ describe('Postern preview workflows', () => {
     await user.click(screen.getByRole('button', { name: /Review demo swap/ }));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByText('0.50%')).toBeTruthy();
-    act(() => window.dispatchEvent(new StorageEvent('storage', {
-      key: 'postern.slippage.v1', newValue: '125',
-    })));
+    act(() =>
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'postern.slippage.v1',
+          newValue: '125',
+        }),
+      ),
+    );
     expect(within(dialog).getByText('0.50%')).toBeTruthy();
     expect(within(dialog).queryByText('1.25%')).toBeNull();
     await user.click(within(dialog).getByRole('button', { name: 'Done' }));
     expect(screen.getByRole('button', { name: '1.25%' })).toBeTruthy();
+  });
+  it('keeps reviewed token units bound to the snapshotted route', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: /Review demo swap/ }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('1000 BLCH')).toBeTruthy();
+    expect(within(dialog).getByText('BLCH → USDC')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Reverse token pair' }));
+
+    expect(screen.getByRole('heading', { name: 'USDC / BLCH' })).toBeTruthy();
+    expect(within(dialog).getByText('1000 BLCH')).toBeTruthy();
+    expect(within(dialog).getByText('BLCH → USDC')).toBeTruthy();
   });
   it('filters pools, sorts activity and saves a device-local watchlist', async () => {
     const user = userEvent.setup();
