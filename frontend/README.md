@@ -38,7 +38,7 @@ and the work needed before transactions can open. Bridge links use the active cu
 
 | Screen    | Behavior                                                                                                                                                               |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Trade     | Token search/selection, pair reversal, amount validation, direct and one-intermediate-token route comparison, slippage settings, review dialog, chart period selection |
+| Trade     | Token search/selection, pair reversal, amount validation, bounded route discovery and comparison, slippage settings, review dialog, chart period selection            |
 | Pools     | Name/symbol search, liquidity/volume/fee sorting, local watchlist, empty results, pool details, deposit preview                                                        |
 | Portfolio | Sample composition/history/activity, period selection, proportional withdrawal and deposit previews                                                                    |
 | Shared    | Hash navigation, keyboard skip link, native modal dialogs, wallet discovery/connection/disconnect, network explanation and liquidity guide                             |
@@ -59,8 +59,9 @@ account persistence, external font request or private-key handling.
 precision and exponent syntax, bounds uint256 inputs/intermediates, and applies
 V2's `997/1000` exact-input formula. Slippage minima are rounded down and zero
 outputs are unavailable. Routes are bounded, cycle-free and ranked by output.
-This preview compares direct paths and paths through one intermediate token;
-it does not claim to implement all route candidates accepted by `BDexLens`.
+This preview discovers simple paths through the fixture pool graph with at most
+four hops, then retains the best eight quotes to match `BDexLens` bounds. It is
+not global market discovery or split-route optimization.
 
 `src/data.ts` is the explicit fixture boundary. Its symbolic assets are not
 addresses or a deployment registry. Numeric USD displays and deterministic

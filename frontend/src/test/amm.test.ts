@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_UINT256, amountOut, findQuotes, formatAmount, parseAmount, quoteRoute } from '../amm';
 import { POOLS } from '../data';
+import type { Pool } from '../model';
 
 describe('exact token arithmetic', () => {
   it('preserves amounts beyond Number safe integer precision', () => {
@@ -68,5 +69,39 @@ describe('exact token arithmetic', () => {
       expect(quote.executionLossBps).toBeGreaterThanOrEqual(29);
     }
     expect(findQuotes(100n, 'BLCH', 'BLCH', POOLS, 50)).toEqual([]);
+  });
+  it('discovers executable routes with up to four hops before selecting the best eight', () => {
+    const pool = (
+      id: string,
+      token0: Pool['token0'],
+      token1: Pool['token1'],
+      reserve0: bigint,
+      reserve1: bigint,
+    ): Pool => ({
+      id,
+      token0,
+      token1,
+      reserve0,
+      reserve1,
+      liquidity: 0,
+      volume: 0,
+      fees: 0,
+    });
+    const pools = [
+      pool('poor-direct', 'BLCH', 'USDC', 1_000_000n, 1_000n),
+      pool('first-hop', 'BLCH', 'WETH', 1_000_000n, 1_000_000n),
+      pool('second-hop', 'WETH', 'USTAV', 1_000_000n, 1_000_000n),
+      pool('third-hop', 'USTAV', 'USDC', 1_000_000n, 1_000_000n),
+    ];
+
+    const quotes = findQuotes(10_000n, 'BLCH', 'USDC', pools, 50);
+    expect(quotes.map((quote) => quote.path)).toContainEqual([
+      'BLCH',
+      'WETH',
+      'USTAV',
+      'USDC',
+    ]);
+    expect(quotes[0].path).toEqual(['BLCH', 'WETH', 'USTAV', 'USDC']);
+    expect(quotes).toHaveLength(2);
   });
 });

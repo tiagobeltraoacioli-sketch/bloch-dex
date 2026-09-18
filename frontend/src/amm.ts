@@ -2,6 +2,8 @@ import type { Pool, Quote, Symbol } from './model';
 
 export const MAX_UINT256 = (1n << 256n) - 1n;
 const MAX_RESERVE = (1n << 112n) - 1n;
+const MAX_PATH_LENGTH = 5;
+const MAX_ROUTES = 8;
 
 /** Parse a user amount without floating point rounding, exponent syntax or truncation. */
 export function parseAmount(input: string, decimals: number): bigint | null {
@@ -44,7 +46,12 @@ export function quoteRoute(
   pools: Pool[],
   slippageBps: number,
 ): Quote | null {
-  if (input <= 0n || path.length < 2 || path.length > 5 || new Set(path).size !== path.length)
+  if (
+    input <= 0n ||
+    path.length < 2 ||
+    path.length > MAX_PATH_LENGTH ||
+    new Set(path).size !== path.length
+  )
     return null;
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 500) return null;
   const amounts = [input];
@@ -70,6 +77,32 @@ export function quoteRoute(
   return { path, amounts, output, minimum, executionLossBps: Number(loss) };
 }
 
+function discoverPaths(from: Symbol, to: Symbol, pools: Pool[]): Symbol[][] {
+  const adjacent = new Map<Symbol, Set<Symbol>>();
+  for (const pool of pools) {
+    if (pool.token0 === pool.token1) continue;
+    if (!adjacent.has(pool.token0)) adjacent.set(pool.token0, new Set());
+    if (!adjacent.has(pool.token1)) adjacent.set(pool.token1, new Set());
+    adjacent.get(pool.token0)!.add(pool.token1);
+    adjacent.get(pool.token1)!.add(pool.token0);
+  }
+
+  const paths: Symbol[][] = [];
+  const visit = (path: Symbol[]) => {
+    const current = path.at(-1)!;
+    if (current === to) {
+      paths.push(path);
+      return;
+    }
+    if (path.length === MAX_PATH_LENGTH) return;
+    for (const next of adjacent.get(current) ?? []) {
+      if (!path.includes(next)) visit([...path, next]);
+    }
+  };
+  visit([from]);
+  return paths;
+}
+
 export function findQuotes(
   input: bigint,
   from: Symbol,
@@ -78,14 +111,13 @@ export function findQuotes(
   slippageBps: number,
 ): Quote[] {
   if (from === to) return [];
-  const symbols = [...new Set(pools.flatMap((p) => [p.token0, p.token1]))];
-  const paths: Symbol[][] = [
-    [from, to],
-    ...symbols.filter((s) => s !== from && s !== to).map((s) => [from, s, to]),
-  ];
-  return paths
-    .slice(0, 8)
+  return discoverPaths(from, to, pools)
     .map((path) => quoteRoute(input, path, pools, slippageBps))
     .filter((q): q is Quote => q !== null)
-    .sort((a, b) => (a.output > b.output ? -1 : a.output < b.output ? 1 : 0));
+    .sort((a, b) => {
+      if (a.output !== b.output) return a.output > b.output ? -1 : 1;
+      if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+      return a.path.join('\0').localeCompare(b.path.join('\0'));
+    })
+    .slice(0, MAX_ROUTES);
 }
