@@ -19,7 +19,7 @@ export default function Trade({
   const [period, setPeriod] = useState<Period>('24H');
   const [picker, setPicker] = useState<'from' | 'to' | null>(null);
   const [search, setSearch] = useState('');
-  const [review, setReview] = useState<Quote | null>(null);
+  const [review, setReview] = useState<(Quote & { slippageBps: number }) | null>(null);
   const inputUnits = parseAmount(input, TOKENS[from].decimals);
   const quotes = useMemo(
     () => findQuotes(inputUnits ?? 0n, from, to, POOLS, slippage),
@@ -238,7 +238,7 @@ export default function Trade({
           <button
             className="button primary full-width"
             disabled={!best || !!error}
-            onClick={() => best && setReview(best)}
+            onClick={() => best && setReview({ ...best, slippageBps: slippage })}
           >
             Review demo swap <ArrowRight size={17} />
           </button>
@@ -295,7 +295,7 @@ export default function Trade({
             <Detail label="Minimum received">
               {formatAmount(review.minimum, TOKENS[to].decimals, 6)} {to}
             </Detail>
-            <Detail label="Slippage">{(slippage / 100).toFixed(2)}%</Detail>
+            <Detail label="Slippage">{(review.slippageBps / 100).toFixed(2)}%</Detail>
             <Detail label="Route">{review.path.join(' → ')}</Detail>
           </div>
           <p className="notice">
