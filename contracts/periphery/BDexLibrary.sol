@@ -21,9 +21,7 @@ library BDexLibrary {
         for (uint256 i; i < path.length - 1; i++) {
             address tokenA = path[i];
             address tokenB = path[i + 1];
-            require(
-                tokenA != address(0) && tokenB != address(0) && tokenA != tokenB, "BDEX: INVALID_PATH"
-            );
+            require(tokenA != address(0) && tokenB != address(0) && tokenA != tokenB, "BDEX: INVALID_PATH");
             for (uint256 j; j < i; j++) {
                 bool sameDirection = tokenA == path[j] && tokenB == path[j + 1];
                 bool reverseDirection = tokenA == path[j + 1] && tokenB == path[j];

@@ -245,9 +245,7 @@ contract RouterSurfaceTest is TestBase {
         vm.expectRevert(bytes("BDEX: INVALID_PATH"));
         router.swapExactBLCHForTokens{value: 1 ether}(0, empty, address(this), block.timestamp);
         vm.expectRevert(bytes("BDEX: INVALID_PATH"));
-        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            1 ether, 0, empty, address(this), block.timestamp
-        );
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(1 ether, 0, empty, address(this), block.timestamp);
     }
 
     function testRepeatedPoolPathRevertsBeforeTakingInput() public {
@@ -260,9 +258,7 @@ contract RouterSurfaceTest is TestBase {
         vm.expectRevert(bytes("BDEX: CYCLIC_PATH"));
         router.swapExactTokensForTokens(1 ether, 0, path, address(this), block.timestamp);
         vm.expectRevert(bytes("BDEX: CYCLIC_PATH"));
-        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            1 ether, 0, path, address(this), block.timestamp
-        );
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(1 ether, 0, path, address(this), block.timestamp);
 
         assertEq(tokenA.balanceOf(address(this)), balanceBefore);
     }
