@@ -117,7 +117,9 @@ export function findQuotes(
     .sort((a, b) => {
       if (a.output !== b.output) return a.output > b.output ? -1 : 1;
       if (a.path.length !== b.path.length) return a.path.length - b.path.length;
-      return a.path.join('\0').localeCompare(b.path.join('\0'));
+      const aPath = a.path.join('\0');
+      const bPath = b.path.join('\0');
+      return aPath < bPath ? -1 : aPath > bPath ? 1 : 0;
     })
     .slice(0, MAX_ROUTES);
 }

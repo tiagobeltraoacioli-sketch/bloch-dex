@@ -103,5 +103,8 @@ describe('exact token arithmetic', () => {
     ]);
     expect(quotes[0].path).toEqual(['BLCH', 'WETH', 'USTAV', 'USDC']);
     expect(quotes).toHaveLength(2);
+
+    const reversed = findQuotes(10_000n, 'BLCH', 'USDC', [...pools].reverse(), 50);
+    expect(reversed).toEqual(quotes);
   });
 });
