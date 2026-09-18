@@ -192,8 +192,9 @@ contract BDexLens {
             q.amounts[i + 1] = out;
             q.executionLossBps[i] = (marginal - out) * BPS / marginal;
         }
-        q.available = true;
         q.amountOut = q.amounts[path.length - 1];
         q.minimumOut = q.amountOut * (BPS - slippageBps) / BPS;
+        if (q.minimumOut == 0) return q;
+        q.available = true;
     }
 }

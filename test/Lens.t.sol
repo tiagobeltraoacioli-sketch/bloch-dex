@@ -88,6 +88,20 @@ contract LensTest is TestBase {
         assertTrue(!empty.available);
     }
 
+    function testDustMinimumIsUnavailableAcrossQuoteAndRanking() public view {
+        address[] memory route = path2(address(a), address(b));
+        BDexLens.RouteQuote memory quote = lens.quoteExactInput(2, route, 50);
+        assertEq(quote.amountOut, 1);
+        assertEq(quote.minimumOut, 0);
+        assertTrue(!quote.available);
+
+        address[][] memory routes = new address[][](1);
+        routes[0] = route;
+        (uint256 best, BDexLens.RouteQuote[] memory quotes) = lens.bestExactInput(2, routes, 50);
+        assertEq(best, type(uint256).max);
+        assertTrue(!quotes[0].available);
+    }
+
     function testCyclicRoutesAndMismatchedEndpointsAreRefused() public {
         address[] memory cycle = new address[](3);
         cycle[0] = address(a);
@@ -127,9 +141,9 @@ contract LensTest is TestBase {
         address[] memory path = path2(address(a), address(b));
         BDexLens.RouteQuote memory quote = lens.quoteExactInput(input, path, slippage);
         uint256[] memory expected = router.getAmountsOut(input, path);
-        assertTrue(quote.available);
         assertEq(quote.amountOut, expected[1]);
         assertEq(quote.minimumOut, expected[1] * (10_000 - slippage) / 10_000);
+        assertTrue(quote.available == (quote.minimumOut > 0));
         assertTrue(quote.executionLossBps[0] <= 10_000);
 
         path = new address[](3);
@@ -138,9 +152,9 @@ contract LensTest is TestBase {
         path[2] = address(b);
         quote = lens.quoteExactInput(input, path, slippage);
         expected = router.getAmountsOut(input, path);
-        assertTrue(quote.available);
         assertEq(quote.amountOut, expected[2]);
         assertEq(quote.minimumOut, expected[2] * (10_000 - slippage) / 10_000);
+        assertTrue(quote.available == (quote.minimumOut > 0));
         assertTrue(quote.executionLossBps[0] <= 10_000);
         assertTrue(quote.executionLossBps[1] <= 10_000);
     }
