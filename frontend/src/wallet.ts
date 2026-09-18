@@ -53,7 +53,12 @@ export function validAddress(value: unknown): value is string {
   );
 }
 export function validAccounts(value: unknown): value is string[] {
-  return Array.isArray(value) && value.length >= 1 && value.length <= 20 && value.every(validAddress);
+  if (!Array.isArray(value) || value.length < 1 || value.length > 20) return false;
+  // Array.every skips holes, which can otherwise validate an undefined identity.
+  for (let index = 0; index < value.length; index++) {
+    if (!validAddress(value[index])) return false;
+  }
+  return true;
 }
 export function validChain(value: unknown): value is string {
   return typeof value === 'string' && /^0x[1-9a-fA-F][0-9a-fA-F]{0,63}$/.test(value);

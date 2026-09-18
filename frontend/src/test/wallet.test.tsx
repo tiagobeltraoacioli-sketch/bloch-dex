@@ -114,6 +114,11 @@ describe('wallet identification boundary', () => {
     expect(validAddress('0x' + '00'.repeat(20))).toBe(false);
     expect(validAccounts([address, secondAddress])).toBe(true);
     expect(validAccounts([address, 'invalid'])).toBe(false);
+    expect(validAccounts(new Array(1))).toBe(false);
+    expect(validAccounts([address, ...new Array(1)])).toBe(false);
+    const sparseAccounts = [address];
+    sparseAccounts.length = 2;
+    expect(validAccounts(sparseAccounts)).toBe(false);
     expect(validAccounts(Array(21).fill(address))).toBe(false);
     expect(validChain('1')).toBe(false);
     expect(validChain('0x0')).toBe(false);
