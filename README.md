@@ -145,9 +145,10 @@ router may remain unrecoverable.
 - Native-output swaps and liquidity removals reject the zero and wrapped-native
   addresses as recipients. The former burns native currency; the latter invokes
   its deposit path and strands newly minted wrapped tokens under the router.
-- Router token and LP outputs reject both the zero address and the router itself.
-  Callers that deliberately need low-level burn semantics can still use the pair
-  directly; ordinary periphery calls cannot strand outputs at unusable recipients.
+- Router token and LP outputs reject the zero address, the router itself and the
+  pair emitting that output. Callers that deliberately need low-level burn
+  semantics can still use the pair directly; ordinary periphery calls cannot
+  strand outputs at unusable recipients or complete a pair self-transfer.
 - Pair creation bytecode changed. Read `INIT_CODE_PAIR_HASH()` from the actual
   factory; never hardcode canonical Uniswap or an earlier Postern hash. Existing
   deployments cannot be upgraded by changing these source files.

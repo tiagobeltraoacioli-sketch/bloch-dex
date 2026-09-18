@@ -122,6 +122,12 @@ contract RouterSurfaceTest is TestBase {
         router.removeLiquidity(address(tokenA), address(tokenB), liquidity, 0, 0, address(0), block.timestamp);
         vm.expectRevert(bytes("BDEX: INVALID_TO"));
         router.removeLiquidity(address(tokenA), address(tokenB), liquidity, 0, 0, address(router), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.addLiquidity(address(tokenA), address(tokenB), 1 ether, 2 ether, 0, 0, address(pair), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactTokensForTokens(1 ether, quote[1], path, address(pair), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.removeLiquidity(address(tokenA), address(tokenB), liquidity, 0, 0, address(pair), block.timestamp);
 
         address[] memory nativePath = _path(address(wrapped), address(tokenA));
         vm.expectRevert(bytes("BDEX: INVALID_TO"));

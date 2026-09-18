@@ -88,6 +88,13 @@ contract BDexRouter is IBDexRouter {
         require(to != address(0) && to != address(this), "BDEX: INVALID_TO");
     }
 
+    /// @dev Sending an output back to the pair that emits it performs a token
+    ///      self-transfer. The swap can then succeed without paying the user;
+    ///      LP shares minted to their own pair are likewise publicly burnable.
+    function _ensurePairRecipient(address to, address pair) private pure {
+        require(to != pair, "BDEX: INVALID_TO");
+    }
+
     // =========================================================================
     // Liquidity
     // =========================================================================
@@ -149,6 +156,7 @@ contract BDexRouter is IBDexRouter {
         _ensureTokenRecipient(to);
         (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
         address pair = BDexLibrary.pairFor(factory, tokenA, tokenB);
+        _ensurePairRecipient(to, pair);
         _safeTransferFrom(tokenA, msg.sender, pair, amountA);
         _safeTransferFrom(tokenB, msg.sender, pair, amountB);
         liquidity = IUniswapV2Pair(pair).mint(to);
@@ -169,6 +177,7 @@ contract BDexRouter is IBDexRouter {
         (amountToken, amountBLCH) =
             _addLiquidity(token, WBLCH, amountTokenDesired, msg.value, amountTokenMin, amountBLCHMin);
         address pair = BDexLibrary.pairFor(factory, token, WBLCH);
+        _ensurePairRecipient(to, pair);
         _safeTransferFrom(token, msg.sender, pair, amountToken);
         IWBLCH(WBLCH).deposit{value: amountBLCH}();
         require(IWBLCH(WBLCH).transfer(pair, amountBLCH), "BDEX: TRANSFER_FAILED");
@@ -200,6 +209,7 @@ contract BDexRouter is IBDexRouter {
         address to
     ) private returns (uint256 amountA, uint256 amountB) {
         address pair = BDexLibrary.pairFor(factory, tokenA, tokenB);
+        _ensurePairRecipient(to, pair);
         // The Pair is itself the LP ERC-20; shares must sit in the Pair before
         // burn() (UniswapV2Pair.sol burn header). "burn" here = redeem LP
         // SHARES — the canonical pool primitive, nothing to do with BLCH.
@@ -333,7 +343,9 @@ contract BDexRouter is IBDexRouter {
             (uint256 amount0Out, uint256 amount1Out) =
                 input == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
             address to = i < path.length - 2 ? BDexLibrary.pairFor(factory, output, path[i + 2]) : _to;
-            IUniswapV2Pair(BDexLibrary.pairFor(factory, input, output)).swap(amount0Out, amount1Out, to, "");
+            address pair = BDexLibrary.pairFor(factory, input, output);
+            _ensurePairRecipient(to, pair);
+            IUniswapV2Pair(pair).swap(amount0Out, amount1Out, to, "");
         }
     }
 
@@ -483,6 +495,7 @@ contract BDexRouter is IBDexRouter {
             (uint256 amount0Out, uint256 amount1Out) =
                 input == token0 ? (uint256(0), amountOutput) : (amountOutput, uint256(0));
             address to = i < path.length - 2 ? BDexLibrary.pairFor(factory, output, path[i + 2]) : _to;
+            _ensurePairRecipient(to, address(pair));
             pair.swap(amount0Out, amount1Out, to, "");
         }
     }
