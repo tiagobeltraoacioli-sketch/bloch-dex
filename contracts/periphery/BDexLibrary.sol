@@ -81,6 +81,11 @@ library BDexLibrary {
     {
         require(amountIn > 0, "BDEX: INSUFFICIENT_INPUT_AMOUNT");
         require(reserveIn > 0 && reserveOut > 0, "BDEX: INSUFFICIENT_LIQUIDITY");
+        require(
+            reserveIn <= type(uint112).max && reserveOut <= type(uint112).max
+                && amountIn <= type(uint112).max - reserveIn,
+            "BDEX: OVERFLOW"
+        );
         uint256 amountInWithFee = amountIn * 997;
         uint256 numerator = amountInWithFee * reserveOut;
         uint256 denominator = reserveIn * 1000 + amountInWithFee;
@@ -100,10 +105,12 @@ library BDexLibrary {
     {
         require(amountOut > 0, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         require(reserveIn > 0 && reserveOut > 0, "BDEX: INSUFFICIENT_LIQUIDITY");
+        require(reserveIn <= type(uint112).max && reserveOut <= type(uint112).max, "BDEX: OVERFLOW");
         require(amountOut < reserveOut, "BDEX: INSUFFICIENT_LIQUIDITY");
         uint256 numerator = reserveIn * amountOut * 1000;
         uint256 denominator = (reserveOut - amountOut) * 997;
         amountIn = numerator / denominator + 1;
+        require(amountIn <= type(uint112).max - reserveIn, "BDEX: OVERFLOW");
     }
 
     /// @notice Chained getAmountOut over a multi-hop path.

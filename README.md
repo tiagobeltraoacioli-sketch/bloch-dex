@@ -88,6 +88,8 @@ Router quotes and swaps reject paths that reuse the same canonical pool. A
 later hop through an already-mutated pool cannot be represented by the static
 reserve quote computed before execution. Cycles that use a different pool on
 every hop remain valid; ordinary direct and multi-hop routes are unchanged.
+Quote helpers also reject inputs that would push a pair balance beyond its
+`uint112` reserve capacity, instead of returning an amount that cannot execute.
 
 ### Integrate the lens
 

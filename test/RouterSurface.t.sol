@@ -5,6 +5,7 @@ import {TestBase, TestToken, TestWrappedNative} from "./TestBase.sol";
 import {UniswapV2Factory} from "../contracts/UniswapV2Factory.sol";
 import {UniswapV2Pair} from "../contracts/UniswapV2Pair.sol";
 import {BDexRouter} from "../contracts/periphery/BDexRouter.sol";
+import {BDexLibrary} from "../contracts/periphery/BDexLibrary.sol";
 
 contract RejectingNativeReceiver {
     function swapForExactTokens(BDexRouter router, address wrapped, address token, uint256 amountOut, uint256 deadline)
@@ -333,6 +334,22 @@ contract RouterSurfaceTest is TestBase {
 
         assertEq(tokenA.balanceOf(address(this)), inputBefore);
         assertEq(tokenB.balanceOf(address(this)), outputBefore);
+    }
+
+    function testRouterQuotesRejectReserveCapacityOverflow() public {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        (uint256 reserveIn, uint256 reserveOut) =
+            BDexLibrary.getReserves(address(factory), address(tokenA), address(tokenB));
+        uint256 capacity = uint256(type(uint112).max) - reserveIn;
+
+        vm.expectRevert(bytes("BDEX: OVERFLOW"));
+        router.getAmountsOut(capacity + 1, path);
+        uint256[] memory fits = router.getAmountsOut(capacity, path);
+        assertEq(fits[0], capacity);
+        assertTrue(fits[1] > 0 && fits[1] < reserveOut);
+
+        vm.expectRevert(bytes("BDEX: OVERFLOW"));
+        router.getAmountsIn(reserveOut - 1, path);
     }
 
     function testFuzzAdverseReserveMutationCannotConsumeExactInput(uint96 targetSeed, uint96 mutationSeed) public {
