@@ -237,6 +237,19 @@ contract RouterSurfaceTest is TestBase {
         router.getAmountsIn(1 ether, path);
     }
 
+    function testMalformedPathsFailBeforeIndexingOrTakingValue() public {
+        address[] memory empty = new address[](0);
+
+        vm.expectRevert(bytes("BDEX: INVALID_PATH"));
+        router.getAmountsOut(1 ether, empty);
+        vm.expectRevert(bytes("BDEX: INVALID_PATH"));
+        router.swapExactBLCHForTokens{value: 1 ether}(0, empty, address(this), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_PATH"));
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            1 ether, 0, empty, address(this), block.timestamp
+        );
+    }
+
     function testRepeatedPoolPathRevertsBeforeTakingInput() public {
         address[] memory path = new address[](3);
         path[0] = address(tokenA);
