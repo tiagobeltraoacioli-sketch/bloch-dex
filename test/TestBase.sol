@@ -74,7 +74,7 @@ contract TestToken {
         return true;
     }
 
-    function _transfer(address from, address to, uint256 amount) internal {
+    function _transfer(address from, address to, uint256 amount) internal virtual {
         uint256 tax = amount * taxBps / 10_000;
         balanceOf[from] -= amount;
         balanceOf[to] += amount - tax;

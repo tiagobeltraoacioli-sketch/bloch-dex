@@ -22,6 +22,23 @@ contract RejectingNativeReceiver {
     }
 }
 
+contract SyncCallbackToken is TestToken {
+    address public callbackPair;
+    bool public callbackBlocked;
+
+    function setCallbackPair(address pair) external {
+        callbackPair = pair;
+    }
+
+    function _transfer(address from, address to, uint256 amount) internal override {
+        super._transfer(from, to, amount);
+        if (callbackPair != address(0)) {
+            (bool success,) = callbackPair.call(abi.encodeWithSelector(UniswapV2Pair.sync.selector));
+            callbackBlocked = !success;
+        }
+    }
+}
+
 contract RouterSurfaceTest is TestBase {
     UniswapV2Factory private factory;
     BDexRouter private router;
@@ -328,6 +345,48 @@ contract RouterSurfaceTest is TestBase {
         assertEq(address(router).balance, 0);
         assertEq(wrapped.balanceOf(address(router)), 0);
         assertEq(tokenB.balanceOf(address(router)), 0);
+    }
+
+    function testTokenSyncCallbacksFailClosedAtInputAndRemainLockedAtOutput() public {
+        UniswapV2Factory callbackFactory = new UniswapV2Factory(address(this));
+        BDexRouter callbackRouter = new BDexRouter(address(callbackFactory), address(wrapped));
+        SyncCallbackToken callbackToken = new SyncCallbackToken();
+        TestToken ordinaryToken = new TestToken();
+        callbackToken.mint(address(this), 10_000 ether);
+        ordinaryToken.mint(address(this), 10_000 ether);
+        callbackToken.approve(address(callbackRouter), type(uint256).max);
+        ordinaryToken.approve(address(callbackRouter), type(uint256).max);
+        callbackRouter.addLiquidity(
+            address(callbackToken),
+            address(ordinaryToken),
+            1_000 ether,
+            1_000 ether,
+            1_000 ether,
+            1_000 ether,
+            address(this),
+            block.timestamp
+        );
+        UniswapV2Pair callbackPair =
+            UniswapV2Pair(callbackFactory.getPair(address(callbackToken), address(ordinaryToken)));
+        callbackToken.setCallbackPair(address(callbackPair));
+
+        address[] memory inputPath = _path(address(callbackToken), address(ordinaryToken));
+        uint256[] memory inputQuote = callbackRouter.getAmountsOut(10 ether, inputPath);
+        uint256 callbackBalanceBefore = callbackToken.balanceOf(address(this));
+        (uint112 reserve0Before, uint112 reserve1Before,) = callbackPair.getReserves();
+        vm.expectRevert(bytes("BDEX: INSUFFICIENT_INPUT_AMOUNT"));
+        callbackRouter.swapExactTokensForTokens(10 ether, inputQuote[1], inputPath, address(this), block.timestamp);
+        assertEq(callbackToken.balanceOf(address(this)), callbackBalanceBefore);
+        (uint112 reserve0After, uint112 reserve1After,) = callbackPair.getReserves();
+        assertEq(reserve0After, reserve0Before);
+        assertEq(reserve1After, reserve1Before);
+
+        address[] memory outputPath = _path(address(ordinaryToken), address(callbackToken));
+        uint256[] memory outputQuote = callbackRouter.getAmountsOut(10 ether, outputPath);
+        uint256 outputBefore = callbackToken.balanceOf(address(this));
+        callbackRouter.swapExactTokensForTokens(10 ether, outputQuote[1], outputPath, address(this), block.timestamp);
+        assertTrue(callbackToken.callbackBlocked());
+        assertEq(callbackToken.balanceOf(address(this)) - outputBefore, outputQuote[1]);
     }
 
     function testQuotesRejectPathsThatReuseAPool() public {
