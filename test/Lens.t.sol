@@ -95,6 +95,9 @@ contract LensTest is TestBase {
         cycle[2] = address(a);
         vm.expectRevert(bytes("LENS: CYCLIC_PATH"));
         lens.quoteExactInput(1 ether, cycle, 50);
+        address[] memory identical = path2(address(a), address(a));
+        vm.expectRevert(bytes("LENS: CYCLIC_PATH"));
+        lens.quoteExactInput(1 ether, identical, 50);
         address[][] memory routes = new address[][](2);
         routes[0] = path2(address(a), address(b));
         routes[1] = path2(address(a), address(c));
@@ -102,6 +105,20 @@ contract LensTest is TestBase {
         lens.bestExactInput(1 ether, routes, 50);
         vm.expectRevert(bytes("LENS: SLIPPAGE_RANGE"));
         lens.quoteExactInput(1 ether, routes[0], 10_001);
+    }
+
+    function testDistinctPoolCycleQuoteMatchesExecution() public {
+        address[] memory path = new address[](4);
+        path[0] = address(a);
+        path[1] = address(c);
+        path[2] = address(b);
+        path[3] = address(a);
+
+        BDexLens.RouteQuote memory quote = lens.quoteExactInput(10 ether, path, 50);
+        assertTrue(quote.available);
+        uint256 before = a.balanceOf(address(this));
+        router.swapExactTokensForTokens(10 ether, quote.minimumOut, path, address(this), block.timestamp);
+        assertEq(a.balanceOf(address(this)), before - 10 ether + quote.amountOut);
     }
 
     function testFuzzQuoteParityAndSlippageFloor(uint96 inputSeed, uint16 slippageSeed) public view {

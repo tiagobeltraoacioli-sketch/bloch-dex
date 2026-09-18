@@ -147,10 +147,15 @@ contract BDexLens {
         require(path.length >= 2 && path.length <= MAX_PATH_LENGTH, "LENS: PATH_LIMIT");
         for (uint256 i; i < path.length; ++i) {
             require(path[i] != address(0), "LENS: ZERO_TOKEN");
-            // Reusing a pool would require simulating its changed reserves.
-            // Simple paths make each quoted hop use the state it will see.
+            if (i == path.length - 1) continue;
+            require(path[i] != path[i + 1], "LENS: CYCLIC_PATH");
+            // A token may reappear when every hop uses a distinct pool. Only
+            // reusing an unordered edge would make a later quote depend on
+            // reserves changed by an earlier hop.
             for (uint256 j; j < i; ++j) {
-                require(path[i] != path[j], "LENS: CYCLIC_PATH");
+                bool sameDirection = path[i] == path[j] && path[i + 1] == path[j + 1];
+                bool reverseDirection = path[i] == path[j + 1] && path[i + 1] == path[j];
+                require(!sameDirection && !reverseDirection, "LENS: CYCLIC_PATH");
             }
         }
     }

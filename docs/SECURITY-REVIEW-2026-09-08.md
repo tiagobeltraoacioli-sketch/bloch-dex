@@ -33,8 +33,9 @@ not a measurement of all possible MEV losses or a proof of full DEX security.
 - Taxed native removals forward only their own token delta. The final recipient
   cannot be the router itself. Unrelated donations do not subsidize the minimum.
 - `BDexLens` adds bounded discovery and quote comparisons without execution,
-  approval or custody. Repeated-token paths are rejected because naive static
-  reserve quotes would be wrong if a route revisited its own modified pool.
+  approval or custody. Repeated-pool paths are rejected because naive static
+  reserve quotes would be wrong after the first visit modifies that pool.
+  Repeated tokens remain valid when every hop uses a distinct pool.
 - LP estimates include pending protocol-fee dilution. A test compares those
   estimates with actual burn proceeds and the protocol shares minted by the pair.
 - Compiler/EVM settings, Foundry version, CI actions and test parameters are

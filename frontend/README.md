@@ -58,10 +58,12 @@ account persistence, external font request or private-key handling.
 `src/amm.ts` parses decimal input into `bigint` token base units, rejects excess
 precision and exponent syntax, bounds uint256 inputs/intermediates, and applies
 V2's `997/1000` exact-input formula. Slippage minima are rounded down and zero
-outputs are unavailable. Routes are bounded, cycle-free and ranked by output.
-This preview discovers simple paths through the fixture pool graph with at most
-four hops, then retains the best eight quotes to match `BDexLens` bounds. It is
-not global market discovery or split-route optimization.
+outputs are unavailable. Routes are bounded, never reuse a pool and are ranked
+by output.
+This preview discovers paths through the fixture pool graph with at most four
+hops and no repeated pool, then retains the best eight quotes to match
+`BDexLens` bounds. A token may reappear when every hop uses a distinct pool. It
+is not global market discovery or split-route optimization.
 
 `src/data.ts` is the explicit fixture boundary. Its symbolic assets are not
 addresses or a deployment registry. Numeric USD displays and deterministic

@@ -5,6 +5,23 @@ const MAX_RESERVE = (1n << 112n) - 1n;
 const MAX_PATH_LENGTH = 5;
 const MAX_ROUTES = 8;
 
+function reusesPool(path: Symbol[], next: Symbol): boolean {
+  const current = path.at(-1)!;
+  if (current === next) return true;
+  for (let i = 0; i < path.length - 1; i++) {
+    if (
+      (path[i] === current && path[i + 1] === next) ||
+      (path[i] === next && path[i + 1] === current)
+    )
+      return true;
+  }
+  return false;
+}
+
+function hasRepeatedPool(path: Symbol[]): boolean {
+  return path.slice(1).some((next, index) => reusesPool(path.slice(0, index + 1), next));
+}
+
 /** Parse a user amount without floating point rounding, exponent syntax or truncation. */
 export function parseAmount(input: string, decimals: number): bigint | null {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 36) return null;
@@ -46,12 +63,7 @@ export function quoteRoute(
   pools: Pool[],
   slippageBps: number,
 ): Quote | null {
-  if (
-    input <= 0n ||
-    path.length < 2 ||
-    path.length > MAX_PATH_LENGTH ||
-    new Set(path).size !== path.length
-  )
+  if (input <= 0n || path.length < 2 || path.length > MAX_PATH_LENGTH || hasRepeatedPool(path))
     return null;
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 500) return null;
   const amounts = [input];
@@ -96,7 +108,7 @@ function discoverPaths(from: Symbol, to: Symbol, pools: Pool[]): Symbol[][] {
     }
     if (path.length === MAX_PATH_LENGTH) return;
     for (const next of adjacent.get(current) ?? []) {
-      if (!path.includes(next)) visit([...path, next]);
+      if (!reusesPool(path, next)) visit([...path, next]);
     }
   };
   visit([from]);

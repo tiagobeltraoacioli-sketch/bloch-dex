@@ -107,4 +107,35 @@ describe('exact token arithmetic', () => {
     const reversed = findQuotes(10_000n, 'BLCH', 'USDC', [...pools].reverse(), 50);
     expect(reversed).toEqual(quotes);
   });
+  it('allows repeated tokens through distinct pools but rejects a reused pool', () => {
+    const pool = (
+      id: string,
+      token0: Pool['token0'],
+      token1: Pool['token1'],
+    ): Pool => ({
+      id,
+      token0,
+      token1,
+      reserve0: 1_000_000n,
+      reserve1: 1_000_000n,
+      liquidity: 0,
+      volume: 0,
+      fees: 0,
+    });
+    const pools = [
+      pool('a-b', 'BLCH', 'WETH'),
+      pool('b-c', 'WETH', 'USTAV'),
+      pool('c-a', 'USTAV', 'BLCH'),
+      pool('a-d', 'BLCH', 'USDC'),
+    ];
+    pools[0].reserve1 = 2_000_000n;
+    pools[1].reserve1 = 2_000_000n;
+    pools[2].reserve1 = 2_000_000n;
+    const repeatedToken = ['BLCH', 'WETH', 'USTAV', 'BLCH', 'USDC'] as const;
+
+    expect(quoteRoute(10_000n, [...repeatedToken], pools, 50)?.path).toEqual(repeatedToken);
+    expect(findQuotes(10_000n, 'BLCH', 'USDC', pools, 50)[0].path).toEqual(repeatedToken);
+    expect(quoteRoute(10_000n, ['BLCH', 'WETH', 'BLCH'], pools, 50)).toBeNull();
+    expect(quoteRoute(10_000n, ['BLCH', 'BLCH'], pools, 50)).toBeNull();
+  });
 });

@@ -105,8 +105,9 @@ make actual redemption differ from reserve-based estimates.
 loss versus the marginal reserve ratio, an explicit availability flag, the
 quote's block/time and a rounded-down minimum output. `bestExactInput` compares
 up to eight caller-supplied routes of at most four hops, with matching endpoints
-and no repeated tokens. Missing or empty pools are marked unavailable; if no
-candidate is usable, `bestIndex` is `uint256.max`.
+and no repeated pools. Tokens may reappear when every hop uses a distinct pool.
+Missing or empty pools are marked unavailable; if no candidate is usable,
+`bestIndex` is `uint256.max`.
 
 This is comparison of supplied candidates, not global route discovery or
 split-route optimization. Read `available` before interpreting a quote. Spot
