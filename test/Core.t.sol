@@ -30,6 +30,8 @@ contract FlashBorrower {
 }
 
 contract CoreTest is TestBase {
+    uint256 private constant SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+
     UniswapV2Factory internal factory;
     TestToken internal a;
     TestToken internal b;
@@ -154,5 +156,23 @@ contract CoreTest is TestBase {
         vm.expectRevert(bytes("BDEX: INVALID_SIGNATURE"));
         lp.permit(owner, address(this), 123, deadline, v, r, s);
         assertEq(lp.nonces(owner), 1);
+    }
+
+    function testPermitRejectsMalleatedHighSSignature() public {
+        UniswapV2ERC20 lp = new UniswapV2ERC20();
+        address owner = vm.addr(0x1234);
+        uint256 deadline = block.timestamp + 100;
+        bytes32 message = keccak256(abi.encode(lp.PERMIT_TYPEHASH(), owner, address(this), 123, 0, deadline));
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(0x1234, keccak256(abi.encodePacked(hex"1901", lp.DOMAIN_SEPARATOR(), message)));
+        uint8 malleatedV = v == 27 ? 28 : 27;
+        bytes32 highS = bytes32(SECP256K1_ORDER - uint256(s));
+
+        vm.expectRevert(bytes("BDEX: INVALID_SIGNATURE"));
+        lp.permit(owner, address(this), 123, deadline, malleatedV, r, highS);
+        assertEq(lp.nonces(owner), 0);
+
+        lp.permit(owner, address(this), 123, deadline, v, r, s);
+        assertEq(lp.allowance(owner, address(this)), 123);
     }
 }

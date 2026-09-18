@@ -23,6 +23,11 @@ contract UniswapV2ERC20 {
     ///      tooling signs permits for this token unmodified.
     bytes32 public constant PERMIT_TYPEHASH = 0x6e71edae12b1b97f4d1f60370fef10105fa2faae0126114a169c64845d6126c9;
 
+    /// @dev EIP-2's secp256k1 half-order. ecrecover accepts both (r, s, v)
+    ///      and (r, n-s, flipped-v) for the same signer; restricting permits
+    ///      to low-s signatures gives each authorization one canonical form.
+    uint256 private constant SECP256K1_HALF_ORDER = 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
+
     mapping(address => uint256) public nonces;
 
     event Approval(address indexed owner, address indexed spender, uint256 value);
@@ -102,6 +107,7 @@ contract UniswapV2ERC20 {
         // (canonical behaviour; the signer chooses the deadline).
         // forge-lint: disable-next-line(block-timestamp)
         require(deadline >= block.timestamp, "BDEX: EXPIRED");
+        require((v == 27 || v == 28) && uint256(s) <= SECP256K1_HALF_ORDER, "BDEX: INVALID_SIGNATURE");
         bytes32 digest = keccak256(
             abi.encodePacked(
                 "\x19\x01",

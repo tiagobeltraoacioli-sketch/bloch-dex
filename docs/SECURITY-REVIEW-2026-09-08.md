@@ -39,6 +39,9 @@ not a measurement of all possible MEV losses or a proof of full DEX security.
   estimates with actual burn proceeds and the protocol shares minted by the pair.
 - Compiler/EVM settings, Foundry version, CI actions and test parameters are
   pinned. The test harness has no external Solidity library dependency.
+- LP permits reject malleated high-s ECDSA alternatives before consuming the
+  nonce. Canonical wallet signatures and the front-run-tolerant router removal
+  flow remain covered by regression tests.
 - Removed inherited references to absent legacy tests and placeholder chain
   configurations. The README now states the EVM/ECDSA and PQ L1 boundary.
 

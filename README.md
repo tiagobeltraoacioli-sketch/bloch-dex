@@ -142,6 +142,9 @@ router may remain unrecoverable.
 - Pair creation bytecode changed. Read `INIT_CODE_PAIR_HASH()` from the actual
   factory; never hardcode canonical Uniswap or an earlier Postern hash. Existing
   deployments cannot be upgraded by changing these source files.
+- LP-token permits require canonical low-s ECDSA signatures with `v` equal to
+  27 or 28. Standard wallet signatures already satisfy this rule; malleated
+  high-s alternatives are rejected and do not consume the permit nonce.
 - Fee arithmetic remains V2's lazy 1/6 share of `sqrt(k)` growth. A liquidity
   event while `feeTo` is off resets `kLast`; toggling off and on between
   liquidity events does not clear that baseline.
