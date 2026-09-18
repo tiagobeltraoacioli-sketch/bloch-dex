@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {TestBase, TestWrappedNative} from "./TestBase.sol";
+import {TestBase, TestToken, TestWrappedNative} from "./TestBase.sol";
 import {BlochAsset} from "../contracts/assets/BlochAsset.sol";
 import {UniswapV2Factory} from "../contracts/UniswapV2Factory.sol";
 import {UniswapV2Pair} from "../contracts/UniswapV2Pair.sol";
@@ -52,6 +52,45 @@ contract PairSupportTest is TestBase {
         assertEq(factory.feeTo(), address(0));
         assertEq(a.balanceOf(address(this)), a.totalSupply());
         assertEq(b.balanceOf(address(this)), b.totalSupply());
+    }
+
+    function testCreate2RegistryKeepsEveryTokenPairUnique() public {
+        TestToken c = new TestToken();
+        TestToken d = new TestToken();
+        address[] memory tokens = new address[](4);
+        tokens[0] = address(a);
+        tokens[1] = address(b);
+        tokens[2] = address(c);
+        tokens[3] = address(d);
+        address[] memory created = new address[](6);
+        uint256 count;
+
+        for (uint256 i; i < tokens.length; ++i) {
+            for (uint256 j = i + 1; j < tokens.length; ++j) {
+                (address token0, address token1) =
+                    tokens[i] < tokens[j] ? (tokens[i], tokens[j]) : (tokens[j], tokens[i]);
+                bytes32 salt = keccak256(abi.encodePacked(token0, token1));
+                address predicted = address(
+                    uint160(
+                        uint256(
+                            keccak256(abi.encodePacked(hex"ff", address(factory), salt, factory.INIT_CODE_PAIR_HASH()))
+                        )
+                    )
+                );
+                address pair = factory.createPair(tokens[j], tokens[i]);
+                assertEq(pair, predicted);
+                assertEq(factory.getPair(tokens[i], tokens[j]), pair);
+                assertEq(factory.getPair(tokens[j], tokens[i]), pair);
+                assertEq(factory.allPairs(count), pair);
+                for (uint256 previous; previous < count; ++previous) {
+                    assertTrue(created[previous] != pair);
+                }
+                created[count++] = pair;
+            }
+        }
+
+        assertEq(factory.allPairsLength(), 6);
+        assertEq(factory.INIT_CODE_PAIR_HASH(), keccak256(type(UniswapV2Pair).creationCode));
     }
 
     function testMissingEmptyAndFundedPairsAreDistinct() public {
