@@ -17,6 +17,13 @@ contract RejectingNativeReceiver {
         router.swapBLCHForExactTokens{value: msg.value}(amountOut, path, address(this), deadline);
     }
 
+    function addLiquidity(BDexRouter router, TestToken token, uint256 deadline) external payable {
+        token.approve(address(router), type(uint256).max);
+        router.addLiquidityBLCH{value: msg.value}(
+            address(token), 100 ether, 100 ether, 10 ether, address(this), deadline
+        );
+    }
+
     receive() external payable {
         revert("reject native");
     }
@@ -114,6 +121,39 @@ contract RouterSurfaceTest is TestBase {
         assertEq(reserve1After, reserve1Before);
         assertEq(tokenA.balanceOf(address(recipient)), 0);
         assertEq(address(router).balance, 0);
+        assertEq(wrapped.balanceOf(address(router)), 0);
+    }
+
+    function testRejectedLiquidityRefundRollsBackDepositAndMint() public {
+        RejectingNativeReceiver provider = new RejectingNativeReceiver();
+        tokenA.mint(address(provider), 100 ether);
+        UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(tokenA), address(wrapped)));
+        (uint112 reserve0Before, uint112 reserve1Before,) = pair.getReserves();
+        uint256 supplyBefore = pair.totalSupply();
+
+        vm.expectRevert(bytes("BDEX: NATIVE_TRANSFER_FAILED"));
+        provider.addLiquidity{value: 20 ether}(router, tokenA, block.timestamp);
+
+        (uint112 reserve0After, uint112 reserve1After,) = pair.getReserves();
+        assertEq(reserve0After, reserve0Before);
+        assertEq(reserve1After, reserve1Before);
+        assertEq(pair.totalSupply(), supplyBefore);
+        assertEq(pair.balanceOf(address(provider)), 0);
+        assertEq(tokenA.balanceOf(address(provider)), 100 ether);
+        assertEq(address(router).balance, 0);
+    }
+
+    function testForcedNativeBalanceCannotSubsidizeOrAlterRefund() public {
+        address[] memory path = _path(address(wrapped), address(tokenA));
+        uint256 amountOut = 5 ether;
+        uint256[] memory quote = router.getAmountsIn(amountOut, path);
+        vm.deal(address(router), 3 ether);
+        uint256 nativeBefore = address(this).balance;
+
+        router.swapBLCHForExactTokens{value: quote[0] + 7 ether}(amountOut, path, address(this), block.timestamp);
+
+        assertEq(nativeBefore - address(this).balance, quote[0]);
+        assertEq(address(router).balance, 3 ether);
         assertEq(wrapped.balanceOf(address(router)), 0);
     }
 
