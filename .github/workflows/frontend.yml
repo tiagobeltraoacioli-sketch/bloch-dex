@@ -35,5 +35,7 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Arithmetic, wallet lifecycle and UI interaction tests
         run: npm test
+      - name: Mobile edge adapter tests
+        run: npm run test:mobile-edge
       - name: Typecheck and compile production assets
         run: npm run build
