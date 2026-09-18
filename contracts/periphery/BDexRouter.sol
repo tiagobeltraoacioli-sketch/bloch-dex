@@ -81,6 +81,13 @@ contract BDexRouter is IBDexRouter {
         require(to != address(0) && to != WBLCH, "BDEX: INVALID_TO");
     }
 
+    /// @dev The router has no token/LP rescue path, and address(0) has no
+    ///      usable owner. Pair primitives remain available to callers that
+    ///      deliberately want canonical low-level burn semantics.
+    function _ensureTokenRecipient(address to) private view {
+        require(to != address(0) && to != address(this), "BDEX: INVALID_TO");
+    }
+
     // =========================================================================
     // Liquidity
     // =========================================================================
@@ -139,6 +146,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) returns (uint256 amountA, uint256 amountB, uint256 liquidity) {
+        _ensureTokenRecipient(to);
         (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
         address pair = BDexLibrary.pairFor(factory, tokenA, tokenB);
         _safeTransferFrom(tokenA, msg.sender, pair, amountA);
@@ -157,6 +165,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external payable ensure(deadline) returns (uint256 amountToken, uint256 amountBLCH, uint256 liquidity) {
+        _ensureTokenRecipient(to);
         (amountToken, amountBLCH) =
             _addLiquidity(token, WBLCH, amountTokenDesired, msg.value, amountTokenMin, amountBLCHMin);
         address pair = BDexLibrary.pairFor(factory, token, WBLCH);
@@ -178,6 +187,18 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) public ensure(deadline) returns (uint256 amountA, uint256 amountB) {
+        _ensureTokenRecipient(to);
+        return _removeLiquidity(tokenA, tokenB, liquidity, amountAMin, amountBMin, to);
+    }
+
+    function _removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to
+    ) private returns (uint256 amountA, uint256 amountB) {
         address pair = BDexLibrary.pairFor(factory, tokenA, tokenB);
         // The Pair is itself the LP ERC-20; shares must sit in the Pair before
         // burn() (UniswapV2Pair.sol burn header). "burn" here = redeem LP
@@ -197,12 +218,11 @@ contract BDexRouter is IBDexRouter {
         uint256 amountBLCHMin,
         address to,
         uint256 deadline
-    ) public returns (uint256 amountToken, uint256 amountBLCH) {
+    ) public ensure(deadline) returns (uint256 amountToken, uint256 amountBLCH) {
         _ensureNativeRecipient(to);
-        // Redeem to the Router first: the Pair pays WBLCH, the user wants
-        // native. removeLiquidity carries the ensure(deadline) check.
+        // Redeem to the Router first: the Pair pays WBLCH, the user wants native.
         (amountToken, amountBLCH) =
-            removeLiquidity(token, WBLCH, liquidity, amountTokenMin, amountBLCHMin, address(this), deadline);
+            _removeLiquidity(token, WBLCH, liquidity, amountTokenMin, amountBLCHMin, address(this));
         _safeTransfer(token, to, amountToken);
         IWBLCH(WBLCH).withdraw(amountBLCH); // unwrap 1:1; native arrives via receive()
         _safeTransferNative(to, amountBLCH);
@@ -263,12 +283,12 @@ contract BDexRouter is IBDexRouter {
         uint256 amountBLCHMin,
         address to,
         uint256 deadline
-    ) public returns (uint256 amountBLCH) {
+    ) public ensure(deadline) returns (uint256 amountBLCH) {
         _ensureNativeRecipient(to);
         require(to != address(this), "BDEX: INVALID_TO");
         uint256 routerBefore = _balanceOf(token, address(this));
         uint256 recipientBefore = _balanceOf(token, to);
-        (, amountBLCH) = removeLiquidity(token, WBLCH, liquidity, 0, amountBLCHMin, address(this), deadline);
+        (, amountBLCH) = _removeLiquidity(token, WBLCH, liquidity, 0, amountBLCHMin, address(this));
         // Only forward this redemption's delta; pre-existing donations cannot
         // subsidize a taxed withdrawal or another caller's minimum.
         _safeTransfer(token, to, _balanceOf(token, address(this)) - routerBefore);
@@ -324,6 +344,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) returns (uint256[] memory amounts) {
+        _ensureTokenRecipient(to);
         amounts = BDexLibrary.getAmountsOut(factory, amountIn, path);
         // Enforce the user's signed execution bound at inclusion time.
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
@@ -338,6 +359,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) returns (uint256[] memory amounts) {
+        _ensureTokenRecipient(to);
         amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= amountInMax, "BDEX: EXCESSIVE_INPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
@@ -350,6 +372,7 @@ contract BDexRouter is IBDexRouter {
         ensure(deadline)
         returns (uint256[] memory amounts)
     {
+        _ensureTokenRecipient(to);
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsOut(factory, msg.value, path);
@@ -405,6 +428,7 @@ contract BDexRouter is IBDexRouter {
         ensure(deadline)
         returns (uint256[] memory amounts)
     {
+        _ensureTokenRecipient(to);
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
@@ -470,6 +494,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external ensure(deadline) {
+        _ensureTokenRecipient(to);
         BDexLibrary.validatePath(path);
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amountIn);
         uint256 balanceBefore = _balanceOf(path[path.length - 1], to);
@@ -487,6 +512,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) external payable ensure(deadline) {
+        _ensureTokenRecipient(to);
         BDexLibrary.validatePath(path);
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
         uint256 amountIn = msg.value;

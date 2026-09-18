@@ -103,6 +103,47 @@ contract RouterSurfaceTest is TestBase {
         assertEq(wrapped.balanceOf(address(router)), 0);
     }
 
+    function testTokenAndLiquidityRecipientsCannotStrandFunds() public {
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256[] memory quote = router.getAmountsOut(1 ether, path);
+        UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(tokenA), address(tokenB)));
+        uint256 liquidity = pair.balanceOf(address(this)) / 10;
+        pair.approve(address(router), liquidity);
+
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.addLiquidity(address(tokenA), address(tokenB), 1 ether, 2 ether, 0, 0, address(0), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.addLiquidity(address(tokenA), address(tokenB), 1 ether, 2 ether, 0, 0, address(router), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactTokensForTokens(1 ether, quote[1], path, address(0), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactTokensForTokens(1 ether, quote[1], path, address(router), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.removeLiquidity(address(tokenA), address(tokenB), liquidity, 0, 0, address(0), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.removeLiquidity(address(tokenA), address(tokenB), liquidity, 0, 0, address(router), block.timestamp);
+
+        address[] memory nativePath = _path(address(wrapped), address(tokenA));
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.addLiquidityBLCH{value: 1 ether}(address(tokenA), 10 ether, 0, 0, address(0), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactBLCHForTokens{value: 1 ether}(0, nativePath, address(0), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapBLCHForExactTokens{value: 1 ether}(1, nativePath, address(router), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(1 ether, 0, path, address(0), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactBLCHForTokensSupportingFeeOnTransferTokens{value: 1 ether}(
+            0, nativePath, address(router), block.timestamp
+        );
+
+        assertEq(tokenA.balanceOf(address(router)), 0);
+        assertEq(tokenB.balanceOf(address(router)), 0);
+        assertEq(pair.balanceOf(address(router)), 0);
+        assertEq(pair.balanceOf(address(0)), pair.MINIMUM_LIQUIDITY());
+        assertTrue(pair.balanceOf(address(this)) > liquidity);
+    }
+
     function testRejectedNativeRefundRollsBackSwap() public {
         address[] memory path = _path(address(wrapped), address(tokenA));
         uint256 amountOut = 5 ether;
