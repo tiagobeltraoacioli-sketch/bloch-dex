@@ -207,3 +207,17 @@ It does not fetch an RPC URL, request accounts, approve tokens, sign, submit a
 transaction or enable liquidity. A future live UI must additionally implement
 an approved registry/provider, explicit read-only UI state, live history, and
 the remaining transaction confirmation/receipt controls listed above.
+
+`src/LivePools.tsx` is the first isolated UI consumer. Given an already bound
+reader, it requests one bounded page and renders only registry-approved token
+symbols and integer reserve amounts. Loading, provider-unavailable, stale and
+unsupported-pool states are distinct; failures explicitly state that preview
+fixtures were not substituted. A per-component latest-read gate and abort signal
+prevent an older reader from overwriting a newer snapshot. The surface has no
+wallet, swap, approval, deposit or withdrawal control.
+
+`LivePools` is also deliberately not imported by `App.tsx`. Mounting it requires
+an approved registry and provider composition that this repository does not yet
+have. This keeps the published preview unchanged while allowing that future
+composition to be tested without adding a cosmetic or silently degraded live
+mode.

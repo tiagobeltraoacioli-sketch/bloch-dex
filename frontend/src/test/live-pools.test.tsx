@@ -1,0 +1,159 @@
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import type { Address, Hex } from 'viem';
+import LivePools, { type LivePoolsReader } from '../LivePools';
+import type { DeploymentRegistry, LivePoolPage, LiveReadState } from '../live-read';
+
+const address = (byte: string) => `0x${byte.repeat(40)}` as Address;
+const hash = (byte: string) => `0x${byte.repeat(64)}` as Hex;
+const token0 = address('1');
+const token1 = address('2');
+const pair = address('3');
+
+const registry = {
+  schemaVersion: 2,
+  environment: 'staging',
+  host: 'bloch-dex',
+  frontendMode: 'preview',
+  liquidityEnabled: false,
+  chain: { id: 1, genesisHash: hash('a'), rpcUrl: 'https://rpc.invalid/' },
+  deployment: {
+    blockNumber: 1,
+    blockHash: hash('b'),
+    pairInitCodeHash: hash('c'),
+    factory: { address: address('4'), runtimeCodeHash: hash('4') },
+    router: { address: address('5'), runtimeCodeHash: hash('5') },
+    lens: { address: address('6'), runtimeCodeHash: hash('6') },
+    collector: { address: address('7'), runtimeCodeHash: hash('7') },
+    wrappedNative: { address: address('8'), runtimeCodeHash: hash('8') },
+  },
+  tokens: [
+    {
+      address: address('8'),
+      runtimeCodeHash: hash('8'),
+      symbol: 'WBLCH',
+      name: 'Wrapped BLCH',
+      decimals: 18,
+      wrappedNative: true,
+      policy: { feeOnTransfer: false, rebasing: false },
+    },
+    {
+      address: token0,
+      runtimeCodeHash: hash('1'),
+      symbol: 'ALPHA',
+      name: 'Alpha',
+      decimals: 18,
+      wrappedNative: false,
+      policy: { feeOnTransfer: false, rebasing: false },
+    },
+    {
+      address: token1,
+      runtimeCodeHash: hash('2'),
+      symbol: 'BETA',
+      name: 'Beta',
+      decimals: 6,
+      wrappedNative: false,
+      policy: { feeOnTransfer: false, rebasing: false },
+    },
+  ],
+} satisfies DeploymentRegistry;
+
+function page(reserve0 = 123n * 10n ** 18n): LivePoolPage {
+  return {
+    blockNumber: 32n,
+    blockHash: hash('d'),
+    pools: [
+      {
+        pair,
+        token0,
+        token1,
+        reserve0,
+        reserve1: 456n * 10n ** 6n,
+        reserveTimestamp: 1,
+        totalSupply: 99n,
+      },
+    ],
+    nextCursor: 1n,
+    total: 1n,
+    filteredUnsupported: 0,
+  };
+}
+
+function reader(
+  result: LiveReadState<LivePoolPage> | Promise<LiveReadState<LivePoolPage>>,
+): LivePoolsReader {
+  return { registry, pools: vi.fn(async () => result) };
+}
+
+describe('read-only live pool UI', () => {
+  it('shows loading then a registry-formatted snapshot without fund controls or fixtures', async () => {
+    let resolve!: (value: LiveReadState<LivePoolPage>) => void;
+    const pending = new Promise<LiveReadState<LivePoolPage>>((done) => {
+      resolve = done;
+    });
+    render(<LivePools reader={reader(pending)} />);
+    expect(screen.getByRole('status').textContent).toContain('Loading one authenticated block');
+    resolve({ available: true, value: page() });
+    expect(await screen.findByText('ALPHA / BETA')).toBeTruthy();
+    expect(screen.getByText('123 ALPHA')).toBeTruthy();
+    expect(screen.getByText('456 BETA')).toBeTruthy();
+    expect(screen.getByText(/Snapshot block 32/)).toBeTruthy();
+    expect(screen.getByText(/no fixture fallback/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /swap|liquidity|approve|deposit/i })).toBeNull();
+  });
+
+  it.each([
+    ['provider-unavailable', 'could not be read'],
+    ['stale', 'became stale'],
+  ] as const)('renders the %s state and retries without fixture fallback', async (reason, copy) => {
+    const pools = vi
+      .fn<LivePoolsReader['pools']>()
+      .mockResolvedValueOnce({ available: false, reason })
+      .mockResolvedValueOnce({ available: true, value: page() });
+    render(<LivePools reader={{ registry, pools }} />);
+    expect(await screen.findByText(new RegExp(copy))).toBeTruthy();
+    expect(screen.getByText(/was not substituted|was not displayed/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /retry read/i }));
+    expect(await screen.findByText('ALPHA / BETA')).toBeTruthy();
+    expect(pools).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows unsupported filtering explicitly and never fills the page with demo pools', async () => {
+    const empty = page();
+    empty.pools = [];
+    empty.filteredUnsupported = 2;
+    empty.total = 2n;
+    render(<LivePools reader={reader({ available: true, value: empty })} />);
+    expect(await screen.findByText(/2 permissionless pools were hidden/)).toBeTruthy();
+    expect(screen.getByText(/No reviewed pools are available/)).toBeTruthy();
+    expect(screen.queryByText(/BLCH \/ USDC/)).toBeNull();
+  });
+
+  it('prevents a late reader from overwriting a newer authenticated snapshot', async () => {
+    let resolveOld!: (value: LiveReadState<LivePoolPage>) => void;
+    const oldResult = new Promise<LiveReadState<LivePoolPage>>((done) => {
+      resolveOld = done;
+    });
+    const oldReader = reader(oldResult);
+    const newReader = reader({ available: true, value: page(222n * 10n ** 18n) });
+    const view = render(<LivePools reader={oldReader} />);
+    view.rerender(<LivePools reader={newReader} />);
+    expect(await screen.findByText('222 ALPHA')).toBeTruthy();
+    resolveOld({ available: true, value: page(111n * 10n ** 18n) });
+    await waitFor(() => expect(screen.queryByText('111 ALPHA')).toBeNull());
+    expect(screen.getByText('222 ALPHA')).toBeTruthy();
+  });
+
+  it('fails closed when a reader rejects unexpectedly', async () => {
+    const rejecting: LivePoolsReader = {
+      registry,
+      pools: vi.fn(async () => {
+        throw new Error('provider leaked an unexpected rejection');
+      }),
+    };
+    render(<LivePools reader={rejecting} />);
+    expect((await screen.findByRole('alert')).textContent).toContain('could not be read');
+    expect(screen.getByText(/Preview data was not substituted/)).toBeTruthy();
+  });
+});
