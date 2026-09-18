@@ -70,6 +70,7 @@ contract DeploymentTest is TestBase {
         assertEq(wrappedAddress, address(wrapped));
         assertEq(factory.feeTo(), address(0));
         assertEq(factory.feeToSetter(), AUTHORITY);
+        assertEq(factory.pendingFeeToSetter(), address(0));
         assertEq(factory.allPairsLength(), 0);
         assertEq(router.factory(), factoryAddress);
         assertEq(router.WBLCH(), address(wrapped));
@@ -78,6 +79,8 @@ contract DeploymentTest is TestBase {
         assertEq(collector.treasury(), TREASURY);
         assertEq(collector.wblch(), address(wrapped));
         assertEq(pairHash, factory.INIT_CODE_PAIR_HASH());
+        vm.expectRevert(bytes("BDEX: FORBIDDEN"));
+        factory.setFeeTo(TREASURY);
 
         vm.chainId(31338);
         vm.expectRevert(bytes("DEPLOY: CHAIN_ID"));
