@@ -221,3 +221,22 @@ an approved registry and provider composition that this repository does not yet
 have. This keeps the published preview unchanged while allowing that future
 composition to be tested without adding a cosmetic or silently degraded live
 mode.
+
+`src/live-runtime.ts` supplies that composition boundary without selecting a
+deployment. It fetches a versioned staging artifact manifest only from a
+credential-free same-origin URL, verifies its configuration SHA-256, preview
+target and registry schema, and accepts the registry RPC only when its HTTPS
+origin is in an explicit host-provided allowlist. Its provider permits only the
+five read methods used by `LiveReadAdapter`, validates each method's exact
+parameters, omits credentials and referrers, rejects redirects and non-JSON or
+oversized responses, and bounds requests with abortable timeouts.
+
+`LiveReaderFactory` reloads the manifest and creates a new provider and bound
+adapter for every refresh. `src/LivePoolsRuntime.tsx` owns and closes each such
+session, rejects late sessions after a refresh, and fails closed without fixture
+substitution. It remains a standalone surface and is not mounted by `App.tsx`:
+this repository still contains neither a reviewed artifact manifest nor an
+approved RPC-origin allowlist. Supplying and operationally reviewing both,
+including browser CORS and real-RPC behavior, is the next read-only integration
+gate. Same-origin delivery and a digest stored beside the configuration detect
+accidental mismatch but are not an independent signature or trust anchor.

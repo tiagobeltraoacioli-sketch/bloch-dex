@@ -41,7 +41,13 @@ function shortAddress(value: string): string {
  * Isolated live-data surface. It never imports preview fixtures and deliberately
  * contains no swap, approval, deposit, withdrawal or wallet control.
  */
-export default function LivePools({ reader }: { reader: LivePoolsReader }) {
+export default function LivePools({
+  reader,
+  onRefresh,
+}: {
+  reader: LivePoolsReader;
+  onRefresh?: () => void;
+}) {
   const [reload, setReload] = useState(0);
   const [state, setState] = useState<ViewState>({ kind: 'loading' });
   const gate = useRef(new LatestReadGate());
@@ -73,6 +79,7 @@ export default function LivePools({ reader }: { reader: LivePoolsReader }) {
   const tokens = new Map(
     reader.registry.tokens.map((token) => [token.address.toLowerCase(), token]),
   );
+  const refresh = () => (onRefresh ? onRefresh() : setReload((value) => value + 1));
   return (
     <section className="panel pools-panel" aria-labelledby="live-pools-title">
       <div className="pool-toolbar">
@@ -93,7 +100,7 @@ export default function LivePools({ reader }: { reader: LivePoolsReader }) {
       {state.kind === 'stale' && (
         <div className="notice" role="status">
           <p>This response became stale and was not displayed.</p>
-          <button className="button secondary" onClick={() => setReload((value) => value + 1)}>
+          <button className="button secondary" onClick={refresh}>
             <RefreshCw size={16} /> Retry read
           </button>
         </div>
@@ -102,7 +109,7 @@ export default function LivePools({ reader }: { reader: LivePoolsReader }) {
         <div className="notice" role="alert">
           <p>{unavailableCopy[state.reason]}</p>
           <p className="microcopy">Preview data was not substituted for this failed live read.</p>
-          <button className="button secondary" onClick={() => setReload((value) => value + 1)}>
+          <button className="button secondary" onClick={refresh}>
             <RefreshCw size={16} /> Retry read
           </button>
         </div>
@@ -172,6 +179,11 @@ export default function LivePools({ reader }: { reader: LivePoolsReader }) {
               pools
             </span>
             <span className="muted">Read only · no fixture fallback</span>
+            {onRefresh && (
+              <button className="button secondary" onClick={refresh}>
+                <RefreshCw size={16} /> Refresh snapshot
+              </button>
+            )}
           </div>
         </>
       )}
