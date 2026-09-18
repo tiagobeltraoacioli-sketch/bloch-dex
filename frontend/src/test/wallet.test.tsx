@@ -6,6 +6,7 @@ import {
   METAMASK_MOBILE_URL,
   discoverWallets,
   validAddress,
+  validAccounts,
   validChain,
   walletDisplayName,
   walletError,
@@ -87,9 +88,18 @@ describe('wallet identification boundary', () => {
   });
   it('rejects malformed accounts and network IDs', async () => {
     expect(validAddress('0x123')).toBe(false);
+    expect(validAccounts([address, secondAddress])).toBe(true);
+    expect(validAccounts([address, 'invalid'])).toBe(false);
+    expect(validAccounts(Array(21).fill(address))).toBe(false);
     expect(validChain('1')).toBe(false);
     expect(validChain('0x0')).toBe(false);
     await expect(connectAccount(fixture(vi.fn(async () => ['0x123'])).wallet)).rejects.toThrow(
+      'valid account',
+    );
+    await expect(connectAccount(fixture(vi.fn(async () => [address, 'invalid'])).wallet)).rejects.toThrow(
+      'valid account',
+    );
+    await expect(connectAccount(fixture(vi.fn(async () => Array(21).fill(address))).wallet)).rejects.toThrow(
       'valid account',
     );
     await expect(
@@ -233,6 +243,21 @@ describe('wallet identification boundary', () => {
     expect(result.current.account).toBeNull();
     expect([...f.listeners.values()].every((handlers) => handlers.size === 0)).toBe(true);
     unmount();
+  });
+  it('disconnects on malformed account lists and snapshots pending account events', async () => {
+    let resolveAccounts!: (value: unknown) => void;
+    const pendingAccounts = new Promise((resolve) => { resolveAccounts = resolve; });
+    const f = fixture(vi.fn(async ({ method }) => method === 'eth_requestAccounts' ? pendingAccounts : '0x1'));
+    const { result } = renderHook(() => useWallet());
+    let connection!: Promise<void>;
+    act(() => { connection = result.current.connect(f.wallet); });
+    const eventAccounts = [secondAddress];
+    act(() => f.emit('accountsChanged', eventAccounts));
+    eventAccounts[0] = 'invalid';
+    await act(async () => { resolveAccounts([address]); await connection; });
+    expect(result.current.account?.address).toBe(secondAddress);
+    act(() => f.emit('accountsChanged', [address, 'invalid']));
+    expect(result.current.account).toBeNull();
   });
   it('does not reconnect after a cancelled in-flight wallet prompt', async () => {
     let resolveAccounts!: (value: unknown) => void;

@@ -38,6 +38,9 @@ declare global {
 export function validAddress(value: unknown): value is string {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }
+export function validAccounts(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length >= 1 && value.length <= 20 && value.every(validAddress);
+}
 export function validChain(value: unknown): value is string {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{1,64}$/.test(value) && BigInt(value) > 0n;
 }
@@ -119,7 +122,7 @@ export function discoverWallets(onWallet: (wallet: WalletOption) => void): () =>
 
 export async function connectAccount(wallet: WalletOption): Promise<WalletAccount> {
   const accounts = await wallet.provider.request({ method: 'eth_requestAccounts' });
-  if (!Array.isArray(accounts) || !validAddress(accounts[0]))
+  if (!validAccounts(accounts))
     throw new Error('The wallet did not return a valid account.');
   const chainId = await wallet.provider.request({ method: 'eth_chainId' });
   if (!validChain(chainId)) throw new Error('The wallet did not return a valid network.');

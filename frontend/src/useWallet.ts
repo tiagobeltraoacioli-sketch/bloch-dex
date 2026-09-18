@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { connectAccount, discoverWallets, validAddress, validChain, walletError } from './wallet';
+import { connectAccount, discoverWallets, validAccounts, validChain, walletError } from './wallet';
 import type { WalletAccount, WalletOption } from './wallet';
 
 export function useWallet() {
@@ -46,13 +46,13 @@ export function useWallet() {
     setError('');
     // Observe before requesting accounts so changes during an open prompt invalidate it.
     let initializing = true;
-    let latestAccounts: unknown;
+    let latestAccounts: string[] | null | undefined;
     let latestChain: unknown;
     const onAccounts = (...args: unknown[]) => {
       if (attempt !== generation.current) return;
-      latestAccounts = args[0];
+      latestAccounts = validAccounts(args[0]) ? [args[0][0]] : null;
       if (initializing) return;
-      if (!Array.isArray(latestAccounts) || !validAddress(latestAccounts[0])) {
+      if (!latestAccounts) {
         disconnect();
         return;
       }
@@ -88,8 +88,7 @@ export function useWallet() {
       const result = await connectAccount(wallet);
       if (attempt !== generation.current) return;
       if (latestAccounts !== undefined) {
-        if (!Array.isArray(latestAccounts) || !validAddress(latestAccounts[0]))
-          throw new Error('Account unavailable.');
+        if (!latestAccounts) throw new Error('Account unavailable.');
         result.address = latestAccounts[0];
       }
       if (latestChain !== undefined) {

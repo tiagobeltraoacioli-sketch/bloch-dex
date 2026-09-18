@@ -1,4 +1,4 @@
-import { validAddress, walletDisplayName, type WalletOption, type Provider } from './wallet';
+import { validAccounts, walletDisplayName, type WalletOption, type Provider } from './wallet';
 import type SignClientType from '@walletconnect/sign-client';
 const projectId = 'e263eead656b6d61ecdee75a71e100bb';
 let client: SignClientType | undefined;
@@ -28,7 +28,7 @@ export function normalizeWalletSessionEvent(message:SessionEvent,topic:string) {
   if(chain!==CHAIN)return {disconnect:true,event:'chainChanged',value:chain};
   if(event?.name==='accountsChanged'){
     const accounts=event.data;
-    if(!Array.isArray(accounts)||accounts.length<1||accounts.length>20||!accounts.every(validAddress))return {disconnect:true,event:'accountsChanged',value:[]};
+    if(!validAccounts(accounts))return {disconnect:true,event:'accountsChanged',value:[]};
     return {disconnect:false,event:'accountsChanged',value:[accounts[0]],address:accounts[0]};
   }
   if(event?.name==='chainChanged'){

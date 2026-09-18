@@ -121,7 +121,10 @@ The app does not request a signature or permissions to move assets.
 After an explicit click, the client uses only `eth_requestAccounts` and
 `eth_chainId` from [EIP-1193](https://eips.ethereum.org/EIPS/eip-1193). It observes
 account changes, network changes and disconnects, validates responses, ignores
-cancelled requests and removes event listeners. Disconnect clears this app's
+cancelled requests and removes event listeners. Initial and changed account
+lists are limited to 20 entries and every entry must be a syntactically valid
+EVM address; pending event data is copied before provider code can mutate it.
+Disconnect clears this app's
 connection state; users manage the extension's permissions in the wallet.
 
 There is no sign, approve, send, add-chain or switch-chain call in this frontend.
