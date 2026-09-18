@@ -3,7 +3,54 @@
 export const EXPECTED_SHELL_SHA256 =
   '9c0774cff12d1546d7e851bec85efb11f7a7bcb3b61c9328441e93181704f7a2';
 
-export function createMobileWalletWorker(browserScript, scriptPath, upstream = fetch) {
+async function boundedClone(response, timeoutMs) {
+  const declared = response.headers.get('Content-Length');
+  if (
+    declared !== null &&
+    (!/^(0|[1-9][0-9]*)$/.test(declared) || BigInt(declared) > 2n * 1024n * 1024n)
+  )
+    return null;
+  const reader = response.clone().body?.getReader();
+  if (!reader) return null;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(Error('Shell scan timed out')), timeoutMs);
+  });
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await Promise.race([reader.read(), timeout]);
+      if (done) break;
+      length += value.byteLength;
+      if (length > 2 * 1024 * 1024) throw Error('Shell scan exceeds bound');
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  } catch {
+    // Cancelling a tee can wait for the untouched branch. Do not delay fallback.
+    reader.cancel().catch(() => {});
+    return null;
+  } finally {
+    clearTimeout(timer);
+    try {
+      reader.releaseLock();
+    } catch {}
+  }
+}
+
+export function createMobileWalletWorker(
+  browserScript,
+  scriptPath,
+  upstream = fetch,
+  { scanTimeoutMs = 2000 } = {},
+) {
   if (!/^\/__postern\/mobile-wallet-[a-f0-9]{16}\.js$/.test(scriptPath)) {
     throw new Error('Invalid versioned mobile script path');
   }
@@ -39,7 +86,10 @@ export function createMobileWalletWorker(browserScript, scriptPath, upstream = f
       if (response.status !== 200 || !response.headers.get('Content-Type')?.includes('text/html')) {
         return response;
       }
-      const bytes = await response.clone().arrayBuffer();
+      const encoding = response.headers.get('Content-Encoding');
+      if (encoding && encoding.trim().toLowerCase() !== 'identity') return response;
+      const bytes = await boundedClone(response, scanTimeoutMs);
+      if (bytes === null) return response;
       const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
         .map((byte) => byte.toString(16).padStart(2, '0'))
         .join('');

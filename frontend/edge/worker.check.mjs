@@ -69,6 +69,36 @@ test('fails open to the unchanged origin on an unknown release, redirect or non-
   }
 });
 
+test('bounded shell inspection preserves oversized, stalled and encoded origin responses', async () => {
+  const largeBody = 'x'.repeat(2 * 1024 * 1024 + 1),
+    large = new Response(largeBody, { headers: { 'Content-Type': 'text/html' } });
+  let worker = createMobileWalletWorker(script, scriptPath, () => large);
+  assert.equal(await worker.fetch(new Request('https://blochdex.com/')), large);
+  assert.equal((await large.text()).length, largeBody.length);
+
+  let controller;
+  const stalled = new Response(
+    new ReadableStream({
+      start(value) {
+        controller = value;
+        value.enqueue(new TextEncoder().encode('original'));
+      },
+    }),
+    { headers: { 'Content-Type': 'text/html' } },
+  );
+  worker = createMobileWalletWorker(script, scriptPath, () => stalled, { scanTimeoutMs: 10 });
+  assert.equal(await worker.fetch(new Request('https://blochdex.com/')), stalled);
+  controller.close();
+  assert.equal(await stalled.text(), 'original');
+
+  const encoded = new Response('encoded', {
+    headers: { 'Content-Type': 'text/html', 'Content-Encoding': 'gzip' },
+  });
+  worker = createMobileWalletWorker(script, scriptPath, () => encoded);
+  assert.equal(await worker.fetch(new Request('https://blochdex.com/')), encoded);
+  assert.equal(await encoded.text(), 'encoded');
+});
+
 // This optional integration check runs against the independently captured release.
 // The generated Pages shell is kept outside version control, per AGENTS.md.
 test(
