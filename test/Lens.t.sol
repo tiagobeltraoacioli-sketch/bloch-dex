@@ -156,6 +156,12 @@ contract LensTest is TestBase {
         BDexLens.Position memory pos = lens.position(address(pair), address(this));
         assertTrue(pos.pendingProtocolLiquidity > 0);
         assertEq(pos.dilutedSupply, pair.totalSupply() + pos.pendingProtocolLiquidity);
+        BDexLens.Position memory feePosition = lens.position(address(pair), address(0xFEE));
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        assertEq(feePosition.liquidity, 0);
+        assertEq(feePosition.pendingProtocolLiquidity, pos.pendingProtocolLiquidity);
+        assertEq(feePosition.reserveShare0, feePosition.pendingProtocolLiquidity * reserve0 / feePosition.dilutedSupply);
+        assertEq(feePosition.reserveShare1, feePosition.pendingProtocolLiquidity * reserve1 / feePosition.dilutedSupply);
         uint256 shares = pair.balanceOf(address(this));
         pair.transfer(address(pair), shares);
         (uint256 amount0, uint256 amount1) = pair.burn(address(this));

@@ -99,7 +99,9 @@ It reads canonical pool state without invoking arbitrary token metadata.
 
 `position(pair, owner)` estimates the owner's reserve shares after accounting
 for pending protocol-fee dilution. Donations, rebases and transfer taxes can
-make actual redemption differ from reserve-based estimates.
+make actual redemption differ from reserve-based estimates. `liquidity` is the
+currently minted LP balance; when `owner` is the current protocol fee recipient,
+the reserve-share estimates also include its pending, not-yet-minted LP shares.
 
 `quoteExactInput(amountIn, path, slippageBps)` returns amounts, per-hop execution
 loss versus the marginal reserve ratio, an explicit availability flag, the

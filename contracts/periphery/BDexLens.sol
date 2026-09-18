@@ -84,7 +84,8 @@ contract BDexLens {
         require(factory.getPair(p.token0, p.token1) == pair, "LENS: NOT_A_PAIR");
         value.liquidity = IUniswapV2Pair(pair).balanceOf(owner);
         uint256 previousK = IUniswapV2Pair(pair).kLast();
-        if (factory.feeTo() != address(0) && previousK != 0) {
+        address feeRecipient = factory.feeTo();
+        if (feeRecipient != address(0) && previousK != 0) {
             uint256 rootK = Math.sqrt(uint256(p.reserve0) * p.reserve1);
             uint256 previousRootK = Math.sqrt(previousK);
             if (rootK > previousRootK) {
@@ -93,8 +94,13 @@ contract BDexLens {
         }
         value.dilutedSupply = p.totalSupply + value.pendingProtocolLiquidity;
         if (value.dilutedSupply != 0) {
-            value.reserveShare0 = value.liquidity * p.reserve0 / value.dilutedSupply;
-            value.reserveShare1 = value.liquidity * p.reserve1 / value.dilutedSupply;
+            // `liquidity` remains the owner's currently minted balance. The
+            // current fee recipient's reserve estimate additionally includes
+            // the shares that the next mint/burn would mint to that owner.
+            uint256 effectiveLiquidity = value.liquidity;
+            if (owner == feeRecipient) effectiveLiquidity += value.pendingProtocolLiquidity;
+            value.reserveShare0 = effectiveLiquidity * p.reserve0 / value.dilutedSupply;
+            value.reserveShare1 = effectiveLiquidity * p.reserve1 / value.dilutedSupply;
         }
         // These are reserve-based shares. burn() uses actual balances; token
         // donations, taxes and rebases can change the realized redemption.
