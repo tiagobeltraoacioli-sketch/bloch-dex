@@ -190,6 +190,28 @@ describe('Postern preview workflows', () => {
       within(screen.getByRole('dialog')).getByText(/does not update your position/),
     ).toBeTruthy();
   });
+  it('canonicalizes bounded stored preferences before rendering them', async () => {
+    localStorage.setItem('postern.slippage.v1', '001');
+    localStorage.setItem(
+      'postern.watchlist.v1',
+      JSON.stringify(['blch-usdc', 'blch-usdc', 'unknown']),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    expect(screen.getByRole('button', { name: '0.50%' })).toBeTruthy();
+    navigate('pools');
+    await user.click(screen.getByRole('button', { name: /Watchlist/ }));
+    expect(screen.getByText('Showing 1 of 4 pools')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Watchlist/ }).textContent).toContain('1');
+  });
+  it('ignores an oversized stored watchlist before parsing its entries', async () => {
+    localStorage.setItem('postern.watchlist.v1', JSON.stringify(Array(1000).fill('blch-usdc')));
+    const user = userEvent.setup();
+    render(<App />);
+    navigate('pools');
+    await user.click(screen.getByRole('button', { name: 'Watchlist' }));
+    expect(screen.getByRole('heading', { name: 'Your watchlist starts here.' })).toBeTruthy();
+  });
   it('previews a proportional withdrawal and keeps the sample portfolio unchanged', async () => {
     const user = userEvent.setup();
     render(<App />);

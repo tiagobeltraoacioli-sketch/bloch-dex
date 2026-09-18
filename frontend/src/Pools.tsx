@@ -7,11 +7,17 @@ import type { Pool } from './model';
 
 function readWatchlist(): string[] {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem('postern.watchlist.v1') ?? '[]');
+    const raw = localStorage.getItem('postern.watchlist.v1') ?? '[]';
+    if (raw.length > 4096) return [];
+    const parsed: unknown = JSON.parse(raw);
     return Array.isArray(parsed)
-      ? parsed.filter(
-          (id): id is string => typeof id === 'string' && POOLS.some((p) => p.id === id),
-        )
+      ? [
+          ...new Set(
+            parsed.filter(
+              (id): id is string => typeof id === 'string' && POOLS.some((p) => p.id === id),
+            ),
+          ),
+        ].slice(0, POOLS.length)
       : [];
   } catch {
     return [];

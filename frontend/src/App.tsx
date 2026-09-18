@@ -16,7 +16,10 @@ const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
 function storedSlippage() {
   try {
-    const value = Number(localStorage.getItem('postern.slippage.v1') ?? 50);
+    const raw = localStorage.getItem('postern.slippage.v1');
+    if (raw === null) return 50;
+    if (!/^(?:[1-9][0-9]{0,2})$/.test(raw)) return 50;
+    const value = Number(raw);
     return Number.isInteger(value) && value >= 1 && value <= 500 ? value : 50;
   } catch {
     return 50;
@@ -103,7 +106,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
 function Application() {
   const [page, setPage] = useState<Page>(pageFromHash);
   const [modal, setModal] = useState<'wallet' | 'network' | 'guide' | 'settings' | null>(() =>
-    ['metamask','qr'].includes(new URLSearchParams(location.search).get('connect') || '') ? 'wallet' : null,
+    ['metamask', 'qr'].includes(new URLSearchParams(location.search).get('connect') || '')
+      ? 'wallet'
+      : null,
   );
   const [pool, setPool] = useState<Pool | null>(null);
   const [liquidity, setLiquidity] = useState<LiquidityAction | null>(null);
