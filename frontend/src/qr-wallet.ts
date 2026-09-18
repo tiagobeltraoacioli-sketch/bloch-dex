@@ -5,32 +5,45 @@ let client: SignClientType | undefined;
 let appkit: Awaited<ReturnType<typeof createModal>> | undefined;
 const CHAIN = 'eip155:84001';
 const CHAIN_HEX = '0x14821';
+const METHODS = ['eth_accounts','eth_chainId'];
+const EVENTS = ['accountsChanged','chainChanged'];
 
 type SessionEvent = {topic?:unknown;params?:{chainId?:unknown;event?:{name?:unknown;data?:unknown}}};
-type SessionUpdate = {topic?:unknown;params?:{namespaces?:{eip155?:{accounts?:unknown}}}};
+type Namespace = {accounts?:unknown;chains?:unknown;methods?:unknown;events?:unknown};
+type SessionUpdate = {topic?:unknown;params?:{namespaces?:{eip155?:Namespace}}};
+function exactPermissionList(value:unknown,required:string[]) {
+  return Array.isArray(value)&&value.length===required.length&&new Set(value).size===value.length&&required.every(item=>value.includes(item));
+}
+export function normalizeWalletNamespace(value:Namespace|undefined) {
+  const accounts=value?.accounts,chains=value?.chains;
+  if(!Array.isArray(accounts)||accounts.length<1||accounts.length>20||
+    !accounts.every(account=>typeof account==='string'&&/^eip155:84001:0x[a-fA-F0-9]{40}$/.test(account))||
+    (chains!==undefined&&(!Array.isArray(chains)||chains.length!==1||chains[0]!==CHAIN))||
+    !exactPermissionList(value?.methods,METHODS)||!exactPermissionList(value?.events,EVENTS))return null;
+  return {address:(accounts[0] as string).split(':')[2]};
+}
 export function normalizeWalletSessionEvent(message:SessionEvent,topic:string) {
   if(message?.topic!==topic)return null;
   const chain=message.params?.chainId,event=message.params?.event;
   if(chain!==CHAIN)return {disconnect:true,event:'chainChanged',value:chain};
   if(event?.name==='accountsChanged'){
-    const account=Array.isArray(event.data)?event.data[0]:undefined;
-    return validAddress(account)?{disconnect:false,event:'accountsChanged',value:[account],address:account}:{disconnect:true,event:'accountsChanged',value:[]};
+    const accounts=event.data;
+    if(!Array.isArray(accounts)||accounts.length<1||accounts.length>20||!accounts.every(validAddress))return {disconnect:true,event:'accountsChanged',value:[]};
+    return {disconnect:false,event:'accountsChanged',value:[accounts[0]],address:accounts[0]};
   }
   if(event?.name==='chainChanged'){
     const value=event.data;
     let supported=false;
-    try{supported=(typeof value==='string'&&/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value)&&BigInt(value)===84001n);}catch{}
+    try{supported=(typeof value==='string'&&value.length<=66&&/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value)&&BigInt(value)===84001n);}catch{}
     return supported?{disconnect:false,event:'chainChanged',value:CHAIN_HEX}:{disconnect:true,event:'chainChanged',value};
   }
   return null;
 }
 export function normalizeWalletSessionUpdate(message:SessionUpdate,topic:string,currentAddress:string) {
   if(message?.topic!==topic)return null;
-  const accounts=message.params?.namespaces?.eip155?.accounts;
-  if(!Array.isArray(accounts))return {disconnect:true,event:'accountsChanged',value:[]};
-  const caip=accounts.find(value=>typeof value==='string'&&/^eip155:84001:0x[a-fA-F0-9]{40}$/.test(value));
-  if(typeof caip!=='string')return {disconnect:true,event:'accountsChanged',value:[]};
-  const address=caip.split(':')[2];
+  const namespace=normalizeWalletNamespace(message.params?.namespaces?.eip155);
+  if(!namespace)return {disconnect:true,event:'accountsChanged',value:[]};
+  const {address}=namespace;
   return address.toLowerCase()===currentAddress.toLowerCase()?null:{disconnect:false,event:'accountsChanged',value:[address],address};
 }
 async function createModal() {
@@ -51,7 +64,7 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
   const c=client;
   appkit ??= await createModal();
   if(signal.aborted) throw Error('Connection cancelled');
-  const {uri,approval} = await c.connect({requiredNamespaces:{eip155:{chains:[CHAIN],methods:['eth_accounts','eth_chainId'],events:['accountsChanged','chainChanged']}}});
+  const {uri,approval} = await c.connect({requiredNamespaces:{eip155:{chains:[CHAIN],methods:METHODS,events:EVENTS}}});
   if(!uri) throw Error('No pairing QR returned');
   await appkit.open({uri});
   let cancelled: boolean=Boolean(signal.aborted);
@@ -66,9 +79,10 @@ export async function connectQrWallet(signal: AbortSignal): Promise<WalletOption
     const session=await Promise.race([approved,cancellation]);
     unsubscribe();
     if(cancelled || signal.aborted) {await c.disconnect({topic:session.topic,reason:{code:6000,message:'Connection cancelled'}});throw Error('Connection cancelled');}
-    const caip=session.namespaces.eip155?.accounts.find(a=>/^eip155:84001:0x[a-fA-F0-9]{40}$/.test(a));
-    if(!caip) {await c.disconnect({topic:session.topic,reason:{code:6000,message:'Unsupported account'}});throw Error('Wallet returned an unsupported account');}
-    let address=caip.split(':')[2];
+    const approvedNamespace=normalizeWalletNamespace(session.namespaces.eip155);
+    const now=Math.floor(Date.now()/1000);
+    if(!approvedNamespace||!Number.isSafeInteger(session.expiry)||session.expiry<=now||session.expiry>now+604800) {await c.disconnect({topic:session.topic,reason:{code:6000,message:'Unsupported session'}});throw Error('Wallet returned an unsupported session');}
+    let address=approvedNamespace.address;
     let active=true;
     const listeners=new Map<string,Set<(...args:unknown[])=>void>>();
     const emit=(event:string,...args:unknown[])=>listeners.get(event)?.forEach(fn=>fn(...args));

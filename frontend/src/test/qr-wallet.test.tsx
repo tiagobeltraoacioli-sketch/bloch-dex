@@ -2,7 +2,7 @@ import {render,screen,waitFor} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {describe,it,expect,vi} from 'vitest';
 import {QrWalletButton} from '../QrWalletButton';
-import {normalizeWalletSessionEvent,normalizeWalletSessionUpdate} from '../qr-wallet';
+import {normalizeWalletNamespace,normalizeWalletSessionEvent,normalizeWalletSessionUpdate} from '../qr-wallet';
 const connect=vi.hoisted(()=>vi.fn());
 vi.mock('../qr-wallet',async importOriginal=>({...await importOriginal<typeof import('../qr-wallet')>(),connectQrWallet:connect}));
 describe('QR wallet entry',()=>{
@@ -17,9 +17,13 @@ describe('QR wallet entry',()=>{
    {topic,params:{chainId:'eip155:84001',event:{name:'chainChanged',data:'0x1'}}},
   ])expect(normalizeWalletSessionEvent(message,topic)?.disconnect).toBe(true);
   const current='0x'+'12'.repeat(20),next='0x'+'34'.repeat(20);
-  expect(normalizeWalletSessionUpdate({topic,params:{namespaces:{eip155:{accounts:['eip155:84001:'+current]}}}},topic,current)).toBeNull();
-  expect(normalizeWalletSessionUpdate({topic,params:{namespaces:{eip155:{accounts:['eip155:84001:'+next]}}}},topic,current)).toEqual({disconnect:false,event:'accountsChanged',value:[next],address:next});
-  expect(normalizeWalletSessionUpdate({topic,params:{namespaces:{eip155:{accounts:['eip155:1:'+next]}}}},topic,current)?.disconnect).toBe(true);
+  const namespace=(accounts:string[])=>({accounts,chains:['eip155:84001'],methods:['eth_accounts','eth_chainId'],events:['accountsChanged','chainChanged']});
+  expect(normalizeWalletSessionUpdate({topic,params:{namespaces:{eip155:namespace(['eip155:84001:'+current])}}},topic,current)).toBeNull();
+  expect(normalizeWalletSessionUpdate({topic,params:{namespaces:{eip155:namespace(['eip155:84001:'+next])}}},topic,current)).toEqual({disconnect:false,event:'accountsChanged',value:[next],address:next});
+  expect(normalizeWalletSessionUpdate({topic,params:{namespaces:{eip155:namespace(['eip155:1:'+next])}}},topic,current)?.disconnect).toBe(true);
+  expect(normalizeWalletNamespace(namespace(['eip155:84001:'+current,'eip155:1:'+next]))).toBeNull();
+  expect(normalizeWalletNamespace({...namespace(['eip155:84001:'+current]),methods:['eth_accounts']})).toBeNull();
+  expect(normalizeWalletSessionEvent({topic,params:{chainId:'eip155:84001',event:{name:'chainChanged',data:'1'.repeat(1000)}}},topic)?.disconnect).toBe(true);
  });
  it('requests a session only after click and passes the approved provider',async()=>{
   const provider={request:vi.fn()},onConnect=vi.fn().mockResolvedValue(undefined);
