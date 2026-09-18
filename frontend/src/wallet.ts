@@ -143,7 +143,12 @@ export async function connectAccount(wallet: WalletOption): Promise<WalletAccoun
 }
 
 export function walletError(error: unknown): string {
-  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  let code: unknown;
+  try {
+    code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+  } catch {
+    // Provider rejection values are untrusted, including accessor-backed objects.
+  }
   if (code === 4001) return 'Connection declined. You can try again when you are ready.';
   if (code === -32002) return 'A connection request is already open. Check your wallet.';
   if (code === 4900 || code === 4901) return 'Your wallet is offline. Reconnect it and try again.';

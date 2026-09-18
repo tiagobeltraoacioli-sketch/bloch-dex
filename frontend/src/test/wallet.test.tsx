@@ -331,5 +331,8 @@ describe('wallet identification boundary', () => {
     await waitFor(() => expect(result.current.error).toMatch(/declined/));
     expect(walletError({ code: -32002 })).toMatch(/already open/);
     expect(walletError({ code: 4900 })).toMatch(/offline/);
+    expect(walletError(new Proxy({}, { has: () => { throw Error('hostile provider error'); } }))).toMatch(
+      /Could not connect/,
+    );
   });
 });
