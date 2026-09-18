@@ -62,4 +62,39 @@ contract SecurityRegressionTest is DexFixture {
             address(token), 100 ether, 101 ether, 99 ether, address(this), block.timestamp
         );
     }
+
+    function testPrecreatedEmptyPairAcceptsFirstLiquidity() public {
+        address pair = factory.createPair(address(token), address(wrapped));
+
+        (uint256 amountToken, uint256 amountNative, uint256 liquidity) = router.addLiquidityBLCH{value: 100 ether}(
+            address(token), 100 ether, 100 ether, 100 ether, address(this), block.timestamp
+        );
+
+        assertEq(factory.getPair(address(token), address(wrapped)), pair);
+        assertEq(amountToken, 100 ether);
+        assertEq(amountNative, 100 ether);
+        assertTrue(liquidity > 0);
+    }
+
+    function testPrefundedPairRatioCannotBypassLiquidityMinimums() public {
+        address pairAddress = factory.createPair(address(token), address(wrapped));
+        token.transfer(pairAddress, 1_000 ether);
+        wrapped.mint(pairAddress, 1 ether);
+        UniswapV2Pair pair = UniswapV2Pair(pairAddress);
+        pair.mint(address(0xBAD));
+        (uint112 reserve0Before, uint112 reserve1Before,) = pair.getReserves();
+        uint256 tokenBefore = token.balanceOf(address(this));
+        uint256 nativeBefore = address(this).balance;
+
+        vm.expectRevert(bytes("BDEX: INSUFFICIENT_B_AMOUNT"));
+        router.addLiquidityBLCH{value: 100 ether}(
+            address(token), 100 ether, 90 ether, 90 ether, address(this), block.timestamp
+        );
+
+        (uint112 reserve0After, uint112 reserve1After,) = pair.getReserves();
+        assertEq(reserve0After, reserve0Before);
+        assertEq(reserve1After, reserve1Before);
+        assertEq(token.balanceOf(address(this)), tokenBefore);
+        assertEq(address(this).balance, nativeBefore);
+    }
 }
