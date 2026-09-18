@@ -261,6 +261,28 @@ contract RouterSurfaceTest is TestBase {
         assertEq(tokenB.balanceOf(address(router)), 0);
     }
 
+    function testFeeOnTransferOutputCannotBypassRecipientMinimum() public {
+        tokenB.setTax(500);
+        address[] memory path = _path(address(tokenA), address(tokenB));
+        uint256 amountIn = 10 ether;
+        uint256[] memory grossQuote = router.getAmountsOut(amountIn, path);
+        UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(tokenA), address(tokenB)));
+        (uint112 reserve0Before, uint112 reserve1Before,) = pair.getReserves();
+        uint256 inputBefore = tokenA.balanceOf(address(this));
+        uint256 outputBefore = tokenB.balanceOf(address(this));
+
+        vm.expectRevert(bytes("BDEX: INSUFFICIENT_OUTPUT_AMOUNT"));
+        router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+            amountIn, grossQuote[1], path, address(this), block.timestamp
+        );
+
+        (uint112 reserve0After, uint112 reserve1After,) = pair.getReserves();
+        assertEq(reserve0After, reserve0Before);
+        assertEq(reserve1After, reserve1Before);
+        assertEq(tokenA.balanceOf(address(this)), inputBefore);
+        assertEq(tokenB.balanceOf(address(this)), outputBefore);
+    }
+
     function testFeeOnTransferNativePathChecksNetRecipientAmount() public {
         tokenB.setTax(500);
         address[] memory path = _path(address(wrapped), address(tokenB));
