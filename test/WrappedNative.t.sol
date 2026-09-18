@@ -169,6 +169,43 @@ contract WrappedNativeTest is TestBase {
         assertEq(factory.feeTo(), address(0));
     }
 
+    function testNativeRouterRejectsWrappedRecipientWithoutResidue() public {
+        UniswapV2Factory factory = new UniswapV2Factory(address(this));
+        BDexRouter router = new BDexRouter(address(factory), address(wrapped));
+        BlochAsset token = new BlochAsset("Asset", "A", 6, 1_000_000 * 1e6, address(this));
+        token.approve(address(router), type(uint256).max);
+        (,, uint256 liquidity) = router.addLiquidityBLCH{value: 10 ether}(
+            address(token), 100_000 * 1e6, 100_000 * 1e6, 10 ether, address(this), block.timestamp
+        );
+        address[] memory path = new address[](2);
+        path[0] = address(token);
+        path[1] = address(wrapped);
+        uint256[] memory exactInputQuote = router.getAmountsOut(1_000 * 1e6, path);
+        uint256[] memory exactOutputQuote = router.getAmountsIn(0.01 ether, path);
+
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactTokensForBLCH(1_000 * 1e6, exactInputQuote[1], path, address(wrapped), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapTokensForExactBLCH(0.01 ether, exactOutputQuote[0], path, address(wrapped), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.swapExactTokensForBLCHSupportingFeeOnTransferTokens(
+            1_000 * 1e6, exactInputQuote[1], path, address(wrapped), block.timestamp
+        );
+
+        UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(token), address(wrapped)));
+        pair.approve(address(router), liquidity);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.removeLiquidityBLCH(address(token), liquidity, 1, 1, address(wrapped), block.timestamp);
+        vm.expectRevert(bytes("BDEX: INVALID_TO"));
+        router.removeLiquidityBLCHSupportingFeeOnTransferTokens(
+            address(token), liquidity, 1, 1, address(wrapped), block.timestamp
+        );
+
+        assertEq(wrapped.balanceOf(address(router)), 0);
+        assertEq(address(router).balance, 0);
+        assertEq(pair.balanceOf(address(this)), liquidity);
+    }
+
     function testLocalDeploymentIsEmptyAndRefusesOtherChains() public {
         LocalDeployment script = new LocalDeployment();
         vm.chainId(1);

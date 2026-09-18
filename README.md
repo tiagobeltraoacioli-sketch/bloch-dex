@@ -140,6 +140,9 @@ router may remain unrecoverable.
 - Liquidity additions enforce both user minimums, including the first deposit.
   Taxed-token native removals enforce the final recipient's net token minimum
   and forward only that withdrawal's balance delta.
+- Native-output swaps and liquidity removals reject the wrapped-native contract
+  as recipient. Sending unwrapped currency there would invoke its deposit path
+  and strand newly minted wrapped tokens under the router's address.
 - Pair creation bytecode changed. Read `INIT_CODE_PAIR_HASH()` from the actual
   factory; never hardcode canonical Uniswap or an earlier Postern hash. Existing
   deployments cannot be upgraded by changing these source files.

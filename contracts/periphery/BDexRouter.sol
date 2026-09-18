@@ -74,6 +74,14 @@ contract BDexRouter is IBDexRouter {
         require(success, "BDEX: NATIVE_TRANSFER_FAILED");
     }
 
+    /// @dev Sending unwrapped native currency back to WBLCH invokes its
+    ///      receive/deposit path and credits the Router, not the intended
+    ///      recipient. Reject that destination before moving user funds so
+    ///      native output cannot become stranded as Router-owned WBLCH.
+    function _ensureNativeRecipient(address to) private view {
+        require(to != WBLCH, "BDEX: INVALID_TO");
+    }
+
     // =========================================================================
     // Liquidity
     // =========================================================================
@@ -191,6 +199,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) public returns (uint256 amountToken, uint256 amountBLCH) {
+        _ensureNativeRecipient(to);
         // Redeem to the Router first: the Pair pays WBLCH, the user wants
         // native. removeLiquidity carries the ensure(deadline) check.
         (amountToken, amountBLCH) =
@@ -256,6 +265,7 @@ contract BDexRouter is IBDexRouter {
         address to,
         uint256 deadline
     ) public returns (uint256 amountBLCH) {
+        _ensureNativeRecipient(to);
         require(to != address(this), "BDEX: INVALID_TO");
         uint256 routerBefore = _balanceOf(token, address(this));
         uint256 recipientBefore = _balanceOf(token, to);
@@ -361,6 +371,7 @@ contract BDexRouter is IBDexRouter {
     ) external ensure(deadline) returns (uint256[] memory amounts) {
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
+        _ensureNativeRecipient(to);
         amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
         require(amounts[0] <= amountInMax, "BDEX: EXCESSIVE_INPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
@@ -378,6 +389,7 @@ contract BDexRouter is IBDexRouter {
     ) external ensure(deadline) returns (uint256[] memory amounts) {
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
+        _ensureNativeRecipient(to);
         amounts = BDexLibrary.getAmountsOut(factory, amountIn, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
@@ -499,6 +511,7 @@ contract BDexRouter is IBDexRouter {
     ) external ensure(deadline) {
         BDexLibrary.validatePath(path);
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
+        _ensureNativeRecipient(to);
         uint256 wrappedBefore = IWBLCH(WBLCH).balanceOf(address(this));
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amountIn);
         _swapSupportingFeeOnTransferTokens(path, address(this));
