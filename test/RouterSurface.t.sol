@@ -3,7 +3,24 @@ pragma solidity ^0.8.24;
 
 import {TestBase, TestToken, TestWrappedNative} from "./TestBase.sol";
 import {UniswapV2Factory} from "../contracts/UniswapV2Factory.sol";
+import {UniswapV2Pair} from "../contracts/UniswapV2Pair.sol";
 import {BDexRouter} from "../contracts/periphery/BDexRouter.sol";
+
+contract RejectingNativeReceiver {
+    function swapForExactTokens(BDexRouter router, address wrapped, address token, uint256 amountOut, uint256 deadline)
+        external
+        payable
+    {
+        address[] memory path = new address[](2);
+        path[0] = wrapped;
+        path[1] = token;
+        router.swapBLCHForExactTokens{value: msg.value}(amountOut, path, address(this), deadline);
+    }
+
+    receive() external payable {
+        revert("reject native");
+    }
+}
 
 contract RouterSurfaceTest is TestBase {
     UniswapV2Factory private factory;
@@ -62,6 +79,27 @@ contract RouterSurfaceTest is TestBase {
         assertEq(wrapped.balanceOf(address(router)), 0);
     }
 
+    function testRejectedNativeRefundRollsBackSwap() public {
+        address[] memory path = _path(address(wrapped), address(tokenA));
+        uint256 amountOut = 5 ether;
+        uint256[] memory quote = router.getAmountsIn(amountOut, path);
+        RejectingNativeReceiver recipient = new RejectingNativeReceiver();
+        UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(wrapped), address(tokenA)));
+        (uint112 reserve0Before, uint112 reserve1Before,) = pair.getReserves();
+
+        vm.expectRevert(bytes("BDEX: NATIVE_TRANSFER_FAILED"));
+        recipient.swapForExactTokens{value: quote[0] + 1 ether}(
+            router, address(wrapped), address(tokenA), amountOut, block.timestamp
+        );
+
+        (uint112 reserve0After, uint112 reserve1After,) = pair.getReserves();
+        assertEq(reserve0After, reserve0Before);
+        assertEq(reserve1After, reserve1Before);
+        assertEq(tokenA.balanceOf(address(recipient)), 0);
+        assertEq(address(router).balance, 0);
+        assertEq(wrapped.balanceOf(address(router)), 0);
+    }
+
     function testExactOutputNativeReturnSpendsOnlyQuotedTokens() public {
         address[] memory path = _path(address(tokenA), address(wrapped));
         uint256 amountOut = 1 ether;
@@ -76,6 +114,27 @@ contract RouterSurfaceTest is TestBase {
         assertEq(amounts[1], amountOut);
         assertEq(tokenBefore - tokenA.balanceOf(address(this)), quote[0]);
         assertEq(address(this).balance - nativeBefore, amountOut);
+        assertEq(address(router).balance, 0);
+        assertEq(wrapped.balanceOf(address(router)), 0);
+    }
+
+    function testRejectedNativeRecipientRollsBackSwap() public {
+        address[] memory path = _path(address(tokenA), address(wrapped));
+        uint256 amountOut = 1 ether;
+        uint256[] memory quote = router.getAmountsIn(amountOut, path);
+        RejectingNativeReceiver recipient = new RejectingNativeReceiver();
+        UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(tokenA), address(wrapped)));
+        (uint112 reserve0Before, uint112 reserve1Before,) = pair.getReserves();
+        uint256 tokenBefore = tokenA.balanceOf(address(this));
+
+        vm.expectRevert(bytes("BDEX: NATIVE_TRANSFER_FAILED"));
+        router.swapTokensForExactBLCH(amountOut, quote[0], path, address(recipient), block.timestamp);
+
+        (uint112 reserve0After, uint112 reserve1After,) = pair.getReserves();
+        assertEq(reserve0After, reserve0Before);
+        assertEq(reserve1After, reserve1Before);
+        assertEq(tokenA.balanceOf(address(this)), tokenBefore);
+        assertEq(address(recipient).balance, 0);
         assertEq(address(router).balance, 0);
         assertEq(wrapped.balanceOf(address(router)), 0);
     }
