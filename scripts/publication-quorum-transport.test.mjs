@@ -15,6 +15,12 @@ import {
   signEnvelope,
 } from "./live-auth/envelope.mjs";
 import { CUSTODY_REQUEST_DOMAIN } from "./publication-quorum-witness-custody.mjs";
+import {
+  activateOperationsStore,
+  buildClientPreflight,
+  initializeOperationsStore,
+  inspectOperationsStore,
+} from "./publication-quorum-transport-operations.mjs";
 
 const execute = promisify(execFile);
 const custodyCli = resolve("scripts/publication-quorum-witness-custody.mjs");
@@ -45,6 +51,7 @@ async function certificate(root, name) {
     "-days", "1",
   ]);
   await chmod(key, 0o600);
+  await chmod(cert, 0o444);
   const parsed = new X509Certificate(await readFile(cert));
   return {
     key,
@@ -190,6 +197,22 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
   const clientConfigPath = join(root, "client-config.json");
   await writeFile(clientConfigPath, JSON.stringify(clientConfig));
 
+  async function operationsStore(name, selectedConfig = clientConfig, head = "genesis") {
+    const store = join(root, name);
+    const manifest = await buildClientPreflight(selectedConfig, witnessConfig);
+    const manifestSha256 = canonicalSha256(manifest);
+    await initializeOperationsStore(store, manifest, manifestSha256, head);
+    const authorization = {
+      schemaVersion: 1,
+      authorizationId: `${name}-approval`,
+      manifestSha256,
+      expectedHeadSha256: head,
+      enabled: true,
+    };
+    await activateOperationsStore(store, authorization, canonicalSha256(authorization));
+    return store;
+  }
+
   const server = await startServer(serverConfigPath);
   t.after(async () => {
     server.kill("SIGTERM");
@@ -207,6 +230,10 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       "request",
       "--config", wrongPinPath,
       "--witness-config", witnessConfigPath,
+      "--operations-store", await operationsStore("wrong-pin-operations", {
+        ...clientConfig,
+        serverCertificateSha256: "0".repeat(64),
+      }),
       "--authenticated-request", authenticatedPath,
       "--expected-head-sha256", "genesis",
       "--output", join(root, "wrong-pin-receipt.json"),
@@ -226,6 +253,11 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       "request",
       "--config", rogueClientPath,
       "--witness-config", witnessConfigPath,
+      "--operations-store", await operationsStore("rogue-operations", {
+        ...clientConfig,
+        tlsCertificatePath: rogueTls.cert,
+        tlsPrivateKeyPath: rogueTls.key,
+      }),
       "--authenticated-request", authenticatedPath,
       "--expected-head-sha256", "genesis",
       "--output", join(root, "rogue-receipt.json"),
@@ -244,6 +276,10 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       "request",
       "--config", wrongPathClient,
       "--witness-config", witnessConfigPath,
+      "--operations-store", await operationsStore("wrong-path-operations", {
+        ...clientConfig,
+        endpoint: { ...endpoint, path: "/v1/wrong" },
+      }),
       "--authenticated-request", authenticatedPath,
       "--expected-head-sha256", "genesis",
       "--output", join(root, "wrong-path-receipt.json"),
@@ -267,6 +303,10 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       "request",
       "--config", boundedClient,
       "--witness-config", witnessConfigPath,
+      "--operations-store", await operationsStore("bounded-operations", {
+        ...clientConfig,
+        endpoint: { ...endpoint, maxBodyBytes: 1_024 },
+      }),
       "--authenticated-request", oversizedRequest,
       "--expected-head-sha256", "genesis",
       "--output", join(root, "oversized-receipt.json"),
@@ -325,6 +365,10 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       "request",
       "--config", maliciousClient,
       "--witness-config", witnessConfigPath,
+      "--operations-store", await operationsStore("malicious-operations", {
+        ...clientConfig,
+        endpoint: { ...endpoint, port: maliciousPort },
+      }),
       "--authenticated-request", authenticatedPath,
       "--expected-head-sha256", "genesis",
       "--output", join(root, "invalid-200-receipt.json"),
@@ -340,6 +384,7 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       "request",
       "--config", clientConfigPath,
       "--witness-config", witnessConfigPath,
+      "--operations-store", await operationsStore("occupied-operations"),
       "--authenticated-request", authenticatedPath,
       "--expected-head-sha256", "genesis",
       "--output", occupied,
@@ -348,11 +393,13 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
   );
 
   const receiptPath = join(root, "receipt.json");
+  const liveOperations = await operationsStore("live-operations");
   const accepted = JSON.parse((await run(
     transportCli,
     "request",
     "--config", clientConfigPath,
     "--witness-config", witnessConfigPath,
+    "--operations-store", liveOperations,
     "--authenticated-request", authenticatedPath,
     "--expected-head-sha256", "genesis",
     "--output", receiptPath,
@@ -363,6 +410,9 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
     accepted.receiptSha256,
     canonicalSha256(JSON.parse(await readFile(receiptPath, "utf8"))),
   );
+  const advancedOperations = await inspectOperationsStore(liveOperations);
+  assert.equal(advancedOperations.status, "ready");
+  assert.equal(advancedOperations.expectedHeadSha256, accepted.receiptSha256);
 
   await assert.rejects(
     run(
@@ -370,10 +420,11 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       "request",
       "--config", clientConfigPath,
       "--witness-config", witnessConfigPath,
+      "--operations-store", liveOperations,
       "--authenticated-request", authenticatedPath,
       "--expected-head-sha256", "genesis",
       "--output", join(root, "duplicate-receipt.json"),
     ),
-    /outcome may be ambiguous.*CAS mismatch.*do not retry.*inspect custody head/,
+    /expected custody head is stale or rolled back/,
   );
 });

@@ -5,6 +5,7 @@ import { lstat, open } from "node:fs/promises";
 import { createServer, request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import { checkServerIdentity } from "node:tls";
 import {
   canonicalJson,
@@ -452,7 +453,7 @@ async function sendOnce(config, body) {
 function usage() {
   console.error(`Usage:
   node scripts/publication-quorum-witness-transport.mjs serve --config <server.json>
-  node scripts/publication-quorum-witness-transport.mjs request --config <client.json> --witness-config <witness.json> --authenticated-request <envelope.json> --expected-head-sha256 <genesis-or-sha256> --output <receipt.json>`);
+  node scripts/publication-quorum-witness-transport.mjs request --config <client.json> --witness-config <witness.json> --operations-store <private-directory> --authenticated-request <envelope.json> --expected-head-sha256 <genesis-or-sha256> --output <receipt.json>`);
 }
 
 async function main() {
@@ -475,7 +476,7 @@ async function main() {
   if (command === "request") {
     const names = [
       "--config", "--witness-config", "--authenticated-request",
-      "--expected-head-sha256", "--output",
+      "--operations-store", "--expected-head-sha256", "--output",
     ];
     if (args.length !== names.length * 2) fail("request arguments are incomplete");
     const values = {};
@@ -508,6 +509,19 @@ async function main() {
       expectedHeadSha256,
       authenticatedRequest,
     };
+    const {
+      beginTransportRequest,
+      buildClientPreflight,
+      commitTransportRequest,
+    } = await import("./publication-quorum-transport-operations.mjs");
+    const manifest = await buildClientPreflight(config, witness);
+    const manifestSha256 = canonicalSha256(manifest);
+    await beginTransportRequest(
+      values["--operations-store"],
+      manifestSha256,
+      expectedHeadSha256,
+      body.requestId,
+    );
     const response = await sendOnce(config, body);
     try {
       exactKeys(
@@ -538,6 +552,11 @@ async function main() {
       )
         fail("transport receipt does not authorize the authenticated request");
       await writeNewJson(values["--output"], response.receipt, 0o444);
+      await commitTransportRequest(
+        values["--operations-store"],
+        body.requestId,
+        response.receiptSha256,
+      );
     } catch (error) {
       error.message = `${error.message}; custody may have advanced, do not retry, inspect custody head and export the durable receipt`;
       throw error;
@@ -555,7 +574,8 @@ async function main() {
   process.exitCode = 2;
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });

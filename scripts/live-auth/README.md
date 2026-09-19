@@ -528,6 +528,59 @@ monitoring and an external monotonic/append-only head anchor. Repository tests
 exercise only an ephemeral loopback mTLS server with throwaway keys and do not
 constitute a deployed service.
 
+Before using the client, create an operational preflight manifest with
+`publication-quorum-transport-operations.mjs preflight`. It verifies that the
+client certificate and private key match, the private key has owner-only
+permissions, certificate/CA inputs are regular non-writable files, and the
+client certificate is currently valid. The canonical manifest binds the exact
+endpoint, server leaf pin, CA file digest, client leaf fingerprint and witness
+configuration hash. Review its printed SHA-256 through a separate change-control
+channel; do not approve a digest obtained only from the machine being enrolled.
+
+Create a private checkpoint store with `init`, supplying that externally
+approved manifest digest and the independently queried custody head. The store
+is deliberately inactive. Activation requires a canonical authorization file
+that binds the manifest digest and initial head, plus that authorization's
+separately reviewed SHA-256:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs preflight \
+  --config <client.json> --witness-config <witness.json> \
+  --output <new-preflight-manifest.json>
+node scripts/publication-quorum-transport-operations.mjs init \
+  --store <new-private-operations-directory> \
+  --manifest <preflight-manifest.json> \
+  --expected-manifest-sha256 <out-of-band-reviewed-sha256> \
+  --initial-head-sha256 <genesis-or-independently-queried-receipt-sha256>
+node scripts/publication-quorum-transport-operations.mjs activate \
+  --store <private-operations-directory> \
+  --authorization <canonical-change-authorization.json> \
+  --expected-authorization-sha256 <out-of-band-reviewed-sha256>
+```
+
+Every transport `request` requires `--operations-store`. Before network I/O it
+recomputes the preflight identity, compares the retained head, and durably moves
+the checkpoint from `ready` to `pending`. A configuration substitution, rollback,
+inactive store or existing pending request fails closed. Only a fully verified
+and durably written receipt advances the retained head and returns the store to
+`ready`; therefore a timeout or malformed response cannot be retried accidentally.
+
+If delivery was ambiguous, run `inspect`, inspect the independent custody head,
+and export its content-addressed receipt. When custody did advance, `reconcile`
+accepts the retained preflight manifest, exact authenticated request, prior head,
+witness config and exported receipt. It verifies the witness signature and exact
+payload before resolving the pending checkpoint. Never reconcile from an
+unauthenticated status response, edit `checkpoint.json`, delete the lock, or
+initialize a replacement store to bypass `pending`. If custody did not advance,
+leave the store blocked until a separately reviewed recovery procedure exists;
+this tool intentionally has no "clear pending" command.
+
+The preflight and activation flow is a fail-closed local guard, not certificate
+issuance, revocation checking, HSM storage, rollback-proof hardware or deployment
+approval. Each certificate rotation requires a new manifest, authorization and
+store; the tool does not activate a service or make any connection during
+preflight, initialization or activation.
+
 Commit with `witnessed-verify` or `witnessed-rotate`. Supply both the ordinary
 expected checkpoint hash and the externally queried witness head hash (or
 `genesis` only for the first receipt), the prior receipt, and the new signed
