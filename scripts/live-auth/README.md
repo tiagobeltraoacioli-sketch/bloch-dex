@@ -540,8 +540,15 @@ channel; do not approve a digest obtained only from the machine being enrolled.
 Create a private checkpoint store with `init`, supplying that externally
 approved manifest digest and the independently queried custody head. The store
 is deliberately inactive. Activation requires a canonical authorization file
-that binds the manifest digest and initial head, plus that authorization's
-separately reviewed SHA-256:
+that binds the manifest digest and initial head. The authorization must also
+pin an Ed25519 rotation authority as `authorityKeyId`,
+`authorityKeyGeneration` and `authorityPublicKeyBase64Url`; its separately
+reviewed SHA-256 is the bootstrap trust anchor. Private authority keys are not
+stored in the operations store:
+
+```json
+{"authorityKeyGeneration":1,"authorityKeyId":"<sha256-of-raw-ed25519-public-key>","authorityPublicKeyBase64Url":"<raw-ed25519-public-key>","authorizationId":"reviewed-bootstrap-1","enabled":true,"expectedHeadSha256":"genesis","manifestSha256":"<approved-preflight-sha256>","schemaVersion":1}
+```
 
 ```sh
 node scripts/publication-quorum-transport-operations.mjs preflight \
@@ -577,9 +584,65 @@ this tool intentionally has no "clear pending" command.
 
 The preflight and activation flow is a fail-closed local guard, not certificate
 issuance, revocation checking, HSM storage, rollback-proof hardware or deployment
-approval. Each certificate rotation requires a new manifest, authorization and
-store; the tool does not activate a service or make any connection during
-preflight, initialization or activation.
+approval. The tool does not activate a service or make any connection during
+preflight, initialization, activation or profile rotation.
+
+### Pinned mTLS profile rotation
+
+Generate the replacement preflight manifest first and approve its digest over
+an independent channel. `prepare-rotation` binds that manifest to the current
+manifest, custody head, monotonically increasing rotation sequence, previous
+rotation-record hash, current authority and a distinct next authority whose key
+generation increases. It durably stores the canonical rotation and moves the
+checkpoint to `rotating`. Transport requests then fail closed until the complete
+rotation record and replacement checkpoint have both been durably committed:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs prepare-rotation \
+  --store <private-operations-directory> \
+  --prior-manifest <current-preflight-manifest.json> \
+  --next-manifest <replacement-preflight-manifest.json> \
+  --expected-next-manifest-sha256 <out-of-band-reviewed-sha256> \
+  --next-authority-public-key <next-offline-ed25519-public.pem> \
+  --next-authority-key-generation <greater-positive-integer>
+node scripts/publication-quorum-transport-operations.mjs inspect-rotation \
+  --store <private-operations-directory>
+```
+
+The old authority independently issues `prior-authorization`; the new
+authority issues `next-acceptance`. Both signatures are domain- and role-bound
+to the exact same rotation. Create each output once on the appropriate isolated
+operator host, then commit both envelopes:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs authorize-rotation \
+  --rotation <store/rotations/printed-rotation-sha256.json> \
+  --role prior-authorization \
+  --private-key <old-offline-ed25519-private.pem> --key-generation <current> \
+  --output <new-prior-authorization.json>
+node scripts/publication-quorum-transport-operations.mjs authorize-rotation \
+  --rotation <store/rotations/printed-rotation-sha256.json> \
+  --role next-acceptance \
+  --private-key <next-offline-ed25519-private.pem> --key-generation <greater> \
+  --output <new-next-acceptance.json>
+node scripts/publication-quorum-transport-operations.mjs commit-rotation \
+  --store <private-operations-directory> \
+  --prior-manifest <current-preflight-manifest.json> \
+  --next-manifest <replacement-preflight-manifest.json> \
+  --rotation <store/rotations/printed-rotation-sha256.json> \
+  --prior-authorization <prior-authorization.json> \
+  --next-acceptance <next-acceptance.json>
+```
+
+There is intentionally no cancel, force, rollback or unsigned migration path.
+An invalid, incomplete or interrupted rotation remains blocked in `rotating`;
+use `inspect` and `inspect-rotation`, recover the two exact authorizations, and
+repeat only `commit-rotation`. Never edit the checkpoint or replace the store.
+The hash chain prevents replaying an old profile or forking a sequence, but an
+external append-only anchor is still required to detect whole-store rollback.
+This release uses operations-checkpoint schema 2. A schema-1 store fails closed;
+do not edit it in place. Bootstrap a separately reviewed schema-2 store from an
+independently queried custody head and retain the old store for audit.
 
 Commit with `witnessed-verify` or `witnessed-rotate`. Supply both the ordinary
 expected checkpoint hash and the externally queried witness head hash (or

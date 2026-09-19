@@ -202,12 +202,16 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
     const manifest = await buildClientPreflight(selectedConfig, witnessConfig);
     const manifestSha256 = canonicalSha256(manifest);
     await initializeOperationsStore(store, manifest, manifestSha256, head);
+    const authority = describeKey(generateKeyPairSync("ed25519").publicKey);
     const authorization = {
       schemaVersion: 1,
       authorizationId: `${name}-approval`,
       manifestSha256,
       expectedHeadSha256: head,
       enabled: true,
+      authorityKeyId: authority.keyId,
+      authorityKeyGeneration: 1,
+      authorityPublicKeyBase64Url: authority.publicKeyBase64Url,
     };
     await activateOperationsStore(store, authorization, canonicalSha256(authorization));
     return store;

@@ -9,11 +9,15 @@ import { promisify } from "node:util";
 import { canonicalSha256, describeKey } from "./live-auth/envelope.mjs";
 import {
   activateOperationsStore,
+  authorizeOperationsRotation,
   beginTransportRequest,
   buildClientPreflight,
+  commitOperationsRotation,
   commitTransportRequest,
   initializeOperationsStore,
+  inspectPendingRotation,
   inspectOperationsStore,
+  prepareOperationsRotation,
 } from "./publication-quorum-transport-operations.mjs";
 
 const execute = promisify(execFile);
@@ -59,7 +63,14 @@ async function fixture() {
     tlsCertificatePath: client.cert,
     tlsPrivateKeyPath: client.key,
   };
-  return { root, server, client, config, witness: witnessConfig() };
+  return {
+    root,
+    server,
+    client,
+    config,
+    witness: witnessConfig(),
+    authority: generateKeyPairSync("ed25519"),
+  };
 }
 
 test("preflight rejects unsafe key permissions and a certificate/key substitution", async () => {
@@ -98,6 +109,9 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
     manifestSha256: manifestHash,
     expectedHeadSha256: "genesis",
     enabled: true,
+    authorityKeyId: describeKey(value.authority.publicKey).keyId,
+    authorityKeyGeneration: 1,
+    authorityPublicKeyBase64Url: describeKey(value.authority.publicKey).publicKeyBase64Url,
   };
   await assert.rejects(
     activateOperationsStore(store, authorization, "2".repeat(64)),
@@ -140,4 +154,195 @@ test("preflight manifest deterministically binds endpoint, pins, certificate, CA
     canonicalSha256(await buildClientPreflight(value.config, value.witness)),
   );
   assert.ok((await readFile(value.client.cert)).length > 0);
+});
+
+test("rotates a pinned mTLS profile only after independent old and new authorization", async () => {
+  const value = await fixture();
+  const priorManifest = await buildClientPreflight(value.config, value.witness);
+  const priorHash = canonicalSha256(priorManifest);
+  const store = join(value.root, "rotation-operations");
+  await initializeOperationsStore(store, priorManifest, priorHash, "genesis");
+  const priorIdentity = describeKey(value.authority.publicKey);
+  const activation = {
+    schemaVersion: 1,
+    authorizationId: "rotation-bootstrap",
+    manifestSha256: priorHash,
+    expectedHeadSha256: "genesis",
+    enabled: true,
+    authorityKeyId: priorIdentity.keyId,
+    authorityKeyGeneration: 1,
+    authorityPublicKeyBase64Url: priorIdentity.publicKeyBase64Url,
+  };
+  await activateOperationsStore(store, activation, canonicalSha256(activation));
+
+  const nextManifest = await buildClientPreflight({
+    ...value.config,
+    serverCertificateSha256: "b".repeat(64),
+  }, value.witness);
+  const nextHash = canonicalSha256(nextManifest);
+  const nextKeys = generateKeyPairSync("ed25519");
+  const nextIdentity = describeKey(nextKeys.publicKey);
+  await assert.rejects(
+    prepareOperationsRotation({
+      root: store,
+      priorManifest,
+      nextManifest,
+      expectedNextManifestSha256: "0".repeat(64),
+      nextAuthority: { ...nextIdentity, keyGeneration: 2 },
+    }),
+    /refusing TOFU/,
+  );
+
+  const prepared = await prepareOperationsRotation({
+    root: store,
+    priorManifest,
+    nextManifest,
+    expectedNextManifestSha256: nextHash,
+    nextAuthority: { ...nextIdentity, keyGeneration: 2 },
+  });
+  assert.equal((await inspectPendingRotation(store)).rotationSha256, prepared.rotationSha256);
+  await assert.rejects(
+    beginTransportRequest(store, priorHash, "genesis", "8".repeat(64)),
+    /rotation is pending.*blocked until durable commit/,
+  );
+
+  const priorAuthorization = authorizeOperationsRotation(
+    prepared.rotation,
+    "prior-authorization",
+    value.authority.privateKey,
+    1,
+  );
+  const nextAcceptance = authorizeOperationsRotation(
+    prepared.rotation,
+    "next-acceptance",
+    nextKeys.privateKey,
+    2,
+  );
+  await assert.rejects(
+    commitOperationsRotation({
+      root: store,
+      priorManifest,
+      nextManifest: { ...nextManifest, serverCertificateSha256: "c".repeat(64) },
+      rotation: prepared.rotation,
+      priorAuthorization,
+      nextAcceptance,
+    }),
+    /next manifest differs/,
+  );
+  await assert.rejects(
+    commitOperationsRotation({
+      root: store,
+      priorManifest,
+      nextManifest,
+      rotation: prepared.rotation,
+      priorAuthorization: nextAcceptance,
+      nextAcceptance: priorAuthorization,
+    }),
+    /signature key identity does not match/,
+  );
+  assert.equal((await inspectOperationsStore(store)).status, "rotating");
+
+  const committed = await commitOperationsRotation({
+    root: store,
+    priorManifest,
+    nextManifest,
+    rotation: prepared.rotation,
+    priorAuthorization,
+    nextAcceptance,
+  });
+  assert.equal(committed.checkpoint.status, "ready");
+  assert.equal(committed.checkpoint.manifestSha256, nextHash);
+  assert.equal(committed.checkpoint.rotationSequence, 1);
+  assert.equal(committed.checkpoint.previousRotationSha256, committed.rotationRecordSha256);
+  assert.equal(committed.checkpoint.authorityKeyId, nextIdentity.keyId);
+  await assert.rejects(
+    commitOperationsRotation({
+      root: store,
+      priorManifest,
+      nextManifest,
+      rotation: prepared.rotation,
+      priorAuthorization,
+      nextAcceptance,
+    }),
+    /does not match the retained pending transition/,
+  );
+  await beginTransportRequest(store, nextHash, "genesis", "9".repeat(64));
+});
+
+test("refuses mTLS rotation downgrade, rollback, shared keys, and stale profile chains", async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestHash = canonicalSha256(manifest);
+  const store = join(value.root, "adversarial-rotation-operations");
+  await initializeOperationsStore(store, manifest, manifestHash, "genesis");
+  const identity = describeKey(value.authority.publicKey);
+  const activation = {
+    schemaVersion: 1,
+    authorizationId: "adversarial-bootstrap",
+    manifestSha256: manifestHash,
+    expectedHeadSha256: "genesis",
+    enabled: true,
+    authorityKeyId: identity.keyId,
+    authorityKeyGeneration: 4,
+    authorityPublicKeyBase64Url: identity.publicKeyBase64Url,
+  };
+  await activateOperationsStore(store, activation, canonicalSha256(activation));
+  await assert.rejects(
+    prepareOperationsRotation({
+      root: store,
+      priorManifest: manifest,
+      nextManifest: manifest,
+      expectedNextManifestSha256: manifestHash,
+      nextAuthority: { ...identity, keyGeneration: 5 },
+    }),
+    /must change the manifest/,
+  );
+  const changed = { ...manifest, serverCertificateSha256: "d".repeat(64) };
+  const invalidEndpoint = { ...changed, endpoint: { ...changed.endpoint, host: "custodian.example" } };
+  await assert.rejects(
+    prepareOperationsRotation({
+      root: store,
+      priorManifest: manifest,
+      nextManifest: invalidEndpoint,
+      expectedNextManifestSha256: canonicalSha256(invalidEndpoint),
+      nextAuthority: { ...describeKey(generateKeyPairSync("ed25519").publicKey), keyGeneration: 5 },
+    }),
+    /preflight endpoint is invalid/,
+  );
+  const witnessSwap = { ...changed, witnessConfigSha256: "e".repeat(64) };
+  const witnessSwapKeys = generateKeyPairSync("ed25519");
+  const witnessSwapIdentity = describeKey(witnessSwapKeys.publicKey);
+  await assert.rejects(
+    prepareOperationsRotation({
+      root: store,
+      priorManifest: manifest,
+      nextManifest: witnessSwap,
+      expectedNextManifestSha256: canonicalSha256(witnessSwap),
+      nextAuthority: { ...witnessSwapIdentity, keyGeneration: 5 },
+    }),
+    /must not replace the witness trust anchor/,
+  );
+  await assert.rejects(
+    prepareOperationsRotation({
+      root: store,
+      priorManifest: manifest,
+      nextManifest: changed,
+      expectedNextManifestSha256: canonicalSha256(changed),
+      nextAuthority: { ...identity, keyGeneration: 5 },
+    }),
+    /independent keys/,
+  );
+  const downgrade = generateKeyPairSync("ed25519");
+  const downgradeIdentity = describeKey(downgrade.publicKey);
+  await assert.rejects(
+    prepareOperationsRotation({
+      root: store,
+      priorManifest: manifest,
+      nextManifest: changed,
+      expectedNextManifestSha256: canonicalSha256(changed),
+      nextAuthority: { ...downgradeIdentity, keyGeneration: 4 },
+    }),
+    /increasing generation/,
+  );
+  assert.equal((await inspectOperationsStore(store)).status, "ready");
 });
