@@ -33,8 +33,11 @@ async function run(cli, ...args) {
   if (cli === transportCli && args[0] === "request" &&
       !args.includes("--external-anchor-log-adapter")) {
     const storeIndex = args.indexOf("--operations-store");
-    const adapter = storeIndex >= 0 ? anchorAdapters.get(args[storeIndex + 1]) : null;
-    if (adapter) args.push("--external-anchor-log-adapter", adapter);
+    const anchor = storeIndex >= 0 ? anchorAdapters.get(args[storeIndex + 1]) : null;
+    if (anchor) args.push(
+      "--external-anchor-log-adapter", anchor.adapter,
+      "--external-anchor-log-config", anchor.config,
+    );
   }
   return execute(process.execPath, [cli, ...args], { cwd: resolve(".") });
 }
@@ -235,13 +238,19 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       evidence,
     };
     const adapter = join(root, `${name}-external-anchor-adapter.mjs`);
+    const adapterConfig = join(root, `${name}-external-anchor-config.json`);
     await writeFile(
       adapter,
-      `export async function readLatestHead() { return ${JSON.stringify(externalHead)}; }\n`,
+      `export async function createExternalAnchorLogAdapter(config) {
+  if (Object.keys(config).length !== 0) throw new Error("unexpected test config");
+  return { async readLatestHead() { return ${JSON.stringify(externalHead)}; } };
+}\n`,
       { mode: 0o444 },
     );
+    await writeFile(adapterConfig, "{}\n", { mode: 0o444 });
     await chmod(adapter, 0o444);
-    anchorAdapters.set(store, adapter);
+    await chmod(adapterConfig, 0o444);
+    anchorAdapters.set(store, { adapter, config: adapterConfig });
     return store;
   }
 

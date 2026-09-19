@@ -565,9 +565,13 @@ node scripts/publication-quorum-transport-operations.mjs activate \
   --expected-authorization-sha256 <out-of-band-reviewed-sha256>
 ```
 
-Every transport `request` requires `--operations-store` and
-`--external-anchor-log-adapter <absolute-module.mjs>`. The owner-controlled,
-non-group-writable module must export an async `readLatestHead(query)` function.
+Every transport `request` requires `--operations-store`,
+`--external-anchor-log-adapter <absolute-module.mjs>` and
+`--external-anchor-log-config <config.json>`. The owner-controlled,
+non-group-writable module must export an async
+`createExternalAnchorLogAdapter(config)` factory whose returned adapter exposes
+`readLatestHead(query)`. Requiring explicit configuration prevents an adapter
+from silently selecting its trust anchors from ambient environment variables.
 Immediately before network I/O, while holding the operations lock, the client
 passes it an immutable query containing the exact stream ID, checkpoint hash and
 generation. The adapter must query an authenticated, independently operated
@@ -588,12 +592,13 @@ request therefore fails closed. Only a fully verified
 and durably written receipt advances the retained head and returns the store to
 `ready`; therefore a timeout or malformed response cannot be retried accidentally.
 
-The repository deliberately provides no production adapter and does not choose
-an endpoint, credentials, TLS policy or freshness source. Supplying a module
-that reads a file on the operations host, caches a response, trusts an
-unauthenticated API or merely echoes the query defeats this gate. A deployment
-adapter must authenticate the independent log, verify its own inclusion and
-consistency semantics, reject equivocation and return only the live latest head.
+The repository supplies the strict mTLS client adapter described below, but
+does not operate its endpoint, issue credentials or provide a freshness source.
+Supplying another module that reads a file on the operations host, caches a
+response, trusts an unauthenticated API or merely echoes the query defeats this
+gate. A deployment adapter must authenticate the independent log, verify its
+own inclusion and consistency semantics, reject equivocation and return only
+the live latest head.
 
 If delivery was ambiguous, run `inspect`, inspect the independent custody head,
 and export its content-addressed receipt. When custody did advance, `reconcile`
@@ -706,6 +711,43 @@ signature is domain- and role-bound and must match that retained authority.
 equality with the current ready checkpoint. The transport path performs that
 same verification through the injected latest-head adapter and additionally
 retains the accepted external log sequence.
+
+`publication-quorum-anchor-log-mtls.mjs` is the supplied fail-closed
+latest-head adapter. Its exact configuration requires a unicast numeric IP
+(hostnames and therefore runtime DNS are refused), port, path, absolute
+deadline, response byte limit, server CA, exact server leaf SHA-256 pin, client
+certificate and owner-only client key. Construction verifies the certificate
+and key pair, validity windows and CA role. Each query uses a new TLS 1.3-only
+mutually authenticated connection, canonical JSON with an exact
+`Content-Length`, no connection pool, redirect, fallback or retry, and checks
+the canonical bounded response before returning it to the operations guard.
+The absolute deadline covers connection, handshake and response processing.
+
+Use the adapter only through its securely loaded absolute path and a separately
+reviewed configuration file:
+
+```sh
+node scripts/publication-quorum-witness-transport.mjs request \
+  --config <custody-client.json> \
+  --witness-config <witness.json> \
+  --operations-store <private-operations-directory> \
+  --external-anchor-log-adapter \
+    <absolute-repository-path>/scripts/publication-quorum-anchor-log-mtls.mjs \
+  --external-anchor-log-config <reviewed-anchor-log-client.json> \
+  --authenticated-request <envelope.json> \
+  --expected-head-sha256 <genesis-or-prior-receipt-sha256> \
+  --output <new-receipt.json>
+```
+
+The loader rejects relative paths, symlinks, hardlinks, foreign ownership,
+group/world-writable modules and modules that change during import. It requires
+an explicit factory so configuration cannot be silently taken from ambient
+environment variables. Treat both the adapter module digest and canonical
+configuration digest as deployment trust anchors approved outside this host.
+The adapter authenticates one log endpoint; it does not prove independent
+operation, global consistency, inclusion, availability, anti-rollback storage,
+certificate revocation or correct server implementation. Those remain external
+production and audit requirements.
 
 The evidence file is portable proof, not an external store. Keeping it beside
 the operations store provides no rollback protection: a rollback can restore

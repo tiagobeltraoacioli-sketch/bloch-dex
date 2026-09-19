@@ -453,10 +453,10 @@ async function sendOnce(config, body) {
 function usage() {
   console.error(`Usage:
   node scripts/publication-quorum-witness-transport.mjs serve --config <server.json>
-  node scripts/publication-quorum-witness-transport.mjs request --config <client.json> --witness-config <witness.json> --operations-store <private-directory> --external-anchor-log-adapter <absolute-module.mjs> --authenticated-request <envelope.json> --expected-head-sha256 <genesis-or-sha256> --output <receipt.json>`);
+  node scripts/publication-quorum-witness-transport.mjs request --config <client.json> --witness-config <witness.json> --operations-store <private-directory> --external-anchor-log-adapter <absolute-module.mjs> --external-anchor-log-config <config.json> --authenticated-request <envelope.json> --expected-head-sha256 <genesis-or-sha256> --output <receipt.json>`);
 }
 
-async function loadExternalAnchorLogAdapter(path) {
+async function loadExternalAnchorLogAdapter(path, config) {
   if (!isAbsolute(path)) fail("external anchor log adapter path must be absolute");
   const metadata = await lstat(path);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1)
@@ -474,9 +474,12 @@ async function loadExternalAnchorLogAdapter(path) {
       after.mtimeMs !== metadata.mtimeMs || after.ctimeMs !== metadata.ctimeMs ||
       after.mode !== metadata.mode || after.uid !== metadata.uid)
     fail("external anchor log adapter changed while it was being loaded");
-  if (typeof loaded.readLatestHead !== "function")
-    fail("external anchor log adapter must export readLatestHead");
-  return Object.freeze({ readLatestHead: loaded.readLatestHead });
+  if (typeof loaded.createExternalAnchorLogAdapter !== "function")
+    fail("external anchor log adapter must export createExternalAnchorLogAdapter");
+  const adapter = await loaded.createExternalAnchorLogAdapter(config);
+  if (!adapter || typeof adapter.readLatestHead !== "function")
+    fail("external anchor log adapter factory returned an invalid adapter");
+  return Object.freeze({ readLatestHead: adapter.readLatestHead.bind(adapter) });
 }
 
 async function main() {
@@ -499,7 +502,7 @@ async function main() {
   if (command === "request") {
     const names = [
       "--config", "--witness-config", "--authenticated-request",
-      "--operations-store", "--external-anchor-log-adapter",
+      "--operations-store", "--external-anchor-log-adapter", "--external-anchor-log-config",
       "--expected-head-sha256", "--output",
     ];
     if (args.length !== names.length * 2) fail("request arguments are incomplete");
@@ -542,6 +545,7 @@ async function main() {
     const manifestSha256 = canonicalSha256(manifest);
     const anchorLog = await loadExternalAnchorLogAdapter(
       values["--external-anchor-log-adapter"],
+      await readJson(values["--external-anchor-log-config"], MAX_CONFIG),
     );
     await beginTransportRequest(
       values["--operations-store"],
