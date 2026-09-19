@@ -429,6 +429,20 @@ async function withLock(root, operation) {
   }
 }
 
+async function withOrderedLocks(roots, operation) {
+  const canonicalRoots = await Promise.all(roots.map(async (root) => {
+    await requireDirectory(root);
+    return realpath(root);
+  }));
+  if (new Set(canonicalRoots).size !== canonicalRoots.length)
+    fail("each operations store lock target must be distinct");
+  const orderedRoots = [...canonicalRoots].sort();
+  const acquire = (index) => index === orderedRoots.length
+    ? operation(canonicalRoots)
+    : withLock(orderedRoots[index], () => acquire(index + 1));
+  return acquire(0);
+}
+
 export async function initializeOperationsStore(root, manifest, expectedManifestSha256, initialHead) {
   validatePreflightManifest(manifest);
   requireHash(expectedManifestSha256, "externally approved manifest hash");
@@ -797,14 +811,6 @@ export async function migrateOperationsStoreV3ToV4({
   });
 }
 
-async function requireUnlocked(root, field) {
-  const lockPresent = await lstat(join(root, LOCK)).then(
-    () => true,
-    (error) => error?.code === "ENOENT" ? false : Promise.reject(error),
-  );
-  if (lockPresent) fail(`${field} is locked; offline migration verification requires quiescence`);
-}
-
 export async function verifyOperationsStoreV3ToV4Migration({
   sourceRoot,
   destinationRoot,
@@ -816,94 +822,97 @@ export async function verifyOperationsStoreV3ToV4Migration({
   requireHash(expectedV4CheckpointSha256, "externally approved schema-4 checkpoint hash");
   requireHash(expectedMigrationRecordSha256, "externally approved migration record hash");
   await requireSeparateTrees(sourceRoot, destinationRoot);
-  await requireDirectory(sourceRoot);
-  await requireDirectory(destinationRoot);
-  await requireUnlocked(sourceRoot, "schema-3 source store");
-  await requireUnlocked(destinationRoot, "schema-4 destination store");
+  return withOrderedLocks([sourceRoot, destinationRoot], async ([
+    canonicalSourceRoot,
+    canonicalDestinationRoot,
+  ]) => {
+    const sourceCheckpoint = validateV3Checkpoint(await secureJson(
+      join(canonicalSourceRoot, HEAD),
+      "schema-3 source checkpoint",
+    ));
+    if (canonicalSha256(sourceCheckpoint) !== expectedV3CheckpointSha256)
+      fail("schema-3 source checkpoint does not match the externally approved hash");
+    if (sourceCheckpoint.externalAnchorSequence !== null)
+      fail("schema-3 source has unretained external anchor acceptance history");
+    const sourceChain = await auditRotationChain(canonicalSourceRoot, sourceCheckpoint);
+    const sourceArtifacts = await collectRotationArtifacts(
+      canonicalSourceRoot,
+      sourceCheckpoint,
+    );
 
-  const sourceCheckpoint = validateV3Checkpoint(await secureJson(
-    join(sourceRoot, HEAD),
-    "schema-3 source checkpoint",
-  ));
-  if (canonicalSha256(sourceCheckpoint) !== expectedV3CheckpointSha256)
-    fail("schema-3 source checkpoint does not match the externally approved hash");
-  if (sourceCheckpoint.externalAnchorSequence !== null)
-    fail("schema-3 source has unretained external anchor acceptance history");
-  const sourceChain = await auditRotationChain(sourceRoot, sourceCheckpoint);
-  const sourceArtifacts = await collectRotationArtifacts(sourceRoot, sourceCheckpoint);
+    const destinationCheckpoint = validateCheckpoint(await secureJson(
+      join(canonicalDestinationRoot, HEAD),
+      "schema-4 destination checkpoint",
+    ));
+    if (canonicalSha256(destinationCheckpoint) !== expectedV4CheckpointSha256)
+      fail("schema-4 destination checkpoint does not match the externally approved hash");
+    const derivedDestinationCheckpoint = {
+      ...sourceCheckpoint,
+      schemaVersion: 4,
+      externalAnchorAcceptanceCount: 0,
+      externalAnchorAcceptanceSha256: null,
+    };
+    if (canonicalJson(destinationCheckpoint) !== canonicalJson(derivedDestinationCheckpoint))
+      fail("schema-4 destination checkpoint is not the exact migration of the source");
 
-  const destinationCheckpoint = validateCheckpoint(await secureJson(
-    join(destinationRoot, HEAD),
-    "schema-4 destination checkpoint",
-  ));
-  if (canonicalSha256(destinationCheckpoint) !== expectedV4CheckpointSha256)
-    fail("schema-4 destination checkpoint does not match the externally approved hash");
-  const derivedDestinationCheckpoint = {
-    ...sourceCheckpoint,
-    schemaVersion: 4,
-    externalAnchorAcceptanceCount: 0,
-    externalAnchorAcceptanceSha256: null,
-  };
-  if (canonicalJson(destinationCheckpoint) !== canonicalJson(derivedDestinationCheckpoint))
-    fail("schema-4 destination checkpoint is not the exact migration of the source");
+    const migration = validateV3MigrationRecord(await secureJson(
+      join(canonicalDestinationRoot, V3_MIGRATION_RECORD),
+      "schema-3 migration record",
+    ));
+    if (canonicalSha256(migration) !== expectedMigrationRecordSha256)
+      fail("schema-3 migration record does not match the externally approved hash");
+    if (migration.sourceCheckpointSha256 !== expectedV3CheckpointSha256 ||
+        migration.destinationCheckpointSha256 !== expectedV4CheckpointSha256 ||
+        canonicalJson(migration.sourceCheckpoint) !== canonicalJson(sourceCheckpoint) ||
+        migration.copiedRotationRecordCount !== sourceArtifacts.records.length ||
+        migration.copiedRotationRecordCount !== sourceChain.verifiedRecords)
+      fail("schema-3 migration record does not bind the verified source and destination");
 
-  const migration = validateV3MigrationRecord(await secureJson(
-    join(destinationRoot, V3_MIGRATION_RECORD),
-    "schema-3 migration record",
-  ));
-  if (canonicalSha256(migration) !== expectedMigrationRecordSha256)
-    fail("schema-3 migration record does not match the externally approved hash");
-  if (migration.sourceCheckpointSha256 !== expectedV3CheckpointSha256 ||
-      migration.destinationCheckpointSha256 !== expectedV4CheckpointSha256 ||
-      canonicalJson(migration.sourceCheckpoint) !== canonicalJson(sourceCheckpoint) ||
-      migration.copiedRotationRecordCount !== sourceArtifacts.records.length ||
-      migration.copiedRotationRecordCount !== sourceChain.verifiedRecords)
-    fail("schema-3 migration record does not bind the verified source and destination");
+    const destinationAudit = await auditOperationsStore(canonicalDestinationRoot);
+    if (destinationAudit.verifiedRecords !== sourceChain.verifiedRecords ||
+        destinationAudit.verifiedAnchorAcceptances !== 0)
+      fail("schema-4 destination audit does not match the migrated source history");
 
-  const destinationAudit = await auditOperationsStore(destinationRoot);
-  if (destinationAudit.verifiedRecords !== sourceChain.verifiedRecords ||
-      destinationAudit.verifiedAnchorAcceptances !== 0)
-    fail("schema-4 destination audit does not match the migrated source history");
-
-  const closingSourceCheckpoint = validateV3Checkpoint(await secureJson(
-    join(sourceRoot, HEAD),
-    "schema-3 source checkpoint after verification",
-  ));
-  const closingDestinationCheckpoint = validateCheckpoint(await secureJson(
-    join(destinationRoot, HEAD),
-    "schema-4 destination checkpoint after verification",
-  ));
-  const closingMigration = validateV3MigrationRecord(await secureJson(
-    join(destinationRoot, V3_MIGRATION_RECORD),
-    "schema-3 migration record after verification",
-  ));
-  if (canonicalSha256(closingSourceCheckpoint) !== expectedV3CheckpointSha256 ||
-      canonicalSha256(closingDestinationCheckpoint) !== expectedV4CheckpointSha256 ||
-      canonicalSha256(closingMigration) !== expectedMigrationRecordSha256)
-    fail("migration state changed during offline verification");
-  const closingSourceChain = await auditRotationChain(sourceRoot, closingSourceCheckpoint);
-  const closingSourceArtifacts = await collectRotationArtifacts(
-    sourceRoot,
-    closingSourceCheckpoint,
-  );
-  const closingDestinationAudit = await auditOperationsStore(destinationRoot);
-  if (canonicalJson(closingSourceChain) !== canonicalJson(sourceChain) ||
-      canonicalJson(closingSourceArtifacts) !== canonicalJson(sourceArtifacts) ||
-      canonicalJson(closingDestinationAudit) !== canonicalJson(destinationAudit))
-    fail("migration history changed during offline verification");
-  await requireUnlocked(sourceRoot, "schema-3 source store");
-  await requireUnlocked(destinationRoot, "schema-4 destination store");
-
-  return {
-    schemaVersion: 1,
-    kind: "operations-checkpoint-v3-v4-verification-receipt",
-    sourceCheckpointSha256: expectedV3CheckpointSha256,
-    destinationCheckpointSha256: expectedV4CheckpointSha256,
-    migrationRecordSha256: expectedMigrationRecordSha256,
-    copiedRotationRecordCount: sourceChain.verifiedRecords,
-    sourcePreserved: true,
-    destinationAudit: closingDestinationAudit,
-  };
+    const closingSourceCheckpoint = validateV3Checkpoint(await secureJson(
+      join(canonicalSourceRoot, HEAD),
+      "schema-3 source checkpoint after verification",
+    ));
+    const closingDestinationCheckpoint = validateCheckpoint(await secureJson(
+      join(canonicalDestinationRoot, HEAD),
+      "schema-4 destination checkpoint after verification",
+    ));
+    const closingMigration = validateV3MigrationRecord(await secureJson(
+      join(canonicalDestinationRoot, V3_MIGRATION_RECORD),
+      "schema-3 migration record after verification",
+    ));
+    if (canonicalSha256(closingSourceCheckpoint) !== expectedV3CheckpointSha256 ||
+        canonicalSha256(closingDestinationCheckpoint) !== expectedV4CheckpointSha256 ||
+        canonicalSha256(closingMigration) !== expectedMigrationRecordSha256)
+      fail("migration state changed during offline verification");
+    const closingSourceChain = await auditRotationChain(
+      canonicalSourceRoot,
+      closingSourceCheckpoint,
+    );
+    const closingSourceArtifacts = await collectRotationArtifacts(
+      canonicalSourceRoot,
+      closingSourceCheckpoint,
+    );
+    const closingDestinationAudit = await auditOperationsStore(canonicalDestinationRoot);
+    if (canonicalJson(closingSourceChain) !== canonicalJson(sourceChain) ||
+        canonicalJson(closingSourceArtifacts) !== canonicalJson(sourceArtifacts) ||
+        canonicalJson(closingDestinationAudit) !== canonicalJson(destinationAudit))
+      fail("migration history changed during offline verification");
+    return {
+      schemaVersion: 1,
+      kind: "operations-checkpoint-v3-v4-verification-receipt",
+      sourceCheckpointSha256: expectedV3CheckpointSha256,
+      destinationCheckpointSha256: expectedV4CheckpointSha256,
+      migrationRecordSha256: expectedMigrationRecordSha256,
+      copiedRotationRecordCount: sourceChain.verifiedRecords,
+      sourcePreserved: true,
+      destinationAudit: closingDestinationAudit,
+    };
+  });
 }
 
 export async function auditOperationsStore(root) {

@@ -60,6 +60,7 @@ async function certificate(root, name) {
     "-addext", name === "server"
       ? "subjectAltName=IP:127.0.0.1"
       : `subjectAltName=DNS:${name}`,
+    "-addext", "basicConstraints=critical,CA:TRUE",
     "-days", "1",
   ]);
   await chmod(key, 0o600);

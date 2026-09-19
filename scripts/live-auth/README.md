@@ -814,15 +814,20 @@ node scripts/publication-quorum-transport-operations.mjs verify-v3-to-v4 \
   --output <new-verification-receipt.json>
 ```
 
-The verifier is read-only. It rejects active operation locks and nested store
-paths, independently revalidates the source rotation history, rederives the
-exact schema-4 checkpoint, binds the canonical migration record to both stores,
-audits the copied destination, and rereads all three objects to detect change
-during inspection. The output digest printed to stdout authenticates the
-portable receipt. Store that receipt and its digest outside both operations
-trees. A receipt kept only beside the destination does not provide rollback
-protection, and the expected hashes are review inputs rather than values the
-verifier is allowed to adopt from local disk.
+The verifier does not change either checkpoint or its history. It takes the
+same exclusive operations lock on both stores, in deterministic canonical-path
+order, for the entire audit. This blocks conforming writers without creating a
+cross-verifier deadlock and rejects an already active operation. As with every
+operations command, a process or host crash can leave a lock that requires
+manual inspection; never delete one merely to bypass an uncertain outcome. The
+verifier rejects nested store paths, independently revalidates the source
+rotation history, rederives the exact schema-4 checkpoint, binds the canonical
+migration record to both stores, audits the copied destination, and rereads all
+three objects before releasing the locks. The output digest printed to stdout
+authenticates the portable receipt. Store that receipt and its digest outside
+both operations trees. A receipt kept only beside the destination does not
+provide rollback protection, and the expected hashes are review inputs rather
+than values the verifier is allowed to adopt from local disk.
 
 A schema-3 store with a non-null external anchor sequence cannot be migrated:
 schema 3 did not retain the authenticated acceptance chain required by schema

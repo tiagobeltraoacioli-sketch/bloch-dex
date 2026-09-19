@@ -34,7 +34,8 @@ async function certificate(root, name) {
   await execute("openssl", [
     "req", "-x509", "-newkey", "rsa:2048", "-nodes",
     "-keyout", key, "-out", cert, "-subj", `/CN=${name}`,
-    "-addext", "subjectAltName=IP:127.0.0.1", "-days", "1",
+    "-addext", "subjectAltName=IP:127.0.0.1",
+    "-addext", "basicConstraints=critical,CA:TRUE", "-days", "1",
   ]);
   await chmod(key, 0o600);
   await chmod(cert, 0o444);
@@ -191,6 +192,33 @@ test("migrates an explicitly approved schema-3 checkpoint into a separate audite
   ));
   assert.equal(migration.sourceCheckpointSha256, expectedV3Hash);
   assert.deepEqual(migration.sourceCheckpoint, v3);
+  const sourceLock = join(source, ".operations.lock");
+  const destinationLock = join(destination, ".operations.lock");
+  await writeFile(sourceLock, "occupied", { mode: 0o600 });
+  await assert.rejects(
+    verifyOperationsStoreV3ToV4Migration({
+      sourceRoot: source,
+      destinationRoot: destination,
+      expectedV3CheckpointSha256: expectedV3Hash,
+      expectedV4CheckpointSha256: result.destinationCheckpointSha256,
+      expectedMigrationRecordSha256: result.migrationRecordSha256,
+    }),
+    /operations store is locked/,
+  );
+  await unlink(sourceLock);
+  await writeFile(destinationLock, "occupied", { mode: 0o600 });
+  await assert.rejects(
+    verifyOperationsStoreV3ToV4Migration({
+      sourceRoot: source,
+      destinationRoot: destination,
+      expectedV3CheckpointSha256: expectedV3Hash,
+      expectedV4CheckpointSha256: result.destinationCheckpointSha256,
+      expectedMigrationRecordSha256: result.migrationRecordSha256,
+    }),
+    /operations store is locked/,
+  );
+  await assert.rejects(lstat(sourceLock), { code: "ENOENT" });
+  await unlink(destinationLock);
   const verificationReceipt = await verifyOperationsStoreV3ToV4Migration({
     sourceRoot: source,
     destinationRoot: destination,
@@ -206,6 +234,8 @@ test("migrates an explicitly approved schema-3 checkpoint into a separate audite
   assert.equal(verificationReceipt.copiedRotationRecordCount, 1);
   assert.equal(verificationReceipt.destinationAudit.valid, true);
   assert.equal(verificationReceipt.destinationAudit.verifiedRecords, 1);
+  await assert.rejects(lstat(sourceLock), { code: "ENOENT" });
+  await assert.rejects(lstat(destinationLock), { code: "ENOENT" });
 
   const tamperedMigration = {
     ...migration,
@@ -225,6 +255,8 @@ test("migrates an explicitly approved schema-3 checkpoint into a separate audite
     }),
     /does not bind the verified source and destination/,
   );
+  await assert.rejects(lstat(sourceLock), { code: "ENOENT" });
+  await assert.rejects(lstat(destinationLock), { code: "ENOENT" });
   await assert.rejects(
     migrateOperationsStoreV3ToV4({
       sourceRoot: source,
