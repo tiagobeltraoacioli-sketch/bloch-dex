@@ -584,8 +584,18 @@ append-only log and return its latest accepted head in this form:
 The client requires the signed evidence to match the exact audited ready
 checkpoint and requires `logSequence` to increase beyond the last accepted
 external sequence. Only then does it durably move the checkpoint from `ready`
-to `pending`; absence, timeout, malformed output, stale sequence, wrong stream,
-bad signature or mismatched checkpoint fails before transport. It also
+to `pending`. Before that checkpoint transition, it writes the canonical query
+and complete authenticated head as a content-addressed record under the private
+`anchor-acceptances/` directory. Each acceptance names the prior acceptance
+hash; the checkpoint retains the chain head, record count and latest external
+sequence. `audit`, anchor preparation, profile rotation and subsequent requests
+walk this chain, verify every content address and evidence signature, require a
+single stream and enforce strictly increasing log sequences. Missing, modified,
+forked or count-downgraded local evidence therefore blocks further use.
+
+Absence, timeout, malformed output, stale sequence, wrong stream, bad signature
+or mismatched checkpoint fails before either an acceptance or transport state is
+committed. The client also
 recomputes the preflight identity and compares the retained custody head. A
 configuration substitution, rollback, inactive store or existing pending
 request therefore fails closed. Only a fully verified
@@ -599,6 +609,13 @@ response, trusts an unauthenticated API or merely echoes the query defeats this
 gate. A deployment adapter must authenticate the independent log, verify its
 own inclusion and consistency semantics, reject equivocation and return only
 the live latest head.
+
+The retained acceptance chain is local audit and recovery evidence only. It is
+not an independent append-only log, transparency-log consistency proof,
+rollback-proof counter or substitute for separately retaining the latest head.
+An attacker able to roll back or replace the complete operations directory can
+roll back the checkpoint and acceptance records together. Deployment must still
+obtain freshness and consistency from the independently operated anchor log.
 
 If delivery was ambiguous, run `inspect`, inspect the independent custody head,
 and export its content-addressed receipt. When custody did advance, `reconcile`

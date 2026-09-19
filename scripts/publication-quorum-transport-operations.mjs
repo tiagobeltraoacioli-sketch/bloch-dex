@@ -42,6 +42,7 @@ const ID = /^[a-z][a-z0-9-]{0,62}$/;
 const HEAD = "checkpoint.json";
 const LOCK = ".operations.lock";
 const ROTATIONS = "rotations";
+const ANCHOR_ACCEPTANCES = "anchor-acceptances";
 export const MTLS_PROFILE_ROTATION_DOMAIN =
   "POSTERN_PUBLICATION_QUORUM_MTLS_PROFILE_ROTATION_V1\n";
 export const OPERATIONS_ANCHOR_DOMAIN =
@@ -232,9 +233,10 @@ function validateCheckpoint(value) {
     "expectedHeadSha256", "pendingRequestId", "authorizationSha256",
     "authorityKeyId", "authorityKeyGeneration", "authorityPublicKeyBase64Url",
     "rotationSequence", "previousRotationSha256", "pendingRotationSha256",
-    "externalAnchorSequence",
+    "externalAnchorSequence", "externalAnchorAcceptanceCount",
+    "externalAnchorAcceptanceSha256",
   ], "operations checkpoint");
-  if (value.schemaVersion !== 3 || !Number.isSafeInteger(value.generation) || value.generation < 0)
+  if (value.schemaVersion !== 4 || !Number.isSafeInteger(value.generation) || value.generation < 0)
     fail("operations checkpoint version or generation is invalid");
   requireHash(value.manifestSha256, "manifest hash");
   requireHead(value.expectedHeadSha256);
@@ -261,6 +263,17 @@ function validateCheckpoint(value) {
   if (value.externalAnchorSequence !== null &&
       (!Number.isSafeInteger(value.externalAnchorSequence) || value.externalAnchorSequence < 1))
     fail("operations checkpoint external anchor sequence is invalid");
+  if (!Number.isSafeInteger(value.externalAnchorAcceptanceCount) ||
+      value.externalAnchorAcceptanceCount < 0)
+    fail("operations checkpoint external anchor acceptance count is invalid");
+  if (value.externalAnchorAcceptanceCount === 0) {
+    if (value.externalAnchorSequence !== null || value.externalAnchorAcceptanceSha256 !== null)
+      fail("operations checkpoint external anchor acceptance genesis is invalid");
+  } else if (value.externalAnchorSequence === null ||
+      typeof value.externalAnchorAcceptanceSha256 !== "string" ||
+      !HEX.test(value.externalAnchorAcceptanceSha256)) {
+    fail("operations checkpoint external anchor acceptance head is invalid");
+  }
   return value;
 }
 
@@ -344,8 +357,10 @@ export async function initializeOperationsStore(root, manifest, expectedManifest
   await requireDirectory(root);
   await mkdir(join(root, ROTATIONS), { mode: 0o700 });
   await chmod(join(root, ROTATIONS), 0o700);
+  await mkdir(join(root, ANCHOR_ACCEPTANCES), { mode: 0o700 });
+  await chmod(join(root, ANCHOR_ACCEPTANCES), 0o700);
   const checkpoint = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     manifestSha256: expectedManifestSha256,
     generation: 0,
     status: "inactive",
@@ -359,6 +374,8 @@ export async function initializeOperationsStore(root, manifest, expectedManifest
     previousRotationSha256: "genesis",
     pendingRotationSha256: null,
     externalAnchorSequence: null,
+    externalAnchorAcceptanceCount: 0,
+    externalAnchorAcceptanceSha256: null,
   };
   await writeNewJson(join(root, HEAD), checkpoint, 0o400);
   await syncDirectory(root);
@@ -481,6 +498,7 @@ export async function prepareOperationsRotation({
   return withLock(root, async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     await auditRotationChain(root, current);
+    await auditAnchorAcceptanceChain(root, current);
     if (current.status !== "ready")
       fail("operations store must be ready before starting mTLS profile rotation");
     if (canonicalSha256(priorManifest) !== current.manifestSha256)
@@ -594,6 +612,7 @@ export async function auditOperationsStore(root) {
   await requireDirectory(root);
   const checkpoint = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
   const chain = await auditRotationChain(root, checkpoint);
+  const anchorAcceptances = await auditAnchorAcceptanceChain(root, checkpoint);
   let pendingRotationSha256 = null;
   if (checkpoint.status === "rotating") {
     const rotation = validateRotationPayload(await secureJson(
@@ -616,6 +635,7 @@ export async function auditOperationsStore(root) {
     previousRotationSha256: checkpoint.previousRotationSha256,
     pendingRotationSha256,
     ...chain,
+    ...anchorAcceptances,
   };
 }
 
@@ -626,6 +646,7 @@ export async function prepareOperationsAnchorStatement(root) {
       "operations checkpoint",
     ));
     const chain = await auditRotationChain(root, checkpoint);
+    await auditAnchorAcceptanceChain(root, checkpoint);
     return anchorStatement(checkpoint, chain);
   });
 }
@@ -702,6 +723,83 @@ function validateExternalAnchorHead(value, streamId) {
   return value;
 }
 
+function validateExternalAnchorQuery(value) {
+  exactKeys(value, [
+    "schemaVersion", "kind", "streamId", "checkpointSha256", "checkpointGeneration",
+  ], "external anchor log query");
+  if (value.schemaVersion !== 1 || value.kind !== "operations-anchor-log-query")
+    fail("external anchor log query identity is invalid");
+  requireHash(value.streamId, "external anchor query stream ID");
+  requireHash(value.checkpointSha256, "external anchor query checkpoint hash");
+  if (!Number.isSafeInteger(value.checkpointGeneration) || value.checkpointGeneration < 1)
+    fail("external anchor query checkpoint generation is invalid");
+  return value;
+}
+
+function validateAnchorAcceptance(value) {
+  exactKeys(value, [
+    "schemaVersion", "kind", "previousAcceptanceSha256", "query", "head",
+  ], "external anchor acceptance");
+  if (value.schemaVersion !== 1 || value.kind !== "operations-anchor-acceptance")
+    fail("external anchor acceptance identity is invalid");
+  if (value.previousAcceptanceSha256 !== "genesis")
+    requireHash(value.previousAcceptanceSha256, "previous external anchor acceptance hash");
+  const query = validateExternalAnchorQuery(value.query);
+  const head = validateExternalAnchorHead(value.head, query.streamId);
+  const statement = validateAnchorStatement(head.evidence?.payload?.statement);
+  const authority = authorityFromRaw(
+    statement.authority.publicKeyBase64Url,
+    statement.authority.keyGeneration,
+  );
+  const payload = verifyEnvelope(
+    head.evidence,
+    authority.publicKey,
+    OPERATIONS_ANCHOR_DOMAIN,
+    authority.keyGeneration,
+  );
+  exactKeys(payload, ["role", "statement"], "retained anchor evidence payload");
+  if (payload.role !== "operations-checkpoint-anchor" ||
+      canonicalJson(payload.statement) !== canonicalJson(statement) ||
+      statement.streamId !== query.streamId ||
+      statement.checkpointSha256 !== query.checkpointSha256 ||
+      statement.checkpointGeneration !== query.checkpointGeneration)
+    fail("retained anchor evidence does not bind its exact query");
+  return { acceptance: value, query, head, statement };
+}
+
+async function auditAnchorAcceptanceChain(root, checkpoint) {
+  const acceptances = join(root, ANCHOR_ACCEPTANCES);
+  await requireDirectory(acceptances);
+  let expectedSha256 = checkpoint.externalAnchorAcceptanceSha256 ?? "genesis";
+  let expectedSequence = checkpoint.externalAnchorSequence;
+  let expectedStreamId = null;
+  for (let remaining = checkpoint.externalAnchorAcceptanceCount; remaining > 0; remaining -= 1) {
+    if (expectedSha256 === "genesis" || expectedSequence === null)
+      fail("external anchor acceptance chain terminates before its retained count");
+    const { acceptance, head } = validateAnchorAcceptance(await secureJson(
+      join(acceptances, `${expectedSha256}.json`),
+      `external anchor acceptance ${remaining}`,
+    ));
+    if (canonicalSha256(acceptance) !== expectedSha256)
+      fail("external anchor acceptance does not match its retained hash");
+    if (remaining === checkpoint.externalAnchorAcceptanceCount
+      ? head.logSequence !== expectedSequence
+      : head.logSequence >= expectedSequence)
+      fail("external anchor acceptance breaks the retained sequence");
+    if (expectedStreamId !== null && head.streamId !== expectedStreamId)
+      fail("external anchor acceptance changes the retained stream");
+    expectedStreamId = head.streamId;
+    expectedSha256 = acceptance.previousAcceptanceSha256;
+    expectedSequence = head.logSequence;
+  }
+  if (expectedSha256 !== "genesis")
+    fail("external anchor acceptance chain has a non-genesis predecessor at count zero");
+  return {
+    verifiedAnchorAcceptances: checkpoint.externalAnchorAcceptanceCount,
+    externalAnchorStreamId: expectedStreamId,
+  };
+}
+
 async function requireLatestExternalAnchor(checkpoint, chain, anchorLog) {
   if (!anchorLog || typeof anchorLog !== "object" ||
       typeof anchorLog.readLatestHead !== "function")
@@ -727,7 +825,7 @@ async function requireLatestExternalAnchor(checkpoint, chain, anchorLog) {
   const verified = verifyAnchorEvidenceForCheckpoint(checkpoint, chain, head.evidence);
   if (verified.evidenceSha256 !== head.evidenceSha256)
     fail("external anchor log evidence identity is inconsistent");
-  return head;
+  return { head, query };
 }
 
 export async function commitOperationsRotation({
@@ -745,6 +843,7 @@ export async function commitOperationsRotation({
   return withLock(root, async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     await auditRotationChain(root, current);
+    await auditAnchorAcceptanceChain(root, current);
     if (current.status !== "rotating" || current.pendingRotationSha256 !== rotationSha256)
       fail("rotation does not match the retained pending transition");
     if (canonicalSha256(priorManifest) !== current.manifestSha256 ||
@@ -817,18 +916,43 @@ export async function beginTransportRequest(
   return withLock(root, async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     const chain = await auditRotationChain(root, current);
+    await auditAnchorAcceptanceChain(root, current);
     if (current.manifestSha256 !== manifestSha256) fail("runtime configuration differs from the approved preflight manifest");
     if (current.status === "inactive") fail("operations store is inactive; explicit reviewed activation is required");
     if (current.status === "rotating") fail("mTLS profile rotation is pending; requests remain blocked until durable commit");
     if (current.status === "pending") fail("a prior outcome is ambiguous; inspect custody and reconcile, never retry");
     if (current.expectedHeadSha256 !== expectedHead) fail("expected custody head is stale or rolled back");
-    const externalHead = await requireLatestExternalAnchor(current, chain, anchorLog);
+    if (current.externalAnchorAcceptanceCount === Number.MAX_SAFE_INTEGER)
+      fail("external anchor acceptance counter is exhausted");
+    const { head: externalHead, query } = await requireLatestExternalAnchor(
+      current,
+      chain,
+      anchorLog,
+    );
+    const acceptance = validateAnchorAcceptance({
+      schemaVersion: 1,
+      kind: "operations-anchor-acceptance",
+      previousAcceptanceSha256: current.externalAnchorAcceptanceSha256 ?? "genesis",
+      query,
+      head: externalHead,
+    }).acceptance;
+    const acceptanceSha256 = canonicalSha256(acceptance);
+    const acceptances = join(root, ANCHOR_ACCEPTANCES);
+    await requireDirectory(acceptances);
+    await writeDurableRecord(
+      join(acceptances, `${acceptanceSha256}.json`),
+      acceptance,
+      0o400,
+      acceptances,
+    );
     const next = {
       ...current,
       generation: current.generation + 1,
       status: "pending",
       pendingRequestId: requestId,
       externalAnchorSequence: externalHead.logSequence,
+      externalAnchorAcceptanceCount: current.externalAnchorAcceptanceCount + 1,
+      externalAnchorAcceptanceSha256: acceptanceSha256,
     };
     await replaceCheckpoint(root, next);
     return next;

@@ -155,6 +155,14 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
   assert.equal(pending.status, "pending");
   assert.equal(pending.pendingRequestId, "4".repeat(64));
   assert.equal(pending.externalAnchorSequence, 7);
+  assert.equal(pending.externalAnchorAcceptanceCount, 1);
+  assert.match(pending.externalAnchorAcceptanceSha256, /^[0-9a-f]{64}$/);
+  assert.equal((await auditOperationsStore(store)).verifiedAnchorAcceptances, 1);
+  assert.ok((await readFile(join(
+    store,
+    "anchor-acceptances",
+    `${pending.externalAnchorAcceptanceSha256}.json`,
+  ))).length > 0);
 
   await commitTransportRequest(store, "4".repeat(64), "5".repeat(64));
   await assert.rejects(
@@ -282,7 +290,18 @@ test("signed anchor evidence binds the exact audited ready checkpoint", async ()
   await beginTransportRequest(
     store, manifestHash, "e".repeat(64), "f".repeat(64), head(2),
   );
-  assert.equal((await inspectOperationsStore(store)).externalAnchorSequence, 2);
+  const secondPending = await inspectOperationsStore(store);
+  assert.equal(secondPending.externalAnchorSequence, 2);
+  assert.equal(secondPending.externalAnchorAcceptanceCount, 2);
+  const acceptanceAudit = await auditOperationsStore(store);
+  assert.equal(acceptanceAudit.verifiedAnchorAcceptances, 2);
+  assert.equal(acceptanceAudit.externalAnchorStreamId, advancedStatement.streamId);
+  await unlink(join(
+    store,
+    "anchor-acceptances",
+    `${secondPending.externalAnchorAcceptanceSha256}.json`,
+  ));
+  await assert.rejects(auditOperationsStore(store), { code: "ENOENT" });
 });
 
 test("rotates a pinned mTLS profile only after independent old and new authorization", async () => {
