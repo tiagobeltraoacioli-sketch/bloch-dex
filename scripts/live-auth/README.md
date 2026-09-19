@@ -347,6 +347,69 @@ Like publication verification, preventing two collectors from advancing the
 same predecessor requires authenticated compare-and-swap storage and auditor
 checkpoint comparison outside this CLI.
 
+### Durable quorum checkpoint store
+
+The path-based `--output-checkpoint` commands above remain useful for offline
+review and compatibility, but they do not serialize two collectors. For an
+offline collector backed by a local filesystem, initialize the dedicated store
+from the reviewed schema-2 checkpoint:
+
+```sh
+node scripts/publication-quorum-store.mjs init \
+  --store <new-private-directory> \
+  --checkpoint <reviewed-quorum-checkpoint.json>
+```
+
+Record the printed checkpoint SHA-256 in a separately authenticated system.
+Every advance requires that exact digest as a compare-and-swap precondition:
+
+```sh
+node scripts/publication-quorum-store.mjs verify \
+  --store <private-directory> \
+  --expected-checkpoint-sha256 <externally-retained-sha256> \
+  --config <auditors.json> \
+  --entry <publication-entry-or-rotation.json> \
+  --attestations <attestation-array.json>
+
+node scripts/publication-quorum-store.mjs rotate \
+  --store <private-directory> \
+  --expected-checkpoint-sha256 <externally-retained-sha256> \
+  --prior-config <auditors-generation-N.json> \
+  --next-config <auditors-generation-N-plus-1.json> \
+  --prior-approvals <sorted-old-approval-array.json> \
+  --next-acceptances <sorted-new-acceptance-array.json>
+```
+
+Both operations take an exclusive lock, re-run the complete cryptographic and
+chain validation, persist a bounded canonical transition record, and replace
+the checkpoint with a temp-file/fsync/rename/directory-fsync sequence. Files
+must be regular, single-link, current-user-owned, non-symlink objects with no
+group or other access. Store directories have the same ownership and permission
+requirements, and their canonical paths may not traverse symlinks. Before
+unlocking, the CLI confirms that the lock path still names the same single-link
+inode opened exclusively; replacement or hardlink races preserve state and fail
+closed. The store rejects non-canonical state. Successful output includes the new
+checkpoint and record hashes; retain and compare both according to operations
+policy.
+
+A durable `.pending.json` or `.quorum.lock` means that an operation may have
+failed after durable intent was recorded. Do not delete either marker or retry
+the operation blindly. Stop writes, preserve an image of the directory, and
+use the read-only inspection command to compare the current checkpoint, pending
+intent and content-addressed record with the external digest:
+
+```sh
+node scripts/publication-quorum-store.mjs inspect --store <private-directory>
+```
+
+Recovery is deliberately a manual, separately authorized procedure; this tool
+does not guess whether an interrupted rename committed. A same-disk lock and
+filesystem checkpoint are not anti-rollback storage. An administrator, disk
+snapshot rollback, filesystem corruption, or loss of the whole directory can
+restore older state. Production use therefore still requires an externally
+retained authenticated checkpoint hash (preferably hardware-backed or an
+independent append-only service), backups, host hardening and auditor gossip.
+
 This CLI does not independently re-verify the publication signature or bundle;
 the supplied publication checkpoint is the explicit handoff from
 `verify-release`/`verify-rotation`. Auditors must run that verification

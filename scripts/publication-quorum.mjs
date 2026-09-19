@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createPublicKey } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import {
   canonicalJson,
   canonicalSha256,
@@ -173,7 +174,7 @@ function requireIndependentAuditors(config, ...publicationKeyIds) {
     fail("auditor keys must be independent from publication keys");
 }
 
-function validateQuorumCheckpoint(checkpoint) {
+export function validateQuorumCheckpoint(checkpoint) {
   exactKeys(
     checkpoint,
     [
@@ -301,6 +302,105 @@ function requireRotationInputs(priorConfig, nextConfig, checkpoint) {
   return configRotationPayload(priorConfig, nextConfig, checkpoint);
 }
 
+export function verifyQuorumConfigRotation(
+  priorConfigInput,
+  nextConfigInput,
+  priorApprovals,
+  nextAcceptances,
+  checkpointInput,
+) {
+  const priorConfig = validateAuditorConfig(priorConfigInput);
+  const nextConfig = validateAuditorConfig(nextConfigInput);
+  const checkpoint = validateQuorumCheckpoint(checkpointInput);
+  const expectedRotation = requireRotationInputs(
+    priorConfig,
+    nextConfig,
+    checkpoint,
+  );
+  if (
+    !Array.isArray(priorApprovals) ||
+    priorApprovals.length > priorConfig.auditors.length ||
+    !Array.isArray(nextAcceptances) ||
+    nextAcceptances.length > nextConfig.auditors.length
+  )
+    fail("rotation approvals must be bounded arrays");
+  const usedIds = new Set();
+  const usedKeys = new Set();
+  function verifyApprovals(envelopes, config, role) {
+    const seen = new Set();
+    let priorSignerId = null;
+    for (const envelope of envelopes) {
+      const claimedId = envelope?.payload?.auditorId;
+      if (typeof claimedId !== "string" || seen.has(claimedId))
+        fail("duplicate or invalid rotation approval");
+      if (priorSignerId !== null && claimedId <= priorSignerId)
+        fail("rotation approvals must be uniquely sorted by auditor ID");
+      priorSignerId = claimedId;
+      const auditor = config.auditors.find(
+        (candidate) => candidate.auditorId === claimedId,
+      );
+      if (!auditor) fail("rotation approver is not configured for its role");
+      validateSignatureShape(envelope.signature, "rotation approval signature");
+      const approved = validateRotationApprovalPayload(
+        verifyEnvelope(
+          envelope,
+          publicKeyFromRaw(auditor.publicKeyBase64Url),
+          AUDITOR_CONFIG_ROTATION_DOMAIN,
+          auditor.keyGeneration,
+        ),
+      );
+      if (
+        approved.role !== role ||
+        canonicalJson(approved.rotation) !== canonicalJson(expectedRotation)
+      )
+        fail("rotation approval does not bind the exact transition");
+      if (usedIds.has(auditor.auditorId) || usedKeys.has(auditor.keyId))
+        fail("rotation thresholds must use independent identities and keys");
+      seen.add(auditor.auditorId);
+      usedIds.add(auditor.auditorId);
+      usedKeys.add(auditor.keyId);
+    }
+    if (seen.size < config.threshold) fail(`${role} threshold is not met`);
+    return seen.size;
+  }
+  const priorCount = verifyApprovals(
+    priorApprovals,
+    priorConfig,
+    "prior-authorization",
+  );
+  const nextCount = verifyApprovals(
+    nextAcceptances,
+    nextConfig,
+    "next-acceptance",
+  );
+  const rotationRecord = {
+    schemaVersion: 1,
+    payload: expectedRotation,
+    priorApprovals,
+    nextAcceptances,
+  };
+  const checkpointSha256 = canonicalSha256(checkpoint);
+  const nextCheckpoint = {
+    ...checkpoint,
+    quorumConfigSha256: configIdentity(nextConfig),
+    quorumConfigGeneration: nextConfig.configGeneration,
+    previousQuorumRotationSha256: canonicalSha256(rotationRecord),
+    threshold: nextConfig.threshold,
+  };
+  return {
+    checkpoint: nextCheckpoint,
+    priorCount,
+    nextCount,
+    record: {
+      schemaVersion: 1,
+      kind: "quorum-config-rotation",
+      priorCheckpointSha256: checkpointSha256,
+      nextCheckpointSha256: canonicalSha256(nextCheckpoint),
+      rotation: rotationRecord,
+    },
+  };
+}
+
 function attestationPayload(configSha256, auditorId, head) {
   return {
     schemaVersion: 1,
@@ -346,6 +446,95 @@ function validateAttestationPayload(payload) {
   )
     fail("attestation payload is invalid");
   return payload;
+}
+
+export function verifyQuorumPublication(
+  configInput,
+  entry,
+  attestations,
+  checkpointInput,
+) {
+  const config = validateAuditorConfig(configInput);
+  const configSha256 = configIdentity(config);
+  const checkpoint = validateQuorumCheckpoint(checkpointInput);
+  if (
+    checkpoint.quorumConfigSha256 !== configSha256 ||
+    checkpoint.quorumConfigGeneration !== config.configGeneration ||
+    checkpoint.threshold !== config.threshold
+  )
+    fail("checkpoint does not match the auditor config");
+  const head = publicationArtifactHead(entry);
+  requireIndependentAuditors(config, head.keyId, head.priorKeyId);
+  if (
+    head.payload.sequence !== checkpoint.sequence + 1 ||
+    head.payload.previousEntrySha256 !== checkpoint.entrySha256
+  )
+    fail("entry is not the retained quorum checkpoint successor");
+  if (head.priorKeyId) {
+    if (
+      head.priorKeyId !== checkpoint.publicationKeyId ||
+      head.priorKeyGeneration !== checkpoint.publicationKeyGeneration
+    )
+      fail("rotation does not start at the retained publication key");
+  } else if (
+    head.keyId !== checkpoint.publicationKeyId ||
+    head.keyGeneration !== checkpoint.publicationKeyGeneration
+  ) {
+    fail("entry publication key does not match the retained checkpoint");
+  }
+  if (!Array.isArray(attestations) || attestations.length > config.auditors.length)
+    fail("attestations must be a bounded array");
+  const seen = new Set();
+  for (const envelope of attestations) {
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope))
+      fail("attestation must be an object");
+    const claimedId = envelope.payload?.auditorId;
+    if (typeof claimedId !== "string" || seen.has(claimedId))
+      fail("duplicate or invalid auditor attestation");
+    const auditor = config.auditors.find(
+      (candidate) => candidate.auditorId === claimedId,
+    );
+    if (!auditor) fail("attestation auditor is not configured");
+    validateSignatureShape(envelope.signature, "attestation signature");
+    const payload = validateAttestationPayload(
+      verifyEnvelope(
+        envelope,
+        publicKeyFromRaw(auditor.publicKeyBase64Url),
+        AUDITOR_ATTESTATION_DOMAIN,
+        auditor.keyGeneration,
+      ),
+    );
+    if (
+      canonicalJson(payload) !==
+      canonicalJson(attestationPayload(configSha256, auditor.auditorId, head))
+    )
+      fail("attestation does not bind the exact entry head");
+    seen.add(claimedId);
+  }
+  if (seen.size < config.threshold) fail("auditor threshold is not met");
+  const next = {
+    schemaVersion: 2,
+    quorumConfigSha256: configSha256,
+    quorumConfigGeneration: config.configGeneration,
+    previousQuorumRotationSha256: checkpoint.previousQuorumRotationSha256,
+    threshold: config.threshold,
+    publicationKeyId: head.keyId,
+    publicationKeyGeneration: head.keyGeneration,
+    sequence: head.payload.sequence,
+    entrySha256: head.entrySha256,
+  };
+  return {
+    checkpoint: next,
+    auditorCount: seen.size,
+    record: {
+      schemaVersion: 1,
+      kind: "publication-quorum-advance",
+      priorCheckpointSha256: canonicalSha256(checkpoint),
+      nextCheckpointSha256: canonicalSha256(next),
+      entrySha256: head.entrySha256,
+      attestations,
+    },
+  };
 }
 
 function parse(command, args, names) {
@@ -466,89 +655,22 @@ async function main() {
     const checkpoint = validateQuorumCheckpoint(
       await readJson(values["--checkpoint"], 4_096),
     );
-    const expectedRotation = requireRotationInputs(
-      priorConfig,
-      nextConfig,
-      checkpoint,
-    );
     const priorApprovals = await readJson(values["--prior-approvals"], 512_000);
     const nextAcceptances = await readJson(values["--next-acceptances"], 512_000);
-    if (
-      !Array.isArray(priorApprovals) ||
-      priorApprovals.length > priorConfig.auditors.length ||
-      !Array.isArray(nextAcceptances) ||
-      nextAcceptances.length > nextConfig.auditors.length
-    )
-      fail("rotation approvals must be bounded arrays");
-    const usedIds = new Set();
-    const usedKeys = new Set();
-    function verifyApprovals(envelopes, config, role) {
-      const seen = new Set();
-      let priorSignerId = null;
-      for (const envelope of envelopes) {
-        const claimedId = envelope?.payload?.auditorId;
-        if (typeof claimedId !== "string" || seen.has(claimedId))
-          fail("duplicate or invalid rotation approval");
-        if (priorSignerId !== null && claimedId <= priorSignerId)
-          fail("rotation approvals must be uniquely sorted by auditor ID");
-        priorSignerId = claimedId;
-        const auditor = config.auditors.find(
-          (candidate) => candidate.auditorId === claimedId,
-        );
-        if (!auditor) fail("rotation approver is not configured for its role");
-        validateSignatureShape(envelope.signature, "rotation approval signature");
-        const approved = validateRotationApprovalPayload(
-          verifyEnvelope(
-            envelope,
-            publicKeyFromRaw(auditor.publicKeyBase64Url),
-            AUDITOR_CONFIG_ROTATION_DOMAIN,
-            auditor.keyGeneration,
-          ),
-        );
-        if (
-          approved.role !== role ||
-          canonicalJson(approved.rotation) !== canonicalJson(expectedRotation)
-        )
-          fail("rotation approval does not bind the exact transition");
-        if (usedIds.has(auditor.auditorId) || usedKeys.has(auditor.keyId))
-          fail("rotation thresholds must use independent identities and keys");
-        seen.add(auditor.auditorId);
-        usedIds.add(auditor.auditorId);
-        usedKeys.add(auditor.keyId);
-      }
-      if (seen.size < config.threshold)
-        fail(`${role} threshold is not met`);
-      return seen.size;
-    }
-    const priorCount = verifyApprovals(
-      priorApprovals,
+    const result = verifyQuorumConfigRotation(
       priorConfig,
-      "prior-authorization",
-    );
-    const nextCount = verifyApprovals(
-      nextAcceptances,
       nextConfig,
-      "next-acceptance",
-    );
-    const rotationRecord = {
-      schemaVersion: 1,
-      payload: expectedRotation,
       priorApprovals,
       nextAcceptances,
-    };
-    const nextCheckpoint = {
-      ...checkpoint,
-      quorumConfigSha256: configIdentity(nextConfig),
-      quorumConfigGeneration: nextConfig.configGeneration,
-      previousQuorumRotationSha256: canonicalSha256(rotationRecord),
-      threshold: nextConfig.threshold,
-    };
+      checkpoint,
+    );
+    const nextCheckpoint = result.checkpoint;
     await writeNewJson(values["--output-checkpoint"], nextCheckpoint, 0o444);
     console.log(canonicalJson({
       rotated: true,
       configGeneration: nextConfig.configGeneration,
-      priorApprovals: priorCount,
-      nextAcceptances: nextCount,
+      priorApprovals: result.priorCount,
+      nextAcceptances: result.nextCount,
       rotationSha256: nextCheckpoint.previousQuorumRotationSha256,
     }));
     return;
@@ -613,87 +735,24 @@ async function main() {
     const config = validateAuditorConfig(
       await readJson(values["--config"], 64_000),
     );
-    const configSha256 = configIdentity(config);
     const checkpoint = validateQuorumCheckpoint(
       await readJson(values["--checkpoint"], 4_096),
     );
-    if (
-      checkpoint.quorumConfigSha256 !== configSha256 ||
-      checkpoint.quorumConfigGeneration !== config.configGeneration ||
-      checkpoint.threshold !== config.threshold
-    )
-      fail("checkpoint does not match the auditor config");
     const entry = await readJson(values["--entry"]);
-    const head = publicationArtifactHead(entry);
-    requireIndependentAuditors(config, head.keyId, head.priorKeyId);
-    if (
-      head.payload.sequence !== checkpoint.sequence + 1 ||
-      head.payload.previousEntrySha256 !== checkpoint.entrySha256
-    )
-      fail("entry is not the retained quorum checkpoint successor");
-    if (head.priorKeyId) {
-      if (
-        head.priorKeyId !== checkpoint.publicationKeyId ||
-        head.priorKeyGeneration !== checkpoint.publicationKeyGeneration
-      )
-        fail("rotation does not start at the retained publication key");
-    } else if (
-      head.keyId !== checkpoint.publicationKeyId ||
-      head.keyGeneration !== checkpoint.publicationKeyGeneration
-    ) {
-      fail("entry publication key does not match the retained checkpoint");
-    }
     const attestations = await readJson(values["--attestations"], 512_000);
-    if (
-      !Array.isArray(attestations) ||
-      attestations.length > config.auditors.length
-    )
-      fail("attestations must be a bounded array");
-    const seen = new Set();
-    for (const envelope of attestations) {
-      if (!envelope || typeof envelope !== "object" || Array.isArray(envelope))
-        fail("attestation must be an object");
-      const claimedId = envelope.payload?.auditorId;
-      if (typeof claimedId !== "string" || seen.has(claimedId))
-        fail("duplicate or invalid auditor attestation");
-      const auditor = config.auditors.find(
-        (candidate) => candidate.auditorId === claimedId,
-      );
-      if (!auditor) fail("attestation auditor is not configured");
-      validateSignatureShape(envelope.signature, "attestation signature");
-      const payload = validateAttestationPayload(
-        verifyEnvelope(
-          envelope,
-          publicKeyFromRaw(auditor.publicKeyBase64Url),
-          AUDITOR_ATTESTATION_DOMAIN,
-          auditor.keyGeneration,
-        ),
-      );
-      if (
-        canonicalJson(payload) !==
-        canonicalJson(attestationPayload(configSha256, auditor.auditorId, head))
-      )
-        fail("attestation does not bind the exact entry head");
-      seen.add(claimedId);
-    }
-    if (seen.size < config.threshold) fail("auditor threshold is not met");
-    const next = {
-      schemaVersion: 2,
-      quorumConfigSha256: configSha256,
-      quorumConfigGeneration: config.configGeneration,
-      previousQuorumRotationSha256: checkpoint.previousQuorumRotationSha256,
-      threshold: config.threshold,
-      publicationKeyId: head.keyId,
-      publicationKeyGeneration: head.keyGeneration,
-      sequence: head.payload.sequence,
-      entrySha256: head.entrySha256,
-    };
+    const result = verifyQuorumPublication(
+      config,
+      entry,
+      attestations,
+      checkpoint,
+    );
+    const next = result.checkpoint;
     await writeNewJson(values["--output-checkpoint"], next, 0o444);
     console.log(
       canonicalJson({
         verified: true,
         sequence: next.sequence,
-        auditors: seen.size,
+        auditors: result.auditorCount,
       }),
     );
     return;
@@ -702,7 +761,9 @@ async function main() {
   process.exitCode = 2;
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}

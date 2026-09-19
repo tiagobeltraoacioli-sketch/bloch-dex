@@ -1,20 +1,75 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { watch } from "node:fs";
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { canonicalSha256, describeKey } from "./live-auth/envelope.mjs";
+import {
+  canonicalJson,
+  canonicalSha256,
+  describeKey,
+} from "./live-auth/envelope.mjs";
 
 const execute = promisify(execFile);
 const cli = resolve("scripts/publication-quorum.mjs");
+const storeCli = resolve("scripts/publication-quorum-store.mjs");
 const ZERO_SIGNATURE = Buffer.alloc(64).toString("base64url");
 const PUBLICATION_KEY_ID = "a".repeat(64);
 
 async function run(...args) {
   return execute(process.execPath, [cli, ...args], { cwd: resolve(".") });
+}
+
+async function runStore(...args) {
+  return execute(process.execPath, [storeCli, ...args], { cwd: resolve(".") });
+}
+
+async function interfereAfterLock(store, args, action) {
+  let watcher;
+  let timer;
+  const observed = new Promise((resolveObserved, rejectObserved) => {
+    watcher = watch(store, (_event, filename) => {
+      if (filename === ".quorum.lock") {
+        clearTimeout(timer);
+        watcher.close();
+        resolveObserved();
+      }
+    });
+    timer = setTimeout(() => {
+      watcher.close();
+      rejectObserved(new Error("timed out waiting for quorum lock"));
+    }, 5_000);
+  });
+  const child = spawn(process.execPath, [storeCli, ...args], {
+    cwd: resolve("."),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+  const closed = new Promise((resolveClosed) => {
+    child.on("close", (code) => resolveClosed(code));
+  });
+  await observed;
+  await action();
+  const code = await closed;
+  return { code, stdout, stderr };
 }
 
 function publication(
@@ -646,4 +701,224 @@ test("rejects rollback, substitution, tamper and reused cross-threshold identity
     ),
     /independent identities and keys/,
   );
+});
+
+test("durably advances a filesystem checkpoint with CAS and a canonical record", async () => {
+  const files = await fixture();
+  const entry = await writeEntry(files, "stored-entry-1", publication(1, null));
+  const first = await attest(files, 0, entry, "-stored");
+  const second = await attest(files, 1, entry, "-stored");
+  const attestationsPath = join(files.root, "stored-attestations.json");
+  await writeFile(attestationsPath, JSON.stringify([first, second]));
+  const store = join(files.root, "quorum-store");
+  const initialized = JSON.parse((await runStore(
+    "init", "--store", store, "--checkpoint", files.quorum0,
+  )).stdout);
+  assert.match(initialized.checkpointSha256, /^[0-9a-f]{64}$/);
+
+  const committed = JSON.parse((await runStore(
+    "verify",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--config", files.configPath,
+    "--entry", entry.entryPath,
+    "--attestations", attestationsPath,
+  )).stdout);
+  assert.equal(committed.committed, true);
+  assert.equal(committed.sequence, 1);
+  const recordNames = await readdir(join(store, "records"));
+  assert.deepEqual(recordNames, [`${committed.recordSha256}.json`]);
+  const recordText = await readFile(join(store, "records", recordNames[0]), "utf8");
+  const record = JSON.parse(recordText);
+  assert.equal(`${JSON.stringify(record)}\n`, recordText);
+  assert.equal(record.priorCheckpointSha256, initialized.checkpointSha256);
+  assert.equal(record.nextCheckpointSha256, committed.checkpointSha256);
+  if (process.platform !== "win32") {
+    assert.equal((await stat(join(store, "checkpoint.json"))).mode & 0o777, 0o400);
+    assert.equal((await stat(join(store, "records", recordNames[0]))).mode & 0o777, 0o400);
+  }
+
+  await assert.rejects(
+    runStore(
+      "verify",
+      "--store", store,
+      "--expected-checkpoint-sha256", initialized.checkpointSha256,
+      "--config", files.configPath,
+      "--entry", entry.entryPath,
+      "--attestations", attestationsPath,
+    ),
+    /checkpoint CAS mismatch/,
+  );
+  const inspected = JSON.parse((await runStore("inspect", "--store", store)).stdout);
+  assert.equal(inspected.checkpointSha256, committed.checkpointSha256);
+  assert.deepEqual(inspected.lock, { present: false });
+  assert.equal(inspected.recoveryRequired, false);
+});
+
+test("serializes config rotation and persists the complete signed transition", async () => {
+  const files = await fixture();
+  const next = await makeNextConfig(files, "stored-next", 2);
+  const oldA = await approveRotation(files, next, "prior-authorization", files.auditors[0], files.quorum0, "stored-old-a");
+  const oldB = await approveRotation(files, next, "prior-authorization", files.auditors[1], files.quorum0, "stored-old-b");
+  const newA = await approveRotation(files, next, "next-acceptance", next.auditors[0], files.quorum0, "stored-new-a");
+  const newB = await approveRotation(files, next, "next-acceptance", next.auditors[1], files.quorum0, "stored-new-b");
+  const oldPath = join(files.root, "stored-old-approvals.json");
+  const newPath = join(files.root, "stored-new-approvals.json");
+  await writeFile(oldPath, JSON.stringify([oldA, oldB]));
+  await writeFile(newPath, JSON.stringify([newA, newB]));
+  const store = join(files.root, "rotation-store");
+  const initialized = JSON.parse((await runStore(
+    "init", "--store", store, "--checkpoint", files.quorum0,
+  )).stdout);
+  const committed = JSON.parse((await runStore(
+    "rotate",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--prior-config", files.configPath,
+    "--next-config", next.configPath,
+    "--prior-approvals", oldPath,
+    "--next-acceptances", newPath,
+  )).stdout);
+  assert.equal(committed.configGeneration, 2);
+  const record = JSON.parse(await readFile(
+    join(store, "records", `${committed.recordSha256}.json`), "utf8",
+  ));
+  assert.equal(record.kind, "quorum-config-rotation");
+  assert.deepEqual(record.rotation.priorApprovals, [oldA, oldB]);
+  assert.deepEqual(record.rotation.nextAcceptances, [newA, newB]);
+  const inspected = JSON.parse((await runStore("inspect", "--store", store)).stdout);
+  assert.equal(inspected.checkpoint.quorumConfigGeneration, 2);
+  assert.equal(inspected.checkpointSha256, committed.checkpointSha256);
+});
+
+test("rejects lock races, symlinks, hardlinks, and unsafe store permissions", async () => {
+  const files = await fixture();
+  async function initializedStore(name) {
+    const store = join(files.root, name);
+    const report = JSON.parse((await runStore(
+      "init", "--store", store, "--checkpoint", files.quorum0,
+    )).stdout);
+    return { store, hash: report.checkpointSha256 };
+  }
+
+  const locked = await initializedStore("locked-store");
+  await writeFile(join(locked.store, ".quorum.lock"), "occupied\n", { mode: 0o600 });
+  const lockedInspection = JSON.parse(
+    (await runStore("inspect", "--store", locked.store)).stdout,
+  );
+  assert.equal(lockedInspection.lock.present, true);
+  assert.equal(lockedInspection.lock.regularSingleLink, true);
+  assert.equal(lockedInspection.recoveryRequired, true);
+  const entry = await writeEntry(files, "locked-entry", publication(1, null));
+  const a = await attest(files, 0, entry, "-locked");
+  const b = await attest(files, 1, entry, "-locked");
+  const attestations = join(files.root, "locked-attestations.json");
+  await writeFile(attestations, JSON.stringify([a, b]));
+  await assert.rejects(runStore(
+    "verify", "--store", locked.store,
+    "--expected-checkpoint-sha256", locked.hash,
+    "--config", files.configPath,
+    "--entry", entry.entryPath,
+    "--attestations", attestations,
+  ), /lock already exists; inspect/);
+
+  const pending = await initializedStore("pending-store");
+  const pendingValue = {
+    schemaVersion: 1,
+    priorCheckpointSha256: pending.hash,
+    nextCheckpointSha256: "a".repeat(64),
+    recordSha256: "b".repeat(64),
+  };
+  await writeFile(
+    join(pending.store, ".pending.json"),
+    `${canonicalJson(pendingValue)}\n`,
+    { mode: 0o400 },
+  );
+  await chmod(join(pending.store, ".pending.json"), 0o400);
+  const pendingInspection = JSON.parse(
+    (await runStore("inspect", "--store", pending.store)).stdout,
+  );
+  assert.equal(pendingInspection.recoveryRequired, true);
+  assert.deepEqual(pendingInspection.pending, pendingValue);
+  await assert.rejects(runStore(
+    "verify", "--store", pending.store,
+    "--expected-checkpoint-sha256", pending.hash,
+    "--config", files.configPath,
+    "--entry", entry.entryPath,
+    "--attestations", attestations,
+  ), /pending transaction exists; inspect/);
+
+  if (process.platform !== "win32") {
+    const linked = await initializedStore("hardlink-store");
+    await link(join(linked.store, "checkpoint.json"), join(files.root, "checkpoint-alias.json"));
+    await assert.rejects(runStore("inspect", "--store", linked.store), /single-link/);
+
+    const symbolic = await initializedStore("symlink-store");
+    await unlink(join(symbolic.store, "checkpoint.json"));
+    await symlink(files.quorum0, join(symbolic.store, "checkpoint.json"));
+    await assert.rejects(runStore("inspect", "--store", symbolic.store), /symlink/);
+
+    const permissive = await initializedStore("permissive-store");
+    await chmod(permissive.store, 0o755);
+    await assert.rejects(runStore("inspect", "--store", permissive.store), /group or other/);
+
+    const realParent = join(files.root, "real-store-parent");
+    const aliasParent = join(files.root, "alias-store-parent");
+    await mkdir(realParent, { mode: 0o700 });
+    await chmod(realParent, 0o700);
+    const nestedStore = join(realParent, "store");
+    await runStore("init", "--store", nestedStore, "--checkpoint", files.quorum0);
+    await symlink(realParent, aliasParent);
+    await assert.rejects(
+      runStore("inspect", "--store", join(aliasParent, "store")),
+      /path must not traverse symlinks/,
+    );
+
+    function verifyArgs(store, hash) {
+      return [
+        "verify", "--store", store,
+        "--expected-checkpoint-sha256", hash,
+        "--config", files.configPath,
+        "--entry", entry.entryPath,
+        "--attestations", attestations,
+      ];
+    }
+
+    const hardlinkedLock = await initializedStore("hardlinked-lock-store");
+    const hardlinkResult = await interfereAfterLock(
+      hardlinkedLock.store,
+      verifyArgs(hardlinkedLock.store, hardlinkedLock.hash),
+      () => link(
+        join(hardlinkedLock.store, ".quorum.lock"),
+        join(hardlinkedLock.store, ".quorum.lock.alias"),
+      ),
+    );
+    assert.equal(hardlinkResult.code, 1);
+    assert.match(hardlinkResult.stderr, /lock .*preserve state and inspect/);
+    assert.equal((await stat(join(hardlinkedLock.store, ".quorum.lock"))).nlink, 2);
+
+    const substitutedLock = await initializedStore("substituted-lock-store");
+    const substitutedResult = await interfereAfterLock(
+      substitutedLock.store,
+      verifyArgs(substitutedLock.store, substitutedLock.hash),
+      async () => {
+        await rename(
+          join(substitutedLock.store, ".quorum.lock"),
+          join(substitutedLock.store, ".quorum.lock.displaced"),
+        );
+        await writeFile(
+          join(substitutedLock.store, ".quorum.lock"),
+          `${canonicalJson({ schemaVersion: 1, pid: 999_999 })}\n`,
+          { mode: 0o600 },
+        );
+        await chmod(join(substitutedLock.store, ".quorum.lock"), 0o600);
+      },
+    );
+    assert.equal(substitutedResult.code, 1);
+    assert.match(substitutedResult.stderr, /lock identity changed; preserve state/);
+    assert.equal(
+      await readFile(join(substitutedLock.store, ".quorum.lock"), "utf8"),
+      `${canonicalJson({ schemaVersion: 1, pid: 999_999 })}\n`,
+    );
+  }
 });
