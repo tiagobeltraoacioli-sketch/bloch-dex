@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { chmod, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -23,6 +23,7 @@ import {
   prepareOperationsAnchorStatement,
   signOperationsAnchorStatement,
   verifyOperationsAnchorEvidence,
+  verifyOperationsStoreV3ToV4Migration,
 } from "./publication-quorum-transport-operations.mjs";
 
 const execute = promisify(execFile);
@@ -190,6 +191,40 @@ test("migrates an explicitly approved schema-3 checkpoint into a separate audite
   ));
   assert.equal(migration.sourceCheckpointSha256, expectedV3Hash);
   assert.deepEqual(migration.sourceCheckpoint, v3);
+  const verificationReceipt = await verifyOperationsStoreV3ToV4Migration({
+    sourceRoot: source,
+    destinationRoot: destination,
+    expectedV3CheckpointSha256: expectedV3Hash,
+    expectedV4CheckpointSha256: result.destinationCheckpointSha256,
+    expectedMigrationRecordSha256: result.migrationRecordSha256,
+  });
+  assert.equal(
+    verificationReceipt.kind,
+    "operations-checkpoint-v3-v4-verification-receipt",
+  );
+  assert.equal(verificationReceipt.sourcePreserved, true);
+  assert.equal(verificationReceipt.copiedRotationRecordCount, 1);
+  assert.equal(verificationReceipt.destinationAudit.valid, true);
+  assert.equal(verificationReceipt.destinationAudit.verifiedRecords, 1);
+
+  const tamperedMigration = {
+    ...migration,
+    copiedRotationRecordCount: migration.copiedRotationRecordCount + 1,
+  };
+  const migrationPath = join(destination, "migration-v3-checkpoint.json");
+  await chmod(migrationPath, 0o600);
+  await writeFile(migrationPath, `${canonicalJson(tamperedMigration)}\n`, { mode: 0o600 });
+  await chmod(migrationPath, 0o400);
+  await assert.rejects(
+    verifyOperationsStoreV3ToV4Migration({
+      sourceRoot: source,
+      destinationRoot: destination,
+      expectedV3CheckpointSha256: expectedV3Hash,
+      expectedV4CheckpointSha256: result.destinationCheckpointSha256,
+      expectedMigrationRecordSha256: canonicalSha256(tamperedMigration),
+    }),
+    /does not bind the verified source and destination/,
+  );
   await assert.rejects(
     migrateOperationsStoreV3ToV4({
       sourceRoot: source,
@@ -222,8 +257,27 @@ test("schema-3 migration refuses TOFU, in-place replacement, and missing accepta
       destinationRoot: source,
       expectedV3CheckpointSha256: expectedV3Hash,
     }),
-    /in-place migration is forbidden/,
+    /separate non-nested trees/,
   );
+  await assert.rejects(
+    migrateOperationsStoreV3ToV4({
+      sourceRoot: source,
+      destinationRoot: join(source, "nested-destination"),
+      expectedV3CheckpointSha256: expectedV3Hash,
+    }),
+    /separate non-nested trees/,
+  );
+  const sourceAlias = join(value.root, "schema-3-source-alias");
+  await symlink(source, sourceAlias, "dir");
+  await assert.rejects(
+    migrateOperationsStoreV3ToV4({
+      sourceRoot: source,
+      destinationRoot: join(sourceAlias, "nested-through-symlink"),
+      expectedV3CheckpointSha256: expectedV3Hash,
+    }),
+    /separate non-nested trees/,
+  );
+  await assert.rejects(lstat(join(source, "nested-through-symlink")), { code: "ENOENT" });
   const accepted = await downgradeFixtureCheckpointToV3(source, {
     externalAnchorSequence: 7,
   });

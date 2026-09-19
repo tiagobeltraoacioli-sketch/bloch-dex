@@ -795,9 +795,34 @@ than adopting local state, audits and copies the complete referenced rotation
 chain, writes a canonical migration record containing the old checkpoint, and
 writes the schema-4 checkpoint last. The source is never modified apart from
 the temporary operations lock and remains the unambiguous backup. The
-destination must not exist; an interrupted attempt leaves an occupied but
+destination must not exist and neither path may contain the other; an
+interrupted attempt leaves an occupied but
 non-runnable directory for manual inspection and must not be resumed or
 silently replaced.
+
+Before using the new store, copy the preserved source and completed destination
+to a separate offline review environment, transfer the three expected digests
+over an authenticated channel, and create a canonical verification receipt:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs verify-v3-to-v4 \
+  --source-store <review-copy-of-schema-3-store> \
+  --destination-store <review-copy-of-schema-4-store> \
+  --expected-v3-checkpoint-sha256 <externally-approved-source-sha256> \
+  --expected-v4-checkpoint-sha256 <externally-approved-destination-sha256> \
+  --expected-migration-record-sha256 <externally-approved-record-sha256> \
+  --output <new-verification-receipt.json>
+```
+
+The verifier is read-only. It rejects active operation locks and nested store
+paths, independently revalidates the source rotation history, rederives the
+exact schema-4 checkpoint, binds the canonical migration record to both stores,
+audits the copied destination, and rereads all three objects to detect change
+during inspection. The output digest printed to stdout authenticates the
+portable receipt. Store that receipt and its digest outside both operations
+trees. A receipt kept only beside the destination does not provide rollback
+protection, and the expected hashes are review inputs rather than values the
+verifier is allowed to adopt from local disk.
 
 A schema-3 store with a non-null external anchor sequence cannot be migrated:
 schema 3 did not retain the authenticated acceptance chain required by schema
