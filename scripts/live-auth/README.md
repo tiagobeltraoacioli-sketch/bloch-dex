@@ -669,6 +669,12 @@ and finally by creating the original canonical bytes with `O_EXCL`. An
 independently raced occupant already at the active name is preserved as the
 poison marker. A retry therefore cannot mutate the store before operator
 inspection even if the original active name or staged tombstone was displaced.
+Lock reconciliation and retained-evidence inspection read those potentially
+mutable files through a fixed 64,001-byte buffer. If a file grows past the
+64,000-byte protocol limit after its initial metadata check, the read stops at
+the sentinel byte and fails closed; it never follows the post-check file size
+into an unbounded allocation. The subsequent descriptor/path metadata checks
+still reject truncation, rewrites, relinks and pathname substitution.
 
 Operational state uses a stricter publication sequence than ordinary portable
 CLI output. A new checkpoint candidate or content-addressed history record is

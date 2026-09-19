@@ -67,6 +67,19 @@ function operationsOutputRaceLoaderArguments() {
   return ["--experimental-loader", loader.href];
 }
 
+function operationsBoundedReadRaceLoaderArguments() {
+  if (supportsModuleRegister(process.versions.node)) {
+    const registration = new URL(
+      "./fixtures/register-operations-bounded-read-race-loader.mjs", import.meta.url,
+    );
+    return ["--import", registration.href];
+  }
+  const loader = new URL(
+    "./fixtures/operations-bounded-read-race-loader.mjs", import.meta.url,
+  );
+  return ["--experimental-loader", loader.href];
+}
+
 async function certificate(root, name) {
   const key = join(root, `${name}.key`);
   const cert = join(root, `${name}.crt`);
@@ -175,6 +188,51 @@ test("secure-input race harness selects a supported loader mode", () => {
   assert.equal(supportsModuleRegister("20.6.0"), true);
   assert.equal(supportsModuleRegister("21.0.0"), true);
   assert.equal(supportsModuleRegister("not-a-version"), false);
+});
+
+test("lock reconciliation bounds growth after the initial size check", async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const store = join(value.root, "bounded-lock-store");
+  const checkpoint = await initializeOperationsStore(
+    store, manifest, canonicalSha256(manifest), "genesis",
+  );
+  const startingCheckpointSha256 = canonicalSha256(checkpoint);
+  const lockPath = join(store, ".operations.lock");
+  const lock = {
+    schemaVersion: 2,
+    pid: process.pid,
+    operation: "bounded-read-test",
+    startingCheckpointSha256,
+  };
+  await writeFile(lockPath, `${canonicalJson(lock)}\n`, {
+    flag: "wx", mode: 0o600,
+  });
+  const output = join(value.root, "bounded-lock-reconciliation.json");
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+
+  await assert.rejects(
+    execute(process.execPath, [
+      ...operationsBoundedReadRaceLoaderArguments(),
+      cli, "reconcile-lock",
+      "--store", store,
+      "--expected-lock-sha256", canonicalSha256(lock),
+      "--expected-starting-checkpoint-sha256", startingCheckpointSha256,
+      "--expected-completed-checkpoint-sha256", "f".repeat(64),
+      "--output", output,
+    ], {
+      env: {
+        ...process.env,
+        POSTERN_OPERATIONS_BOUNDED_READ_RACE_TARGET: lockPath,
+      },
+      timeout: raceSubprocessTimeoutMs,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024,
+    }),
+    /operations lock exceeded its maximum size while being read/,
+  );
+  assert.equal((await lstat(lockPath)).size > 64_000, true);
+  assert.equal((await lstat(output)).size, 0);
 });
 
 test("preflight pins secure input bytes and their pathname across the read", async (context) => {

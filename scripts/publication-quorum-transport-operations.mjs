@@ -97,6 +97,20 @@ function hashBytes(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
+async function readBoundedHandle(handle, maximum, field) {
+  const buffer = Buffer.alloc(maximum + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    const { bytesRead } = await handle.read(
+      buffer, length, buffer.length - length, length,
+    );
+    if (bytesRead === 0) break;
+    length += bytesRead;
+  }
+  if (length > maximum) fail(`${field} exceeded its maximum size while being read`);
+  return buffer.subarray(0, length);
+}
+
 async function secureBytes(path, privateFile, field) {
   let handle;
   try {
@@ -1744,7 +1758,7 @@ async function readOperationsLockSnapshot(root) {
       fail("operations lock must be owned by the current user");
     if ((before.mode & 0o077) !== 0)
       fail("operations lock must not grant group or other permissions");
-    const bytes = await handle.readFile();
+    const bytes = await readBoundedHandle(handle, MAX_JSON, "operations lock");
     const after = await handle.stat();
     const linked = await lstat(path);
     if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
@@ -1789,7 +1803,7 @@ async function readRetainedLockFile(path, field, expectedMode, allowMultipleLink
     const expectedModes = Array.isArray(expectedMode) ? expectedMode : [expectedMode];
     if (!expectedModes.some((mode) => (before.mode & 0o777n) === BigInt(mode)))
       fail(`${field} mode is not the release protocol mode`);
-    const bytes = await handle.readFile();
+    const bytes = await readBoundedHandle(handle, MAX_JSON, field);
     const after = await handle.stat({ bigint: true });
     const linked = await lstat(path, { bigint: true });
     const stable = ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]
@@ -1822,7 +1836,7 @@ async function readCanonicalCheckpointSnapshot(path, field) {
         before.size > BigInt(MAX_JSON) || (before.mode & 0o777n) !== 0o400n ||
         (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid())))
       fail(`${field} identity or permissions are invalid`);
-    const bytes = await handle.readFile();
+    const bytes = await readBoundedHandle(handle, MAX_JSON, field);
     const after = await handle.stat({ bigint: true });
     const linked = await lstat(path, { bigint: true });
     if (!sameIntegralMetadata(before, after) || !sameIntegralMetadata(after, linked) ||
