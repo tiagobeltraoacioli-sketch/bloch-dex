@@ -6,6 +6,7 @@ import {
   GATE_DOMAIN,
   MANIFEST_DOMAIN,
   PUBLICATION_DOMAIN,
+  PUBLICATION_ROTATION_DOMAIN,
   WITNESS_DOMAIN,
   payloadSha256,
   readJson,
@@ -16,6 +17,7 @@ import {
   validateManifest,
   validatePublication,
   validatePublicationCheckpoint,
+  validatePublicationRotation,
   validateWitness,
   verifyEnvelope,
   writeNewJson,
@@ -30,6 +32,9 @@ function usage() {
   node scripts/live-auth.mjs verify-bundle --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --at <unix-seconds>
   node scripts/live-auth.mjs init-publication --publication-public-key <offline-ed25519-public.pem> --publication-key-generation <positive-integer> --output-checkpoint <checkpoint.json>
   node scripts/live-auth.mjs publish-release --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --publication-private-key <offline-ed25519-private.pem> --publication-key-generation <positive-integer> --previous <genesis|signed-entry.json> --at <unix-seconds> --output <signed-entry.json>
+  node scripts/live-auth.mjs rotate-publication --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --prior-publication-private-key <old-offline-ed25519-private.pem> --prior-publication-key-generation <positive-integer> --next-publication-private-key <new-offline-ed25519-private.pem> --next-publication-key-generation <greater-positive-integer> --previous <signed-entry.json> --at <unix-seconds> --output <rotation.json>
+  node scripts/live-auth.mjs verify-rotation --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --prior-publication-public-key <old-offline-ed25519-public.pem> --prior-publication-key-generation <positive-integer> --next-publication-public-key <new-offline-ed25519-public.pem> --next-publication-key-generation <greater-positive-integer> --rotation <rotation.json> --checkpoint <checkpoint.json> --at <unix-seconds> --output-checkpoint <checkpoint.json>
+  node scripts/live-auth.mjs publish-after-rotation --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --prior-publication-public-key <old-offline-ed25519-public.pem> --prior-publication-key-generation <positive-integer> --publication-private-key <new-offline-ed25519-private.pem> --publication-key-generation <greater-positive-integer> --previous-rotation <rotation.json> --at <unix-seconds> --output <signed-entry.json>
   node scripts/live-auth.mjs verify-release --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --publication-public-key <offline-ed25519-public.pem> --publication-key-generation <positive-integer> --entry <signed-entry.json> --checkpoint <checkpoint.json> --at <unix-seconds> --output-checkpoint <checkpoint.json>`);
 }
 
@@ -128,6 +133,28 @@ function publicationBinding(bundle) {
     witnessKeyGeneration: bundle.witnessGeneration,
   };
   return { ...binding, bundleSha256: canonicalSha256(binding) };
+}
+
+function requireIndependentPublicationKey(identity, bundle) {
+  if (
+    identity.keyId === describeKey(bundle.key).keyId ||
+    identity.keyId === describeKey(bundle.witnessKey).keyId
+  )
+    fail("publication key must be independent from bundle keys");
+}
+
+function nextPublicationPayload(bundle, previousPayload, previousSha256, at) {
+  const sequence = previousPayload.sequence + 1;
+  if (!Number.isSafeInteger(sequence)) fail("publication sequence overflow");
+  if (at < previousPayload.publishedAt)
+    fail("publication time must not move backwards");
+  return validatePublication({
+    schemaVersion: 1,
+    sequence,
+    previousEntrySha256: previousSha256,
+    publishedAt: at,
+    ...publicationBinding(bundle),
+  });
 }
 
 async function main() {
@@ -253,11 +280,7 @@ async function main() {
       values["--publication-private-key"],
     );
     const publicationIdentity = describeKey(publicationKey);
-    if (
-      publicationIdentity.keyId === describeKey(bundle.key).keyId ||
-      publicationIdentity.keyId === describeKey(bundle.witnessKey).keyId
-    )
-      fail("publication key must be independent from bundle keys");
+    requireIndependentPublicationKey(publicationIdentity, bundle);
     const publicationGeneration = keyGeneration(
       values["--publication-key-generation"],
     );
@@ -294,6 +317,137 @@ async function main() {
         PUBLICATION_DOMAIN,
         publicationGeneration,
       ),
+      0o444,
+    );
+    return;
+  }
+  if (command === "rotate-publication") {
+    const values = parse(command, args, [
+      "--public-key",
+      "--key-generation",
+      "--gate",
+      "--manifest",
+      "--witness-public-key",
+      "--witness-key-generation",
+      "--witness",
+      "--prior-publication-private-key",
+      "--prior-publication-key-generation",
+      "--next-publication-private-key",
+      "--next-publication-key-generation",
+      "--previous",
+      "--at",
+      "--output",
+    ]);
+    const at = timestamp(values["--at"]);
+    const bundle = await verifiedBundle(values, at);
+    const priorKey = await readPrivateKey(
+      values["--prior-publication-private-key"],
+    );
+    const nextKey = await readPrivateKey(
+      values["--next-publication-private-key"],
+    );
+    const priorIdentity = describeKey(priorKey);
+    const nextIdentity = describeKey(nextKey);
+    requireIndependentPublicationKey(priorIdentity, bundle);
+    requireIndependentPublicationKey(nextIdentity, bundle);
+    const priorGeneration = keyGeneration(
+      values["--prior-publication-key-generation"],
+    );
+    const nextGeneration = keyGeneration(
+      values["--next-publication-key-generation"],
+    );
+    if (priorIdentity.keyId === nextIdentity.keyId)
+      fail("publication rotation must change the key");
+    if (nextGeneration <= priorGeneration)
+      fail("publication rotation generation must increase");
+    const previous = await readJson(values["--previous"]);
+    const previousPayload = validatePublication(
+      verifyEnvelope(
+        previous,
+        priorKey,
+        PUBLICATION_DOMAIN,
+        priorGeneration,
+      ),
+    );
+    const payload = nextPublicationPayload(
+      bundle,
+      previousPayload,
+      canonicalSha256(previous),
+      at,
+    );
+    const rotation = {
+      schemaVersion: 1,
+      priorAuthorization: signEnvelope(
+        payload,
+        priorKey,
+        PUBLICATION_ROTATION_DOMAIN,
+        priorGeneration,
+      ),
+      nextAcceptance: signEnvelope(
+        payload,
+        nextKey,
+        PUBLICATION_ROTATION_DOMAIN,
+        nextGeneration,
+      ),
+    };
+    validatePublicationRotation(
+      rotation,
+      priorKey,
+      priorGeneration,
+      nextKey,
+      nextGeneration,
+    );
+    await writeNewJson(values["--output"], rotation, 0o444);
+    return;
+  }
+  if (command === "publish-after-rotation") {
+    const values = parse(command, args, [
+      "--public-key",
+      "--key-generation",
+      "--gate",
+      "--manifest",
+      "--witness-public-key",
+      "--witness-key-generation",
+      "--witness",
+      "--prior-publication-public-key",
+      "--prior-publication-key-generation",
+      "--publication-private-key",
+      "--publication-key-generation",
+      "--previous-rotation",
+      "--at",
+      "--output",
+    ]);
+    const at = timestamp(values["--at"]);
+    const bundle = await verifiedBundle(values, at);
+    const priorKey = await readPublicKey(
+      values["--prior-publication-public-key"],
+    );
+    const nextKey = await readPrivateKey(values["--publication-private-key"]);
+    requireIndependentPublicationKey(describeKey(priorKey), bundle);
+    requireIndependentPublicationKey(describeKey(nextKey), bundle);
+    const priorGeneration = keyGeneration(
+      values["--prior-publication-key-generation"],
+    );
+    const nextGeneration = keyGeneration(
+      values["--publication-key-generation"],
+    );
+    const rotation = await readJson(values["--previous-rotation"]);
+    const rotationPayload = validatePublicationRotation(
+      rotation,
+      priorKey,
+      priorGeneration,
+      nextKey,
+      nextGeneration,
+    );
+    const payload = nextPublicationPayload(
+      bundle,
+      rotationPayload,
+      canonicalSha256(rotation),
+      at,
+    );
+    await writeNewJson(
+      values["--output"],
+      signEnvelope(payload, nextKey, PUBLICATION_DOMAIN, nextGeneration),
       0o444,
     );
     return;
@@ -359,11 +513,7 @@ async function main() {
     if (payload.publishedAt > at + 300)
       fail("publication time is in the future");
     const bundle = await verifiedBundle(values, payload.publishedAt);
-    if (
-      publicationIdentity.keyId === describeKey(bundle.key).keyId ||
-      publicationIdentity.keyId === describeKey(bundle.witnessKey).keyId
-    )
-      fail("publication key must be independent from bundle keys");
+    requireIndependentPublicationKey(publicationIdentity, bundle);
     const expected = publicationBinding(bundle);
     for (const [field, value] of Object.entries(expected))
       if (payload[field] !== value)
@@ -399,6 +549,91 @@ async function main() {
         sequence: payload.sequence,
         bundleSha256: payload.bundleSha256,
         entrySha256,
+      }),
+    );
+    return;
+  }
+  if (command === "verify-rotation") {
+    const values = parse(command, args, [
+      "--public-key",
+      "--key-generation",
+      "--gate",
+      "--manifest",
+      "--witness-public-key",
+      "--witness-key-generation",
+      "--witness",
+      "--prior-publication-public-key",
+      "--prior-publication-key-generation",
+      "--next-publication-public-key",
+      "--next-publication-key-generation",
+      "--rotation",
+      "--checkpoint",
+      "--at",
+      "--output-checkpoint",
+    ]);
+    const at = timestamp(values["--at"]);
+    const priorKey = await readPublicKey(
+      values["--prior-publication-public-key"],
+    );
+    const nextKey = await readPublicKey(
+      values["--next-publication-public-key"],
+    );
+    const priorIdentity = describeKey(priorKey);
+    const nextIdentity = describeKey(nextKey);
+    const priorGeneration = keyGeneration(
+      values["--prior-publication-key-generation"],
+    );
+    const nextGeneration = keyGeneration(
+      values["--next-publication-key-generation"],
+    );
+    const rotation = await readJson(values["--rotation"]);
+    const payload = validatePublicationRotation(
+      rotation,
+      priorKey,
+      priorGeneration,
+      nextKey,
+      nextGeneration,
+    );
+    if (payload.publishedAt > at + 300)
+      fail("publication time is in the future");
+    const bundle = await verifiedBundle(values, payload.publishedAt);
+    requireIndependentPublicationKey(priorIdentity, bundle);
+    requireIndependentPublicationKey(nextIdentity, bundle);
+    const expected = publicationBinding(bundle);
+    for (const [field, value] of Object.entries(expected))
+      if (payload[field] !== value)
+        fail("publication does not match the verified bundle");
+    const checkpoint = validatePublicationCheckpoint(
+      await readJson(values["--checkpoint"], 4_096),
+    );
+    if (
+      checkpoint.publicationKeyId !== priorIdentity.keyId ||
+      checkpoint.publicationKeyGeneration !== priorGeneration
+    )
+      fail("publication checkpoint key does not match prior rotation key");
+    if (
+      payload.sequence !== checkpoint.sequence + 1 ||
+      payload.previousEntrySha256 !== checkpoint.entrySha256
+    )
+      fail("publication rotation is not the checkpoint successor");
+    const entrySha256 = canonicalSha256(rotation);
+    const nextCheckpoint = validatePublicationCheckpoint({
+      schemaVersion: 1,
+      publicationKeyId: nextIdentity.keyId,
+      publicationKeyGeneration: nextGeneration,
+      sequence: payload.sequence,
+      entrySha256,
+    });
+    await writeNewJson(values["--output-checkpoint"], nextCheckpoint, 0o444);
+    console.log(
+      canonicalJson({
+        verified: true,
+        rotated: true,
+        sequence: payload.sequence,
+        bundleSha256: payload.bundleSha256,
+        entrySha256,
+        priorPublicationKeyId: priorIdentity.keyId,
+        nextPublicationKeyId: nextIdentity.keyId,
       }),
     );
     return;

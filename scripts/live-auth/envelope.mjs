@@ -16,6 +16,8 @@ export const GATE_DOMAIN = "POSTERN_LIVE_GATE_V2\n";
 export const MANIFEST_DOMAIN = "POSTERN_LIVE_MANIFEST_V2\n";
 export const WITNESS_DOMAIN = "POSTERN_LIVE_WITNESS_V1\n";
 export const PUBLICATION_DOMAIN = "POSTERN_LIVE_PUBLICATION_V1\n";
+export const PUBLICATION_ROTATION_DOMAIN =
+  "POSTERN_LIVE_PUBLICATION_ROTATION_V1\n";
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_JSON_BYTES = 512 * 1024;
@@ -365,6 +367,52 @@ export function validatePublicationCheckpoint(checkpoint) {
   )
     fail("publication checkpoint is invalid");
   return checkpoint;
+}
+
+export function validatePublicationRotation(
+  rotation,
+  priorPublicKey,
+  priorKeyGeneration,
+  nextPublicKey,
+  nextKeyGeneration,
+) {
+  exactKeys(
+    rotation,
+    ["schemaVersion", "priorAuthorization", "nextAcceptance"],
+    "publication rotation",
+  );
+  if (rotation.schemaVersion !== 1)
+    fail("publication rotation schema is unsupported");
+  const priorIdentity = describeKey(priorPublicKey);
+  const nextIdentity = describeKey(nextPublicKey);
+  if (priorIdentity.keyId === nextIdentity.keyId)
+    fail("publication rotation must change the key");
+  if (
+    !Number.isSafeInteger(priorKeyGeneration) ||
+    priorKeyGeneration < 1 ||
+    !Number.isSafeInteger(nextKeyGeneration) ||
+    nextKeyGeneration <= priorKeyGeneration
+  )
+    fail("publication rotation generation must increase");
+  const priorPayload = validatePublication(
+    verifyEnvelope(
+      rotation.priorAuthorization,
+      priorPublicKey,
+      PUBLICATION_ROTATION_DOMAIN,
+      priorKeyGeneration,
+    ),
+  );
+  const nextPayload = validatePublication(
+    verifyEnvelope(
+      rotation.nextAcceptance,
+      nextPublicKey,
+      PUBLICATION_ROTATION_DOMAIN,
+      nextKeyGeneration,
+    ),
+  );
+  if (canonicalJson(priorPayload) !== canonicalJson(nextPayload))
+    fail("publication rotation signatures disagree");
+  return priorPayload;
 }
 
 async function regularFile(path, secret = false, limit = 64 * 1024) {

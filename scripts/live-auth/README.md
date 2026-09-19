@@ -178,6 +178,52 @@ global gossip nor detects a fork before independent auditors compare/retain a
 checkpoint. Coordinated compromise of DNS/TLS, the live-read signer, witness,
 publication signer and checkpoint store remains outside its guarantees.
 
+### Offline publication-key rotation
+
+Rotate the offline publication key only after at least one ordinary publication
+has been retained. The rotation is itself the next log entry. It contains the
+same release binding, sequence and predecessor hash signed independently by the
+old key (authorization) and the new key (acceptance). The new generation must be
+strictly greater and the key IDs must differ. Both keys must also remain distinct
+from the live-read and witness keys.
+
+```sh
+node scripts/live-auth.mjs rotate-publication \
+  <the same bundle arguments used by publish-release> \
+  --prior-publication-private-key <old-private.pem> \
+  --prior-publication-key-generation <old-generation> \
+  --next-publication-private-key <new-private.pem> \
+  --next-publication-key-generation <greater-generation> \
+  --previous <last-signed-entry.json> \
+  --at <rotation-unix-seconds> \
+  --output <rotation.json>
+```
+
+An auditor advances from its old checkpoint only after verifying both public
+keys, both signatures, the bundle and the direct chain link:
+
+```sh
+node scripts/live-auth.mjs verify-rotation \
+  <the same bundle arguments used by verify-release> \
+  --prior-publication-public-key <old-public.pem> \
+  --prior-publication-key-generation <old-generation> \
+  --next-publication-public-key <new-public.pem> \
+  --next-publication-key-generation <greater-generation> \
+  --rotation <rotation.json> \
+  --checkpoint <old-retained-checkpoint.json> \
+  --at <audit-unix-seconds> \
+  --output-checkpoint <new-retained-checkpoint.json>
+```
+
+The first ordinary entry after rotation uses `publish-after-rotation`, with the
+old public key, new private key and the rotation entry. Later entries return to
+`publish-release`. This explicit bridge prevents the CLI from silently treating
+an arbitrary file or an old-key entry as new-key history. A consumed rotation,
+a competing rotation from the same predecessor, a generation downgrade or key
+reuse fails against the advanced checkpoint. Auditors must still exchange and
+compare independently retained checkpoint hashes to discover equivocation;
+this local, offline mechanism is not a claim of globally visible transparency.
+
 ## Rotation and recovery
 
 Rotation is intentionally single-key and explicit. Increment the reviewed key

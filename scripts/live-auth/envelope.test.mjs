@@ -95,6 +95,7 @@ async function fixture() {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const witnessKeys = generateKeyPairSync("ed25519");
   const publicationKeys = generateKeyPairSync("ed25519");
+  const nextPublicationKeys = generateKeyPairSync("ed25519");
   const privatePath = join(root, "private.pem");
   const publicPath = join(root, "public.pem");
   const manifestPath = join(root, "manifest.json");
@@ -105,6 +106,11 @@ async function fixture() {
   const witnessPath = join(root, "witness.signed.json");
   const publicationPrivatePath = join(root, "publication-private.pem");
   const publicationPublicPath = join(root, "publication-public.pem");
+  const nextPublicationPrivatePath = join(
+    root,
+    "next-publication-private.pem",
+  );
+  const nextPublicationPublicPath = join(root, "next-publication-public.pem");
   await writeFile(
     privatePath,
     privateKey.export({ format: "pem", type: "pkcs8" }),
@@ -127,6 +133,15 @@ async function fixture() {
   await writeFile(
     publicationPublicPath,
     publicationKeys.publicKey.export({ format: "pem", type: "spki" }),
+  );
+  await writeFile(
+    nextPublicationPrivatePath,
+    nextPublicationKeys.privateKey.export({ format: "pem", type: "pkcs8" }),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    nextPublicationPublicPath,
+    nextPublicationKeys.publicKey.export({ format: "pem", type: "spki" }),
   );
   await writeFile(
     publicPath,
@@ -181,6 +196,8 @@ async function fixture() {
     witnessPath,
     publicationPrivatePath,
     publicationPublicPath,
+    nextPublicationPrivatePath,
+    nextPublicationPublicPath,
   };
 }
 
@@ -495,6 +512,285 @@ test("publishes an immutable chained receipt and advances a retained checkpoint"
       String(NOW + 1),
       "--output-checkpoint",
       join(files.root, "tampered-checkpoint.json"),
+    ]),
+    /signature is invalid/,
+  );
+});
+
+test("rotates the offline publication key with a dual-signed chained entry", async () => {
+  const files = await fixture();
+  const signedManifest = join(files.root, "rotation-manifest.signed.json");
+  const signedGate = join(files.root, "rotation-gate.signed.json");
+  await run(
+    "sign-manifest",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.manifestPath,
+    "--output",
+    signedManifest,
+  );
+  await run(
+    "sign-gate",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.gatePath,
+    "--manifest",
+    signedManifest,
+    "--at",
+    String(NOW),
+    "--output",
+    signedGate,
+  );
+  const bundle = bundleArgs(files, signedGate, signedManifest);
+  const checkpoint0 = join(files.root, "rotation-checkpoint-0.json");
+  await execute(process.execPath, [
+    cli,
+    "init-publication",
+    "--publication-public-key",
+    files.publicationPublicPath,
+    "--publication-key-generation",
+    "3",
+    "--output-checkpoint",
+    checkpoint0,
+  ]);
+  const entry1 = join(files.root, "before-rotation.json");
+  await execute(process.execPath, [
+    cli,
+    "publish-release",
+    ...bundle,
+    "--publication-private-key",
+    files.publicationPrivatePath,
+    "--publication-key-generation",
+    "3",
+    "--previous",
+    "genesis",
+    "--at",
+    String(NOW),
+    "--output",
+    entry1,
+  ]);
+  const checkpoint1 = join(files.root, "rotation-checkpoint-1.json");
+  await execute(process.execPath, [
+    cli,
+    "verify-release",
+    ...bundle,
+    "--publication-public-key",
+    files.publicationPublicPath,
+    "--publication-key-generation",
+    "3",
+    "--entry",
+    entry1,
+    "--checkpoint",
+    checkpoint0,
+    "--at",
+    String(NOW),
+    "--output-checkpoint",
+    checkpoint1,
+  ]);
+
+  const rotation = join(files.root, "publication-rotation.json");
+  const rotateArgs = [
+    cli,
+    "rotate-publication",
+    ...bundle,
+    "--prior-publication-private-key",
+    files.publicationPrivatePath,
+    "--prior-publication-key-generation",
+    "3",
+    "--next-publication-private-key",
+    files.nextPublicationPrivatePath,
+    "--next-publication-key-generation",
+    "4",
+    "--previous",
+    entry1,
+    "--at",
+    String(NOW + 1),
+  ];
+  await execute(process.execPath, [
+    ...rotateArgs,
+    "--output",
+    rotation,
+  ]);
+  const checkpoint2 = join(files.root, "rotation-checkpoint-2.json");
+  const verifyRotationArgs = [
+    cli,
+    "verify-rotation",
+    ...bundle,
+    "--prior-publication-public-key",
+    files.publicationPublicPath,
+    "--prior-publication-key-generation",
+    "3",
+    "--next-publication-public-key",
+    files.nextPublicationPublicPath,
+    "--next-publication-key-generation",
+    "4",
+    "--rotation",
+    rotation,
+  ];
+  const verified = await execute(process.execPath, [
+    ...verifyRotationArgs,
+    "--checkpoint",
+    checkpoint1,
+    "--at",
+    String(NOW + 1),
+    "--output-checkpoint",
+    checkpoint2,
+  ]);
+  assert.equal(JSON.parse(verified.stdout).rotated, true);
+  const checkpoint2Value = JSON.parse(await readFile(checkpoint2, "utf8"));
+  assert.equal(checkpoint2Value.sequence, 2);
+  const nextIdentity = JSON.parse(
+    (
+      await execute(process.execPath, [
+        cli,
+        "inspect-key",
+        "--public-key",
+        files.nextPublicationPublicPath,
+      ])
+    ).stdout,
+  );
+  assert.equal(checkpoint2Value.publicationKeyId, nextIdentity.keyId);
+  assert.equal(checkpoint2Value.publicationKeyGeneration, 4);
+
+  await assert.rejects(
+    execute(process.execPath, [
+      ...verifyRotationArgs,
+      "--checkpoint",
+      checkpoint2,
+      "--at",
+      String(NOW + 1),
+      "--output-checkpoint",
+      join(files.root, "reused-rotation.json"),
+    ]),
+    /checkpoint key does not match prior rotation key/,
+  );
+
+  await assert.rejects(
+    execute(process.execPath, [
+      cli,
+      "verify-release",
+      ...bundle,
+      "--publication-public-key",
+      files.publicationPublicPath,
+      "--publication-key-generation",
+      "3",
+      "--entry",
+      entry1,
+      "--checkpoint",
+      checkpoint2,
+      "--at",
+      String(NOW + 1),
+      "--output-checkpoint",
+      join(files.root, "rolled-back-before-rotation.json"),
+    ]),
+    /publication checkpoint key does not match/,
+  );
+
+  const fork = join(files.root, "publication-rotation-fork.json");
+  await execute(process.execPath, [
+    ...rotateArgs.slice(0, -1),
+    String(NOW + 2),
+    "--output",
+    fork,
+  ]);
+  await assert.rejects(
+    execute(process.execPath, [
+      ...verifyRotationArgs.slice(0, -1),
+      fork,
+      "--checkpoint",
+      checkpoint2,
+      "--at",
+      String(NOW + 2),
+      "--output-checkpoint",
+      join(files.root, "forked-rotation.json"),
+    ]),
+    /checkpoint key does not match prior rotation key/,
+  );
+
+  const entry3 = join(files.root, "after-rotation.json");
+  await execute(process.execPath, [
+    cli,
+    "publish-after-rotation",
+    ...bundle,
+    "--prior-publication-public-key",
+    files.publicationPublicPath,
+    "--prior-publication-key-generation",
+    "3",
+    "--publication-private-key",
+    files.nextPublicationPrivatePath,
+    "--publication-key-generation",
+    "4",
+    "--previous-rotation",
+    rotation,
+    "--at",
+    String(NOW + 2),
+    "--output",
+    entry3,
+  ]);
+  const checkpoint3 = join(files.root, "rotation-checkpoint-3.json");
+  const verified3 = await execute(process.execPath, [
+    cli,
+    "verify-release",
+    ...bundle,
+    "--publication-public-key",
+    files.nextPublicationPublicPath,
+    "--publication-key-generation",
+    "4",
+    "--entry",
+    entry3,
+    "--checkpoint",
+    checkpoint2,
+    "--at",
+    String(NOW + 2),
+    "--output-checkpoint",
+    checkpoint3,
+  ]);
+  assert.equal(JSON.parse(verified3.stdout).sequence, 3);
+
+  await assert.rejects(
+    execute(process.execPath, [
+      ...rotateArgs.slice(0, -6),
+      "--next-publication-key-generation",
+      "3",
+      "--previous",
+      entry1,
+      "--at",
+      String(NOW + 1),
+      "--output",
+      join(files.root, "generation-reuse.json"),
+    ]),
+    /generation must increase/,
+  );
+
+  const sameKeyArgs = [...rotateArgs];
+  sameKeyArgs[
+    sameKeyArgs.indexOf("--next-publication-private-key") + 1
+  ] = files.publicationPrivatePath;
+  await assert.rejects(
+    execute(process.execPath, [
+      ...sameKeyArgs,
+      "--output",
+      join(files.root, "same-key-rotation.json"),
+    ]),
+    /rotation must change the key/,
+  );
+
+  const tampered = JSON.parse(await readFile(rotation, "utf8"));
+  tampered.nextAcceptance.payload.publishedAt += 1;
+  const tamperedPath = join(files.root, "tampered-rotation.json");
+  await writeFile(tamperedPath, JSON.stringify(tampered));
+  await assert.rejects(
+    execute(process.execPath, [
+      ...verifyRotationArgs.slice(0, -1),
+      tamperedPath,
+      "--checkpoint",
+      checkpoint1,
+      "--at",
+      String(NOW + 2),
+      "--output-checkpoint",
+      join(files.root, "tampered-rotation-checkpoint.json"),
     ]),
     /signature is invalid/,
   );
