@@ -65,6 +65,7 @@ export async function readLiveReadGate(
       return { available: false, reason: 'invalid' };
     const config = value as Record<string, unknown>;
     if (
+      Object.keys(config).length !== ALLOWED_KEYS.size ||
       Object.keys(config).some((key) => !ALLOWED_KEYS.has(key)) ||
       config.schemaVersion !== 1 ||
       config.enabled !== true ||
@@ -83,10 +84,9 @@ export async function readLiveReadGate(
       config.allowedRpcOrigins.length > MAX_RPC_ORIGINS ||
       !config.allowedRpcOrigins.every(exactHttpsOrigin) ||
       new Set(config.allowedRpcOrigins).size !== config.allowedRpcOrigins.length ||
-      (config.timeoutMs !== undefined &&
-        (!Number.isSafeInteger(config.timeoutMs) ||
-          Number(config.timeoutMs) < 250 ||
-          Number(config.timeoutMs) > 30_000))
+      !Number.isSafeInteger(config.timeoutMs) ||
+      Number(config.timeoutMs) < 250 ||
+      Number(config.timeoutMs) > 30_000
     ) {
       return { available: false, reason: 'invalid' };
     }
@@ -110,7 +110,7 @@ export async function readLiveReadGate(
       trustAnchor,
       manifestSha256: config.manifestSha256,
       expiresAt: Number(config.expiresAt),
-      ...(config.timeoutMs === undefined ? {} : { timeoutMs: Number(config.timeoutMs) }),
+      timeoutMs: Number(config.timeoutMs),
     };
     return { available: true, factory: new LiveReaderFactory(options) };
   } catch {

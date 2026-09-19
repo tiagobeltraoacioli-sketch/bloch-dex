@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readLiveReadGate } from '../live-gate';
 import App from '../App';
-import { LIVE_GATE_DOMAIN, LIVE_MANIFEST_DOMAIN } from '../live-auth';
+import { canonicalLiveReadPayload, LIVE_GATE_DOMAIN, LIVE_MANIFEST_DOMAIN } from '../live-auth';
 import { createSigningFixture, type SigningFixture } from './live-auth-helpers';
 
 vi.mock('../LivePoolsRuntime', () => ({
@@ -55,6 +55,12 @@ afterEach(() => {
 });
 
 describe('live read host gate', () => {
+  it('uses the release tool canonical JSON format', () => {
+    expect(
+      new TextDecoder().decode(canonicalLiveReadPayload('', { z: [true, null, 'é'], a: { n: 7 } })),
+    ).toBe('{"a":{"n":7},"z":[true,null,"é"]}');
+  });
+
   it('accepts only an explicitly signed bounded read-only configuration', async () => {
     const isolated = document.implementation.createHTMLDocument();
     const signed = (await signedConfiguration()) as { payload: Record<string, unknown> };
@@ -85,6 +91,16 @@ describe('live read host gate', () => {
       available: false,
       reason: 'invalid',
     });
+  });
+
+  it('rejects a signed configuration with a missing required field', async () => {
+    const isolated = document.implementation.createHTMLDocument();
+    const payload = configuration();
+    delete (payload as Partial<typeof payload>).timeoutMs;
+    inject(await signing.sign(payload, LIVE_GATE_DOMAIN), isolated);
+    await expect(
+      readLiveReadGate(isolated, 'https://dex.invalid', signing.encodedPublicKey),
+    ).resolves.toEqual({ available: false, reason: 'invalid' });
   });
 
   it('rejects tampering, the wrong pin and cross-domain signature replay', async () => {

@@ -238,7 +238,7 @@ signed envelope whose payload schema requires version 1, `enabled: true`,
 `mode: "read-only"`, a same-origin manifest path and one to eight unique HTTPS
 RPC origins. It also pins the domain-separated canonical SHA-256 of the exact
 signed manifest payload and carries a signed issuance/expiry window of at most
-seven days; the optional timeout is bounded. Unknown capabilities,
+seven days; the required timeout is bounded. Unknown capabilities,
 insecure/cross-origin URLs, queries, fragments and malformed or oversized input
 disable the gate. A valid gate adds a link to the isolated read-only route.
 Missing, invalid or unauthenticated configuration leaves the preview unchanged,
@@ -263,8 +263,10 @@ manifest fetch, limiting replay of an older signed gate and manifest pair.
 The repository contains no public-key pin, private key, signed host element or
 deployment values. The staging build currently emits the unsigned artifact
 payload; an external controlled signing step must wrap it before this runtime
-will accept it. Defining that release custody/rotation procedure, supplying its
-reviewed public-key pin and signing the gate and manifest are the next deployment
-gate. Browser Ed25519 support, CORS and real-RPC behavior also require operational
-validation. The private signing key must remain outside the frontend, artifact
-and repository.
+will accept it. The [offline envelope tooling](../scripts/live-auth/README.md)
+provides deterministic signing, exact-bundle verification and an explicit
+single-key rotation procedure without generating or storing a key. Supplying an
+operationally reviewed public-key pin and custody process, then signing the gate
+and manifest, are the next deployment gate. Browser Ed25519 support, CORS and
+real-RPC behavior also require operational validation. The private signing key
+must remain outside the frontend, artifact and repository.
