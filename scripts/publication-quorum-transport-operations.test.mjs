@@ -23,6 +23,7 @@ import {
   migrateOperationsStoreV3ToV4,
   prepareOperationsRotation,
   prepareOperationsAnchorStatement,
+  prepareRetainedOperationsLockCleanupPlan,
   reconcileOperationsLock,
   reconcileRetainedOperationsLockEvidence,
   signOperationsAnchorStatement,
@@ -547,7 +548,87 @@ test("operations lock release preserves hardlinked or substituted locks", async 
       join(store, inspection.recoveryName), "utf8",
     ), `${canonicalJson(inspection.lock)}\n`);
 
+    const receiptSha256 = canonicalSha256(receipt);
+    const cleanupPlan = await prepareRetainedOperationsLockCleanupPlan({
+      root: store,
+      reconciliationReceipt: receipt,
+      expectedReconciliationReceiptSha256: receiptSha256,
+    });
+    assert.deepEqual(cleanupPlan, {
+      schemaVersion: 1,
+      kind: "operations-lock-retained-evidence-cleanup-plan",
+      reconciliationReceiptSha256: receiptSha256,
+      cleanupDirectory,
+      retainedName,
+      recoveryName: inspection.recoveryName,
+      operation: receipt.operation,
+      lockSha256: inspection.lockSha256,
+      startingCheckpointSha256: receipt.startingCheckpointSha256,
+      observedCheckpointSha256: receipt.observedCheckpointSha256,
+      completedCheckpointSha256: receipt.completedCheckpointSha256,
+      outcome: "committed",
+      requiredActiveLockState: "absent",
+      deletionAuthorized: false,
+      executionSupported: false,
+      filesRemoved: false,
+      retryAuthorized: false,
+    });
+    let cleanupDirectoryReads = 0;
+    const accessorReceipt = { ...receipt };
+    Object.defineProperty(accessorReceipt, "cleanupDirectory", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        cleanupDirectoryReads += 1;
+        return cleanupDirectoryReads === 1 ? receipt.cleanupDirectory : "../substituted";
+      },
+    });
+    assert.deepEqual(await prepareRetainedOperationsLockCleanupPlan({
+      root: store,
+      reconciliationReceipt: accessorReceipt,
+      expectedReconciliationReceiptSha256: receiptSha256,
+    }), cleanupPlan);
+    assert.equal(cleanupDirectoryReads, 1);
+    await assert.rejects(
+      prepareRetainedOperationsLockCleanupPlan({
+        root: store,
+        reconciliationReceipt: receipt,
+        expectedReconciliationReceiptSha256: "0".repeat(64),
+      }),
+      /does not match the externally approved hash/,
+    );
+    const forgedReceipt = { ...receipt, outcome: "not-committed" };
+    await assert.rejects(
+      prepareRetainedOperationsLockCleanupPlan({
+        root: store,
+        reconciliationReceipt: forgedReceipt,
+        expectedReconciliationReceiptSha256: canonicalSha256(forgedReceipt),
+      }),
+      /does not reproduce the approved reconciliation receipt/,
+    );
+
+    const receiptPath = join(store, "..", `${cleanupDirectory}.receipt.json`);
+    const planPath = join(store, "..", `${cleanupDirectory}.cleanup-plan.json`);
+    await writeFile(receiptPath, `${canonicalJson(receipt)}\n`, { flag: "wx", mode: 0o444 });
+    await execute(process.execPath, [
+      cli, "prepare-lock-evidence-cleanup",
+      "--store", store,
+      "--reconciliation-receipt", receiptPath,
+      "--expected-reconciliation-receipt-sha256", receiptSha256,
+      "--output", planPath,
+    ]);
+    assert.deepEqual(JSON.parse(await readFile(planPath, "utf8")), cleanupPlan);
+    assert.equal((await lstat(planPath)).mode & 0o777, 0o444);
+
     await link(join(store, cleanupDirectory, retainedName), join(store, ".operations.lock"));
+    await assert.rejects(
+      prepareRetainedOperationsLockCleanupPlan({
+        root: store,
+        reconciliationReceipt: receipt,
+        expectedReconciliationReceiptSha256: receiptSha256,
+      }),
+      /active lock state differs from the externally approved absent state/,
+    );
     await assert.rejects(
       reconcileRetainedOperationsLockEvidence(approved),
       /active lock state differs from the externally approved absent state/,

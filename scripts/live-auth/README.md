@@ -818,6 +818,31 @@ external archival and any later deletion require a distinct reviewed policy
 that can account for all aliases and receipts without destroying ambiguous
 evidence.
 
+After the reconciliation receipt has itself been exported and authenticated
+over an independent channel, an offline operator may prepare a non-executable
+cleanup plan:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs prepare-lock-evidence-cleanup \
+  --store <private-operations-directory> \
+  --reconciliation-receipt <externally-retained-canonical-receipt.json> \
+  --expected-reconciliation-receipt-sha256 <authenticated-receipt-sha256> \
+  --output <new-cleanup-plan.json>
+```
+
+The command verifies the exact external receipt hash before using any receipt
+field, requires its active-lock state to be `absent`, and then reruns the full
+retained-evidence reconciliation against the current store. The newly observed
+receipt must reproduce the approved receipt exactly. A changed checkpoint,
+new lock, alias, extra directory entry, rewritten inode, or missing artifact
+therefore fails closed. The plan pins the only tombstone and recovery basenames
+that a future reviewed cleanup protocol could consider, but deliberately sets
+`deletionAuthorized`, `executionSupported`, `filesRemoved`, and
+`retryAuthorized` to `false`. It never unlinks or modifies evidence and is not
+authorization to retry an operation. There is currently no cleanup executor;
+the plan and all evidence must remain preserved pending a separate archival and
+deletion policy.
+
 ### Pinned mTLS profile rotation
 
 Generate the replacement preflight manifest first and approve its digest over

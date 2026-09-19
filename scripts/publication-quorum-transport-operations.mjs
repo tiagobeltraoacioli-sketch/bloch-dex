@@ -2113,6 +2113,79 @@ export async function reconcileRetainedOperationsLockEvidence({
   };
 }
 
+export async function prepareRetainedOperationsLockCleanupPlan({
+  root,
+  reconciliationReceipt,
+  expectedReconciliationReceiptSha256,
+  expectedStoreMetadata = null,
+}) {
+  requireHash(
+    expectedReconciliationReceiptSha256,
+    "externally approved retained evidence reconciliation receipt hash",
+  );
+  // Serialize the untrusted caller value exactly once, then use only the
+  // resulting plain-data clone. In particular, accessors and Proxy traps must
+  // not be able to return one value for the approved hash and another value
+  // after an asynchronous reconciliation boundary.
+  const receiptCanonical = canonicalJson(reconciliationReceipt);
+  const receipt = JSON.parse(receiptCanonical);
+  exactKeys(receipt, [
+    "schemaVersion", "kind", "cleanupDirectory", "retainedName", "recoveryName",
+    "operation", "lockSha256", "startingCheckpointSha256",
+    "observedCheckpointSha256", "completedCheckpointSha256", "activeLockState",
+    "outcome", "audit", "filesRemoved", "retryAuthorized",
+  ], "retained evidence reconciliation receipt");
+  if (hashBytes(Buffer.from(receiptCanonical, "utf8")) !==
+      expectedReconciliationReceiptSha256)
+    fail("retained evidence reconciliation receipt does not match the externally approved hash");
+  if (receipt.schemaVersion !== 1 ||
+      receipt.kind !==
+        "operations-lock-retained-evidence-reconciliation-receipt" ||
+      receipt.filesRemoved !== false ||
+      receipt.retryAuthorized !== false)
+    fail("retained evidence reconciliation receipt identity is invalid");
+  if (receipt.activeLockState !== "absent")
+    fail("cleanup planning requires an externally reconciled absent active lock");
+
+  // A hash-pinned receipt still is not trusted as a description of current
+  // local state. Re-run its full reconciliation and require byte-for-byte
+  // equivalent canonical output before producing a non-executable plan.
+  const currentReceipt = await reconcileRetainedOperationsLockEvidence({
+    root,
+    cleanupDirectory: receipt.cleanupDirectory,
+    retainedName: receipt.retainedName,
+    expectedLockSha256: receipt.lockSha256,
+    expectedStartingCheckpointSha256:
+      receipt.startingCheckpointSha256,
+    expectedCompletedCheckpointSha256:
+      receipt.completedCheckpointSha256,
+    expectedActiveLockState: "absent",
+    expectedStoreMetadata,
+  });
+  if (canonicalJson(currentReceipt) !== receiptCanonical)
+    fail("current retained evidence does not reproduce the approved reconciliation receipt");
+
+  return {
+    schemaVersion: 1,
+    kind: "operations-lock-retained-evidence-cleanup-plan",
+    reconciliationReceiptSha256: expectedReconciliationReceiptSha256,
+    cleanupDirectory: currentReceipt.cleanupDirectory,
+    retainedName: currentReceipt.retainedName,
+    recoveryName: currentReceipt.recoveryName,
+    operation: currentReceipt.operation,
+    lockSha256: currentReceipt.lockSha256,
+    startingCheckpointSha256: currentReceipt.startingCheckpointSha256,
+    observedCheckpointSha256: currentReceipt.observedCheckpointSha256,
+    completedCheckpointSha256: currentReceipt.completedCheckpointSha256,
+    outcome: currentReceipt.outcome,
+    requiredActiveLockState: "absent",
+    deletionAuthorized: false,
+    executionSupported: false,
+    filesRemoved: false,
+    retryAuthorized: false,
+  };
+}
+
 export async function reconcileOperationsLock({
   root,
   expectedLockSha256,
@@ -2453,6 +2526,38 @@ async function main() {
     }));
     return;
   }
+  if (command === "prepare-lock-evidence-cleanup") {
+    const v = parse(args, [
+      "--store", "--reconciliation-receipt",
+      "--expected-reconciliation-receipt-sha256", "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let plan;
+    try {
+      plan = await prepareRetainedOperationsLockCleanupPlan({
+        root: v["--store"],
+        reconciliationReceipt: await securePublicJson(
+          v["--reconciliation-receipt"], "retained evidence reconciliation receipt",
+        ),
+        expectedReconciliationReceiptSha256:
+          v["--expected-reconciliation-receipt-sha256"],
+        expectedStoreMetadata: reservation.storeDirectory.metadata,
+      });
+      await writeReservedReconciliationOutput(reservation, plan);
+    } finally {
+      await closeReservedReconciliationOutput(reservation);
+    }
+    console.log(canonicalJson({
+      cleanupPlanSha256: canonicalSha256(plan),
+      deletionAuthorized: false,
+      executionSupported: false,
+      filesRemoved: false,
+      retryAuthorized: false,
+    }));
+    return;
+  }
   if (command === "inspect-rotation") {
     const v = parse(args, ["--store"]);
     console.log(canonicalJson(await inspectPendingRotation(v["--store"]))); return;
@@ -2506,7 +2611,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
