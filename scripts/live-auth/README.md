@@ -747,6 +747,77 @@ funds. Preserve the receipt, its digest, the lock and all aliases for a separate
 operator-approved recovery process. Schema-1 PID-only locks predate the bound
 starting checkpoint and cannot be reconciled by this command.
 
+Each successful lock release also retains a tombstone in its randomly named
+private cleanup directory and an independent content-addressed recovery file.
+They are evidence, not garbage-collection candidates. First inspect one exact
+pair by copying the two basenames from a separately captured directory listing:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs inspect-lock-evidence \
+  --store <private-operations-directory> \
+  --cleanup-directory <exact-.operations.lock.cleanup.*-basename> \
+  --retained-name <exact-retained-*-basename>
+```
+
+The inspection is read-only and explicitly marks its output as unreconciled.
+It verifies canonical schema-2 bytes, ownership, release-protocol permissions,
+stable inode metadata, the content-addressed recovery name and content, and the
+current active-lock relationship. Treat all printed values as untrusted local
+observations. Review the lock intent and derive both possible checkpoint hashes
+from independently authorized operation inputs; never approve a hash merely
+because inspection printed it.
+
+After that independent review, produce a portable receipt with all names,
+hashes, checkpoint outcomes and the exact expected active-lock state pinned:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs reconcile-lock-evidence \
+  --store <private-operations-directory> \
+  --cleanup-directory <externally-recorded-cleanup-basename> \
+  --retained-name <externally-recorded-retained-basename> \
+  --expected-lock-sha256 <authenticated-canonical-lock-sha256> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <independently-derived-after-sha256> \
+  --expected-active-lock-state <absent-or-exact-alias-state> \
+  --output <new-retained-evidence-reconciliation-receipt.json>
+```
+
+Reconciliation requires the cleanup directory to contain exactly the approved
+tombstone, requires the recovery and tombstone bytes to agree, audits the
+retained checkpoint history, and rereads every object after the audit. Private
+snapshots compare the complete device, inode, mode, owner, group, link count,
+size, nanosecond mtime and nanosecond ctime identity of the store directory,
+cleanup directory, tombstone, recovery and optional active lock across that
+audit. Every rotation and anchor-acceptance record used by the audit is likewise
+retained as exact canonical bytes plus integral metadata and reread after the
+audit; a same-inode rewrite therefore fails even if valid content is restored.
+Open directory descriptors pin both directories while every child is
+read. Linux uses `/proc/self/fd` descriptor-relative child paths and revalidates
+membership and pathname identities after each boundary; other platforms fail
+closed before inspecting retained evidence.
+`same`
+is not an accepted shorthand: choose `absent`, `tombstone-alias`,
+`recovery-alias`, or `independent-copy` to bind the precise active pathname
+relationship and exact expected link counts created by the release failure
+fallback. Extra hardlinks are rejected. An independent occupant
+with other content is rejected and preserved. Any extra directory entry,
+symlink, permission change, third checkpoint outcome, content mismatch or
+concurrent namespace change fails closed. Both commands reject path traversal
+by accepting only release-protocol basenames.
+
+This command never unlinks, renames, overwrites, adopts or garbage-collects an
+artifact. Its receipt fixes `filesRemoved` and `retryAuthorized` to `false`.
+The create-once receipt output must resolve outside the operations store and
+all of its evidence paths. Before evidence is read, Linux pins both trees,
+reserves the output name with `O_EXCL`, and later publishes only through that
+descriptor and its pinned parent; a failed reconciliation can therefore leave
+an empty reserved output that must be preserved and investigated. Platforms
+without strong descriptor-relative child access fail closed for this workflow.
+There is deliberately no automatic or age-based cleanup: storage retention,
+external archival and any later deletion require a distinct reviewed policy
+that can account for all aliases and receipts without destroying ambiguous
+evidence.
+
 ### Pinned mTLS profile rotation
 
 Generate the replacement preflight manifest first and approve its digest over

@@ -13,6 +13,7 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   realpath,
   rename,
   unlink,
@@ -55,6 +56,8 @@ const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const RAW_ED25519 = /^[A-Za-z0-9_-]{43}$/;
 const TRANSPORT_PATH = /^\/[A-Za-z0-9/_-]{1,127}$/;
 const LOCK_OPERATION = /^[a-z][a-z0-9-]{0,62}$/;
+const LOCK_CLEANUP_DIRECTORY = /^\.operations\.lock\.cleanup\.[1-9][0-9]*\.[0-9a-f]{32}$/;
+const LOCK_RETAINED_NAME = /^retained-[0-9a-f]{64}$/;
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 function fail(message) {
@@ -430,8 +433,34 @@ async function writeContentAddressedRecovery(path, value, field) {
     await writeNewDurableJson(path, value, 0o400, field);
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
-    if (canonicalJson(await secureJson(path, `existing ${field}`)) !== canonicalJson(value))
-      fail(`${field} path contains different content`);
+    let handle;
+    try {
+      handle = await open(path, constants.O_RDONLY | NOFOLLOW);
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || before.nlink !== 1n ||
+          before.size < 1n || before.size > BigInt(MAX_JSON) ||
+          (before.mode & 0o777n) !== 0o400n ||
+          (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid())))
+        fail(`existing ${field} does not have the exact recovery file identity`);
+      const bytes = Buffer.alloc(Number(before.size));
+      const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+      const after = await handle.stat({ bigint: true });
+      const linked = await lstat(path, { bigint: true });
+      if (!["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]
+          .every((name) => before[name] === after[name] && after[name] === linked[name]) ||
+          !linked.isFile() || linked.isSymbolicLink() ||
+          bytesRead !== bytes.length || bytes.length !== Number(after.size))
+        fail(`existing ${field} changed while it was being validated`);
+      let existing;
+      try { existing = JSON.parse(bytes.toString("utf8")); } catch {
+        fail(`existing ${field} is not valid JSON`);
+      }
+      if (`${canonicalJson(existing)}\n` !== bytes.toString("utf8") ||
+          canonicalJson(existing) !== canonicalJson(value))
+        fail(`${field} path contains different content`);
+    } finally {
+      await handle?.close();
+    }
   }
 }
 
@@ -974,9 +1003,28 @@ function validateRotationRecord(value) {
   return { record: value, rotation };
 }
 
-async function auditRotationChain(root, checkpoint) {
+async function requireAnchoredPrivateDirectory(path, field) {
+  const metadata = await lstat(path);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink() ||
+      (typeof process.getuid === "function" && metadata.uid !== process.getuid()) ||
+      (metadata.mode & 0o077) !== 0)
+    fail(`${field} identity or permissions are invalid`);
+}
+
+async function auditedHistoryJson(path, field, snapshots) {
+  if (!snapshots) return secureJson(path, field);
+  const snapshot = await readCanonicalCheckpointSnapshot(path, field);
+  snapshots.push({ path, field, bytes: snapshot.bytes, metadata: snapshot.metadata });
+  return snapshot.value;
+}
+
+async function auditRotationChain(
+  root, checkpoint, descriptorRelative = false, snapshots = null,
+) {
   const rotations = join(root, ROTATIONS);
-  await requireDirectory(rotations);
+  if (descriptorRelative)
+    await requireAnchoredPrivateDirectory(rotations, "rotation history directory");
+  else await requireDirectory(rotations);
   let expectedRecordSha256 = checkpoint.previousRotationSha256;
   let expectedSequence = checkpoint.rotationSequence;
   let expectedManifestSha256 = checkpoint.manifestSha256;
@@ -985,9 +1033,10 @@ async function auditRotationChain(root, checkpoint) {
   while (expectedSequence > 0) {
     if (expectedRecordSha256 === "genesis")
       fail("rotation chain terminates before its retained sequence");
-    const { record, rotation } = validateRotationRecord(await secureJson(
+    const { record, rotation } = validateRotationRecord(await auditedHistoryJson(
       join(rotations, `${expectedRecordSha256}.json`),
       `rotation record ${expectedSequence}`,
+      snapshots,
     ));
     if (canonicalSha256(record) !== expectedRecordSha256)
       fail("rotation record content does not match its retained hash");
@@ -1236,16 +1285,20 @@ export async function verifyOperationsStoreV3ToV4Migration({
   });
 }
 
-export async function auditOperationsStore(root) {
-  await requireDirectory(root);
-  const checkpoint = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
-  const chain = await auditRotationChain(root, checkpoint);
-  const anchorAcceptances = await auditAnchorAcceptanceChain(root, checkpoint);
+async function auditOperationsStoreAtCheckpoint(
+  root, checkpointInput, descriptorRelative = false, snapshots = null,
+) {
+  const checkpoint = validateCheckpoint(checkpointInput);
+  const chain = await auditRotationChain(root, checkpoint, descriptorRelative, snapshots);
+  const anchorAcceptances = await auditAnchorAcceptanceChain(
+    root, checkpoint, descriptorRelative, snapshots,
+  );
   let pendingRotationSha256 = null;
   if (checkpoint.status === "rotating") {
-    const rotation = validateRotationPayload(await secureJson(
+    const rotation = validateRotationPayload(await auditedHistoryJson(
       join(root, ROTATIONS, `${checkpoint.pendingRotationSha256}.json`),
       "pending rotation",
+      snapshots,
     ));
     if (canonicalSha256(rotation) !== checkpoint.pendingRotationSha256 ||
         rotation.rotationSequence !== checkpoint.rotationSequence + 1 ||
@@ -1265,6 +1318,12 @@ export async function auditOperationsStore(root) {
     ...chain,
     ...anchorAcceptances,
   };
+}
+
+export async function auditOperationsStore(root) {
+  await requireDirectory(root);
+  const checkpoint = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
+  return auditOperationsStoreAtCheckpoint(root, checkpoint);
 }
 
 export async function prepareOperationsAnchorStatement(root) {
@@ -1395,18 +1454,23 @@ function validateAnchorAcceptance(value) {
   return { acceptance: value, query, head, statement };
 }
 
-async function auditAnchorAcceptanceChain(root, checkpoint) {
+async function auditAnchorAcceptanceChain(
+  root, checkpoint, descriptorRelative = false, snapshots = null,
+) {
   const acceptances = join(root, ANCHOR_ACCEPTANCES);
-  await requireDirectory(acceptances);
+  if (descriptorRelative)
+    await requireAnchoredPrivateDirectory(acceptances, "anchor acceptance directory");
+  else await requireDirectory(acceptances);
   let expectedSha256 = checkpoint.externalAnchorAcceptanceSha256 ?? "genesis";
   let expectedSequence = checkpoint.externalAnchorSequence;
   let expectedStreamId = null;
   for (let remaining = checkpoint.externalAnchorAcceptanceCount; remaining > 0; remaining -= 1) {
     if (expectedSha256 === "genesis" || expectedSequence === null)
       fail("external anchor acceptance chain terminates before its retained count");
-    const { acceptance, head } = validateAnchorAcceptance(await secureJson(
+    const { acceptance, head } = validateAnchorAcceptance(await auditedHistoryJson(
       join(acceptances, `${expectedSha256}.json`),
       `external anchor acceptance ${remaining}`,
+      snapshots,
     ));
     if (canonicalSha256(acceptance) !== expectedSha256)
       fail("external anchor acceptance does not match its retained hash");
@@ -1675,6 +1739,380 @@ async function readOperationsLockSnapshot(root) {
   }
 }
 
+async function readRetainedLockFile(path, field, expectedMode, allowMultipleLinks = false) {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | NOFOLLOW);
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size < 1n || before.size > BigInt(MAX_JSON) ||
+        (!allowMultipleLinks && before.nlink !== 1n) ||
+        (allowMultipleLinks && before.nlink < 1n))
+      fail(`${field} is not a bounded regular file with the approved link state`);
+    if (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
+      fail(`${field} must be owned by the current user`);
+    const expectedModes = Array.isArray(expectedMode) ? expectedMode : [expectedMode];
+    if (!expectedModes.some((mode) => (before.mode & 0o777n) === BigInt(mode)))
+      fail(`${field} mode is not the release protocol mode`);
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const linked = await lstat(path, { bigint: true });
+    const stable = ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"]
+      .every((name) => before[name] === after[name] && after[name] === linked[name]);
+    if (!stable || !after.isFile() || linked.isSymbolicLink() ||
+        bytes.length !== Number(after.size))
+      fail(`${field} changed while it was being inspected`);
+    let value;
+    try { value = JSON.parse(bytes.toString("utf8")); } catch {
+      fail(`${field} is not valid JSON`);
+    }
+    if (`${canonicalJson(value)}\n` !== bytes.toString("utf8"))
+      fail(`${field} is not canonical JSON`);
+    validateOperationsLock(value);
+    return { bytes, value, sha256: canonicalSha256(value), metadata: after };
+  } catch (error) {
+    if (error?.code === "ELOOP") fail(`${field} must not be a symlink`);
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function readCanonicalCheckpointSnapshot(path, field) {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | NOFOLLOW);
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.size < 1n ||
+        before.size > BigInt(MAX_JSON) || (before.mode & 0o777n) !== 0o400n ||
+        (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid())))
+      fail(`${field} identity or permissions are invalid`);
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    const linked = await lstat(path, { bigint: true });
+    if (!sameIntegralMetadata(before, after) || !sameIntegralMetadata(after, linked) ||
+        !linked.isFile() || linked.isSymbolicLink() || bytes.length !== Number(after.size))
+      fail(`${field} changed while it was being inspected`);
+    let value;
+    try { value = JSON.parse(bytes.toString("utf8")); } catch {
+      fail(`${field} is not valid JSON`);
+    }
+    if (`${canonicalJson(value)}\n` !== bytes.toString("utf8"))
+      fail(`${field} is not canonical JSON`);
+    return { bytes, value, metadata: after, sha256: canonicalSha256(value) };
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function revalidateHistorySnapshots(snapshots) {
+  for (const retained of snapshots) {
+    const closing = await readCanonicalCheckpointSnapshot(
+      retained.path, `${retained.field} after audit`,
+    );
+    if (!retained.bytes.equals(closing.bytes) ||
+        !sameIntegralMetadata(retained.metadata, closing.metadata))
+      fail(`${retained.field} changed during retained evidence audit`);
+  }
+}
+
+function requireRetainedEvidenceNames(cleanupDirectory, retainedName) {
+  if (typeof cleanupDirectory !== "string" || !LOCK_CLEANUP_DIRECTORY.test(cleanupDirectory))
+    fail("cleanup directory name is invalid");
+  if (typeof retainedName !== "string" || !LOCK_RETAINED_NAME.test(retainedName))
+    fail("retained lock name is invalid");
+}
+
+const INTEGRAL_METADATA = [
+  "dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs",
+];
+
+function sameIntegralMetadata(left, right) {
+  return INTEGRAL_METADATA.every((name) => left?.[name] === right?.[name]);
+}
+
+async function openPinnedDirectory(path, field, exactMode = null) {
+  let handle;
+  try {
+    handle = await open(
+      path,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | NOFOLLOW,
+    );
+    const opened = await handle.stat({ bigint: true });
+    const linked = await lstat(path, { bigint: true });
+    if (!opened.isDirectory() || !linked.isDirectory() || linked.isSymbolicLink() ||
+        !sameIntegralMetadata(opened, linked) ||
+        (exactMode !== null && (opened.mode & 0o777n) !== BigInt(exactMode)) ||
+        (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid())))
+      fail(`${field} identity or permissions are invalid`);
+    return {
+      handle,
+      path,
+      anchoredPath: process.platform === "linux"
+        ? join("/proc/self/fd", String(handle.fd))
+        : path,
+      metadata: opened,
+    };
+  } catch (error) {
+    await handle?.close();
+    if (error?.code === "ELOOP") fail(`${field} must not be a symlink`);
+    throw error;
+  }
+}
+
+async function requirePinnedDirectory(directory, field) {
+  const opened = await directory.handle.stat({ bigint: true });
+  const linked = await lstat(directory.path, { bigint: true });
+  if (!opened.isDirectory() || !linked.isDirectory() || linked.isSymbolicLink() ||
+      !sameIntegralMetadata(directory.metadata, opened) ||
+      !sameIntegralMetadata(opened, linked))
+    fail(`${field} changed while retained evidence was being inspected`);
+}
+
+async function readCleanupDirectory(rootDirectory, cleanupDirectory) {
+  const directory = await openPinnedDirectory(
+    join(rootDirectory.anchoredPath, cleanupDirectory), "cleanup directory", 0o700,
+  );
+  try {
+    const entries = (await readdir(directory.anchoredPath)).sort();
+    await requirePinnedDirectory(directory, "cleanup directory");
+    return { ...directory, entries };
+  } catch (error) {
+    await directory.handle.close();
+    throw error;
+  }
+}
+
+async function readOptionalActiveEvidence(rootPath) {
+  const path = join(rootPath, LOCK);
+  try {
+    return await readRetainedLockFile(
+      path, "active operations lock evidence", [0o400, 0o600], true,
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function collectRetainedOperationsLockEvidence({
+  root,
+  cleanupDirectory,
+  retainedName,
+}) {
+  requireRetainedEvidenceNames(cleanupDirectory, retainedName);
+  if (process.platform !== "linux")
+    fail("retained evidence inspection requires descriptor-relative filesystem access");
+  await requireDirectory(root);
+  const rootDirectory = await openPinnedDirectory(root, "operations store");
+  let cleanup;
+  try {
+    cleanup = await readCleanupDirectory(rootDirectory, cleanupDirectory);
+    await requirePinnedDirectory(rootDirectory, "operations store");
+    if (!cleanup.entries.includes(retainedName))
+      fail("retained lock is not present in the named cleanup directory");
+    const tombstone = await readRetainedLockFile(
+      join(cleanup.anchoredPath, retainedName),
+      "retained operations lock tombstone", 0o600, true,
+    );
+    await requirePinnedDirectory(cleanup, "cleanup directory");
+    await requirePinnedDirectory(rootDirectory, "operations store");
+    const recoveryName = `.operations.lock.recovery.${hashBytes(tombstone.bytes)}.json`;
+    const recovery = await readRetainedLockFile(
+      join(rootDirectory.anchoredPath, recoveryName),
+      "content-addressed operations lock recovery", 0o400, true,
+    );
+    await requirePinnedDirectory(cleanup, "cleanup directory");
+    await requirePinnedDirectory(rootDirectory, "operations store");
+    const active = await readOptionalActiveEvidence(rootDirectory.anchoredPath);
+    await requirePinnedDirectory(cleanup, "cleanup directory");
+    await requirePinnedDirectory(rootDirectory, "operations store");
+    const closingEntries = (await readdir(cleanup.anchoredPath)).sort();
+    if (canonicalJson(closingEntries) !== canonicalJson(cleanup.entries))
+      fail("cleanup directory membership changed while evidence was being inspected");
+    await requirePinnedDirectory(cleanup, "cleanup directory");
+    await requirePinnedDirectory(rootDirectory, "operations store");
+    const publicEvidence = {
+      schemaVersion: 1,
+      kind: "operations-lock-retained-evidence-inspection",
+      cleanupDirectory,
+      retainedName,
+      cleanupEntries: cleanup.entries,
+      lock: tombstone.value,
+      lockSha256: tombstone.sha256,
+      lockBytesSha256: hashBytes(tombstone.bytes),
+      tombstoneLinkCount: Number(tombstone.metadata.nlink),
+      recoveryName,
+      recoverySha256: recovery.sha256,
+      recoveryLinkCount: Number(recovery.metadata.nlink),
+      recoveryMatchesTombstone: recovery.bytes.equals(tombstone.bytes),
+      activeLockSha256: active?.sha256 ?? null,
+      activeLockLinkCount: active ? Number(active.metadata.nlink) : null,
+      activeLockMode: active ? Number(active.metadata.mode & 0o777n) : null,
+      activeMatchesTombstone: active ? active.bytes.equals(tombstone.bytes) : null,
+      activeSharesTombstoneInode: active
+        ? active.metadata.dev === tombstone.metadata.dev && active.metadata.ino === tombstone.metadata.ino
+        : null,
+      activeSharesRecoveryInode: active
+        ? active.metadata.dev === recovery.metadata.dev && active.metadata.ino === recovery.metadata.ino
+        : null,
+      reconciled: false,
+      filesRemoved: false,
+    };
+    return {
+      publicEvidence,
+      snapshot: {
+        root: rootDirectory.metadata,
+        cleanup: cleanup.metadata,
+        tombstone: tombstone.metadata,
+        recovery: recovery.metadata,
+        active: active?.metadata ?? null,
+      },
+    };
+  } finally {
+    await cleanup?.handle.close();
+    await rootDirectory.handle.close();
+  }
+}
+
+export async function inspectRetainedOperationsLockEvidence(input) {
+  return (await collectRetainedOperationsLockEvidence(input)).publicEvidence;
+}
+
+function sameEvidenceSnapshots(left, right) {
+  return ["root", "cleanup", "tombstone", "recovery", "active"].every((name) =>
+    left[name] === null || right[name] === null
+      ? left[name] === right[name]
+      : sameIntegralMetadata(left[name], right[name]));
+}
+
+export async function reconcileRetainedOperationsLockEvidence({
+  root,
+  cleanupDirectory,
+  retainedName,
+  expectedLockSha256,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+  expectedActiveLockState,
+  expectedStoreMetadata = null,
+}) {
+  requireHash(expectedLockSha256, "externally approved retained lock hash");
+  requireHash(expectedStartingCheckpointSha256, "externally approved starting checkpoint hash");
+  requireHash(expectedCompletedCheckpointSha256, "externally approved completed checkpoint hash");
+  if (expectedStartingCheckpointSha256 === expectedCompletedCheckpointSha256)
+    fail("starting and completed checkpoint hashes must differ");
+  const activeStates = new Set([
+    "absent", "tombstone-alias", "recovery-alias", "independent-copy",
+  ]);
+  if (!activeStates.has(expectedActiveLockState))
+    fail("externally approved active lock state is invalid");
+
+  const firstCollected = await collectRetainedOperationsLockEvidence({
+    root, cleanupDirectory, retainedName,
+  });
+  const first = firstCollected.publicEvidence;
+  if (expectedStoreMetadata &&
+      !sameIntegralMetadata(expectedStoreMetadata, firstCollected.snapshot.root))
+    fail("operations store differs from the output-separation snapshot");
+  if (first.cleanupEntries.length !== 1 || first.cleanupEntries[0] !== retainedName)
+    fail("cleanup directory contains unapproved additional evidence");
+  if (first.lockSha256 !== expectedLockSha256 ||
+      first.recoverySha256 !== expectedLockSha256 || !first.recoveryMatchesTombstone)
+    fail("retained lock evidence does not match the externally approved hash");
+  if (first.lock.startingCheckpointSha256 !== expectedStartingCheckpointSha256)
+    fail("retained lock does not bind the externally approved starting checkpoint");
+  if (expectedActiveLockState === "absent" && first.activeLockSha256 !== null)
+    fail("active lock state differs from the externally approved absent state");
+  if (expectedActiveLockState !== "absent" &&
+      (first.activeLockSha256 !== expectedLockSha256 || !first.activeMatchesTombstone))
+    fail("active lock content does not match the approved retained lock");
+  if (expectedActiveLockState === "tombstone-alias" &&
+      (!first.activeSharesTombstoneInode || first.activeSharesRecoveryInode))
+    fail("active lock is not the approved tombstone alias");
+  if (expectedActiveLockState === "recovery-alias" &&
+      (!first.activeSharesRecoveryInode || first.activeSharesTombstoneInode))
+    fail("active lock is not the approved recovery alias");
+  if (expectedActiveLockState === "independent-copy" &&
+      (first.activeSharesTombstoneInode || first.activeSharesRecoveryInode))
+    fail("active lock is not the approved independent copy");
+  const exactLinkCounts = expectedActiveLockState === "absent"
+    ? first.tombstoneLinkCount === 1 && first.recoveryLinkCount === 1
+    : expectedActiveLockState === "tombstone-alias"
+      ? first.tombstoneLinkCount === 2 && first.recoveryLinkCount === 1 &&
+        first.activeLockLinkCount === 2 && first.activeLockMode === 0o600
+      : expectedActiveLockState === "recovery-alias"
+        ? first.tombstoneLinkCount === 1 && first.recoveryLinkCount === 2 &&
+          first.activeLockLinkCount === 2 && first.activeLockMode === 0o400
+        : first.tombstoneLinkCount === 1 && first.recoveryLinkCount === 1 &&
+          first.activeLockLinkCount === 1 && first.activeLockMode === 0o600;
+  if (!exactLinkCounts)
+    fail("retained lock evidence has unapproved additional aliases");
+
+  const auditRoot = await openPinnedDirectory(root, "operations store during audit");
+  let checkpointSha256;
+  let outcome;
+  let audit;
+  let closingCollected;
+  try {
+    if (!sameIntegralMetadata(firstCollected.snapshot.root, auditRoot.metadata))
+      fail("operations store changed before retained evidence audit");
+    const checkpoint = await readCanonicalCheckpointSnapshot(
+      join(auditRoot.anchoredPath, HEAD), "retained evidence checkpoint",
+    );
+    checkpointSha256 = checkpoint.sha256;
+    outcome = checkpointSha256 === expectedStartingCheckpointSha256
+      ? "not-committed"
+      : checkpointSha256 === expectedCompletedCheckpointSha256 ? "committed" : null;
+    if (!outcome) fail("checkpoint matches neither externally approved outcome");
+    const historySnapshots = [];
+    if (checkpoint.value?.schemaVersion === 4) {
+      validateCheckpoint(checkpoint.value);
+      audit = await auditOperationsStoreAtCheckpoint(
+        auditRoot.anchoredPath, checkpoint.value, true, historySnapshots,
+      );
+    } else if (checkpoint.value?.schemaVersion === 3) {
+      audit = await auditRotationChain(
+        auditRoot.anchoredPath, validateV3Checkpoint(checkpoint.value), true,
+        historySnapshots,
+      );
+    } else fail("reconciliation checkpoint schema is unsupported");
+    await revalidateHistorySnapshots(historySnapshots);
+    const closingCheckpoint = await readCanonicalCheckpointSnapshot(
+      join(auditRoot.anchoredPath, HEAD), "retained evidence checkpoint after audit",
+    );
+    if (closingCheckpoint.sha256 !== checkpointSha256 ||
+        !checkpoint.bytes.equals(closingCheckpoint.bytes) ||
+        !sameIntegralMetadata(checkpoint.metadata, closingCheckpoint.metadata))
+      fail("checkpoint changed during retained evidence audit");
+    await requirePinnedDirectory(auditRoot, "operations store during audit");
+    closingCollected = await collectRetainedOperationsLockEvidence({
+      root, cleanupDirectory, retainedName,
+    });
+  } finally {
+    await auditRoot.handle.close();
+  }
+  const closing = closingCollected.publicEvidence;
+  if (canonicalJson(closing) !== canonicalJson(first) ||
+      !sameEvidenceSnapshots(firstCollected.snapshot, closingCollected.snapshot))
+    fail("checkpoint or retained lock evidence changed during reconciliation");
+  return {
+    schemaVersion: 1,
+    kind: "operations-lock-retained-evidence-reconciliation-receipt",
+    cleanupDirectory,
+    retainedName,
+    recoveryName: first.recoveryName,
+    operation: first.lock.operation,
+    lockSha256: first.lockSha256,
+    startingCheckpointSha256: expectedStartingCheckpointSha256,
+    observedCheckpointSha256: checkpointSha256,
+    completedCheckpointSha256: expectedCompletedCheckpointSha256,
+    activeLockState: expectedActiveLockState,
+    outcome,
+    audit,
+    filesRemoved: false,
+    retryAuthorized: false,
+  };
+}
+
 export async function reconcileOperationsLock({
   root,
   expectedLockSha256,
@@ -1759,6 +2197,76 @@ function parse(args, names) {
   }
   if (names.some((name) => !values[name])) fail("argument is missing");
   return values;
+}
+
+async function reserveOutputOutsideOperationsStore(root, output) {
+  if (process.platform !== "linux")
+    fail("safe reconciliation output requires descriptor-relative filesystem access");
+  const store = await realpath(root);
+  const resolvedOutput = resolve(output);
+  const parentPath = await realpath(dirname(resolvedOutput));
+  const outputPath = join(parentPath, basename(resolvedOutput));
+  const storeToOutput = relative(store, outputPath);
+  const outputToStore = relative(outputPath, store);
+  const nested = (value) => value === "" ||
+    (value.split(sep)[0] !== ".." && !isAbsolute(value));
+  if (nested(storeToOutput) || nested(outputToStore))
+    fail("reconciliation output must be outside the operations store and evidence tree");
+  const storeDirectory = await openPinnedDirectory(store, "output-separation operations store");
+  let parentDirectory;
+  let handle;
+  try {
+    parentDirectory = await openPinnedDirectory(parentPath, "reconciliation output parent");
+    const anchoredOutput = join(parentDirectory.anchoredPath, basename(resolvedOutput));
+    handle = await open(
+      anchoredOutput,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW,
+      0o444,
+    );
+    await handle.sync();
+    await parentDirectory.handle.sync();
+    await requirePinnedDirectory(storeDirectory, "output-separation operations store");
+    const parentAfter = await parentDirectory.handle.stat({ bigint: true });
+    const parentLinked = await lstat(parentDirectory.path, { bigint: true });
+    if (!parentAfter.isDirectory() || !parentLinked.isDirectory() ||
+        parentLinked.isSymbolicLink() || !sameIntegralMetadata(parentAfter, parentLinked) ||
+        !["dev", "ino", "mode", "uid", "gid", "nlink"]
+          .every((name) => parentDirectory.metadata[name] === parentAfter[name]))
+      fail("reconciliation output parent changed during name reservation");
+    parentDirectory.metadata = parentAfter;
+    return { handle, parentDirectory, storeDirectory, anchoredOutput };
+  } catch (error) {
+    await handle?.close();
+    await parentDirectory?.handle.close();
+    await storeDirectory.handle.close();
+    throw error;
+  }
+}
+
+async function writeReservedReconciliationOutput(reservation, value) {
+  const bytes = Buffer.from(`${canonicalJson(value)}\n`, "utf8");
+  await reservation.handle.writeFile(bytes);
+  await reservation.handle.sync();
+  const opened = await reservation.handle.stat({ bigint: true });
+  const linked = await lstat(reservation.anchoredOutput, { bigint: true });
+  if (!opened.isFile() || opened.nlink !== 1n || (opened.mode & 0o777n) !== 0o444n ||
+      opened.size !== BigInt(bytes.length) || !sameIntegralMetadata(opened, linked) ||
+      linked.isSymbolicLink() ||
+      (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid())))
+    fail("reserved reconciliation output changed while it was being published");
+  await requirePinnedDirectory(
+    reservation.parentDirectory, "reconciliation output parent",
+  );
+  await requirePinnedDirectory(
+    reservation.storeDirectory, "output-separation operations store",
+  );
+  await reservation.parentDirectory.handle.sync();
+}
+
+async function closeReservedReconciliationOutput(reservation) {
+  await reservation.handle.close();
+  await reservation.parentDirectory.handle.close();
+  await reservation.storeDirectory.handle.close();
 }
 
 async function main() {
@@ -1878,19 +2386,70 @@ async function main() {
       "--expected-starting-checkpoint-sha256",
       "--expected-completed-checkpoint-sha256", "--output",
     ]);
-    const receipt = await reconcileOperationsLock({
-      root: v["--store"],
-      expectedLockSha256: v["--expected-lock-sha256"],
-      expectedStartingCheckpointSha256:
-        v["--expected-starting-checkpoint-sha256"],
-      expectedCompletedCheckpointSha256:
-        v["--expected-completed-checkpoint-sha256"],
-    });
-    await writeNewJson(v["--output"], receipt, 0o444);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let receipt;
+    try {
+      receipt = await reconcileOperationsLock({
+        root: v["--store"],
+        expectedLockSha256: v["--expected-lock-sha256"],
+        expectedStartingCheckpointSha256:
+          v["--expected-starting-checkpoint-sha256"],
+        expectedCompletedCheckpointSha256:
+          v["--expected-completed-checkpoint-sha256"],
+      });
+      await writeReservedReconciliationOutput(reservation, receipt);
+    } finally {
+      await closeReservedReconciliationOutput(reservation);
+    }
     console.log(canonicalJson({
       reconciliationReceiptSha256: canonicalSha256(receipt),
       outcome: receipt.outcome,
       lockRemoved: false,
+    }));
+    return;
+  }
+  if (command === "inspect-lock-evidence") {
+    const v = parse(args, ["--store", "--cleanup-directory", "--retained-name"]);
+    console.log(canonicalJson(await inspectRetainedOperationsLockEvidence({
+      root: v["--store"],
+      cleanupDirectory: v["--cleanup-directory"],
+      retainedName: v["--retained-name"],
+    })));
+    return;
+  }
+  if (command === "reconcile-lock-evidence") {
+    const v = parse(args, [
+      "--store", "--cleanup-directory", "--retained-name",
+      "--expected-lock-sha256", "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--expected-active-lock-state",
+      "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let receipt;
+    try {
+      receipt = await reconcileRetainedOperationsLockEvidence({
+        root: v["--store"],
+        cleanupDirectory: v["--cleanup-directory"],
+        retainedName: v["--retained-name"],
+        expectedLockSha256: v["--expected-lock-sha256"],
+        expectedStartingCheckpointSha256: v["--expected-starting-checkpoint-sha256"],
+        expectedCompletedCheckpointSha256: v["--expected-completed-checkpoint-sha256"],
+        expectedActiveLockState: v["--expected-active-lock-state"],
+        expectedStoreMetadata: reservation.storeDirectory.metadata,
+      });
+      await writeReservedReconciliationOutput(reservation, receipt);
+    } finally {
+      await closeReservedReconciliationOutput(reservation);
+    }
+    console.log(canonicalJson({
+      reconciliationReceiptSha256: canonicalSha256(receipt),
+      outcome: receipt.outcome,
+      filesRemoved: false,
+      retryAuthorized: false,
     }));
     return;
   }
@@ -1947,7 +2506,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, reconcile-lock, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)

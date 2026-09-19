@@ -19,10 +19,12 @@ import {
   initializeOperationsStore,
   inspectPendingRotation,
   inspectOperationsStore,
+  inspectRetainedOperationsLockEvidence,
   migrateOperationsStoreV3ToV4,
   prepareOperationsRotation,
   prepareOperationsAnchorStatement,
   reconcileOperationsLock,
+  reconcileRetainedOperationsLockEvidence,
   signOperationsAnchorStatement,
   verifyOperationsAnchorEvidence,
   verifyOperationsStoreV3ToV4Migration,
@@ -467,6 +469,165 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     const anchorLog = await externalAnchorLog(store, value.authority.privateKey, 1, 1);
     return { store, manifestHash, anchorLog };
   }
+
+  await context.test("retained evidence is inspected and reconciled without cleanup", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("retained-lock-evidence");
+    const starting = JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8"));
+    const existing = new Set(await readdir(store));
+    await beginTransportRequest(
+      store, manifestHash, "genesis", "1".repeat(64), anchorLog,
+    );
+    const completed = JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8"));
+    const cleanupDirectory = (await readdir(store)).find(name =>
+      name.startsWith(".operations.lock.cleanup.") && !existing.has(name));
+    assert.ok(cleanupDirectory);
+    const retainedName = (await readdir(join(store, cleanupDirectory))).find(name =>
+      /^retained-[0-9a-f]{64}$/.test(name));
+    assert.ok(retainedName);
+
+    const inspection = await inspectRetainedOperationsLockEvidence({
+      root: store, cleanupDirectory, retainedName,
+    });
+    assert.equal(inspection.kind, "operations-lock-retained-evidence-inspection");
+    assert.equal(inspection.lock.operation, "begin-request");
+    assert.equal(inspection.recoveryMatchesTombstone, true);
+    assert.equal(inspection.activeLockSha256, null);
+    assert.equal(inspection.filesRemoved, false);
+
+    const approved = {
+      root: store,
+      cleanupDirectory,
+      retainedName,
+      expectedLockSha256: inspection.lockSha256,
+      expectedStartingCheckpointSha256: canonicalSha256(starting),
+      expectedCompletedCheckpointSha256: canonicalSha256(completed),
+      expectedActiveLockState: "absent",
+    };
+    const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+    const cliArguments = (output) => [
+      cli, "reconcile-lock-evidence",
+      "--store", store,
+      "--cleanup-directory", cleanupDirectory,
+      "--retained-name", retainedName,
+      "--expected-lock-sha256", approved.expectedLockSha256,
+      "--expected-starting-checkpoint-sha256", approved.expectedStartingCheckpointSha256,
+      "--expected-completed-checkpoint-sha256", approved.expectedCompletedCheckpointSha256,
+      "--expected-active-lock-state", "absent",
+      "--output", output,
+    ];
+    await assert.rejects(
+      execute(process.execPath, cliArguments(join(store, ".operations.lock"))),
+      /output must be outside the operations store and evidence tree/,
+    );
+    await assert.rejects(
+      execute(process.execPath, cliArguments(join(store, cleanupDirectory, retainedName))),
+      /output must be outside the operations store and evidence tree/,
+    );
+    assert.equal((await inspectOperationsStore(store)).lockPresent, false);
+    await assert.rejects(
+      reconcileRetainedOperationsLockEvidence({
+        ...approved, expectedLockSha256: "f".repeat(64),
+      }),
+      /does not match the externally approved hash/,
+    );
+    await assert.rejects(
+      reconcileRetainedOperationsLockEvidence({
+        ...approved, expectedCompletedCheckpointSha256: "e".repeat(64),
+      }),
+      /checkpoint matches neither externally approved outcome/,
+    );
+    const receipt = await reconcileRetainedOperationsLockEvidence(approved);
+    assert.equal(receipt.outcome, "committed");
+    assert.equal(receipt.filesRemoved, false);
+    assert.equal(receipt.retryAuthorized, false);
+    assert.equal(await readFile(
+      join(store, cleanupDirectory, retainedName), "utf8",
+    ), `${canonicalJson(inspection.lock)}\n`);
+    assert.equal(await readFile(
+      join(store, inspection.recoveryName), "utf8",
+    ), `${canonicalJson(inspection.lock)}\n`);
+
+    await link(join(store, cleanupDirectory, retainedName), join(store, ".operations.lock"));
+    await assert.rejects(
+      reconcileRetainedOperationsLockEvidence(approved),
+      /active lock state differs from the externally approved absent state/,
+    );
+    const aliasedReceipt = await reconcileRetainedOperationsLockEvidence({
+      ...approved, expectedActiveLockState: "tombstone-alias",
+    });
+    assert.equal(aliasedReceipt.activeLockState, "tombstone-alias");
+    assert.equal((await lstat(join(store, ".operations.lock"))).nlink, 2);
+
+    await unlink(join(store, ".operations.lock"));
+    await link(join(store, inspection.recoveryName), join(store, ".operations.lock"));
+    const recoveryAliasReceipt = await reconcileRetainedOperationsLockEvidence({
+      ...approved, expectedActiveLockState: "recovery-alias",
+    });
+    assert.equal(recoveryAliasReceipt.activeLockState, "recovery-alias");
+    await unlink(join(store, ".operations.lock"));
+    await writeFile(join(store, ".operations.lock"), `${canonicalJson(inspection.lock)}\n`, {
+      flag: "wx", mode: 0o600,
+    });
+    const copiedReceipt = await reconcileRetainedOperationsLockEvidence({
+      ...approved, expectedActiveLockState: "independent-copy",
+    });
+    assert.equal(copiedReceipt.activeLockState, "independent-copy");
+
+    await writeFile(join(store, cleanupDirectory, "unapproved"), "preserve me\n", {
+      flag: "wx", mode: 0o600,
+    });
+    await assert.rejects(
+      reconcileRetainedOperationsLockEvidence(approved),
+      /contains unapproved additional evidence/,
+    );
+    assert.equal(await readFile(join(store, cleanupDirectory, "unapproved"), "utf8"),
+      "preserve me\n");
+  });
+
+  await context.test("preexisting recovery must retain exact mode 0400", async () => {
+    const { store, manifestHash } = await activatedStore("recovery-mode");
+    const unavailable = { readLatestHead: async () => { throw new Error("offline"); } };
+    const existing = new Set(await readdir(store));
+    await assert.rejects(
+      beginTransportRequest(store, manifestHash, "genesis", "6".repeat(64), unavailable),
+      /offline/,
+    );
+    const recoveryName = (await readdir(store)).find(name =>
+      name.startsWith(".operations.lock.recovery.") && !existing.has(name));
+    assert.ok(recoveryName);
+    const recoveryPath = join(store, recoveryName);
+    await chmod(recoveryPath, 0o600);
+    await assert.rejects(
+      beginTransportRequest(store, manifestHash, "genesis", "6".repeat(64), unavailable),
+      /existing operations lock recovery evidence does not have the exact recovery file identity/,
+    );
+    assert.equal((await lstat(recoveryPath)).mode & 0o777, 0o600);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, true);
+  });
+
+  await context.test("oversized preexisting recovery is rejected before reading", async () => {
+    const { store, manifestHash } = await activatedStore("recovery-size");
+    const unavailable = { readLatestHead: async () => { throw new Error("offline"); } };
+    const existing = new Set(await readdir(store));
+    await assert.rejects(
+      beginTransportRequest(store, manifestHash, "genesis", "7".repeat(64), unavailable),
+      /offline/,
+    );
+    const recoveryName = (await readdir(store)).find(name =>
+      name.startsWith(".operations.lock.recovery.") && !existing.has(name));
+    assert.ok(recoveryName);
+    const recoveryPath = join(store, recoveryName);
+    await unlink(recoveryPath);
+    await writeFile(recoveryPath, Buffer.alloc(64_001, 0x20), {
+      flag: "wx", mode: 0o400,
+    });
+    await assert.rejects(
+      beginTransportRequest(store, manifestHash, "genesis", "7".repeat(64), unavailable),
+      /existing operations lock recovery evidence does not have the exact recovery file identity/,
+    );
+    assert.equal((await lstat(recoveryPath)).size, 64_001);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, true);
+  });
 
   await context.test("checkpoint substitution during external query is preserved", async () => {
     const { store, manifestHash, anchorLog } = await activatedStore("checkpoint-race");
