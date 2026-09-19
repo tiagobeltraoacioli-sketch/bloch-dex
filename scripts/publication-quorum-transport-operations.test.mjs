@@ -6,6 +6,7 @@ import { lstatSync, renameSync, unlinkSync, watch as watchCallback, writeFileSyn
 import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, symlink, unlink, watch, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { canonicalJson, canonicalSha256, describeKey } from "./live-auth/envelope.mjs";
 import {
@@ -50,6 +51,19 @@ function secureBytesRaceLoaderArguments() {
     return ["--import", registration.href];
   }
   const loader = new URL("./fixtures/secure-bytes-race-loader.mjs", import.meta.url);
+  return ["--experimental-loader", loader.href];
+}
+
+function operationsOutputRaceLoaderArguments() {
+  if (supportsModuleRegister(process.versions.node)) {
+    const registration = new URL(
+      "./fixtures/register-operations-output-race-loader.mjs", import.meta.url,
+    );
+    return ["--import", registration.href];
+  }
+  const loader = new URL(
+    "./fixtures/operations-output-race-loader.mjs", import.meta.url,
+  );
   return ["--experimental-loader", loader.href];
 }
 
@@ -1387,7 +1401,67 @@ test("signed anchor evidence binds the exact audited ready checkpoint", async ()
   };
   await activateOperationsStore(store, authorization, canonicalSha256(authorization));
 
+  const cli = join(
+    process.cwd(), "scripts", "publication-quorum-transport-operations.mjs",
+  );
+  const nestedOutput = join(store, "anchor-statement.json");
+  await assert.rejects(
+    execute(process.execPath, [
+      cli, "prepare-anchor", "--store", store, "--output", nestedOutput,
+    ]),
+    /output must be outside the operations store and evidence tree/,
+  );
+  await assert.rejects(lstat(nestedOutput), { code: "ENOENT" });
+  const symlinkedStore = join(value.root, "anchored-operations-alias");
+  await symlink(store, symlinkedStore);
+  const symlinkedStoreOutput = join(value.root, "symlinked-store-anchor.json");
+  await assert.rejects(execute(process.execPath, [
+    cli, "prepare-anchor", "--store", symlinkedStore,
+    "--output", symlinkedStoreOutput,
+  ]), /store path must not traverse symlinks/);
+  await assert.rejects(lstat(symlinkedStoreOutput), { code: "ENOENT" });
+
+  await chmod(store, 0o750);
+  const unsafeStoreOutput = join(value.root, "unsafe-store-anchor.json");
+  await assert.rejects(execute(process.execPath, [
+    cli, "prepare-anchor", "--store", store, "--output", unsafeStoreOutput,
+  ]), /store identity or permissions are invalid/);
+  await assert.rejects(lstat(unsafeStoreOutput), { code: "ENOENT" });
+  await chmod(store, 0o700);
+
+  const cliOutput = join(value.root, "anchor-statement.json");
+  const openUmaskRunner = new URL(
+    "./fixtures/run-with-open-umask.mjs", import.meta.url,
+  );
+  await execute(process.execPath, [
+    fileURLToPath(openUmaskRunner),
+    "prepare-anchor", "--store", store, "--output", cliOutput,
+  ]);
+  assert.equal((await lstat(cliOutput)).mode & 0o777, 0o444);
+
+  for (const mode of [
+    "before-validation", "after-write", "after-parent-sync",
+  ]) {
+    const racedOutput = join(value.root, `anchor-statement-${mode}.json`);
+    await assert.rejects(execute(process.execPath, [
+      ...operationsOutputRaceLoaderArguments(), cli,
+      "prepare-anchor", "--store", store, "--output", racedOutput,
+    ], {
+      env: {
+        ...process.env,
+        POSTERN_OPERATIONS_OUTPUT_RACE_MODE: mode,
+        POSTERN_OPERATIONS_OUTPUT_RACE_TARGET: racedOutput,
+      },
+      timeout: raceSubprocessTimeoutMs,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024,
+    }), /reserved operations output (?:changed|identity)/);
+    assert.equal((await lstat(racedOutput)).mode & 0o777, 0o444);
+    assert.ok((await readFile(racedOutput)).length > 0);
+  }
+
   const statement = await prepareOperationsAnchorStatement(store);
+  assert.deepEqual(JSON.parse(await readFile(cliOutput, "utf8")), statement);
   const evidence = signOperationsAnchorStatement(statement, value.authority.privateKey, 1);
   assert.deepEqual(await verifyOperationsAnchorEvidence(store, evidence), {
     valid: true,

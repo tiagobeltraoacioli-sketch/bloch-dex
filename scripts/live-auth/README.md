@@ -852,6 +852,25 @@ same-inode rewriting, pathname replacement, symlinks and hardlinks therefore
 fail closed before an artifact can influence a plan or receipt; a raced file is
 left untouched for investigation.
 
+`prepare-anchor` applies the same output separation rule as reconciliation:
+on Linux it pins the operations store and the output parent, requires the
+create-once output to be outside the entire store tree, and reserves that name
+before auditing any checkpoint or history record. The configured store path
+must be canonical (not a symlink alias), and the pinned store must retain exact
+mode `0700`. The audit itself addresses
+the store through that pinned descriptor. The statement is published only
+through an `O_RDWR` reserved descriptor after the store identity, output parent
+and still-empty output are revalidated. Mode `0444` is set explicitly, and the
+complete published bytes are read back and matched across descriptor/path
+snapshots both before and after the output-parent directory sync. Normal lock
+bookkeeping may change store
+membership, but replacement of the pinned store is rejected. An occupied name,
+directory substitution, output rewrite, or attempt to place the statement in
+the store therefore fails closed. An audit failure leaves an empty reservation;
+any publication failure may leave a non-authoritative artifact. In either case
+the reserved path must be preserved and investigated, and its bytes must not be
+consumed unless the command reported success.
+
 ### Pinned mTLS profile rotation
 
 Generate the replacement preflight manifest first and approve its digest over

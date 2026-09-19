@@ -58,6 +58,7 @@ const TRANSPORT_PATH = /^\/[A-Za-z0-9/_-]{1,127}$/;
 const LOCK_OPERATION = /^[a-z][a-z0-9-]{0,62}$/;
 const LOCK_CLEANUP_DIRECTORY = /^\.operations\.lock\.cleanup\.[1-9][0-9]*\.[0-9a-f]{32}$/;
 const LOCK_RETAINED_NAME = /^retained-[0-9a-f]{64}$/;
+const DESCRIPTOR_RELATIVE_PATH = /^\/proc\/self\/fd\/[1-9][0-9]*(?:\/.*)?$/;
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 function fail(message) {
@@ -391,7 +392,8 @@ async function requireDirectory(root) {
   if (!metadata?.isDirectory() || metadata.isSymbolicLink()) fail("operations store must be a real directory");
   if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) fail("operations store must be owned by the current user");
   if ((metadata.mode & 0o077) !== 0) fail("operations store permissions are unsafe");
-  if ((await realpath(root)) !== resolve(root)) fail("operations store path must not traverse symlinks");
+  if ((await realpath(root)) !== resolve(root) && !DESCRIPTOR_RELATIVE_PATH.test(root))
+    fail("operations store path must not traverse symlinks");
 }
 
 async function secureJson(path, field) {
@@ -411,7 +413,9 @@ async function securePublicJson(path, field) {
 }
 
 async function syncDirectory(path) {
-  const handle = await open(path, constants.O_RDONLY | NOFOLLOW);
+  const openedPath = /^\/proc\/self\/fd\/[1-9][0-9]*$/.test(path)
+    ? `${path}/.` : path;
+  const handle = await open(openedPath, constants.O_RDONLY | NOFOLLOW);
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
@@ -762,8 +766,13 @@ async function releaseLock(root, lock) {
   }
 }
 
-async function withLock(root, operationName, operation) {
-  await requireDirectory(root);
+async function withLock(
+  root,
+  operationName,
+  operation,
+  { directoryAlreadyPinned = false } = {},
+) {
+  if (!directoryAlreadyPinned) await requireDirectory(root);
   const lock = await acquireLock(root, operationName);
   let preserve = false;
   try {
@@ -1346,7 +1355,10 @@ export async function auditOperationsStore(root) {
   return auditOperationsStoreAtCheckpoint(root, checkpoint);
 }
 
-export async function prepareOperationsAnchorStatement(root) {
+async function prepareOperationsAnchorStatementAtRoot(
+  root,
+  directoryAlreadyPinned = false,
+) {
   return withLock(root, "prepare-anchor", async () => {
     const checkpoint = validateCheckpoint(await secureJson(
       join(root, HEAD),
@@ -1355,7 +1367,11 @@ export async function prepareOperationsAnchorStatement(root) {
     const chain = await auditRotationChain(root, checkpoint);
     await auditAnchorAcceptanceChain(root, checkpoint);
     return anchorStatement(checkpoint, chain);
-  });
+  }, { directoryAlreadyPinned });
+}
+
+export async function prepareOperationsAnchorStatement(root) {
+  return prepareOperationsAnchorStatementAtRoot(root);
 }
 
 export function signOperationsAnchorStatement(statementInput, privateKey, keyGeneration) {
@@ -1888,6 +1904,18 @@ async function requirePinnedDirectory(directory, field) {
     fail(`${field} changed while retained evidence was being inspected`);
 }
 
+async function requirePinnedDirectoryIdentity(directory, field) {
+  const opened = await directory.handle.stat({ bigint: true });
+  const linked = await lstat(directory.path, { bigint: true });
+  // Directory link count can legitimately change when lock cleanup retains a
+  // private subdirectory. Device/inode and access identity must not.
+  const identity = ["dev", "ino", "mode", "uid", "gid"];
+  if (!opened.isDirectory() || !linked.isDirectory() || linked.isSymbolicLink() ||
+      !sameIntegralMetadata(opened, linked) ||
+      !identity.every((name) => directory.metadata[name] === opened[name]))
+    fail(`${field} identity changed while the output was being prepared`);
+}
+
 async function readCleanupDirectory(rootDirectory, cleanupDirectory) {
   const directory = await openPinnedDirectory(
     join(rootDirectory.anchoredPath, cleanupDirectory), "cleanup directory", 0o700,
@@ -2295,7 +2323,10 @@ function parse(args, names) {
 async function reserveOutputOutsideOperationsStore(root, output) {
   if (process.platform !== "linux")
     fail("safe reconciliation output requires descriptor-relative filesystem access");
+  const resolvedRoot = resolve(root);
   const store = await realpath(root);
+  if (store !== resolvedRoot)
+    fail("operations store path must not traverse symlinks");
   const resolvedOutput = resolve(output);
   const parentPath = await realpath(dirname(resolvedOutput));
   const outputPath = join(parentPath, basename(resolvedOutput));
@@ -2305,7 +2336,9 @@ async function reserveOutputOutsideOperationsStore(root, output) {
     (value.split(sep)[0] !== ".." && !isAbsolute(value));
   if (nested(storeToOutput) || nested(outputToStore))
     fail("reconciliation output must be outside the operations store and evidence tree");
-  const storeDirectory = await openPinnedDirectory(store, "output-separation operations store");
+  const storeDirectory = await openPinnedDirectory(
+    store, "output-separation operations store", 0o700,
+  );
   let parentDirectory;
   let handle;
   try {
@@ -2313,9 +2346,10 @@ async function reserveOutputOutsideOperationsStore(root, output) {
     const anchoredOutput = join(parentDirectory.anchoredPath, basename(resolvedOutput));
     handle = await open(
       anchoredOutput,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW,
-      0o444,
+      constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | NOFOLLOW,
+      0o600,
     );
+    await handle.chmod(0o444);
     await handle.sync();
     await parentDirectory.handle.sync();
     await requirePinnedDirectory(storeDirectory, "output-separation operations store");
@@ -2327,7 +2361,18 @@ async function reserveOutputOutsideOperationsStore(root, output) {
           .every((name) => parentDirectory.metadata[name] === parentAfter[name]))
       fail("reconciliation output parent changed during name reservation");
     parentDirectory.metadata = parentAfter;
-    return { handle, parentDirectory, storeDirectory, anchoredOutput };
+    const outputMetadata = await handle.stat({ bigint: true });
+    const outputLinked = await lstat(anchoredOutput, { bigint: true });
+    if (!outputMetadata.isFile() || outputMetadata.nlink !== 1n ||
+        (outputMetadata.mode & 0o777n) !== 0o444n || outputMetadata.size !== 0n ||
+        !sameIntegralMetadata(outputMetadata, outputLinked) ||
+        outputLinked.isSymbolicLink() ||
+        (typeof process.getuid === "function" &&
+          outputMetadata.uid !== BigInt(process.getuid())))
+      fail("reserved operations output identity is unsafe");
+    return {
+      handle, parentDirectory, storeDirectory, anchoredOutput, outputMetadata,
+    };
   } catch (error) {
     await handle?.close();
     await parentDirectory?.handle.close();
@@ -2336,27 +2381,94 @@ async function reserveOutputOutsideOperationsStore(root, output) {
   }
 }
 
-async function writeReservedReconciliationOutput(reservation, value) {
+async function writeReservedOperationsOutput(
+  reservation,
+  value,
+  { storeMayHaveChanged = false } = {},
+) {
   const bytes = Buffer.from(`${canonicalJson(value)}\n`, "utf8");
+  await requirePinnedDirectory(
+    reservation.parentDirectory, "operations output parent before publication",
+  );
+  if (storeMayHaveChanged) {
+    await requirePinnedDirectoryIdentity(
+      reservation.storeDirectory,
+      "output-separation operations store before publication",
+    );
+  } else {
+    await requirePinnedDirectory(
+      reservation.storeDirectory,
+      "output-separation operations store before publication",
+    );
+  }
+  const reservedOpened = await reservation.handle.stat({ bigint: true });
+  const reservedLinked = await lstat(reservation.anchoredOutput, { bigint: true });
+  if (!sameIntegralMetadata(reservation.outputMetadata, reservedOpened) ||
+      !sameIntegralMetadata(reservedOpened, reservedLinked) ||
+      !reservedOpened.isFile() || reservedLinked.isSymbolicLink() ||
+      reservedOpened.size !== 0n || reservedOpened.nlink !== 1n ||
+      (reservedOpened.mode & 0o777n) !== 0o444n)
+    fail("reserved operations output changed before publication");
   await reservation.handle.writeFile(bytes);
   await reservation.handle.sync();
+  await requireExactReservedOutput(
+    reservation, bytes, "reserved operations output changed while it was being published",
+  );
+  await requirePinnedDirectory(
+    reservation.parentDirectory, "operations output parent",
+  );
+  if (storeMayHaveChanged) {
+    await requirePinnedDirectoryIdentity(
+      reservation.storeDirectory, "output-separation operations store",
+    );
+  } else {
+    await requirePinnedDirectory(
+      reservation.storeDirectory, "output-separation operations store",
+    );
+  }
+  await reservation.parentDirectory.handle.sync();
+  await requireExactReservedOutput(
+    reservation, bytes,
+    "reserved operations output changed after parent synchronization",
+  );
+  await requirePinnedDirectory(
+    reservation.parentDirectory, "operations output parent after synchronization",
+  );
+  if (storeMayHaveChanged) {
+    await requirePinnedDirectoryIdentity(
+      reservation.storeDirectory,
+      "output-separation operations store after synchronization",
+    );
+  } else {
+    await requirePinnedDirectory(
+      reservation.storeDirectory,
+      "output-separation operations store after synchronization",
+    );
+  }
+}
+
+async function requireExactReservedOutput(reservation, bytes, message) {
   const opened = await reservation.handle.stat({ bigint: true });
+  const observed = Buffer.alloc(bytes.length + 1);
+  let observedLength = 0;
+  while (observedLength < observed.length) {
+    const { bytesRead } = await reservation.handle.read(
+      observed, observedLength, observed.length - observedLength, observedLength,
+    );
+    if (bytesRead === 0) break;
+    observedLength += bytesRead;
+  }
+  const afterRead = await reservation.handle.stat({ bigint: true });
   const linked = await lstat(reservation.anchoredOutput, { bigint: true });
   if (!opened.isFile() || opened.nlink !== 1n || (opened.mode & 0o777n) !== 0o444n ||
       opened.size !== BigInt(bytes.length) || !sameIntegralMetadata(opened, linked) ||
-      linked.isSymbolicLink() ||
+      !sameIntegralMetadata(opened, afterRead) || linked.isSymbolicLink() ||
+      observedLength !== bytes.length || !observed.subarray(0, observedLength).equals(bytes) ||
       (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid())))
-    fail("reserved reconciliation output changed while it was being published");
-  await requirePinnedDirectory(
-    reservation.parentDirectory, "reconciliation output parent",
-  );
-  await requirePinnedDirectory(
-    reservation.storeDirectory, "output-separation operations store",
-  );
-  await reservation.parentDirectory.handle.sync();
+    fail(message);
 }
 
-async function closeReservedReconciliationOutput(reservation) {
+async function closeReservedOperationsOutput(reservation) {
   await reservation.handle.close();
   await reservation.parentDirectory.handle.close();
   await reservation.storeDirectory.handle.close();
@@ -2492,9 +2604,9 @@ async function main() {
         expectedCompletedCheckpointSha256:
           v["--expected-completed-checkpoint-sha256"],
       });
-      await writeReservedReconciliationOutput(reservation, receipt);
+      await writeReservedOperationsOutput(reservation, receipt);
     } finally {
-      await closeReservedReconciliationOutput(reservation);
+      await closeReservedOperationsOutput(reservation);
     }
     console.log(canonicalJson({
       reconciliationReceiptSha256: canonicalSha256(receipt),
@@ -2534,9 +2646,9 @@ async function main() {
         expectedActiveLockState: v["--expected-active-lock-state"],
         expectedStoreMetadata: reservation.storeDirectory.metadata,
       });
-      await writeReservedReconciliationOutput(reservation, receipt);
+      await writeReservedOperationsOutput(reservation, receipt);
     } finally {
-      await closeReservedReconciliationOutput(reservation);
+      await closeReservedOperationsOutput(reservation);
     }
     console.log(canonicalJson({
       reconciliationReceiptSha256: canonicalSha256(receipt),
@@ -2565,9 +2677,9 @@ async function main() {
           v["--expected-reconciliation-receipt-sha256"],
         expectedStoreMetadata: reservation.storeDirectory.metadata,
       });
-      await writeReservedReconciliationOutput(reservation, plan);
+      await writeReservedOperationsOutput(reservation, plan);
     } finally {
-      await closeReservedReconciliationOutput(reservation);
+      await closeReservedOperationsOutput(reservation);
     }
     console.log(canonicalJson({
       cleanupPlanSha256: canonicalSha256(plan),
@@ -2588,8 +2700,21 @@ async function main() {
   }
   if (command === "prepare-anchor") {
     const v = parse(args, ["--store", "--output"]);
-    const statement = await prepareOperationsAnchorStatement(v["--store"]);
-    await writeNewJson(v["--output"], statement, 0o444);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let statement;
+    try {
+      statement = await prepareOperationsAnchorStatementAtRoot(
+        reservation.storeDirectory.anchoredPath,
+        true,
+      );
+      await writeReservedOperationsOutput(reservation, statement, {
+        storeMayHaveChanged: true,
+      });
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
     console.log(canonicalJson({
       streamId: statement.streamId,
       checkpointSha256: statement.checkpointSha256,
