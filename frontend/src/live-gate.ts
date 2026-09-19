@@ -1,19 +1,25 @@
 import { LiveReaderFactory, type LiveRuntimeOptions } from './live-runtime';
+import { importLiveReadTrustAnchor, LIVE_GATE_DOMAIN, verifySignedJson } from './live-auth';
 
 const CONFIG_ID = 'postern-live-read-config';
 const MAX_CONFIG_BYTES = 4_096;
 const MAX_RPC_ORIGINS = 8;
+const MAX_VALIDITY_SECONDS = 7 * 24 * 60 * 60;
+const MAX_CLOCK_SKEW_SECONDS = 5 * 60;
 const ALLOWED_KEYS = new Set([
   'schemaVersion',
   'enabled',
   'mode',
   'registryUrl',
+  'manifestSha256',
+  'issuedAt',
+  'expiresAt',
   'allowedRpcOrigins',
   'timeoutMs',
 ]);
 
 export type LiveReadGate =
-  | { available: false; reason: 'missing' | 'invalid' }
+  | { available: false; reason: 'loading' | 'missing' | 'invalid' | 'untrusted' }
   | { available: true; factory: LiveReaderFactory };
 
 function exactHttpsOrigin(value: unknown): value is string {
@@ -27,10 +33,12 @@ function exactHttpsOrigin(value: unknown): value is string {
 }
 
 /** Reads one host-injected, non-executable gate. No deployment value is bundled. */
-export function readLiveReadGate(
+export async function readLiveReadGate(
   documentValue: Document = document,
   pageOrigin: string = location.origin,
-): LiveReadGate {
+  encodedPublicKey: unknown = import.meta.env.VITE_POSTERN_LIVE_READ_PUBLIC_KEY,
+  nowSeconds: number = Math.floor(Date.now() / 1_000),
+): Promise<LiveReadGate> {
   const element = documentValue.getElementById(CONFIG_ID);
   if (!element) return { available: false, reason: 'missing' };
   if (
@@ -44,7 +52,15 @@ export function readLiveReadGate(
   }
 
   try {
-    const value: unknown = JSON.parse(element.textContent);
+    const envelope: unknown = JSON.parse(element.textContent);
+    let value: unknown;
+    let trustAnchor;
+    try {
+      trustAnchor = await importLiveReadTrustAnchor(encodedPublicKey);
+      value = await verifySignedJson(envelope, trustAnchor, LIVE_GATE_DOMAIN);
+    } catch {
+      return { available: false, reason: 'untrusted' };
+    }
     if (!value || typeof value !== 'object' || Array.isArray(value))
       return { available: false, reason: 'invalid' };
     const config = value as Record<string, unknown>;
@@ -54,6 +70,14 @@ export function readLiveReadGate(
       config.enabled !== true ||
       config.mode !== 'read-only' ||
       typeof config.registryUrl !== 'string' ||
+      typeof config.manifestSha256 !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(config.manifestSha256) ||
+      !Number.isSafeInteger(config.issuedAt) ||
+      !Number.isSafeInteger(config.expiresAt) ||
+      Number(config.issuedAt) > nowSeconds + MAX_CLOCK_SKEW_SECONDS ||
+      Number(config.expiresAt) <= nowSeconds ||
+      Number(config.expiresAt) <= Number(config.issuedAt) ||
+      Number(config.expiresAt) - Number(config.issuedAt) > MAX_VALIDITY_SECONDS ||
       !Array.isArray(config.allowedRpcOrigins) ||
       config.allowedRpcOrigins.length === 0 ||
       config.allowedRpcOrigins.length > MAX_RPC_ORIGINS ||
@@ -83,6 +107,9 @@ export function readLiveReadGate(
       registryUrl: registry.pathname,
       pageOrigin,
       allowedRpcOrigins: [...config.allowedRpcOrigins],
+      trustAnchor,
+      manifestSha256: config.manifestSha256,
+      expiresAt: Number(config.expiresAt),
       ...(config.timeoutMs === undefined ? {} : { timeoutMs: Number(config.timeoutMs) }),
     };
     return { available: true, factory: new LiveReaderFactory(options) };

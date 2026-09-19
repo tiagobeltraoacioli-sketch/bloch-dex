@@ -1,5 +1,11 @@
 import type { Provider } from './wallet';
 import { LiveReadAdapter, parseDeploymentRegistry, type DeploymentRegistry } from './live-read';
+import {
+  liveReadPayloadSha256,
+  LIVE_MANIFEST_DOMAIN,
+  verifySignedJson,
+  type LiveReadTrustAnchor,
+} from './live-auth';
 
 const READ_METHODS = new Set([
   'eth_chainId',
@@ -21,6 +27,9 @@ export type LiveRuntimeOptions = {
   registryUrl: string;
   pageOrigin: string;
   allowedRpcOrigins: readonly string[];
+  trustAnchor: LiveReadTrustAnchor;
+  manifestSha256: string;
+  expiresAt: number;
   timeoutMs?: number;
   fetchFn?: RuntimeFetch;
 };
@@ -254,6 +263,10 @@ export async function loadDeploymentRegistry(
   options: LiveRuntimeOptions,
   signal?: AbortSignal,
 ): Promise<DeploymentRegistry> {
+  ensure(
+    Number.isSafeInteger(options.expiresAt) && options.expiresAt > Math.floor(Date.now() / 1_000),
+    'signed gate has expired',
+  );
   let page: URL;
   let registryUrl: URL;
   try {
@@ -290,7 +303,13 @@ export async function loadDeploymentRegistry(
     ensure(response.ok, 'registry request failed');
     const type = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
     ensure(type === 'application/json', 'registry response type is invalid');
-    const parsed: unknown = JSON.parse(await readBounded(response, MAX_MANIFEST_BYTES));
+    const envelope: unknown = JSON.parse(await readBounded(response, MAX_MANIFEST_BYTES));
+    const parsed = await verifySignedJson(envelope, options.trustAnchor, LIVE_MANIFEST_DOMAIN);
+    ensure(
+      SHA256.test(options.manifestSha256) &&
+        (await liveReadPayloadSha256(LIVE_MANIFEST_DOMAIN, parsed)) === options.manifestSha256,
+      'signed manifest does not match the gate pin',
+    );
     ensure(
       parsed && typeof parsed === 'object' && !Array.isArray(parsed),
       'artifact manifest is invalid',

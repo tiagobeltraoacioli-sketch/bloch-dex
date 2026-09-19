@@ -233,18 +233,38 @@ session, rejects late sessions after a refresh, and fails closed without fixture
 substitution.
 
 `src/live-gate.ts` requires the host to inject a non-executable
-`script#postern-live-read-config[type="application/json"]`. Its bounded schema
-requires version 1, `enabled: true`, `mode: "read-only"`, a same-origin manifest
-path and one to eight unique HTTPS RPC origins; the optional timeout is also
-bounded. Unknown capabilities, insecure/cross-origin URLs, queries, fragments
-and malformed or oversized input disable the gate. A valid gate adds a link to
-the isolated read-only route. Missing or invalid configuration leaves the
-preview unchanged, while directly visiting that route produces an explicit
-unavailable state rather than falling back to sample pools. The live route has
-no wallet, swap, approval or liquidity controls.
+`script#postern-live-read-config[type="application/json"]`. The element must be a
+signed envelope whose payload schema requires version 1, `enabled: true`,
+`mode: "read-only"`, a same-origin manifest path and one to eight unique HTTPS
+RPC origins. It also pins the domain-separated canonical SHA-256 of the exact
+signed manifest payload and carries a signed issuance/expiry window of at most
+seven days; the optional timeout is bounded. Unknown capabilities,
+insecure/cross-origin URLs, queries, fragments and malformed or oversized input
+disable the gate. A valid gate adds a link to the isolated read-only route.
+Missing, invalid or unauthenticated configuration leaves the preview unchanged,
+while directly visiting that route produces an explicit unavailable state
+rather than falling back to sample pools. The live route has no wallet, swap,
+approval or liquidity controls.
 
-The repository still contains neither the host element nor deployment values.
-Supplying and operationally reviewing the manifest and RPC allowlist, including
-browser CORS and real-RPC behavior, is the next integration gate. Same-origin
-delivery and a digest stored beside the configuration detect accidental mismatch
-but are not an independent signature or trust anchor.
+`src/live-auth.ts` authenticates both the gate payload and artifact manifest with
+Ed25519 WebCrypto signatures over bounded canonical JSON. Separate domain tags
+prevent a signature for either object from being replayed as the other. The raw
+public key must be supplied as unpadded base64url at reviewed frontend build time
+through `VITE_POSTERN_LIVE_READ_PUBLIC_KEY`; its SHA-256 is the envelope key ID.
+The key is an explicit trust pin embedded in that build, not another value read
+from the host configuration. A missing/malformed pin, unsupported Ed25519,
+incorrect key ID, altered payload, unknown envelope field or bad signature fails
+closed before registry or RPC use. A different validly signed manifest is also
+rejected unless its digest matches the signed gate, preventing the host from
+substituting another release authorized by the same key. Key rotation therefore
+requires a reviewed frontend rebuild. Gate expiry is checked again before every
+manifest fetch, limiting replay of an older signed gate and manifest pair.
+
+The repository contains no public-key pin, private key, signed host element or
+deployment values. The staging build currently emits the unsigned artifact
+payload; an external controlled signing step must wrap it before this runtime
+will accept it. Defining that release custody/rotation procedure, supplying its
+reviewed public-key pin and signing the gate and manifest are the next deployment
+gate. Browser Ed25519 support, CORS and real-RPC behavior also require operational
+validation. The private signing key must remain outside the frontend, artifact
+and repository.

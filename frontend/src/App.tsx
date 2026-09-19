@@ -446,15 +446,24 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
   );
 }
 
-function LiveReadUnavailable({ invalid }: { invalid: boolean }) {
+function LiveReadUnavailable({
+  reason,
+}: {
+  reason: Exclude<LiveReadGate, { available: true }>['reason'];
+}) {
+  const loading = reason === 'loading';
   return (
     <section className="panel pools-panel" aria-labelledby="live-read-unavailable-title">
       <p className="eyebrow">READ-ONLY GATE</p>
       <h1 id="live-read-unavailable-title">Live pool data is unavailable.</h1>
-      <p className="notice" role="alert">
-        {invalid
-          ? 'The host read-only configuration did not pass validation.'
-          : 'This host did not provide a reviewed read-only configuration.'}
+      <p className="notice" role={loading ? 'status' : 'alert'}>
+        {loading
+          ? 'Authenticating the read-only configuration…'
+          : reason === 'missing'
+            ? 'This host did not provide a reviewed read-only configuration.'
+            : reason === 'untrusted'
+              ? 'The host read-only configuration could not be authenticated.'
+              : 'The host read-only configuration did not pass validation.'}
       </p>
       <p className="microcopy">Preview fixtures were not substituted on this route.</p>
       <a className="button secondary" href="#/trade">
@@ -489,7 +498,7 @@ function LiveReadApplication({ gate }: { gate: LiveReadGate }) {
         {gate.available ? (
           <LivePoolsRuntime factory={gate.factory} />
         ) : (
-          <LiveReadUnavailable invalid={gate.reason === 'invalid'} />
+          <LiveReadUnavailable reason={gate.reason} />
         )}
       </main>
       <footer className="footer">
@@ -504,7 +513,16 @@ function LiveReadApplication({ gate }: { gate: LiveReadGate }) {
 
 function ApplicationRouter() {
   const [hash, setHash] = useState(location.hash);
-  const [gate] = useState(readLiveReadGate);
+  const [gate, setGate] = useState<LiveReadGate>({ available: false, reason: 'loading' });
+  useEffect(() => {
+    let current = true;
+    void readLiveReadGate().then((result) => {
+      if (current) setGate(result);
+    });
+    return () => {
+      current = false;
+    };
+  }, []);
   useEffect(() => {
     const change = () => setHash(location.hash);
     window.addEventListener('hashchange', change);

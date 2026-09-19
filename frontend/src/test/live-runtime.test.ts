@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Address, Hex } from 'viem';
 import type { LiveReadAdapter } from '../live-read';
 import type { Provider } from '../wallet';
@@ -8,9 +8,16 @@ import {
   loadDeploymentRegistry,
   type RuntimeFetch,
 } from '../live-runtime';
+import { liveReadPayloadSha256, LIVE_MANIFEST_DOMAIN } from '../live-auth';
+import { createSigningFixture, type SigningFixture } from './live-auth-helpers';
 
 const address = (byte: string) => `0x${byte.repeat(40)}` as Address;
 const hash = (byte: string) => `0x${byte.repeat(64)}` as Hex;
+let signing: SigningFixture;
+
+beforeAll(async () => {
+  signing = await createSigningFixture();
+});
 
 function configuration() {
   return {
@@ -71,19 +78,26 @@ async function fingerprint(value: unknown): Promise<string> {
 
 async function artifact(overrides: Record<string, unknown> = {}) {
   const deploymentConfiguration = configuration();
-  return {
-    schemaVersion: 1,
-    sourceRevision: 'a'.repeat(40),
-    target: {
-      environment: 'staging',
-      host: 'bloch-dex',
-      frontendMode: 'preview',
-      liquidityEnabled: false,
+  return signing.sign(
+    {
+      schemaVersion: 1,
+      sourceRevision: 'a'.repeat(40),
+      target: {
+        environment: 'staging',
+        host: 'bloch-dex',
+        frontendMode: 'preview',
+        liquidityEnabled: false,
+      },
+      configurationSha256: await fingerprint(deploymentConfiguration),
+      deploymentConfiguration,
+      ...overrides,
     },
-    configurationSha256: await fingerprint(deploymentConfiguration),
-    deploymentConfiguration,
-    ...overrides,
-  };
+    LIVE_MANIFEST_DOMAIN,
+  );
+}
+
+async function artifactPin(value: unknown): Promise<string> {
+  return liveReadPayloadSha256(LIVE_MANIFEST_DOMAIN, (value as { payload: unknown }).payload);
 }
 
 function json(value: unknown, init?: ResponseInit): Response {
@@ -188,16 +202,25 @@ describe('read-only RPC provider', () => {
 });
 
 describe('deployment registry composition', () => {
-  it('loads a fingerprinted same-origin manifest and rejects cross-origin URLs', async () => {
+  it('loads a signed fingerprinted same-origin manifest and rejects cross-origin URLs', async () => {
     const manifest = await artifact();
     const fetchFn = vi.fn<RuntimeFetch>(async () => json(manifest));
     const options = {
       registryUrl: '/deployment/artifact.json',
       pageOrigin: 'https://dex.invalid',
       allowedRpcOrigins: ['https://rpc.invalid'],
+      trustAnchor: signing.trustAnchor,
+      manifestSha256: await artifactPin(manifest),
+      expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
       fetchFn,
     };
     await expect(loadDeploymentRegistry(options)).resolves.toMatchObject({ schemaVersion: 2 });
+    await expect(
+      loadDeploymentRegistry({
+        ...options,
+        fetchFn: vi.fn(async () => json((manifest as { payload: unknown }).payload)),
+      }),
+    ).rejects.toThrow(/authentication failed: envelope is invalid/);
     expect(fetchFn.mock.calls[0][0].toString()).toBe(
       'https://dex.invalid/deployment/artifact.json',
     );
@@ -213,6 +236,7 @@ describe('deployment registry composition', () => {
     await expect(
       loadDeploymentRegistry({ ...options, pageOrigin: 'http://dex.invalid' }),
     ).rejects.toThrow(/same-origin/);
+    await expect(loadDeploymentRegistry({ ...options, expiresAt: 1 })).rejects.toThrow(/expired/);
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
@@ -222,19 +246,46 @@ describe('deployment registry composition', () => {
       registryUrl: '/deployment/artifact.json',
       pageOrigin: 'https://dex.invalid',
       allowedRpcOrigins: ['https://rpc.invalid'],
+      trustAnchor: signing.trustAnchor,
+      manifestSha256: await artifactPin(good),
+      expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
     };
+    const tampered = structuredClone(good) as { payload: Record<string, unknown> };
+    tampered.payload.sourceRevision = 'b'.repeat(40);
     await expect(
       loadDeploymentRegistry({
         ...options,
-        fetchFn: vi.fn(async () => json({ ...good, configurationSha256: '0'.repeat(64) })),
+        fetchFn: vi.fn(async () => json(tampered)),
+      }),
+    ).rejects.toThrow(/signature is invalid/);
+    const alternate = await artifact({ sourceRevision: 'b'.repeat(40) });
+    await expect(
+      loadDeploymentRegistry({
+        ...options,
+        fetchFn: vi.fn(async () => json(alternate)),
+      }),
+    ).rejects.toThrow(/does not match the gate pin/);
+    const badFingerprint = await artifact({ configurationSha256: '0'.repeat(64) });
+    await expect(
+      loadDeploymentRegistry({
+        ...options,
+        manifestSha256: await artifactPin(badFingerprint),
+        fetchFn: vi.fn(async () => json(badFingerprint)),
       }),
     ).rejects.toThrow(/fingerprint does not match/);
+    const badTarget = await artifact({
+      target: {
+        environment: 'staging',
+        host: 'bloch-dex',
+        frontendMode: 'preview',
+        liquidityEnabled: true,
+      },
+    });
     await expect(
       loadDeploymentRegistry({
         ...options,
-        fetchFn: vi.fn(async () =>
-          json({ ...good, target: { ...good.target, liquidityEnabled: true } }),
-        ),
+        manifestSha256: await artifactPin(badTarget),
+        fetchFn: vi.fn(async () => json(badTarget)),
       }),
     ).rejects.toThrow(/target does not match/);
     await expect(
@@ -259,6 +310,9 @@ describe('deployment registry composition', () => {
         registryUrl: '/deployment/artifact.json',
         pageOrigin: 'https://dex.invalid',
         allowedRpcOrigins: ['https://rpc.invalid'],
+        trustAnchor: signing.trustAnchor,
+        manifestSha256: await artifactPin(manifest),
+        expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
         fetchFn,
       },
       connect,
