@@ -654,6 +654,23 @@ Every command that mutates an existing operations store creates an exclusive,
 durable lock and records its inode identity. Before removing the lock, the
 command revalidates the open file and pathname, including ownership, mode and
 single-link count.
+
+Operational state uses a stricter publication sequence than ordinary portable
+CLI output. A new checkpoint candidate or content-addressed history record is
+created with `O_EXCL`/`O_NOFOLLOW`, written through an open descriptor, fsynced,
+and read back through that same descriptor while its inode, ownership, mode,
+link count, size and timestamps remain stable. Checkpoints are renamed only
+after that proof; the containing directory is then fsynced and the published
+checkpoint is securely reread. History directories are likewise fsynced after
+their durable record. Thus a directory fsync is never treated as a substitute
+for first flushing file content.
+
+An occupied temporary or content-addressed pathname is preserved, never
+truncated or followed. A partial file or failed publication remains crash
+evidence for inspection; operators must not delete it merely to retry. These
+steps provide the local filesystem ordering required by the workflow, but do
+not claim protection from faulty storage that lies about fsync, rollback-proof
+hardware, or an independently retained external head.
 If the lock is removed, replaced, hardlinked or otherwise changed while an
 operation is running, cleanup preserves the observed files and fails closed.
 Treat the operation outcome as ambiguous: do not delete either lock path or

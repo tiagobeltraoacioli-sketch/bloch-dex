@@ -390,12 +390,48 @@ async function syncDirectory(path) {
   try { await handle.sync(); } finally { await handle.close(); }
 }
 
+async function writeNewDurableJson(path, value, mode, field) {
+  const bytes = Buffer.from(`${canonicalJson(value)}\n`, "utf8");
+  let handle;
+  try {
+    handle = await open(
+      path,
+      constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | NOFOLLOW,
+      mode,
+    );
+    await handle.writeFile(bytes);
+    await handle.sync();
+    const before = await handle.stat();
+    if (!before.isFile() || before.nlink !== 1 || before.size !== bytes.length ||
+        (before.mode & 0o777) !== mode ||
+        (typeof process.getuid === "function" && before.uid !== process.getuid()))
+      fail(`${field} is unsafe after durable write; preserve state and inspect`);
+    const observed = Buffer.alloc(bytes.length);
+    const { bytesRead } = await handle.read(observed, 0, observed.length, 0);
+    const after = await handle.stat();
+    if (bytesRead !== bytes.length || !observed.equals(bytes) ||
+        after.dev !== before.dev || after.ino !== before.ino ||
+        after.nlink !== before.nlink || after.size !== before.size ||
+        after.mode !== before.mode || after.uid !== before.uid || after.gid !== before.gid ||
+        after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs)
+      fail(`${field} changed after durable write; preserve state and inspect`);
+  } catch (error) {
+    if (error?.code === "ELOOP") fail(`${field} must not be a symlink`);
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
 async function replaceCheckpoint(root, next) {
   const target = join(root, HEAD);
   const temporary = join(root, `.${basename(HEAD)}.${process.pid}.${Date.now()}.tmp`);
-  await writeNewJson(temporary, next, 0o400);
+  await writeNewDurableJson(temporary, next, 0o400, "temporary operations checkpoint");
   await rename(temporary, target);
   await syncDirectory(root);
+  if (canonicalJson(await secureJson(target, "published operations checkpoint")) !==
+      canonicalJson(next))
+    fail("published operations checkpoint differs from the durable candidate");
 }
 
 async function requireUnchangedCheckpoint(root, expected, phase) {
@@ -409,7 +445,7 @@ async function requireUnchangedCheckpoint(root, expected, phase) {
 
 async function writeDurableRecord(path, value, mode, parent) {
   try {
-    await writeNewJson(path, value, mode);
+    await writeNewDurableJson(path, value, mode, "operations history record");
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
     if (canonicalJson(await secureJson(path, "existing rotation record")) !== canonicalJson(value))
@@ -550,7 +586,9 @@ export async function initializeOperationsStore(root, manifest, expectedManifest
     externalAnchorAcceptanceCount: 0,
     externalAnchorAcceptanceSha256: null,
   };
-  await writeNewJson(join(root, HEAD), checkpoint, 0o400);
+  await writeNewDurableJson(
+    join(root, HEAD), checkpoint, 0o400, "initial operations checkpoint",
+  );
   await syncDirectory(root);
   return checkpoint;
 }
@@ -857,24 +895,40 @@ export async function migrateOperationsStoreV3ToV4({
     await mkdir(acceptances, { mode: 0o700 });
     await chmod(acceptances, 0o700);
     for (const artifact of artifacts.records)
-      await writeNewJson(join(rotations, `${artifact.sha256}.json`), artifact.value, 0o400);
+      await writeNewDurableJson(
+        join(rotations, `${artifact.sha256}.json`),
+        artifact.value,
+        0o400,
+        "migrated rotation record",
+      );
     if (artifacts.pending &&
         !artifacts.records.some(({ sha256 }) => sha256 === artifacts.pending.sha256))
-      await writeNewJson(
+      await writeNewDurableJson(
         join(rotations, `${artifacts.pending.sha256}.json`),
         artifacts.pending.value,
         0o400,
+        "migrated pending rotation",
       );
     await syncDirectory(rotations);
     await syncDirectory(acceptances);
-    await writeNewJson(join(destinationRoot, V3_MIGRATION_RECORD), migration, 0o400);
+    await writeNewDurableJson(
+      join(destinationRoot, V3_MIGRATION_RECORD),
+      migration,
+      0o400,
+      "schema-3 migration record",
+    );
     await syncDirectory(destinationRoot);
     if (canonicalSha256(validateV3Checkpoint(await secureJson(
       join(sourceRoot, HEAD),
       "schema-3 operations checkpoint after copy",
     ))) !== expectedV3CheckpointSha256)
       fail("schema-3 checkpoint changed during migration");
-    await writeNewJson(join(destinationRoot, HEAD), nextCheckpoint, 0o400);
+    await writeNewDurableJson(
+      join(destinationRoot, HEAD),
+      nextCheckpoint,
+      0o400,
+      "migrated operations checkpoint",
+    );
     await syncDirectory(destinationRoot);
     const audit = await auditOperationsStore(destinationRoot);
     return {

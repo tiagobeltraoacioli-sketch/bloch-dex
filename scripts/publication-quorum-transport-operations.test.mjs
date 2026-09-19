@@ -353,6 +353,25 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
     activateOperationsStore(store, authorization, "2".repeat(64)),
     /does not match the externally approved hash/,
   );
+  const fixedNow = 1_700_000_000_000;
+  const occupiedTemporary = join(
+    store,
+    `.checkpoint.json.${process.pid}.${fixedNow}.tmp`,
+  );
+  await symlink("checkpoint.json", occupiedTemporary);
+  const realNow = Date.now;
+  Date.now = () => fixedNow;
+  try {
+    await assert.rejects(
+      activateOperationsStore(store, authorization, canonicalSha256(authorization)),
+      { code: "EEXIST" },
+    );
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal((await lstat(occupiedTemporary)).isSymbolicLink(), true);
+  assert.equal((await inspectOperationsStore(store)).status, "inactive");
+  await unlink(occupiedTemporary);
   await activateOperationsStore(store, authorization, canonicalSha256(authorization));
 
   await assert.rejects(
@@ -416,6 +435,13 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
   const committed = await inspectOperationsStore(store);
   assert.equal(committed.expectedHeadSha256, "5".repeat(64));
   assert.equal(committed.generation, 3);
+  const durableCheckpoint = await lstat(join(store, "checkpoint.json"));
+  assert.equal(durableCheckpoint.mode & 0o777, 0o400);
+  assert.equal(durableCheckpoint.nlink, 1);
+  assert.equal(
+    (await readdir(store)).some(name => name.startsWith(".checkpoint.json.")),
+    false,
+  );
 });
 
 test("operations lock release preserves hardlinked or substituted locks", async (context) => {
