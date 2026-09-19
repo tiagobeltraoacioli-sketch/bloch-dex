@@ -1340,6 +1340,8 @@ export async function commitTransportRequest(root, requestId, receiptSha256) {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     if (current.status !== "pending" || current.pendingRequestId !== requestId)
       fail("pending request does not match the confirmed transport response");
+    await auditRotationChain(root, current);
+    await auditAnchorAcceptanceChain(root, current);
     const next = { ...current, generation: current.generation + 1, status: "ready", expectedHeadSha256: receiptSha256, pendingRequestId: null };
     await replaceCheckpoint(root, next);
     return next;

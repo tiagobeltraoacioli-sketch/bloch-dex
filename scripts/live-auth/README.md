@@ -601,6 +601,14 @@ configuration substitution, rollback, inactive store or existing pending
 request therefore fails closed. Only a fully verified
 and durably written receipt advances the retained head and returns the store to
 `ready`; therefore a timeout or malformed response cannot be retried accidentally.
+The final `commit-request` step does not rely on the audit performed before
+network I/O. While holding its own exclusive lock, it re-walks the complete
+profile-rotation chain and retained external-anchor acceptance chain before
+changing `pending` to `ready`. If either history was removed, altered, spliced,
+or made unreadable while the request was in flight, receipt commit fails and
+the checkpoint remains `pending`. Restore only the exact reviewed,
+content-addressed evidence; never bypass the audit by editing the checkpoint or
+inventing replacement history.
 
 The repository supplies the strict mTLS client adapter described below, but
 does not operate its endpoint, issue credentials or provide a freshness source.

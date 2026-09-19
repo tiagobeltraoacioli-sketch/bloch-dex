@@ -376,11 +376,37 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
   assert.equal(pending.externalAnchorAcceptanceCount, 1);
   assert.match(pending.externalAnchorAcceptanceSha256, /^[0-9a-f]{64}$/);
   assert.equal((await auditOperationsStore(store)).verifiedAnchorAcceptances, 1);
-  assert.ok((await readFile(join(
+  const acceptancePath = join(
     store,
     "anchor-acceptances",
     `${pending.externalAnchorAcceptanceSha256}.json`,
-  ))).length > 0);
+  );
+  const acceptanceBytes = await readFile(acceptancePath);
+  assert.ok(acceptanceBytes.length > 0);
+
+  await unlink(acceptancePath);
+  await assert.rejects(
+    commitTransportRequest(store, "4".repeat(64), "5".repeat(64)),
+    { code: "ENOENT" },
+  );
+  assert.equal((await inspectOperationsStore(store)).status, "pending");
+  await writeFile(acceptancePath, acceptanceBytes, { flag: "wx", mode: 0o400 });
+
+  const acceptance = JSON.parse(acceptanceBytes.toString("utf8"));
+  await chmod(acceptancePath, 0o600);
+  await writeFile(
+    acceptancePath,
+    `${canonicalJson({ ...acceptance, injected: true })}\n`,
+  );
+  await chmod(acceptancePath, 0o400);
+  await assert.rejects(
+    commitTransportRequest(store, "4".repeat(64), "5".repeat(64)),
+    /external anchor acceptance fields are invalid/,
+  );
+  assert.equal((await inspectOperationsStore(store)).status, "pending");
+  await chmod(acceptancePath, 0o600);
+  await writeFile(acceptancePath, acceptanceBytes);
+  await chmod(acceptancePath, 0o400);
 
   await commitTransportRequest(store, "4".repeat(64), "5".repeat(64));
   await assert.rejects(
@@ -787,11 +813,30 @@ test("rotates a pinned mTLS profile only after independent old and new authoriza
     }),
     /does not match the retained pending transition/,
   );
-  await unlink(join(store, "rotations", `${committed.rotationRecordSha256}.json`));
+  const anchorLog = await externalAnchorLog(store, nextKeys.privateKey, 2, 1);
+  await beginTransportRequest(
+    store, nextHash, "genesis", "9".repeat(64), anchorLog,
+  );
+  const rotationRecordPath = join(
+    store,
+    "rotations",
+    `${committed.rotationRecordSha256}.json`,
+  );
+  const rotationRecordBytes = await readFile(rotationRecordPath);
+  await unlink(rotationRecordPath);
   await assert.rejects(
-    beginTransportRequest(store, nextHash, "genesis", "9".repeat(64)),
+    commitTransportRequest(store, "9".repeat(64), "a".repeat(64)),
     { code: "ENOENT" },
   );
+  assert.equal((await inspectOperationsStore(store)).status, "pending");
+  await writeFile(rotationRecordPath, rotationRecordBytes, { flag: "wx", mode: 0o400 });
+  const completedRequest = await commitTransportRequest(
+    store,
+    "9".repeat(64),
+    "a".repeat(64),
+  );
+  assert.equal(completedRequest.status, "ready");
+  assert.equal(completedRequest.expectedHeadSha256, "a".repeat(64));
 });
 
 test("refuses mTLS rotation downgrade, rollback, shared keys, and stale profile chains", async () => {
