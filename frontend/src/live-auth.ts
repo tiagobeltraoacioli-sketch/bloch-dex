@@ -3,11 +3,12 @@ const SIGNATURE_BYTES = 64;
 const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
-export const LIVE_GATE_DOMAIN = 'POSTERN_LIVE_GATE_V1\n';
-export const LIVE_MANIFEST_DOMAIN = 'POSTERN_LIVE_MANIFEST_V1\n';
+export const LIVE_GATE_DOMAIN = 'POSTERN_LIVE_GATE_V2\n';
+export const LIVE_MANIFEST_DOMAIN = 'POSTERN_LIVE_MANIFEST_V2\n';
 
 export type LiveReadTrustAnchor = {
   readonly keyId: string;
+  readonly keyGeneration: number;
   readonly publicKey: CryptoKey;
 };
 
@@ -69,11 +70,20 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 /** Imports a raw Ed25519 public key pinned into the reviewed frontend build. */
 export async function importLiveReadTrustAnchor(
   encodedPublicKey: unknown,
+  encodedKeyGeneration: unknown,
 ): Promise<LiveReadTrustAnchor> {
   const raw = decodeBase64Url(encodedPublicKey, PUBLIC_KEY_BYTES);
+  if (
+    typeof encodedKeyGeneration !== 'string' ||
+    !/^[1-9][0-9]*$/.test(encodedKeyGeneration) ||
+    !Number.isSafeInteger(Number(encodedKeyGeneration))
+  ) {
+    throw authError('key generation is invalid');
+  }
   try {
     return {
       keyId: await sha256(raw),
+      keyGeneration: Number(encodedKeyGeneration),
       publicKey: await crypto.subtle.importKey(
         'raw',
         arrayBuffer(raw),
@@ -101,7 +111,7 @@ export async function verifySignedJson(
     !Object.hasOwn(envelope, 'schemaVersion') ||
     !Object.hasOwn(envelope, 'payload') ||
     !Object.hasOwn(envelope, 'signature') ||
-    envelope.schemaVersion !== 1 ||
+    envelope.schemaVersion !== 2 ||
     !envelope.signature ||
     typeof envelope.signature !== 'object' ||
     Array.isArray(envelope.signature)
@@ -110,11 +120,12 @@ export async function verifySignedJson(
   }
   const signature = envelope.signature as Record<string, unknown>;
   if (
-    Object.keys(signature).length !== 3 ||
+    Object.keys(signature).length !== 4 ||
     signature.algorithm !== 'Ed25519' ||
     typeof signature.keyId !== 'string' ||
     !HEX_SHA256.test(signature.keyId) ||
-    signature.keyId !== trustAnchor.keyId
+    signature.keyId !== trustAnchor.keyId ||
+    signature.keyGeneration !== trustAnchor.keyGeneration
   ) {
     throw authError('signature metadata is invalid');
   }
@@ -125,7 +136,12 @@ export async function verifySignedJson(
       { name: 'Ed25519' },
       trustAnchor.publicKey,
       arrayBuffer(bytes),
-      arrayBuffer(signedBytes(domain, envelope.payload)),
+      arrayBuffer(
+        signedBytes(domain, {
+          keyGeneration: trustAnchor.keyGeneration,
+          payload: envelope.payload,
+        }),
+      ),
     );
   } catch {
     throw authError('signature verification is unavailable');
@@ -135,8 +151,12 @@ export async function verifySignedJson(
 }
 
 /** Exported only to keep offline signing and browser verification byte-identical. */
-export function canonicalLiveReadPayload(domain: string, payload: unknown): ArrayBuffer {
-  return arrayBuffer(signedBytes(domain, payload));
+export function canonicalLiveReadPayload(
+  domain: string,
+  keyGeneration: number,
+  payload: unknown,
+): ArrayBuffer {
+  return arrayBuffer(signedBytes(domain, { keyGeneration, payload }));
 }
 
 export async function liveReadPayloadSha256(domain: string, payload: unknown): Promise<string> {

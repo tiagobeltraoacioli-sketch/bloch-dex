@@ -12,8 +12,8 @@ import {
   stableJson,
 } from "../staging/manifest.mjs";
 
-export const GATE_DOMAIN = "POSTERN_LIVE_GATE_V1\n";
-export const MANIFEST_DOMAIN = "POSTERN_LIVE_MANIFEST_V1\n";
+export const GATE_DOMAIN = "POSTERN_LIVE_GATE_V2\n";
+export const MANIFEST_DOMAIN = "POSTERN_LIVE_MANIFEST_V2\n";
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_JSON_BYTES = 512 * 1024;
@@ -87,31 +87,43 @@ export function describeKey(key) {
   };
 }
 
-export function signEnvelope(payload, privateKey, domain) {
+export function signEnvelope(payload, privateKey, domain, keyGeneration) {
   if (privateKey.asymmetricKeyType !== "ed25519")
     fail("private key must be Ed25519");
+  if (!Number.isSafeInteger(keyGeneration) || keyGeneration < 1)
+    fail("key generation must be a positive safe integer");
   const identity = describeKey(privateKey);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     payload,
     signature: {
       algorithm: identity.algorithm,
       keyId: identity.keyId,
-      value: sign(null, payloadBytes(domain, payload), privateKey).toString(
-        "base64url",
-      ),
+      keyGeneration,
+      value: sign(
+        null,
+        payloadBytes(domain, { keyGeneration, payload }),
+        privateKey,
+      ).toString("base64url"),
     },
   };
 }
 
-export function verifyEnvelope(envelope, publicKey, domain) {
+export function verifyEnvelope(envelope, publicKey, domain, keyGeneration) {
   exactKeys(envelope, ["schemaVersion", "payload", "signature"], "envelope");
-  if (envelope.schemaVersion !== 1) fail("envelope schema is unsupported");
-  exactKeys(envelope.signature, ["algorithm", "keyId", "value"], "signature");
+  if (envelope.schemaVersion !== 2) fail("envelope schema is unsupported");
+  if (!Number.isSafeInteger(keyGeneration) || keyGeneration < 1)
+    fail("key generation must be a positive safe integer");
+  exactKeys(
+    envelope.signature,
+    ["algorithm", "keyId", "keyGeneration", "value"],
+    "signature",
+  );
   const identity = describeKey(publicKey);
   if (
     envelope.signature.algorithm !== "Ed25519" ||
-    envelope.signature.keyId !== identity.keyId
+    envelope.signature.keyId !== identity.keyId ||
+    envelope.signature.keyGeneration !== keyGeneration
   )
     fail("signature key identity does not match");
   if (
@@ -122,7 +134,12 @@ export function verifyEnvelope(envelope, publicKey, domain) {
   const signature = Buffer.from(envelope.signature.value, "base64url");
   if (
     signature.length !== 64 ||
-    !verify(null, payloadBytes(domain, envelope.payload), publicKey, signature)
+    !verify(
+      null,
+      payloadBytes(domain, { keyGeneration, payload: envelope.payload }),
+      publicKey,
+      signature,
+    )
   )
     fail("signature is invalid");
   return envelope.payload;

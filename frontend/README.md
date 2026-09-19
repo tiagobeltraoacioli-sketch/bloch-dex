@@ -251,13 +251,21 @@ Ed25519 WebCrypto signatures over bounded canonical JSON. Separate domain tags
 prevent a signature for either object from being replayed as the other. The raw
 public key must be supplied as unpadded base64url at reviewed frontend build time
 through `VITE_POSTERN_LIVE_READ_PUBLIC_KEY`; its SHA-256 is the envelope key ID.
+The same build must pin a canonical positive integer in
+`VITE_POSTERN_LIVE_READ_KEY_GENERATION`. Envelope schema 2 binds that generation
+into the signed bytes and requires an exact match, so an old envelope cannot be
+relabelled for a new generation even if an operator accidentally reuses a key.
 The key is an explicit trust pin embedded in that build, not another value read
 from the host configuration. A missing/malformed pin, unsupported Ed25519,
-incorrect key ID, altered payload, unknown envelope field or bad signature fails
-closed before registry or RPC use. A different validly signed manifest is also
+missing/noncanonical generation, incorrect key ID or generation, altered payload,
+unknown envelope field or bad signature fails closed before registry or RPC use.
+A different validly signed manifest is also
 rejected unless its digest matches the signed gate, preventing the host from
 substituting another release authorized by the same key. Key rotation therefore
-requires a reviewed frontend rebuild. Gate expiry is checked again before every
+requires incrementing the generation, changing the key pin, rebuilding the
+frontend, and signing both objects with the matching generation. There is no
+multi-key fallback: a removed key and every prior-generation envelope are
+rejected by the new build. Gate expiry is checked again before every
 manifest fetch, limiting replay of an older signed gate and manifest pair.
 
 The repository contains no public-key pin, private key, signed host element or
@@ -265,7 +273,7 @@ deployment values. The staging build currently emits the unsigned artifact
 payload; an external controlled signing step must wrap it before this runtime
 will accept it. The [offline envelope tooling](../scripts/live-auth/README.md)
 provides deterministic signing, exact-bundle verification and an explicit
-single-key rotation procedure without generating or storing a key. Supplying an
+generation-bound single-key rotation procedure without generating or storing a key. Supplying an
 operationally reviewed public-key pin and custody process, then signing the gate
 and manifest, are the next deployment gate. Browser Ed25519 support, CORS and
 real-RPC behavior also require operational validation. The private signing key

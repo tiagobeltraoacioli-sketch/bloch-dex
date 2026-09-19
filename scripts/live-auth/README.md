@@ -27,7 +27,10 @@ log, artifact, browser, or CI secret that is exposed to untrusted jobs.
 
    Independently compare the displayed `keyId` and `publicKeyBase64Url`. A reviewed
    frontend build receives the latter as
-   `VITE_POSTERN_LIVE_READ_PUBLIC_KEY`. This repository supplies no value.
+   `VITE_POSTERN_LIVE_READ_PUBLIC_KEY`. Choose the next positive integer key
+   generation and pin it in the same build as
+   `VITE_POSTERN_LIVE_READ_KEY_GENERATION`. This repository supplies neither
+   value.
 
 2. Build the unsigned staging artifact with the existing staging pipeline. Move
    the artifact payload into the controlled signing environment and sign it:
@@ -35,6 +38,7 @@ log, artifact, browser, or CI secret that is exposed to untrusted jobs.
    ```sh
    node scripts/live-auth.mjs sign-manifest \
      --private-key <private-key.pem> \
+     --key-generation <positive-integer> \
      --input <artifact-manifest.json> \
      --output <artifact-manifest.signed.json>
    ```
@@ -48,6 +52,7 @@ log, artifact, browser, or CI secret that is exposed to untrusted jobs.
    ```sh
    node scripts/live-auth.mjs sign-gate \
      --private-key <private-key.pem> \
+     --key-generation <positive-integer> \
      --input <gate-payload.json> \
      --manifest <artifact-manifest.signed.json> \
      --at <review-unix-seconds> \
@@ -60,6 +65,7 @@ log, artifact, browser, or CI secret that is exposed to untrusted jobs.
    ```sh
    node scripts/live-auth.mjs verify-bundle \
      --public-key <public-key.pem> \
+     --key-generation <positive-integer> \
      --gate <gate.signed.json> \
      --manifest <artifact-manifest.signed.json> \
      --at <review-unix-seconds>
@@ -70,12 +76,21 @@ Verification does not publish files or validate a real RPC/CORS deployment.
 
 ## Rotation and recovery
 
-Rotation is intentionally single-key and explicit. Inspect the new public key,
-record its key ID in the release review, rebuild the frontend with the new raw
-public-key pin, and sign a new gate and manifest with the corresponding private
-key. A build pinned to the old key will reject the new bundle and a build pinned
-to the new key will reject the old bundle. The runtime has no hidden fallback or
-multi-key trust set.
+Rotation is intentionally single-key and explicit. Increment the reviewed key
+generation, inspect the new public key, record both generation and key ID in the
+release review, rebuild the frontend with the new raw public-key pin and exact
+generation, and sign a new gate and manifest with the corresponding private key
+and generation. Envelope schema 2 signs `{ keyGeneration, payload }`, so changing
+metadata cannot relabel an old signature. A build pinned to the old key/generation
+rejects the new bundle and a build pinned to the new pair rejects the old bundle.
+The runtime has no hidden fallback or multi-key trust set; omitting either build
+pin fails closed.
+
+Never decrement or reuse a generation, including after a failed or rolled-back
+release. The generation is an externally reviewed release counter, not persistent
+browser state: serving an entire older frontend build also restores that build's
+older trust policy. TLS, immutable release deployment, and an external monotonic
+release process must prevent that whole-build rollback.
 
 Revoke a compromised signer by removing the host gate, preserving preview mode,
 and producing a reviewed build pinned to a new key. Retaining an old private key

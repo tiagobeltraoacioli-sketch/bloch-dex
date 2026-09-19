@@ -18,9 +18,9 @@ import {
 function usage() {
   console.error(`Usage:
   node scripts/live-auth.mjs inspect-key --public-key <ed25519-public.pem>
-  node scripts/live-auth.mjs sign-manifest --private-key <ed25519-private.pem> --input <manifest.json> --output <signed.json>
-  node scripts/live-auth.mjs sign-gate --private-key <ed25519-private.pem> --input <gate.json> --manifest <signed-manifest.json> --at <unix-seconds> --output <signed.json>
-  node scripts/live-auth.mjs verify-bundle --public-key <ed25519-public.pem> --gate <signed-gate.json> --manifest <signed-manifest.json> --at <unix-seconds>`);
+  node scripts/live-auth.mjs sign-manifest --private-key <ed25519-private.pem> --key-generation <positive-integer> --input <manifest.json> --output <signed.json>
+  node scripts/live-auth.mjs sign-gate --private-key <ed25519-private.pem> --key-generation <positive-integer> --input <gate.json> --manifest <signed-manifest.json> --at <unix-seconds> --output <signed.json>
+  node scripts/live-auth.mjs verify-bundle --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --at <unix-seconds>`);
 }
 
 function parse(command, args, names) {
@@ -49,6 +49,15 @@ function timestamp(value) {
   return parsed;
 }
 
+function keyGeneration(value) {
+  if (!/^[1-9][0-9]*$/.test(value))
+    fail("--key-generation must be a positive integer");
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed))
+    fail("--key-generation must be a safe integer");
+  return parsed;
+}
+
 async function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === "inspect-key") {
@@ -61,31 +70,36 @@ async function main() {
   if (command === "sign-manifest") {
     const values = parse(command, args, [
       "--private-key",
+      "--key-generation",
       "--input",
       "--output",
     ]);
     const key = await readPrivateKey(values["--private-key"]);
+    const generation = keyGeneration(values["--key-generation"]);
     const payload = validateManifest(await readJson(values["--input"]));
     await writeNewJson(
       values["--output"],
-      signEnvelope(payload, key, MANIFEST_DOMAIN),
+      signEnvelope(payload, key, MANIFEST_DOMAIN, generation),
     );
     return;
   }
   if (command === "sign-gate") {
     const values = parse(command, args, [
       "--private-key",
+      "--key-generation",
       "--input",
       "--manifest",
       "--at",
       "--output",
     ]);
     const key = await readPrivateKey(values["--private-key"]);
+    const generation = keyGeneration(values["--key-generation"]);
     const manifest = validateManifest(
       verifyEnvelope(
         await readJson(values["--manifest"]),
         key,
         MANIFEST_DOMAIN,
+        generation,
       ),
     );
     const input = await readJson(values["--input"], 4_096);
@@ -97,27 +111,35 @@ async function main() {
     );
     await writeNewJson(
       values["--output"],
-      signEnvelope(payload, key, GATE_DOMAIN),
+      signEnvelope(payload, key, GATE_DOMAIN, generation),
     );
     return;
   }
   if (command === "verify-bundle") {
     const values = parse(command, args, [
       "--public-key",
+      "--key-generation",
       "--gate",
       "--manifest",
       "--at",
     ]);
     const key = await readPublicKey(values["--public-key"]);
+    const generation = keyGeneration(values["--key-generation"]);
     const manifest = validateManifest(
       verifyEnvelope(
         await readJson(values["--manifest"]),
         key,
         MANIFEST_DOMAIN,
+        generation,
       ),
     );
     const gate = validateGate(
-      verifyEnvelope(await readJson(values["--gate"], 4_096), key, GATE_DOMAIN),
+      verifyEnvelope(
+        await readJson(values["--gate"], 4_096),
+        key,
+        GATE_DOMAIN,
+        generation,
+      ),
       timestamp(values["--at"]),
     );
     if (gate.manifestSha256 !== payloadSha256(MANIFEST_DOMAIN, manifest))
@@ -126,6 +148,7 @@ async function main() {
       canonicalJson({
         verified: true,
         keyId: describeKey(key).keyId,
+        keyGeneration: generation,
         expiresAt: gate.expiresAt,
       }),
     );

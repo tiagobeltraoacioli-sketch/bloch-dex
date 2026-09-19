@@ -117,7 +117,16 @@ async function keyFiles(root, name) {
 }
 
 async function runCli(...args) {
-  await execute(nodeBin, [cli, ...args], { cwd: repository });
+  await runCliAtGeneration("7", ...args);
+}
+
+async function runCliAtGeneration(generation, ...args) {
+  const [command, ...rest] = args;
+  await execute(
+    nodeBin,
+    [cli, command, "--key-generation", generation, ...rest],
+    { cwd: repository },
+  );
 }
 
 function gate(origin, issuedAt, expiresAt) {
@@ -258,7 +267,11 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
   const secondary = await keyFiles(root, "secondary");
   await execute(nodeBin, [vite, "build", "--outDir", site, "--emptyOutDir"], {
     cwd: resolve("frontend"),
-    env: { ...process.env, VITE_POSTERN_LIVE_READ_PUBLIC_KEY: primary.pin },
+    env: {
+      ...process.env,
+      VITE_POSTERN_LIVE_READ_PUBLIC_KEY: primary.pin,
+      VITE_POSTERN_LIVE_READ_KEY_GENERATION: "7",
+    },
   });
   const baseIndex = await readFile(join(site, "index.html"), "utf8");
   const payloadPath = join(root, "manifest.json");
@@ -282,11 +295,13 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
     payload,
     at,
     manifestPath = signedManifestPath,
+    generation = "7",
   ) {
     const input = join(root, `${name}.json`);
     const output = join(root, `${name}.signed.json`);
     await writeFile(input, JSON.stringify(payload));
-    await runCli(
+    await runCliAtGeneration(
+      generation,
       "sign-gate",
       "--private-key",
       keys.privatePath,
@@ -330,6 +345,25 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
     gate(origin, now - 30, now + 600),
     now,
     secondaryManifest,
+  );
+  const priorManifest = join(root, "prior-manifest.signed.json");
+  await runCliAtGeneration(
+    "6",
+    "sign-manifest",
+    "--private-key",
+    primary.privatePath,
+    "--input",
+    payloadPath,
+    "--output",
+    priorManifest,
+  );
+  const priorGenerationGate = await signedGate(
+    "prior-generation-gate",
+    primary,
+    gate(origin, now - 30, now + 600),
+    now,
+    priorManifest,
+    "6",
   );
 
   async function chromeDom(envelope, name) {
@@ -452,6 +486,7 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
   for (const [name, envelope, copy] of [
     ["expired", expiredGate, /did not pass validation/i],
     ["wrong-key", wrongKeyGate, /could not be authenticated/i],
+    ["prior-generation", priorGenerationGate, /could not be authenticated/i],
     ["missing", null, /did not provide a reviewed/i],
   ]) {
     const dom = await chromeDom(envelope, name);

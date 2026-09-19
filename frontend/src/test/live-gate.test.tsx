@@ -16,7 +16,10 @@ beforeAll(async () => {
   signing = await createSigningFixture();
 });
 
-beforeEach(() => vi.stubEnv('VITE_POSTERN_LIVE_READ_PUBLIC_KEY', signing.encodedPublicKey));
+beforeEach(() => {
+  vi.stubEnv('VITE_POSTERN_LIVE_READ_PUBLIC_KEY', signing.encodedPublicKey);
+  vi.stubEnv('VITE_POSTERN_LIVE_READ_KEY_GENERATION', String(signing.keyGeneration));
+});
 
 function configuration(overrides: Record<string, unknown> = {}) {
   return {
@@ -57,8 +60,10 @@ afterEach(() => {
 describe('live read host gate', () => {
   it('uses the release tool canonical JSON format', () => {
     expect(
-      new TextDecoder().decode(canonicalLiveReadPayload('', { z: [true, null, 'é'], a: { n: 7 } })),
-    ).toBe('{"a":{"n":7},"z":[true,null,"é"]}');
+      new TextDecoder().decode(
+        canonicalLiveReadPayload('', 7, { z: [true, null, 'é'], a: { n: 7 } }),
+      ),
+    ).toBe('{"keyGeneration":7,"payload":{"a":{"n":7},"z":[true,null,"é"]}}');
   });
 
   it('accepts only an explicitly signed bounded read-only configuration', async () => {
@@ -161,6 +166,38 @@ describe('live read host gate', () => {
     render(<App />);
     expect((await screen.findByRole('alert')).textContent).toContain('could not be authenticated');
     expect(screen.queryByTestId('live-runtime')).toBeNull();
+  });
+
+  it('rejects a removed or ambiguously configured key generation before runtime use', async () => {
+    const isolated = document.implementation.createHTMLDocument();
+    const signed = await signedConfiguration();
+    inject(signed, isolated);
+    await expect(
+      readLiveReadGate(isolated, 'https://dex.invalid', signing.encodedPublicKey, '8'),
+    ).resolves.toEqual({ available: false, reason: 'untrusted' });
+    await expect(
+      readLiveReadGate(isolated, 'https://dex.invalid', signing.encodedPublicKey, '07'),
+    ).resolves.toEqual({ available: false, reason: 'untrusted' });
+    await expect(
+      readLiveReadGate(isolated, 'https://dex.invalid', signing.encodedPublicKey, ''),
+    ).resolves.toEqual({ available: false, reason: 'untrusted' });
+
+    isolated.getElementById('postern-live-read-config')?.remove();
+    const legacy = structuredClone(signed) as {
+      schemaVersion: number;
+      signature: Record<string, unknown>;
+    };
+    legacy.schemaVersion = 1;
+    delete legacy.signature.keyGeneration;
+    inject(legacy, isolated);
+    await expect(
+      readLiveReadGate(
+        isolated,
+        'https://dex.invalid',
+        signing.encodedPublicKey,
+        String(signing.keyGeneration),
+      ),
+    ).resolves.toEqual({ available: false, reason: 'untrusted' });
   });
 
   it('fails closed on the live route when configuration is missing or invalid', async () => {

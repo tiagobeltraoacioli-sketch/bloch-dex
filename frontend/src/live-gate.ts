@@ -37,6 +37,7 @@ export async function readLiveReadGate(
   documentValue: Document = document,
   pageOrigin: string = location.origin,
   encodedPublicKey: unknown = import.meta.env.VITE_POSTERN_LIVE_READ_PUBLIC_KEY,
+  encodedKeyGeneration: unknown = import.meta.env.VITE_POSTERN_LIVE_READ_KEY_GENERATION,
   nowSeconds: number = Math.floor(Date.now() / 1_000),
 ): Promise<LiveReadGate> {
   const element = documentValue.getElementById(CONFIG_ID);
@@ -56,7 +57,7 @@ export async function readLiveReadGate(
     let value: unknown;
     let trustAnchor;
     try {
-      trustAnchor = await importLiveReadTrustAnchor(encodedPublicKey);
+      trustAnchor = await importLiveReadTrustAnchor(encodedPublicKey, encodedKeyGeneration);
       value = await verifySignedJson(envelope, trustAnchor, LIVE_GATE_DOMAIN);
     } catch {
       return { available: false, reason: 'untrusted' };

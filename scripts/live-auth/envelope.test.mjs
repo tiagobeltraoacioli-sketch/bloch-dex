@@ -14,6 +14,7 @@ const cli = resolve("scripts/live-auth.mjs");
 const H1 = `0x${"11".repeat(32)}`;
 const H2 = `0x${"22".repeat(32)}`;
 const NOW = 2_000_000_000;
+const KEY_GENERATION = "7";
 
 function contract(suffix) {
   return { address: `0x${"00".repeat(19)}${suffix}`, runtimeCodeHash: H2 };
@@ -112,7 +113,12 @@ async function fixture() {
 }
 
 async function run(...args) {
-  return execute(process.execPath, [cli, ...args], { cwd: resolve(".") });
+  const [command, ...rest] = args;
+  const generationArgs =
+    command === "inspect-key" ? [] : ["--key-generation", KEY_GENERATION];
+  return execute(process.execPath, [cli, command, ...generationArgs, ...rest], {
+    cwd: resolve("."),
+  });
 }
 
 test("canonical JSON matches the browser signing format", () => {
@@ -176,11 +182,79 @@ test("creates deterministic signed envelopes and verifies their exact bundle", a
     String(NOW),
   );
   assert.equal(JSON.parse(verified.stdout).verified, true);
+  assert.equal(
+    JSON.parse(verified.stdout).keyGeneration,
+    Number(KEY_GENERATION),
+  );
   const inspected = JSON.parse(
     (await run("inspect-key", "--public-key", files.publicPath)).stdout,
   );
   assert.match(inspected.publicKeyBase64Url, /^[A-Za-z0-9_-]{43}$/);
   assert.match(inspected.keyId, /^[0-9a-f]{64}$/);
+});
+
+test("binds the generation into signatures and rejects downgrade or relabeling", async () => {
+  const files = await fixture();
+  const signedManifest = join(files.root, "generation-7.signed.json");
+  await run(
+    "sign-manifest",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.manifestPath,
+    "--output",
+    signedManifest,
+  );
+  const envelope = JSON.parse(await readFile(signedManifest, "utf8"));
+  assert.equal(envelope.schemaVersion, 2);
+  assert.equal(envelope.signature.keyGeneration, 7);
+
+  const relabeled = join(files.root, "relabeled.signed.json");
+  envelope.signature.keyGeneration = 8;
+  await writeFile(relabeled, JSON.stringify(envelope));
+  await assert.rejects(
+    execute(
+      process.execPath,
+      [
+        cli,
+        "verify-bundle",
+        "--key-generation",
+        "8",
+        "--public-key",
+        files.publicPath,
+        "--gate",
+        relabeled,
+        "--manifest",
+        relabeled,
+        "--at",
+        String(NOW),
+      ],
+      { cwd: resolve(".") },
+    ),
+    /signature is invalid/,
+  );
+
+  await assert.rejects(
+    execute(
+      process.execPath,
+      [
+        cli,
+        "verify-bundle",
+        "--key-generation",
+        "8",
+        "--public-key",
+        files.publicPath,
+        "--gate",
+        signedManifest,
+        "--manifest",
+        signedManifest,
+        "--at",
+        String(NOW),
+      ],
+      { cwd: resolve(".") },
+    ),
+    /signature key identity does not match/,
+  );
 });
 
 test("rejects tampering, a substituted signed manifest and a different key", async () => {
