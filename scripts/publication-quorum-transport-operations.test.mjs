@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { lstatSync, unlinkSync, watch as watchCallback, writeFileSync } from "node:fs";
+import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, symlink, unlink, watch, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -494,6 +495,184 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     );
     assert.deepEqual(await readdir(join(store, "anchor-acceptances")), []);
     assert.equal((await inspectOperationsStore(store)).lockPresent, false);
+  });
+
+  await context.test("checkpoint substitution at publication preserves the durable candidate", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("publication-race");
+    await beginTransportRequest(
+      store, manifestHash, "genesis", "d".repeat(64), anchorLog,
+    );
+    const checkpointPath = join(store, "checkpoint.json");
+    const pending = JSON.parse(await readFile(checkpointPath, "utf8"));
+    const substituted = { ...pending, generation: pending.generation + 20 };
+    const observer = watch(store);
+    const substitution = (async () => {
+      for await (const event of observer) {
+        if (event.filename?.startsWith(".checkpoint.json.") &&
+            event.filename.endsWith(".tmp")) {
+          await chmod(checkpointPath, 0o600);
+          await writeFile(checkpointPath, `${canonicalJson(substituted)}\n`);
+          await chmod(checkpointPath, 0o400);
+          return;
+        }
+      }
+    })();
+    await assert.rejects(
+      commitTransportRequest(store, "d".repeat(64), "e".repeat(64)),
+      /checkpoint changed at checkpoint publication boundary; preserve state and inspect/,
+    );
+    await substitution;
+    assert.deepEqual(JSON.parse(await readFile(checkpointPath, "utf8")), substituted);
+    const candidates = (await readdir(store)).filter(name =>
+      name.startsWith(".checkpoint.json.") && name.endsWith(".tmp"));
+    assert.equal(candidates.length, 1);
+    const candidate = JSON.parse(await readFile(join(store, candidates[0]), "utf8"));
+    assert.equal(candidate.status, "ready");
+    assert.equal(candidate.expectedHeadSha256, "e".repeat(64));
+    assert.equal((await lstat(join(store, candidates[0]))).mode & 0o777, 0o400);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, false);
+  });
+
+  await context.test("conditional publication never overwrites a final-window intruder", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("conditional-publication");
+    await beginTransportRequest(
+      store, manifestHash, "genesis", "1".repeat(64), anchorLog,
+    );
+    const checkpointPath = join(store, "checkpoint.json");
+    const pending = JSON.parse(await readFile(checkpointPath, "utf8"));
+    const intruder = { ...pending, generation: pending.generation + 30 };
+    const observer = watch(store);
+    const substitution = (async () => {
+      for await (const event of observer) {
+        if (event.filename === "checkpoint.json") {
+          await writeFile(
+            checkpointPath,
+            `${canonicalJson(intruder)}\n`,
+            { flag: "wx", mode: 0o400 },
+          );
+          return;
+        }
+      }
+    })();
+    await assert.rejects(
+      commitTransportRequest(store, "1".repeat(64), "2".repeat(64)),
+      /checkpoint publication outcome is ambiguous; preserve lock, candidate, predecessor/,
+    );
+    await substitution;
+    assert.deepEqual(JSON.parse(await readFile(checkpointPath, "utf8")), intruder);
+    const names = await readdir(store);
+    const candidates = names.filter(name =>
+      name.startsWith(".checkpoint.json.") && name.endsWith(".tmp"));
+    assert.equal(candidates.length, 1);
+    const candidate = JSON.parse(await readFile(join(store, candidates[0]), "utf8"));
+    assert.equal(candidate.status, "ready");
+    assert.equal(candidate.expectedHeadSha256, "2".repeat(64));
+    const predecessorPath = join(
+      store,
+      `.checkpoint.previous.${canonicalSha256(pending)}.json`,
+    );
+    assert.deepEqual(JSON.parse(await readFile(predecessorPath, "utf8")), pending);
+    assert.equal((await lstat(predecessorPath)).mode & 0o777, 0o400);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, true);
+  });
+
+  await context.test("occupied recovery candidate must contain the exact candidate", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("occupied-candidate");
+    await beginTransportRequest(
+      store, manifestHash, "genesis", "5".repeat(64), anchorLog,
+    );
+    const checkpointPath = join(store, "checkpoint.json");
+    const pending = JSON.parse(await readFile(checkpointPath, "utf8"));
+    const next = {
+      ...pending,
+      generation: pending.generation + 1,
+      status: "ready",
+      expectedHeadSha256: "6".repeat(64),
+      pendingRequestId: null,
+    };
+    const candidatePath = join(
+      store,
+      `.checkpoint.candidate.${canonicalSha256(next)}.json`,
+    );
+    await writeFile(
+      candidatePath,
+      `${canonicalJson({ corrupt: true })}\n`,
+      { flag: "wx", mode: 0o400 },
+    );
+    await assert.rejects(
+      commitTransportRequest(store, "5".repeat(64), "6".repeat(64)),
+      /checkpoint recovery candidate path contains different content/,
+    );
+    assert.deepEqual(JSON.parse(await readFile(checkpointPath, "utf8")), pending);
+    assert.deepEqual(JSON.parse(await readFile(candidatePath, "utf8")), { corrupt: true });
+    assert.equal((await inspectOperationsStore(store)).lockPresent, false);
+  });
+
+  await context.test("post-link substitution retains an independent recovery candidate", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("post-link-substitution");
+    await beginTransportRequest(
+      store, manifestHash, "genesis", "3".repeat(64), anchorLog,
+    );
+    const checkpointPath = join(store, "checkpoint.json");
+    const pending = JSON.parse(await readFile(checkpointPath, "utf8"));
+    const intruder = { ...pending, generation: pending.generation + 40 };
+    let resolveSubstitution;
+    let rejectSubstitution;
+    const substitution = new Promise((resolve, reject) => {
+      resolveSubstitution = resolve;
+      rejectSubstitution = reject;
+    });
+    const observer = watchCallback(store, (_event, filename) => {
+      if (filename !== "checkpoint.json") return;
+      try {
+        if (lstatSync(checkpointPath).nlink !== 2) return;
+        unlinkSync(checkpointPath);
+        writeFileSync(
+          checkpointPath,
+          `${canonicalJson(intruder)}\n`,
+          { flag: "wx", mode: 0o400 },
+        );
+        observer.close();
+        resolveSubstitution();
+      } catch (error) {
+        if (error?.code === "ENOENT") return;
+        observer.close();
+        rejectSubstitution(error);
+      }
+    });
+    await assert.rejects(
+      commitTransportRequest(store, "3".repeat(64), "4".repeat(64)),
+      /checkpoint publication outcome is ambiguous; preserve lock, candidate, predecessor/,
+    );
+    await substitution;
+    assert.deepEqual(JSON.parse(await readFile(checkpointPath, "utf8")), intruder);
+    const names = await readdir(store);
+    assert.equal(
+      names.filter(name => name.startsWith(".checkpoint.json.") && name.endsWith(".tmp")).length,
+      0,
+      "the temporary alias was removed after the race",
+    );
+    const candidatePath = join(
+      store,
+      `.checkpoint.candidate.${canonicalSha256({
+        ...pending,
+        status: "ready",
+        expectedHeadSha256: "4".repeat(64),
+        pendingRequestId: null,
+        generation: pending.generation + 1,
+      })}.json`,
+    );
+    const candidate = JSON.parse(await readFile(candidatePath, "utf8"));
+    assert.equal(candidate.status, "ready");
+    assert.equal(candidate.expectedHeadSha256, "4".repeat(64));
+    assert.equal((await lstat(candidatePath)).mode & 0o777, 0o400);
+    assert.equal((await lstat(candidatePath)).nlink, 1);
+    const predecessorPath = join(
+      store,
+      `.checkpoint.previous.${canonicalSha256(pending)}.json`,
+    );
+    assert.deepEqual(JSON.parse(await readFile(predecessorPath, "utf8")), pending);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, true);
   });
 
   await context.test("hardlink race", async () => {

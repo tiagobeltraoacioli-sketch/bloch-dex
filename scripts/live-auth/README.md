@@ -659,11 +659,33 @@ Operational state uses a stricter publication sequence than ordinary portable
 CLI output. A new checkpoint candidate or content-addressed history record is
 created with `O_EXCL`/`O_NOFOLLOW`, written through an open descriptor, fsynced,
 and read back through that same descriptor while its inode, ownership, mode,
-link count, size and timestamps remain stable. Checkpoints are renamed only
-after that proof; the containing directory is then fsynced and the published
-checkpoint is securely reread. History directories are likewise fsynced after
+link count, size and timestamps remain stable. Checkpoint candidates are
+published only after that proof; the containing directory is fsynced at every
+namespace boundary and the published checkpoint is securely reread. History directories are likewise fsynced after
 their durable record. Thus a directory fsync is never treated as a substitute
 for first flushing file content.
+
+Publication never uses an overwriting rename. After securely rereading the
+exact predecessor, it writes separate mode-`0400`, content-addressed recovery
+copies of both the predecessor and candidate, fsyncs the directory, rereads the
+predecessor again, then unlinks only that validated pathname. The candidate
+recovery copy is a distinct inode, not another hardlink to the temporary file,
+so publication can still prove that the final checkpoint is single-link. After
+the removal is durable, `link()` conditionally creates `checkpoint.json` from
+the already durable temporary candidate: if any writer has occupied the name,
+the link fails with `EEXIST` and cannot overwrite it. A successful link and
+removal of the temporary alias are each directory-fsynced before the
+single-link checkpoint is reread.
+
+If anything fails after predecessor removal, the operation outcome is
+ambiguous. The named entry, independent content-addressed candidate and
+predecessor recovery copies, and operations lock are preserved even if a
+same-UID writer replaces the just-linked name before the temporary alias is
+removed. The tool does not select, link, merge, delete or otherwise adopt any
+of them; compare all objects and the retained external evidence under a
+separately reviewed recovery procedure. This append-and-link protocol
+intentionally prefers a recoverable missing-head window over silently
+destroying an unexpected same-UID writer's state.
 
 An occupied temporary or content-addressed pathname is preserved, never
 truncated or followed. A partial file or failed publication remains crash

@@ -8,11 +8,11 @@ import {
 import { constants } from "node:fs";
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   open,
   realpath,
-  rename,
   unlink,
 } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -423,15 +423,62 @@ async function writeNewDurableJson(path, value, mode, field) {
   }
 }
 
-async function replaceCheckpoint(root, next) {
+async function writeContentAddressedRecovery(path, value, field) {
+  try {
+    await writeNewDurableJson(path, value, 0o400, field);
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    if (canonicalJson(await secureJson(path, `existing ${field}`)) !== canonicalJson(value))
+      fail(`${field} path contains different content`);
+  }
+}
+
+async function replaceCheckpoint(root, expectedCurrent, next) {
   const target = join(root, HEAD);
   const temporary = join(root, `.${basename(HEAD)}.${process.pid}.${Date.now()}.tmp`);
+  const predecessor = join(
+    root,
+    `.checkpoint.previous.${canonicalSha256(expectedCurrent)}.json`,
+  );
+  const candidate = join(
+    root,
+    `.checkpoint.candidate.${canonicalSha256(next)}.json`,
+  );
   await writeNewDurableJson(temporary, next, 0o400, "temporary operations checkpoint");
-  await rename(temporary, target);
+  await requireUnchangedCheckpoint(root, expectedCurrent, "at checkpoint publication boundary");
+  await writeContentAddressedRecovery(
+    candidate,
+    next,
+    "checkpoint recovery candidate",
+  );
+  await writeContentAddressedRecovery(
+    predecessor,
+    expectedCurrent,
+    "checkpoint recovery predecessor",
+  );
   await syncDirectory(root);
-  if (canonicalJson(await secureJson(target, "published operations checkpoint")) !==
-      canonicalJson(next))
-    fail("published operations checkpoint differs from the durable candidate");
+  await requireUnchangedCheckpoint(root, expectedCurrent, "before predecessor removal");
+  let predecessorRemoved = false;
+  try {
+    await unlink(target);
+    predecessorRemoved = true;
+    await syncDirectory(root);
+    await link(temporary, target);
+    await syncDirectory(root);
+    await unlink(temporary);
+    await syncDirectory(root);
+    if (canonicalJson(await secureJson(target, "published operations checkpoint")) !==
+        canonicalJson(next))
+      fail("published operations checkpoint differs from the durable candidate");
+  } catch (cause) {
+    if (!predecessorRemoved) throw cause;
+    const error = new Error(
+      "publication quorum transport operations: checkpoint publication outcome is ambiguous; preserve lock, candidate, predecessor, and named checkpoint",
+      { cause },
+    );
+    error.preserveOperationsLock = true;
+    throw error;
+  }
 }
 
 async function requireUnchangedCheckpoint(root, expected, phase) {
@@ -534,10 +581,19 @@ async function releaseLock(root, lock) {
 async function withLock(root, operationName, operation) {
   await requireDirectory(root);
   const lock = await acquireLock(root, operationName);
+  let preserve = false;
   try {
     return await operation();
+  } catch (error) {
+    preserve = error?.preserveOperationsLock === true;
+    throw error;
   } finally {
-    await releaseLock(root, lock);
+    if (preserve) {
+      await lock.handle.close();
+      await syncDirectory(root);
+    } else {
+      await releaseLock(root, lock);
+    }
   }
 }
 
@@ -621,7 +677,7 @@ export async function activateOperationsStore(root, authorization, expectedAutho
       authorityKeyGeneration: authority.keyGeneration,
       authorityPublicKeyBase64Url: authority.publicKeyBase64Url,
     };
-    await replaceCheckpoint(root, next);
+    await replaceCheckpoint(root, current, next);
     return next;
   });
 }
@@ -739,7 +795,7 @@ export async function prepareOperationsRotation({
       status: "rotating",
       pendingRotationSha256: rotationSha256,
     };
-    await replaceCheckpoint(root, next);
+    await replaceCheckpoint(root, current, next);
     return { rotation, rotationSha256, checkpoint: next };
   });
 }
@@ -1322,7 +1378,7 @@ export async function commitOperationsRotation({
       previousRotationSha256: recordSha256,
       pendingRotationSha256: null,
     };
-    await replaceCheckpoint(root, next);
+    await replaceCheckpoint(root, current, next);
     return { checkpoint: next, rotationRecordSha256: recordSha256 };
   });
 }
@@ -1393,7 +1449,7 @@ export async function beginTransportRequest(
       externalAnchorAcceptanceSha256: acceptanceSha256,
     };
     await requireUnchangedCheckpoint(root, current, "before pending transition");
-    await replaceCheckpoint(root, next);
+    await replaceCheckpoint(root, current, next);
     return next;
   });
 }
@@ -1408,7 +1464,7 @@ export async function commitTransportRequest(root, requestId, receiptSha256) {
     await auditRotationChain(root, current);
     await auditAnchorAcceptanceChain(root, current);
     const next = { ...current, generation: current.generation + 1, status: "ready", expectedHeadSha256: receiptSha256, pendingRequestId: null };
-    await replaceCheckpoint(root, next);
+    await replaceCheckpoint(root, current, next);
     return next;
   });
 }
