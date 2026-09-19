@@ -495,6 +495,39 @@ anchor its head in hardware-backed monotonic or independently append-only
 storage. The CLI must not be colocated with the collector or treated as proof
 that those operational controls exist.
 
+`publication-quorum-witness-transport.mjs` is the bounded network adapter for
+placing that custody command on an independent host. Server and client use
+separate exact, versioned configuration files; every address, port, path,
+timeout, byte limit, certificate path and SHA-256 certificate pin is mandatory.
+Wildcard listen addresses, redirects, TLS below 1.3, keep-alive reuse, fallback
+certificates and retry loops are rejected or disabled.
+
+The server requires a CA-validated client certificate and its exact pinned leaf
+fingerprint. The client likewise validates the server CA, hostname/IP and exact
+leaf fingerprint. This mTLS boundary is additional to the application-level
+Ed25519 client signature already checked by custody. Only `POST` to the single
+configured path with an exact bounded `Content-Length` is accepted. The server
+calls the same durable CAS core in process and returns the signed witness receipt
+only after custody confirms its new head.
+
+The client derives a deterministic request ID from the expected head and
+authenticated request, sends exactly once, bounds the response and independently
+verifies the witness signature, receipt hash, request ID and exact signed
+payload before creating its output. An occupied output fails before any network
+request. Timeout, disconnect, TLS failure, every non-200 response, an invalid
+200 response, or a create-once output race after the call is reported as
+potentially ambiguous and is never retried: query `custody inspect`, then recover
+the content-addressed receipt with `custody export` when the head advanced.
+Even a non-200 can follow a committed CAS whose cleanup failed. Reposting the
+same request is intentionally rejected by custody CAS.
+
+`serve` runs in the foreground and provides no daemonization, secret manager,
+rate-limit cluster or certificate issuance. Deployment must supply process
+isolation, firewalling, audited certificate rotation, HSM-backed witness keys,
+monitoring and an external monotonic/append-only head anchor. Repository tests
+exercise only an ephemeral loopback mTLS server with throwaway keys and do not
+constitute a deployed service.
+
 Commit with `witnessed-verify` or `witnessed-rotate`. Supply both the ordinary
 expected checkpoint hash and the externally queried witness head hash (or
 `genesis` only for the first receipt), the prior receipt, and the new signed

@@ -11,6 +11,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   canonicalJson,
   canonicalSha256,
@@ -534,6 +535,22 @@ async function authorize(root, config, witnessPrivateKey, request, expectedHead)
   }
 }
 
+export async function authorizeCustodyRequest({
+  store,
+  config: configInput,
+  witnessPrivateKey,
+  authenticatedRequest,
+  expectedHead,
+}) {
+  const root = await openStore(store);
+  const config = validateCustodyConfig(configInput);
+  if (expectedHead !== "genesis") requireHash(expectedHead, "expected head hash");
+  if (describeKey(witnessPrivateKey).keyId !== config.witness.keyId)
+    fail("witness private key does not match custody config");
+  const request = verifyAuthenticatedRequest(config, authenticatedRequest);
+  return authorize(root, config, witnessPrivateKey, request, expectedHead);
+}
+
 function usage() {
   console.error(`Usage:
   node scripts/publication-quorum-witness-custody.mjs init --store <new-directory> --config <custody.json> --initial-checkpoint-sha256 <sha256>
@@ -589,7 +606,6 @@ async function main() {
       "--store", "--config", "--witness-private-key",
       "--authenticated-request", "--expected-head-sha256", "--output",
     ]);
-    const root = await openStore(values["--store"]);
     const config = validateCustodyConfig(await readJson(values["--config"], MAX_CONFIG));
     const expectedHead = values["--expected-head-sha256"];
     if (expectedHead !== "genesis") requireHash(expectedHead, "expected head hash");
@@ -599,14 +615,16 @@ async function main() {
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    const witnessKey = await readPrivateKey(values["--witness-private-key"]);
-    if (describeKey(witnessKey).keyId !== config.witness.keyId)
-      fail("witness private key does not match custody config");
-    const request = verifyAuthenticatedRequest(
+    const result = await authorizeCustodyRequest({
+      store: values["--store"],
       config,
-      await readJson(values["--authenticated-request"], MAX_ENVELOPE),
-    );
-    const result = await authorize(root, config, witnessKey, request, expectedHead);
+      witnessPrivateKey: await readPrivateKey(values["--witness-private-key"]),
+      authenticatedRequest: await readJson(
+        values["--authenticated-request"],
+        MAX_ENVELOPE,
+      ),
+      expectedHead,
+    });
     try {
       await writeNewJson(values["--output"], result.receipt, 0o444);
     } catch (error) {
@@ -675,7 +693,9 @@ async function main() {
   process.exitCode = 2;
 }
 
-main().catch((error) => {
-  console.error(error.message);
-  process.exitCode = 1;
-});
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+}
