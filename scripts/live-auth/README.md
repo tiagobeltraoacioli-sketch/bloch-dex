@@ -1,7 +1,7 @@
 # Offline live-read envelope tooling
 
-This tooling signs and verifies the read-only gate and staging artifact consumed
-by the frontend. It does not generate a key, select a deployment, contact a
+This tooling signs and verifies the read-only gate, staging artifact and an
+independently keyed generation-witness statement consumed by the frontend. It does not generate a key, select a deployment, contact a
 network, modify `index.html`, or enable liquidity.
 
 Run it with Node 24. Inputs must be regular, non-symlink files. A private key must
@@ -59,8 +59,28 @@ log, artifact, browser, or CI secret that is exposed to untrusted jobs.
      --output <gate.signed.json>
    ```
 
-4. On a separate verification host, verify both files with the public key and an
-   explicit review time:
+4. An independent operator maintains a distinct Ed25519 witness key and HTTPS
+   origin. Prepare a payload containing exactly `schemaVersion: 1`, the reviewed
+   live-read `liveReadKeyId`, `minimumLiveReadKeyGeneration`, `issuedAt`, and
+   `expiresAt`. Its window is at most 15 minutes. Sign it with the witness key:
+
+   ```sh
+   node scripts/live-auth.mjs sign-witness \
+     --private-key <witness-private-key.pem> \
+     --key-generation <witness-key-generation> \
+     --input <witness-payload.json> \
+     --at <review-unix-seconds> \
+     --output <witness.signed.json>
+   ```
+
+   Pin its exact cross-origin HTTPS URL, public key, and signer generation in the
+   reviewed build as `VITE_POSTERN_LIVE_WITNESS_URL`,
+   `VITE_POSTERN_LIVE_WITNESS_PUBLIC_KEY`, and
+   `VITE_POSTERN_LIVE_WITNESS_KEY_GENERATION`. Serve only the current statement
+   with narrowly scoped CORS and `Cache-Control: no-store`.
+
+5. On a separate verification host, verify all three files with both public keys
+   and an explicit review time:
 
    ```sh
    node scripts/live-auth.mjs verify-bundle \
@@ -68,6 +88,9 @@ log, artifact, browser, or CI secret that is exposed to untrusted jobs.
      --key-generation <positive-integer> \
      --gate <gate.signed.json> \
      --manifest <artifact-manifest.signed.json> \
+     --witness-public-key <witness-public-key.pem> \
+     --witness-key-generation <witness-key-generation> \
+     --witness <witness.signed.json> \
      --at <review-unix-seconds>
    ```
 
@@ -86,11 +109,19 @@ rejects the new bundle and a build pinned to the new pair rejects the old bundle
 The runtime has no hidden fallback or multi-key trust set; omitting either build
 pin fails closed.
 
-Never decrement or reuse a generation, including after a failed or rolled-back
-release. The generation is an externally reviewed release counter, not persistent
-browser state: serving an entire older frontend build also restores that build's
-older trust policy. TLS, immutable release deployment, and an external monotonic
-release process must prevent that whole-build rollback.
+Never decrement or reuse either generation. Before any manifest or RPC request,
+the browser fetches the independently hosted statement without credentials or a
+referrer and requires its live-read key ID and generation floor to authorize the
+build. Advancing the witness floor therefore rejects an older live-read build as
+long as that build already contains this witness policy and the independent
+origin/key are not compromised. A replay remains possible until the statement's
+short expiry.
+
+This is not complete whole-build rollback prevention. Serving a frontend from
+before witness enforcement removes the check, while rolling back DNS/TLS, the
+witness service and its key together can restore an older policy. Immutable
+release deployment, client-visible transparency/pinning, independent custody,
+reliable clocks and an external monotonic publication process remain required.
 
 Revoke a compromised signer by removing the host gate, preserving preview mode,
 and producing a reviewed build pinned to a new key. Retaining an old private key
@@ -104,8 +135,8 @@ RPC behavior and operational custody remains mandatory.
 
 ## Browser acceptance
 
-The acceptance test uses only ephemeral test keys, a one-day self-signed test
-certificate and an HTTPS server bound to `127.0.0.1`. It builds the actual
+The acceptance test uses only ephemeral live-read and witness keys, a one-day self-signed test
+certificate and two HTTPS origins bound to `127.0.0.1`. It builds the actual
 frontend with the ephemeral public-key pin, creates gate/manifest envelopes via
 the CLI, and drives an installed Chrome/Chromium through its local DevTools
 endpoint:
@@ -121,7 +152,9 @@ background networking and does not contact a real RPC. The local fake RPC
 intentionally returns the wrong chain ID after recording the request, so the UI
 must end in an unavailable read-only state.
 
-The test proves that Chrome WebCrypto accepts the CLI signatures, that the exact
+The test proves that Chrome WebCrypto accepts the CLI signatures, that the independent witness
+is fetched without cookies/referrer before the manifest, that a higher witness
+generation floor causes zero manifest/RPC requests, and that the exact
 manifest pin and gate clock policy are enforced, and that expired, wrong-key and
 missing gates make no manifest or RPC request. For the valid gate it permits only
 the same-origin manifest GET and allowlisted `eth_chainId` POST, verifies RPC

@@ -14,10 +14,12 @@ import {
 
 export const GATE_DOMAIN = "POSTERN_LIVE_GATE_V2\n";
 export const MANIFEST_DOMAIN = "POSTERN_LIVE_MANIFEST_V2\n";
+export const WITNESS_DOMAIN = "POSTERN_LIVE_WITNESS_V1\n";
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_JSON_BYTES = 512 * 1024;
 const MAX_GATE_SECONDS = 7 * 24 * 60 * 60;
+const MAX_WITNESS_SECONDS = 15 * 60;
 
 function fail(message) {
   throw new Error(`live auth: ${message}`);
@@ -257,6 +259,34 @@ export function validateGate(payload, at) {
     if (url.protocol !== "https:" || url.origin !== origin)
       fail("gate RPC origin is invalid");
   }
+  return payload;
+}
+
+export function validateWitness(payload, at) {
+  exactKeys(
+    payload,
+    [
+      "schemaVersion",
+      "liveReadKeyId",
+      "minimumLiveReadKeyGeneration",
+      "issuedAt",
+      "expiresAt",
+    ],
+    "witness",
+  );
+  if (
+    payload.schemaVersion !== 1 ||
+    !HEX.test(payload.liveReadKeyId) ||
+    !Number.isSafeInteger(payload.minimumLiveReadKeyGeneration) ||
+    payload.minimumLiveReadKeyGeneration < 1 ||
+    !Number.isSafeInteger(payload.issuedAt) ||
+    !Number.isSafeInteger(payload.expiresAt) ||
+    payload.expiresAt <= payload.issuedAt ||
+    payload.expiresAt - payload.issuedAt > MAX_WITNESS_SECONDS ||
+    payload.expiresAt <= at ||
+    payload.issuedAt > at + 300
+  )
+    fail("witness policy is invalid");
   return payload;
 }
 

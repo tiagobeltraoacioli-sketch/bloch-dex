@@ -2,7 +2,12 @@ import { render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readLiveReadGate } from '../live-gate';
 import App from '../App';
-import { canonicalLiveReadPayload, LIVE_GATE_DOMAIN, LIVE_MANIFEST_DOMAIN } from '../live-auth';
+import {
+  canonicalLiveReadPayload,
+  LIVE_GATE_DOMAIN,
+  LIVE_MANIFEST_DOMAIN,
+  LIVE_WITNESS_DOMAIN,
+} from '../live-auth';
 import { createSigningFixture, type SigningFixture } from './live-auth-helpers';
 
 vi.mock('../LivePoolsRuntime', () => ({
@@ -10,15 +15,20 @@ vi.mock('../LivePoolsRuntime', () => ({
 }));
 
 let signing: SigningFixture;
+let witnessSigning: SigningFixture;
 const NOW = Math.floor(Date.now() / 1_000);
 
 beforeAll(async () => {
   signing = await createSigningFixture();
+  witnessSigning = await createSigningFixture();
 });
 
 beforeEach(() => {
   vi.stubEnv('VITE_POSTERN_LIVE_READ_PUBLIC_KEY', signing.encodedPublicKey);
   vi.stubEnv('VITE_POSTERN_LIVE_READ_KEY_GENERATION', String(signing.keyGeneration));
+  vi.stubEnv('VITE_POSTERN_LIVE_WITNESS_URL', 'https://witness.invalid/current.json');
+  vi.stubEnv('VITE_POSTERN_LIVE_WITNESS_PUBLIC_KEY', witnessSigning.encodedPublicKey);
+  vi.stubEnv('VITE_POSTERN_LIVE_WITNESS_KEY_GENERATION', String(witnessSigning.keyGeneration));
 });
 
 function configuration(overrides: Record<string, unknown> = {}) {
@@ -52,9 +62,33 @@ async function signedConfiguration(
   return signing.sign(configuration(overrides), domain);
 }
 
+async function witnessResponse(overrides: Record<string, unknown> = {}) {
+  const payload = {
+    schemaVersion: 1,
+    liveReadKeyId: signing.trustAnchor.keyId,
+    minimumLiveReadKeyGeneration: signing.keyGeneration,
+    issuedAt: NOW - 30,
+    expiresAt: NOW + 600,
+    ...overrides,
+  };
+  return new Response(JSON.stringify(await witnessSigning.sign(payload, LIVE_WITNESS_DOMAIN)), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+async function installValidWitness() {
+  const response = await witnessResponse();
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => response),
+  );
+}
+
 afterEach(() => {
   document.getElementById('postern-live-read-config')?.remove();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe('live read host gate', () => {
@@ -67,6 +101,7 @@ describe('live read host gate', () => {
   });
 
   it('accepts only an explicitly signed bounded read-only configuration', async () => {
+    await installValidWitness();
     const isolated = document.implementation.createHTMLDocument();
     const signed = (await signedConfiguration()) as { payload: Record<string, unknown> };
     signed.payload = Object.fromEntries(Object.entries(signed.payload).reverse());
@@ -148,6 +183,7 @@ describe('live read host gate', () => {
   });
 
   it('mounts the isolated runtime on its explicit route only when every gate is present', async () => {
+    await installValidWitness();
     inject(await signedConfiguration());
     history.replaceState(null, '', '/#/live-pools');
     render(<App />);
@@ -198,6 +234,67 @@ describe('live read host gate', () => {
         String(signing.keyGeneration),
       ),
     ).resolves.toEqual({ available: false, reason: 'untrusted' });
+  });
+
+  it('fails before manifest or RPC use when the independent witness floor rejects this release', async () => {
+    const isolated = document.implementation.createHTMLDocument();
+    inject(await signedConfiguration(), isolated);
+    const response = await witnessResponse({ minimumLiveReadKeyGeneration: 8 });
+    const fetchFn = vi.fn(async () => response);
+    await expect(
+      readLiveReadGate(
+        isolated,
+        'https://dex.invalid',
+        signing.encodedPublicKey,
+        String(signing.keyGeneration),
+        NOW,
+        'https://witness.invalid/current.json',
+        witnessSigning.encodedPublicKey,
+        String(witnessSigning.keyGeneration),
+        fetchFn,
+      ),
+    ).resolves.toEqual({ available: false, reason: 'untrusted' });
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith(
+      'https://witness.invalid/current.json',
+      expect.objectContaining({
+        credentials: 'omit',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
+      }),
+    );
+  });
+
+  it('rejects a same-origin, stale, wrong-key or oversized witness', async () => {
+    const isolated = document.implementation.createHTMLDocument();
+    inject(await signedConfiguration(), isolated);
+    const stale = await witnessResponse({ issuedAt: NOW - 1_000, expiresAt: NOW - 1 });
+    const cases: Array<[unknown, unknown, () => Promise<Response>]> = [
+      ['https://dex.invalid/witness.json', witnessSigning.encodedPublicKey, async () => stale],
+      ['https://witness.invalid/current.json', signing.encodedPublicKey, async () => stale],
+      ['https://witness.invalid/current.json', witnessSigning.encodedPublicKey, async () => stale],
+      [
+        'https://witness.invalid/current.json',
+        witnessSigning.encodedPublicKey,
+        async () =>
+          new Response('x'.repeat(4_097), { headers: { 'content-type': 'application/json' } }),
+      ],
+    ];
+    for (const [url, key, response] of cases) {
+      await expect(
+        readLiveReadGate(
+          isolated,
+          'https://dex.invalid',
+          signing.encodedPublicKey,
+          String(signing.keyGeneration),
+          NOW,
+          url,
+          key,
+          String(witnessSigning.keyGeneration),
+          response,
+        ),
+      ).resolves.toEqual({ available: false, reason: 'untrusted' });
+    }
   });
 
   it('fails closed on the live route when configuration is missing or invalid', async () => {

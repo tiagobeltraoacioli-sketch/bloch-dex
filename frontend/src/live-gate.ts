@@ -1,5 +1,6 @@
 import { LiveReaderFactory, type LiveRuntimeOptions } from './live-runtime';
 import { importLiveReadTrustAnchor, LIVE_GATE_DOMAIN, verifySignedJson } from './live-auth';
+import { verifyLiveReadWitness } from './live-witness';
 
 const CONFIG_ID = 'postern-live-read-config';
 const MAX_CONFIG_BYTES = 4_096;
@@ -39,6 +40,10 @@ export async function readLiveReadGate(
   encodedPublicKey: unknown = import.meta.env.VITE_POSTERN_LIVE_READ_PUBLIC_KEY,
   encodedKeyGeneration: unknown = import.meta.env.VITE_POSTERN_LIVE_READ_KEY_GENERATION,
   nowSeconds: number = Math.floor(Date.now() / 1_000),
+  encodedWitnessUrl: unknown = import.meta.env.VITE_POSTERN_LIVE_WITNESS_URL,
+  encodedWitnessPublicKey: unknown = import.meta.env.VITE_POSTERN_LIVE_WITNESS_PUBLIC_KEY,
+  encodedWitnessKeyGeneration: unknown = import.meta.env.VITE_POSTERN_LIVE_WITNESS_KEY_GENERATION,
+  fetchFn: typeof fetch = fetch,
 ): Promise<LiveReadGate> {
   const element = documentValue.getElementById(CONFIG_ID);
   if (!element) return { available: false, reason: 'missing' };
@@ -103,6 +108,19 @@ export async function readLiveReadGate(
       registry.hash
     ) {
       return { available: false, reason: 'invalid' };
+    }
+    try {
+      await verifyLiveReadWitness(
+        trustAnchor,
+        pageOrigin,
+        encodedWitnessUrl,
+        encodedWitnessPublicKey,
+        encodedWitnessKeyGeneration,
+        nowSeconds,
+        fetchFn,
+      );
+    } catch {
+      return { available: false, reason: 'untrusted' };
     }
     const options: LiveRuntimeOptions = {
       registryUrl: registry.pathname,

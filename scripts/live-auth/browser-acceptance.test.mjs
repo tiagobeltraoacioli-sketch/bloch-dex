@@ -113,7 +113,12 @@ async function keyFiles(root, name) {
       })
     ).stdout,
   );
-  return { privatePath, publicPath, pin: inspected.publicKeyBase64Url };
+  return {
+    privatePath,
+    publicPath,
+    pin: inspected.publicKeyBase64Url,
+    keyId: inspected.keyId,
+  };
 }
 
 async function runCli(...args) {
@@ -188,9 +193,45 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
     certificate,
   ]);
   const requests = [];
+  const witnessRequests = [];
   let indexHtml = "";
   let signedManifest = "";
+  let signedWitness = "";
   const site = join(root, "site");
+  const witnessServer = createServer(
+    { cert: await readFile(certificate), key: await readFile(certificateKey) },
+    (request, response) => {
+      witnessRequests.push({
+        method: request.method,
+        path: request.url,
+        cookie: request.headers.cookie,
+        referer: request.headers.referer,
+      });
+      if (request.method !== "GET" || request.url !== "/current.json") {
+        response.writeHead(404).end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "application/json",
+        "access-control-allow-origin": request.headers.origin ?? "null",
+        "cache-control": "no-store",
+      });
+      response.end(signedWitness);
+    },
+  );
+  await new Promise((resolveListen) =>
+    witnessServer.listen(0, "127.0.0.1", resolveListen),
+  );
+  t.after(
+    () =>
+      new Promise((resolveClose) => {
+        witnessServer.closeAllConnections();
+        witnessServer.close(resolveClose);
+      }),
+  );
+  const witnessAddress = witnessServer.address();
+  assert(witnessAddress && typeof witnessAddress === "object");
+  const witnessOrigin = `https://127.0.0.1:${witnessAddress.port}`;
   const server = createServer(
     { cert: await readFile(certificate), key: await readFile(certificateKey) },
     async (request, response) => {
@@ -265,12 +306,16 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
   const origin = `https://127.0.0.1:${address.port}`;
   const primary = await keyFiles(root, "primary");
   const secondary = await keyFiles(root, "secondary");
+  const witness = await keyFiles(root, "witness");
   await execute(nodeBin, [vite, "build", "--outDir", site, "--emptyOutDir"], {
     cwd: resolve("frontend"),
     env: {
       ...process.env,
       VITE_POSTERN_LIVE_READ_PUBLIC_KEY: primary.pin,
       VITE_POSTERN_LIVE_READ_KEY_GENERATION: "7",
+      VITE_POSTERN_LIVE_WITNESS_URL: `${witnessOrigin}/current.json`,
+      VITE_POSTERN_LIVE_WITNESS_PUBLIC_KEY: witness.pin,
+      VITE_POSTERN_LIVE_WITNESS_KEY_GENERATION: "7",
     },
   });
   const baseIndex = await readFile(join(site, "index.html"), "utf8");
@@ -288,6 +333,30 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
   );
   signedManifest = await readFile(signedManifestPath, "utf8");
   const now = Math.floor(Date.now() / 1_000);
+  const witnessInput = join(root, "witness.json");
+  const witnessOutput = join(root, "witness.signed.json");
+  await writeFile(
+    witnessInput,
+    JSON.stringify({
+      schemaVersion: 1,
+      liveReadKeyId: primary.keyId,
+      minimumLiveReadKeyGeneration: 7,
+      issuedAt: now - 30,
+      expiresAt: now + 600,
+    }),
+  );
+  await runCli(
+    "sign-witness",
+    "--private-key",
+    witness.privatePath,
+    "--input",
+    witnessInput,
+    "--at",
+    String(now),
+    "--output",
+    witnessOutput,
+  );
+  signedWitness = await readFile(witnessOutput, "utf8");
 
   async function signedGate(
     name,
@@ -368,6 +437,7 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
 
   async function chromeDom(envelope, name) {
     requests.length = 0;
+    witnessRequests.length = 0;
     indexHtml = injectGate(baseIndex, envelope);
     const profile = join(root, `profile-${name}`);
     const args = [
@@ -479,9 +549,53 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
   assert.equal(dataRequests[0].cookie, "browser_acceptance=1");
   assert.equal(dataRequests[1].cookie, undefined);
   assert.equal(dataRequests[1].referer, undefined);
+  assert.deepEqual(witnessRequests, [
+    {
+      method: "GET",
+      path: "/current.json",
+      cookie: undefined,
+      referer: undefined,
+    },
+  ]);
   assert(
     dataRequests.every((entry) => !/^eth_(?:send|sign)/.test(entry.rpc ?? "")),
   );
+
+  const rejectingWitnessInput = join(root, "rejecting-witness.json");
+  const rejectingWitnessOutput = join(root, "rejecting-witness.signed.json");
+  await writeFile(
+    rejectingWitnessInput,
+    JSON.stringify({
+      schemaVersion: 1,
+      liveReadKeyId: primary.keyId,
+      minimumLiveReadKeyGeneration: 8,
+      issuedAt: now - 30,
+      expiresAt: now + 600,
+    }),
+  );
+  await runCli(
+    "sign-witness",
+    "--private-key",
+    witness.privatePath,
+    "--input",
+    rejectingWitnessInput,
+    "--at",
+    String(now),
+    "--output",
+    rejectingWitnessOutput,
+  );
+  signedWitness = await readFile(rejectingWitnessOutput, "utf8");
+  const rejectedByWitness = await chromeDom(validGate, "witness-floor");
+  assert.match(rejectedByWitness, /could not be authenticated/i);
+  assert.equal(
+    requests.some(
+      (entry) =>
+        entry.path === "/artifact.signed.json" || entry.method === "POST",
+    ),
+    false,
+  );
+  assert.equal(witnessRequests.length, 1);
+  signedWitness = await readFile(witnessOutput, "utf8");
 
   for (const [name, envelope, copy] of [
     ["expired", expiredGate, /did not pass validation/i],

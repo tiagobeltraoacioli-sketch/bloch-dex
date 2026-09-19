@@ -36,12 +36,12 @@ and the work needed before transactions can open. Bridge links use the active cu
 
 ## Implemented interactions
 
-| Screen    | Behavior                                                                                                                                                               |
-| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Trade     | Token search/selection, pair reversal, amount validation, bounded route discovery and comparison, slippage settings, review dialog, chart period selection            |
-| Pools     | Name/symbol search, liquidity/volume/fee sorting, local watchlist, empty results, pool details, deposit preview                                                        |
-| Portfolio | Sample composition/history/activity, period selection, proportional withdrawal and deposit previews                                                                    |
-| Shared    | Hash navigation, keyboard skip link, native modal dialogs, wallet discovery/connection/disconnect, network explanation and liquidity guide                             |
+| Screen    | Behavior                                                                                                                                                   |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Trade     | Token search/selection, pair reversal, amount validation, bounded route discovery and comparison, slippage settings, review dialog, chart period selection |
+| Pools     | Name/symbol search, liquidity/volume/fee sorting, local watchlist, empty results, pool details, deposit preview                                            |
+| Portfolio | Sample composition/history/activity, period selection, proportional withdrawal and deposit previews                                                        |
+| Shared    | Hash navigation, keyboard skip link, native modal dialogs, wallet discovery/connection/disconnect, network explanation and liquidity guide                 |
 
 Below 720px, the swap form precedes the market panel and pool rows become cards.
 Other layouts adapt at 380px, 960px and 1180px. Controls have accessible names,
@@ -268,7 +268,23 @@ multi-key fallback: a removed key and every prior-generation envelope are
 rejected by the new build. Gate expiry is checked again before every
 manifest fetch, limiting replay of an older signed gate and manifest pair.
 
-The repository contains no public-key pin, private key, signed host element or
+Before the manifest is fetched, `src/live-witness.ts` also requires a fresh
+Ed25519 statement from the exact cross-origin HTTPS URL pinned into the build by
+`VITE_POSTERN_LIVE_WITNESS_URL`. A separate witness public key and signer
+generation are pinned by `VITE_POSTERN_LIVE_WITNESS_PUBLIC_KEY` and
+`VITE_POSTERN_LIVE_WITNESS_KEY_GENERATION`. The statement names the live-read
+key ID, sets its minimum allowed generation, and expires within 15 minutes. The
+request omits credentials and referrer, refuses redirects, bypasses caches, and
+is bounded to 4 KiB and five seconds. A missing, stale, malformed, wrong-key or
+higher-floor statement disables live read before any manifest or RPC request.
+
+This witness adds an independently controlled rollback boundary only for builds
+that contain the check. It does not stop rollback to a frontend predating the
+witness, coordinated rollback/compromise of both origins and keys, DNS/TLS
+control, or replay within the short signed window. Immutable deployment and an
+external transparency/monotonic publication system remain production gates.
+
+The repository contains no public-key pin, witness endpoint, private key, signed host element or
 deployment values. The staging build currently emits the unsigned artifact
 payload; an external controlled signing step must wrap it before this runtime
 will accept it. The [offline envelope tooling](../scripts/live-auth/README.md)

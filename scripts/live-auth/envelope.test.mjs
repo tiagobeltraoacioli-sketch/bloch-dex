@@ -93,14 +93,28 @@ function gate() {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "postern-live-auth-"));
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const witnessKeys = generateKeyPairSync("ed25519");
   const privatePath = join(root, "private.pem");
   const publicPath = join(root, "public.pem");
   const manifestPath = join(root, "manifest.json");
   const gatePath = join(root, "gate.json");
+  const witnessPrivatePath = join(root, "witness-private.pem");
+  const witnessPublicPath = join(root, "witness-public.pem");
+  const witnessInputPath = join(root, "witness.json");
+  const witnessPath = join(root, "witness.signed.json");
   await writeFile(
     privatePath,
     privateKey.export({ format: "pem", type: "pkcs8" }),
     { mode: 0o600 },
+  );
+  await writeFile(
+    witnessPrivatePath,
+    witnessKeys.privateKey.export({ format: "pem", type: "pkcs8" }),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    witnessPublicPath,
+    witnessKeys.publicKey.export({ format: "pem", type: "spki" }),
   );
   await writeFile(
     publicPath,
@@ -109,7 +123,62 @@ async function fixture() {
   );
   await writeFile(manifestPath, JSON.stringify(manifest()));
   await writeFile(gatePath, JSON.stringify(gate()));
-  return { root, privatePath, publicPath, manifestPath, gatePath };
+  const inspected = JSON.parse(
+    (
+      await execute(process.execPath, [
+        cli,
+        "inspect-key",
+        "--public-key",
+        publicPath,
+      ])
+    ).stdout,
+  );
+  await writeFile(
+    witnessInputPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      liveReadKeyId: inspected.keyId,
+      minimumLiveReadKeyGeneration: Number(KEY_GENERATION),
+      issuedAt: NOW - 30,
+      expiresAt: NOW + 600,
+    }),
+  );
+  await execute(process.execPath, [
+    cli,
+    "sign-witness",
+    "--private-key",
+    witnessPrivatePath,
+    "--key-generation",
+    KEY_GENERATION,
+    "--input",
+    witnessInputPath,
+    "--at",
+    String(NOW),
+    "--output",
+    witnessPath,
+  ]);
+  return {
+    root,
+    privatePath,
+    publicPath,
+    manifestPath,
+    gatePath,
+    witnessPrivatePath,
+    witnessPublicPath,
+    witnessInputPath,
+    witnessPath,
+  };
+}
+
+function witnessArgs(files) {
+  return [
+    "--witness-public-key",
+    files.witnessPublicPath,
+    "--witness-key-generation",
+    KEY_GENERATION,
+    "--witness",
+    files.witnessPath,
+  ];
 }
 
 async function run(...args) {
@@ -178,6 +247,7 @@ test("creates deterministic signed envelopes and verifies their exact bundle", a
     signedGate,
     "--manifest",
     signedManifest,
+    ...witnessArgs(files),
     "--at",
     String(NOW),
   );
@@ -226,6 +296,7 @@ test("binds the generation into signatures and rejects downgrade or relabeling",
         relabeled,
         "--manifest",
         relabeled,
+        ...witnessArgs(files),
         "--at",
         String(NOW),
       ],
@@ -248,6 +319,7 @@ test("binds the generation into signatures and rejects downgrade or relabeling",
         signedManifest,
         "--manifest",
         signedManifest,
+        ...witnessArgs(files),
         "--at",
         String(NOW),
       ],
@@ -297,6 +369,7 @@ test("rejects tampering, a substituted signed manifest and a different key", asy
       signedGate,
       "--manifest",
       tamperedPath,
+      ...witnessArgs(files),
       "--at",
       String(NOW),
     ),
@@ -324,6 +397,7 @@ test("rejects tampering, a substituted signed manifest and a different key", asy
       signedGate,
       "--manifest",
       alternativeSigned,
+      ...witnessArgs(files),
       "--at",
       String(NOW),
     ),
@@ -340,10 +414,75 @@ test("rejects tampering, a substituted signed manifest and a different key", asy
       signedGate,
       "--manifest",
       signedManifest,
+      ...witnessArgs(files),
       "--at",
       String(NOW),
     ),
     /signature key identity does not match/,
+  );
+});
+
+test("rejects a witness floor above the bundle generation", async () => {
+  const files = await fixture();
+  const signedManifest = join(files.root, "floor-manifest.signed.json");
+  const signedGate = join(files.root, "floor-gate.signed.json");
+  const witnessInput = join(files.root, "higher-floor.json");
+  const witness = join(files.root, "higher-floor.signed.json");
+  await run(
+    "sign-manifest",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.manifestPath,
+    "--output",
+    signedManifest,
+  );
+  await run(
+    "sign-gate",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.gatePath,
+    "--manifest",
+    signedManifest,
+    "--at",
+    String(NOW),
+    "--output",
+    signedGate,
+  );
+  const input = JSON.parse(await readFile(files.witnessInputPath, "utf8"));
+  input.minimumLiveReadKeyGeneration = 8;
+  await writeFile(witnessInput, JSON.stringify(input));
+  await run(
+    "sign-witness",
+    "--private-key",
+    files.witnessPrivatePath,
+    "--input",
+    witnessInput,
+    "--at",
+    String(NOW),
+    "--output",
+    witness,
+  );
+  await assert.rejects(
+    run(
+      "verify-bundle",
+      "--public-key",
+      files.publicPath,
+      "--gate",
+      signedGate,
+      "--manifest",
+      signedManifest,
+      "--witness-public-key",
+      files.witnessPublicPath,
+      "--witness-key-generation",
+      KEY_GENERATION,
+      "--witness",
+      witness,
+      "--at",
+      String(NOW),
+    ),
+    /witness does not authorize/,
   );
 });
 

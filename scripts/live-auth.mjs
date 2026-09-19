@@ -4,6 +4,7 @@ import {
   canonicalJson,
   GATE_DOMAIN,
   MANIFEST_DOMAIN,
+  WITNESS_DOMAIN,
   payloadSha256,
   readJson,
   readPrivateKey,
@@ -11,6 +12,7 @@ import {
   signEnvelope,
   validateGate,
   validateManifest,
+  validateWitness,
   verifyEnvelope,
   writeNewJson,
 } from "./live-auth/envelope.mjs";
@@ -20,7 +22,8 @@ function usage() {
   node scripts/live-auth.mjs inspect-key --public-key <ed25519-public.pem>
   node scripts/live-auth.mjs sign-manifest --private-key <ed25519-private.pem> --key-generation <positive-integer> --input <manifest.json> --output <signed.json>
   node scripts/live-auth.mjs sign-gate --private-key <ed25519-private.pem> --key-generation <positive-integer> --input <gate.json> --manifest <signed-manifest.json> --at <unix-seconds> --output <signed.json>
-  node scripts/live-auth.mjs verify-bundle --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --at <unix-seconds>`);
+  node scripts/live-auth.mjs sign-witness --private-key <witness-ed25519-private.pem> --key-generation <positive-integer> --input <witness.json> --at <unix-seconds> --output <signed.json>
+  node scripts/live-auth.mjs verify-bundle --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --at <unix-seconds>`);
 }
 
 function parse(command, args, names) {
@@ -115,16 +118,40 @@ async function main() {
     );
     return;
   }
+  if (command === "sign-witness") {
+    const values = parse(command, args, [
+      "--private-key",
+      "--key-generation",
+      "--input",
+      "--at",
+      "--output",
+    ]);
+    const key = await readPrivateKey(values["--private-key"]);
+    const generation = keyGeneration(values["--key-generation"]);
+    const payload = validateWitness(
+      await readJson(values["--input"], 4_096),
+      timestamp(values["--at"]),
+    );
+    await writeNewJson(
+      values["--output"],
+      signEnvelope(payload, key, WITNESS_DOMAIN, generation),
+    );
+    return;
+  }
   if (command === "verify-bundle") {
     const values = parse(command, args, [
       "--public-key",
       "--key-generation",
       "--gate",
       "--manifest",
+      "--witness-public-key",
+      "--witness-key-generation",
+      "--witness",
       "--at",
     ]);
     const key = await readPublicKey(values["--public-key"]);
     const generation = keyGeneration(values["--key-generation"]);
+    const at = timestamp(values["--at"]);
     const manifest = validateManifest(
       verifyEnvelope(
         await readJson(values["--manifest"]),
@@ -140,16 +167,36 @@ async function main() {
         GATE_DOMAIN,
         generation,
       ),
-      timestamp(values["--at"]),
+      at,
     );
     if (gate.manifestSha256 !== payloadSha256(MANIFEST_DOMAIN, manifest))
       fail("gate manifest pin does not match");
+    const witnessKey = await readPublicKey(values["--witness-public-key"]);
+    if (describeKey(witnessKey).keyId === describeKey(key).keyId)
+      fail("witness key must be independent from the live-read key");
+    const witnessGeneration = keyGeneration(values["--witness-key-generation"]);
+    const witness = validateWitness(
+      verifyEnvelope(
+        await readJson(values["--witness"], 4_096),
+        witnessKey,
+        WITNESS_DOMAIN,
+        witnessGeneration,
+      ),
+      at,
+    );
+    if (
+      witness.liveReadKeyId !== describeKey(key).keyId ||
+      generation < witness.minimumLiveReadKeyGeneration
+    )
+      fail("witness does not authorize the live-read generation");
     console.log(
       canonicalJson({
         verified: true,
         keyId: describeKey(key).keyId,
         keyGeneration: generation,
         expiresAt: gate.expiresAt,
+        witnessKeyId: describeKey(witnessKey).keyId,
+        witnessExpiresAt: witness.expiresAt,
       }),
     );
     return;

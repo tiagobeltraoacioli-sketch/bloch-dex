@@ -5,6 +5,7 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 
 export const LIVE_GATE_DOMAIN = 'POSTERN_LIVE_GATE_V2\n';
 export const LIVE_MANIFEST_DOMAIN = 'POSTERN_LIVE_MANIFEST_V2\n';
+export const LIVE_WITNESS_DOMAIN = 'POSTERN_LIVE_WITNESS_V1\n';
 
 export type LiveReadTrustAnchor = {
   readonly keyId: string;
