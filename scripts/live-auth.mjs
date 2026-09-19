@@ -2,8 +2,10 @@
 import {
   describeKey,
   canonicalJson,
+  canonicalSha256,
   GATE_DOMAIN,
   MANIFEST_DOMAIN,
+  PUBLICATION_DOMAIN,
   WITNESS_DOMAIN,
   payloadSha256,
   readJson,
@@ -12,6 +14,8 @@ import {
   signEnvelope,
   validateGate,
   validateManifest,
+  validatePublication,
+  validatePublicationCheckpoint,
   validateWitness,
   verifyEnvelope,
   writeNewJson,
@@ -23,7 +27,10 @@ function usage() {
   node scripts/live-auth.mjs sign-manifest --private-key <ed25519-private.pem> --key-generation <positive-integer> --input <manifest.json> --output <signed.json>
   node scripts/live-auth.mjs sign-gate --private-key <ed25519-private.pem> --key-generation <positive-integer> --input <gate.json> --manifest <signed-manifest.json> --at <unix-seconds> --output <signed.json>
   node scripts/live-auth.mjs sign-witness --private-key <witness-ed25519-private.pem> --key-generation <positive-integer> --input <witness.json> --at <unix-seconds> --output <signed.json>
-  node scripts/live-auth.mjs verify-bundle --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --at <unix-seconds>`);
+  node scripts/live-auth.mjs verify-bundle --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --at <unix-seconds>
+  node scripts/live-auth.mjs init-publication --publication-public-key <offline-ed25519-public.pem> --publication-key-generation <positive-integer> --output-checkpoint <checkpoint.json>
+  node scripts/live-auth.mjs publish-release --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --publication-private-key <offline-ed25519-private.pem> --publication-key-generation <positive-integer> --previous <genesis|signed-entry.json> --at <unix-seconds> --output <signed-entry.json>
+  node scripts/live-auth.mjs verify-release --public-key <ed25519-public.pem> --key-generation <positive-integer> --gate <signed-gate.json> --manifest <signed-manifest.json> --witness-public-key <witness-ed25519-public.pem> --witness-key-generation <positive-integer> --witness <signed-witness.json> --publication-public-key <offline-ed25519-public.pem> --publication-key-generation <positive-integer> --entry <signed-entry.json> --checkpoint <checkpoint.json> --at <unix-seconds> --output-checkpoint <checkpoint.json>`);
 }
 
 function parse(command, args, names) {
@@ -59,6 +66,68 @@ function keyGeneration(value) {
   if (!Number.isSafeInteger(parsed))
     fail("--key-generation must be a safe integer");
   return parsed;
+}
+
+async function verifiedBundle(values, at) {
+  const key = await readPublicKey(values["--public-key"]);
+  const generation = keyGeneration(values["--key-generation"]);
+  const manifestEnvelope = await readJson(values["--manifest"]);
+  const manifest = validateManifest(
+    verifyEnvelope(manifestEnvelope, key, MANIFEST_DOMAIN, generation),
+  );
+  const gateEnvelope = await readJson(values["--gate"], 4_096);
+  const gate = validateGate(
+    verifyEnvelope(gateEnvelope, key, GATE_DOMAIN, generation),
+    at,
+  );
+  if (gate.manifestSha256 !== payloadSha256(MANIFEST_DOMAIN, manifest))
+    fail("gate manifest pin does not match");
+  const witnessKey = await readPublicKey(values["--witness-public-key"]);
+  if (describeKey(witnessKey).keyId === describeKey(key).keyId)
+    fail("witness key must be independent from the live-read key");
+  const witnessGeneration = keyGeneration(values["--witness-key-generation"]);
+  const witnessEnvelope = await readJson(values["--witness"], 4_096);
+  const witness = validateWitness(
+    verifyEnvelope(
+      witnessEnvelope,
+      witnessKey,
+      WITNESS_DOMAIN,
+      witnessGeneration,
+    ),
+    at,
+  );
+  if (
+    witness.liveReadKeyId !== describeKey(key).keyId ||
+    generation < witness.minimumLiveReadKeyGeneration
+  )
+    fail("witness does not authorize the live-read generation");
+  return {
+    key,
+    generation,
+    manifestEnvelope,
+    manifest,
+    gateEnvelope,
+    gate,
+    witnessKey,
+    witnessGeneration,
+    witnessEnvelope,
+    witness,
+  };
+}
+
+function publicationBinding(bundle) {
+  const binding = {
+    schemaVersion: 1,
+    manifestEnvelopeSha256: canonicalSha256(bundle.manifestEnvelope),
+    gateEnvelopeSha256: canonicalSha256(bundle.gateEnvelope),
+    witnessEnvelopeSha256: canonicalSha256(bundle.witnessEnvelope),
+    sourceRevision: bundle.manifest.sourceRevision,
+    liveReadKeyId: describeKey(bundle.key).keyId,
+    liveReadKeyGeneration: bundle.generation,
+    witnessKeyId: describeKey(bundle.witnessKey).keyId,
+    witnessKeyGeneration: bundle.witnessGeneration,
+  };
+  return { ...binding, bundleSha256: canonicalSha256(binding) };
 }
 
 async function main() {
@@ -149,54 +218,187 @@ async function main() {
       "--witness",
       "--at",
     ]);
-    const key = await readPublicKey(values["--public-key"]);
-    const generation = keyGeneration(values["--key-generation"]);
     const at = timestamp(values["--at"]);
-    const manifest = validateManifest(
-      verifyEnvelope(
-        await readJson(values["--manifest"]),
-        key,
-        MANIFEST_DOMAIN,
-        generation,
-      ),
-    );
-    const gate = validateGate(
-      verifyEnvelope(
-        await readJson(values["--gate"], 4_096),
-        key,
-        GATE_DOMAIN,
-        generation,
-      ),
-      at,
-    );
-    if (gate.manifestSha256 !== payloadSha256(MANIFEST_DOMAIN, manifest))
-      fail("gate manifest pin does not match");
-    const witnessKey = await readPublicKey(values["--witness-public-key"]);
-    if (describeKey(witnessKey).keyId === describeKey(key).keyId)
-      fail("witness key must be independent from the live-read key");
-    const witnessGeneration = keyGeneration(values["--witness-key-generation"]);
-    const witness = validateWitness(
-      verifyEnvelope(
-        await readJson(values["--witness"], 4_096),
-        witnessKey,
-        WITNESS_DOMAIN,
-        witnessGeneration,
-      ),
-      at,
-    );
-    if (
-      witness.liveReadKeyId !== describeKey(key).keyId ||
-      generation < witness.minimumLiveReadKeyGeneration
-    )
-      fail("witness does not authorize the live-read generation");
+    const bundle = await verifiedBundle(values, at);
     console.log(
       canonicalJson({
         verified: true,
-        keyId: describeKey(key).keyId,
-        keyGeneration: generation,
-        expiresAt: gate.expiresAt,
-        witnessKeyId: describeKey(witnessKey).keyId,
-        witnessExpiresAt: witness.expiresAt,
+        keyId: describeKey(bundle.key).keyId,
+        keyGeneration: bundle.generation,
+        expiresAt: bundle.gate.expiresAt,
+        witnessKeyId: describeKey(bundle.witnessKey).keyId,
+        witnessExpiresAt: bundle.witness.expiresAt,
+      }),
+    );
+    return;
+  }
+  if (command === "publish-release") {
+    const values = parse(command, args, [
+      "--public-key",
+      "--key-generation",
+      "--gate",
+      "--manifest",
+      "--witness-public-key",
+      "--witness-key-generation",
+      "--witness",
+      "--publication-private-key",
+      "--publication-key-generation",
+      "--previous",
+      "--at",
+      "--output",
+    ]);
+    const at = timestamp(values["--at"]);
+    const bundle = await verifiedBundle(values, at);
+    const publicationKey = await readPrivateKey(
+      values["--publication-private-key"],
+    );
+    const publicationIdentity = describeKey(publicationKey);
+    if (
+      publicationIdentity.keyId === describeKey(bundle.key).keyId ||
+      publicationIdentity.keyId === describeKey(bundle.witnessKey).keyId
+    )
+      fail("publication key must be independent from bundle keys");
+    const publicationGeneration = keyGeneration(
+      values["--publication-key-generation"],
+    );
+    let sequence = 1;
+    let previousEntrySha256 = null;
+    if (values["--previous"] !== "genesis") {
+      const previous = await readJson(values["--previous"]);
+      const previousPayload = validatePublication(
+        verifyEnvelope(
+          previous,
+          publicationKey,
+          PUBLICATION_DOMAIN,
+          publicationGeneration,
+        ),
+      );
+      sequence = previousPayload.sequence + 1;
+      if (!Number.isSafeInteger(sequence)) fail("publication sequence overflow");
+      if (at < previousPayload.publishedAt)
+        fail("publication time must not move backwards");
+      previousEntrySha256 = canonicalSha256(previous);
+    }
+    const payload = validatePublication({
+      schemaVersion: 1,
+      sequence,
+      previousEntrySha256,
+      publishedAt: at,
+      ...publicationBinding(bundle),
+    });
+    await writeNewJson(
+      values["--output"],
+      signEnvelope(
+        payload,
+        publicationKey,
+        PUBLICATION_DOMAIN,
+        publicationGeneration,
+      ),
+      0o444,
+    );
+    return;
+  }
+  if (command === "init-publication") {
+    const values = parse(command, args, [
+      "--publication-public-key",
+      "--publication-key-generation",
+      "--output-checkpoint",
+    ]);
+    const publicationKey = await readPublicKey(
+      values["--publication-public-key"],
+    );
+    const publicationGeneration = keyGeneration(
+      values["--publication-key-generation"],
+    );
+    await writeNewJson(
+      values["--output-checkpoint"],
+      validatePublicationCheckpoint({
+        schemaVersion: 1,
+        publicationKeyId: describeKey(publicationKey).keyId,
+        publicationKeyGeneration: publicationGeneration,
+        sequence: 0,
+        entrySha256: null,
+      }),
+      0o444,
+    );
+    return;
+  }
+  if (command === "verify-release") {
+    const values = parse(command, args, [
+      "--public-key",
+      "--key-generation",
+      "--gate",
+      "--manifest",
+      "--witness-public-key",
+      "--witness-key-generation",
+      "--witness",
+      "--publication-public-key",
+      "--publication-key-generation",
+      "--entry",
+      "--checkpoint",
+      "--at",
+      "--output-checkpoint",
+    ]);
+    const at = timestamp(values["--at"]);
+    const publicationKey = await readPublicKey(
+      values["--publication-public-key"],
+    );
+    const publicationIdentity = describeKey(publicationKey);
+    const publicationGeneration = keyGeneration(
+      values["--publication-key-generation"],
+    );
+    const entry = await readJson(values["--entry"]);
+    const payload = validatePublication(
+      verifyEnvelope(
+        entry,
+        publicationKey,
+        PUBLICATION_DOMAIN,
+        publicationGeneration,
+      ),
+    );
+    if (payload.publishedAt > at + 300)
+      fail("publication time is in the future");
+    const bundle = await verifiedBundle(values, payload.publishedAt);
+    if (
+      publicationIdentity.keyId === describeKey(bundle.key).keyId ||
+      publicationIdentity.keyId === describeKey(bundle.witnessKey).keyId
+    )
+      fail("publication key must be independent from bundle keys");
+    const expected = publicationBinding(bundle);
+    for (const [field, value] of Object.entries(expected))
+      if (payload[field] !== value)
+        fail("publication does not match the verified bundle");
+    const checkpoint = validatePublicationCheckpoint(
+      await readJson(values["--checkpoint"], 4_096),
+    );
+    if (
+      checkpoint.publicationKeyId !== publicationIdentity.keyId ||
+      checkpoint.publicationKeyGeneration !== publicationGeneration
+    )
+      fail("publication checkpoint key does not match");
+    const entrySha256 = canonicalSha256(entry);
+    const alreadyTrusted =
+      checkpoint.sequence === payload.sequence &&
+      checkpoint.entrySha256 === entrySha256;
+    const nextTrusted =
+      payload.sequence === checkpoint.sequence + 1 &&
+      payload.previousEntrySha256 === checkpoint.entrySha256;
+    if (!alreadyTrusted && !nextTrusted)
+      fail("publication is not the retained checkpoint or its successor");
+    const nextCheckpoint = validatePublicationCheckpoint({
+      schemaVersion: 1,
+      publicationKeyId: publicationIdentity.keyId,
+      publicationKeyGeneration: publicationGeneration,
+      sequence: payload.sequence,
+      entrySha256,
+    });
+    await writeNewJson(values["--output-checkpoint"], nextCheckpoint, 0o444);
+    console.log(
+      canonicalJson({
+        verified: true,
+        sequence: payload.sequence,
+        bundleSha256: payload.bundleSha256,
+        entrySha256,
       }),
     );
     return;

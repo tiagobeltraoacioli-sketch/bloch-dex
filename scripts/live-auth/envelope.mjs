@@ -15,6 +15,7 @@ import {
 export const GATE_DOMAIN = "POSTERN_LIVE_GATE_V2\n";
 export const MANIFEST_DOMAIN = "POSTERN_LIVE_MANIFEST_V2\n";
 export const WITNESS_DOMAIN = "POSTERN_LIVE_WITNESS_V1\n";
+export const PUBLICATION_DOMAIN = "POSTERN_LIVE_PUBLICATION_V1\n";
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HEX = /^[0-9a-f]{64}$/;
 const MAX_JSON_BYTES = 512 * 1024;
@@ -66,6 +67,10 @@ export function payloadSha256(domain, payload) {
   return createHash("sha256")
     .update(payloadBytes(domain, payload))
     .digest("hex");
+}
+
+export function canonicalSha256(value) {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
 }
 
 function rawPublicKey(key) {
@@ -290,6 +295,78 @@ export function validateWitness(payload, at) {
   return payload;
 }
 
+export function validatePublication(payload) {
+  exactKeys(
+    payload,
+    [
+      "schemaVersion",
+      "sequence",
+      "previousEntrySha256",
+      "publishedAt",
+      "bundleSha256",
+      "manifestEnvelopeSha256",
+      "gateEnvelopeSha256",
+      "witnessEnvelopeSha256",
+      "sourceRevision",
+      "liveReadKeyId",
+      "liveReadKeyGeneration",
+      "witnessKeyId",
+      "witnessKeyGeneration",
+    ],
+    "publication",
+  );
+  if (
+    payload.schemaVersion !== 1 ||
+    !Number.isSafeInteger(payload.sequence) ||
+    payload.sequence < 1 ||
+    (payload.sequence === 1
+      ? payload.previousEntrySha256 !== null
+      : !HEX.test(payload.previousEntrySha256)) ||
+    !Number.isSafeInteger(payload.publishedAt) ||
+    payload.publishedAt < 0 ||
+    !HEX.test(payload.bundleSha256) ||
+    !HEX.test(payload.manifestEnvelopeSha256) ||
+    !HEX.test(payload.gateEnvelopeSha256) ||
+    !HEX.test(payload.witnessEnvelopeSha256) ||
+    !/^[0-9a-f]{40}$/.test(payload.sourceRevision) ||
+    !HEX.test(payload.liveReadKeyId) ||
+    !Number.isSafeInteger(payload.liveReadKeyGeneration) ||
+    payload.liveReadKeyGeneration < 1 ||
+    !HEX.test(payload.witnessKeyId) ||
+    !Number.isSafeInteger(payload.witnessKeyGeneration) ||
+    payload.witnessKeyGeneration < 1
+  )
+    fail("publication is invalid");
+  return payload;
+}
+
+export function validatePublicationCheckpoint(checkpoint) {
+  exactKeys(
+    checkpoint,
+    [
+      "schemaVersion",
+      "publicationKeyId",
+      "publicationKeyGeneration",
+      "sequence",
+      "entrySha256",
+    ],
+    "publication checkpoint",
+  );
+  if (
+    checkpoint.schemaVersion !== 1 ||
+    !HEX.test(checkpoint.publicationKeyId) ||
+    !Number.isSafeInteger(checkpoint.publicationKeyGeneration) ||
+    checkpoint.publicationKeyGeneration < 1 ||
+    !Number.isSafeInteger(checkpoint.sequence) ||
+    checkpoint.sequence < 0 ||
+    (checkpoint.sequence === 0
+      ? checkpoint.entrySha256 !== null
+      : !HEX.test(checkpoint.entrySha256))
+  )
+    fail("publication checkpoint is invalid");
+  return checkpoint;
+}
+
 async function regularFile(path, secret = false, limit = 64 * 1024) {
   const before = await lstat(path);
   if (!before.isFile() || before.isSymbolicLink())
@@ -346,9 +423,9 @@ export async function readPublicKey(path) {
   }
 }
 
-export async function writeNewJson(path, value) {
+export async function writeNewJson(path, value, mode = 0o644) {
   await writeFile(path, `${canonicalJson(value)}\n`, {
     flag: "wx",
-    mode: 0o644,
+    mode,
   });
 }

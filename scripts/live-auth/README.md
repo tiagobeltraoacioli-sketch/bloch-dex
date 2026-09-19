@@ -97,6 +97,87 @@ log, artifact, browser, or CI secret that is exposed to untrusted jobs.
 Only a verified bundle may be considered for the later host-injection review.
 Verification does not publish files or validate a real RPC/CORS deployment.
 
+## Offline publication receipt and retained checkpoint
+
+The short-lived witness prevents an already witness-aware browser from accepting
+a live-read generation below its current floor. It is not a durable release
+history. For audit and rollback detection, use a third Ed25519 publication key
+that is distinct from both bundle keys and kept offline. The publication command
+re-verifies the complete bundle before signing a permanent, content-addressed
+receipt. It never copies a private key into the bundle or contacts a network.
+
+Initialize the verifier checkpoint once from the reviewed publication public
+key. Store this checkpoint in an independently authenticated system, not beside
+the web release:
+
+```sh
+node scripts/live-auth.mjs init-publication \
+  --publication-public-key <offline-publication-public.pem> \
+  --publication-key-generation <positive-integer> \
+  --output-checkpoint <checkpoint-0.json>
+```
+
+For the first release, pass `genesis`. For every later release, transfer the
+previous signed entry into the offline system and pass its path. The CLI derives
+the next sequence and previous-entry hash rather than accepting either value
+from operator input:
+
+```sh
+node scripts/live-auth.mjs publish-release \
+  --public-key <public-key.pem> \
+  --key-generation <positive-integer> \
+  --gate <gate.signed.json> \
+  --manifest <artifact-manifest.signed.json> \
+  --witness-public-key <witness-public-key.pem> \
+  --witness-key-generation <witness-key-generation> \
+  --witness <witness.signed.json> \
+  --publication-private-key <offline-publication-private.pem> \
+  --publication-key-generation <positive-integer> \
+  --previous <genesis-or-previous-entry.json> \
+  --at <publication-unix-seconds> \
+  --output <publication-entry.json>
+```
+
+The entry binds the canonical hashes of all three signed envelopes, the source
+revision, signer identities and generations, sequence, predecessor and
+publication time. Output creation is exclusive and mode `0444` on POSIX. That
+mode prevents accidental edits; it is not WORM storage or protection from an
+administrator. Publish the entry and bundle under their hashes in immutable
+object storage or a transparency service according to the deployment policy.
+
+An auditor verifies a new entry against its retained checkpoint and writes a new
+checkpoint to a different path:
+
+```sh
+node scripts/live-auth.mjs verify-release \
+  --public-key <public-key.pem> \
+  --key-generation <positive-integer> \
+  --gate <gate.signed.json> \
+  --manifest <artifact-manifest.signed.json> \
+  --witness-public-key <witness-public-key.pem> \
+  --witness-key-generation <witness-key-generation> \
+  --witness <witness.signed.json> \
+  --publication-public-key <offline-publication-public.pem> \
+  --publication-key-generation <positive-integer> \
+  --entry <publication-entry.json> \
+  --checkpoint <retained-checkpoint.json> \
+  --at <audit-unix-seconds> \
+  --output-checkpoint <next-checkpoint.json>
+```
+
+Verification accepts only the retained entry itself or its direct successor.
+This deliberately requires auditors to process every publication in order; it
+rejects rollback and a different same-sequence fork once the newer checkpoint
+has been retained. Bundle validity is checked at the signed publication time, so
+the receipt remains auditable after the gate and witness expire. The explicit
+audit time only bounds a publication timestamp from the future.
+
+The browser does not fetch or trust this log, and a checkpoint stored beside a
+rollbackable deployment provides no protection. The mechanism neither provides
+global gossip nor detects a fork before independent auditors compare/retain a
+checkpoint. Coordinated compromise of DNS/TLS, the live-read signer, witness,
+publication signer and checkpoint store remains outside its guarantees.
+
 ## Rotation and recovery
 
 Rotation is intentionally single-key and explicit. Increment the reviewed key
@@ -122,6 +203,8 @@ before witness enforcement removes the check, while rolling back DNS/TLS, the
 witness service and its key together can restore an older policy. Immutable
 release deployment, client-visible transparency/pinning, independent custody,
 reliable clocks and an external monotonic publication process remain required.
+The offline publication receipt above supplies tooling for that process, but its
+guarantee depends on independent key custody and durable external checkpoints.
 
 Revoke a compromised signer by removing the host gate, preserving preview mode,
 and producing a reviewed build pinned to a new key. Retaining an old private key
@@ -166,3 +249,8 @@ The signed `expiresAt` is also a hard runtime deadline. Manifest verification
 must finish before it, in-flight RPC reads are bounded by it, and an open reader
 refuses every request after it. Opening a session before expiry therefore does
 not extend the gate's authority.
+
+Publication receipts are intentionally absent from browser requests and do not
+expand browser authority. Their CLI tests cover signature tampering, key reuse,
+checkpoint rollback and same-sequence forks; browser acceptance continues to
+exercise only the short-lived online policy that gates reads.

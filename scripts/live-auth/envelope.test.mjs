@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -94,6 +94,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "postern-live-auth-"));
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const witnessKeys = generateKeyPairSync("ed25519");
+  const publicationKeys = generateKeyPairSync("ed25519");
   const privatePath = join(root, "private.pem");
   const publicPath = join(root, "public.pem");
   const manifestPath = join(root, "manifest.json");
@@ -102,6 +103,8 @@ async function fixture() {
   const witnessPublicPath = join(root, "witness-public.pem");
   const witnessInputPath = join(root, "witness.json");
   const witnessPath = join(root, "witness.signed.json");
+  const publicationPrivatePath = join(root, "publication-private.pem");
+  const publicationPublicPath = join(root, "publication-public.pem");
   await writeFile(
     privatePath,
     privateKey.export({ format: "pem", type: "pkcs8" }),
@@ -115,6 +118,15 @@ async function fixture() {
   await writeFile(
     witnessPublicPath,
     witnessKeys.publicKey.export({ format: "pem", type: "spki" }),
+  );
+  await writeFile(
+    publicationPrivatePath,
+    publicationKeys.privateKey.export({ format: "pem", type: "pkcs8" }),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    publicationPublicPath,
+    publicationKeys.publicKey.export({ format: "pem", type: "spki" }),
   );
   await writeFile(
     publicPath,
@@ -167,6 +179,8 @@ async function fixture() {
     witnessPublicPath,
     witnessInputPath,
     witnessPath,
+    publicationPrivatePath,
+    publicationPublicPath,
   };
 }
 
@@ -178,6 +192,20 @@ function witnessArgs(files) {
     KEY_GENERATION,
     "--witness",
     files.witnessPath,
+  ];
+}
+
+function bundleArgs(files, signedGate, signedManifest) {
+  return [
+    "--public-key",
+    files.publicPath,
+    "--key-generation",
+    KEY_GENERATION,
+    "--gate",
+    signedGate,
+    "--manifest",
+    signedManifest,
+    ...witnessArgs(files),
   ];
 }
 
@@ -261,6 +289,261 @@ test("creates deterministic signed envelopes and verifies their exact bundle", a
   );
   assert.match(inspected.publicKeyBase64Url, /^[A-Za-z0-9_-]{43}$/);
   assert.match(inspected.keyId, /^[0-9a-f]{64}$/);
+});
+
+test("publishes an immutable chained receipt and advances a retained checkpoint", async () => {
+  const files = await fixture();
+  const signedManifest = join(files.root, "release-manifest.signed.json");
+  const signedGate = join(files.root, "release-gate.signed.json");
+  await run(
+    "sign-manifest",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.manifestPath,
+    "--output",
+    signedManifest,
+  );
+  await run(
+    "sign-gate",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.gatePath,
+    "--manifest",
+    signedManifest,
+    "--at",
+    String(NOW),
+    "--output",
+    signedGate,
+  );
+  const checkpoint0 = join(files.root, "checkpoint-0.json");
+  await execute(process.execPath, [
+    cli,
+    "init-publication",
+    "--publication-public-key",
+    files.publicationPublicPath,
+    "--publication-key-generation",
+    "3",
+    "--output-checkpoint",
+    checkpoint0,
+  ]);
+  const entry1 = join(files.root, "publication-1.json");
+  const publicationArgs = [
+    cli,
+    "publish-release",
+    ...bundleArgs(files, signedGate, signedManifest),
+    "--publication-private-key",
+    files.publicationPrivatePath,
+    "--publication-key-generation",
+    "3",
+  ];
+  await execute(process.execPath, [
+    ...publicationArgs,
+    "--previous",
+    "genesis",
+    "--at",
+    String(NOW),
+    "--output",
+    entry1,
+  ]);
+  if (process.platform !== "win32")
+    assert.equal((await stat(entry1)).mode & 0o777, 0o444);
+
+  const checkpoint1 = join(files.root, "checkpoint-1.json");
+  const verificationArgs = [
+    cli,
+    "verify-release",
+    ...bundleArgs(files, signedGate, signedManifest),
+    "--publication-public-key",
+    files.publicationPublicPath,
+    "--publication-key-generation",
+    "3",
+  ];
+  const verified1 = await execute(process.execPath, [
+    ...verificationArgs,
+    "--entry",
+    entry1,
+    "--checkpoint",
+    checkpoint0,
+    "--at",
+    String(NOW),
+    "--output-checkpoint",
+    checkpoint1,
+  ]);
+  assert.equal(JSON.parse(verified1.stdout).sequence, 1);
+  assert.equal(JSON.parse(await readFile(checkpoint1, "utf8")).sequence, 1);
+
+  const checkpoint1Late = join(files.root, "checkpoint-1-late.json");
+  await execute(process.execPath, [
+    ...verificationArgs,
+    "--entry",
+    entry1,
+    "--checkpoint",
+    checkpoint1,
+    "--at",
+    String(NOW + 10_000),
+    "--output-checkpoint",
+    checkpoint1Late,
+  ]);
+  assert.deepEqual(
+    JSON.parse(await readFile(checkpoint1Late, "utf8")),
+    JSON.parse(await readFile(checkpoint1, "utf8")),
+  );
+
+  const entry2 = join(files.root, "publication-2.json");
+  await assert.rejects(
+    execute(process.execPath, [
+      ...publicationArgs,
+      "--previous",
+      entry1,
+      "--at",
+      String(NOW - 1),
+      "--output",
+      join(files.root, "backdated-publication.json"),
+    ]),
+    /publication time must not move backwards/,
+  );
+  await execute(process.execPath, [
+    ...publicationArgs,
+    "--previous",
+    entry1,
+    "--at",
+    String(NOW + 1),
+    "--output",
+    entry2,
+  ]);
+  const checkpoint2 = join(files.root, "checkpoint-2.json");
+  await execute(process.execPath, [
+    ...verificationArgs,
+    "--entry",
+    entry2,
+    "--checkpoint",
+    checkpoint1,
+    "--at",
+    String(NOW + 1),
+    "--output-checkpoint",
+    checkpoint2,
+  ]);
+  await assert.rejects(
+    execute(process.execPath, [
+      ...verificationArgs,
+      "--entry",
+      entry2,
+      "--checkpoint",
+      checkpoint1,
+      "--at",
+      String(NOW - 1_000),
+      "--output-checkpoint",
+      join(files.root, "future-checkpoint.json"),
+    ]),
+    /publication time is in the future/,
+  );
+
+  await assert.rejects(
+    execute(process.execPath, [
+      ...verificationArgs,
+      "--entry",
+      entry1,
+      "--checkpoint",
+      checkpoint2,
+      "--at",
+      String(NOW + 1),
+      "--output-checkpoint",
+      join(files.root, "rolled-back.json"),
+    ]),
+    /not the retained checkpoint or its successor/,
+  );
+
+  const fork = join(files.root, "publication-2-fork.json");
+  await execute(process.execPath, [
+    ...publicationArgs,
+    "--previous",
+    entry1,
+    "--at",
+    String(NOW + 2),
+    "--output",
+    fork,
+  ]);
+  await assert.rejects(
+    execute(process.execPath, [
+      ...verificationArgs,
+      "--entry",
+      fork,
+      "--checkpoint",
+      checkpoint2,
+      "--at",
+      String(NOW + 2),
+      "--output-checkpoint",
+      join(files.root, "forked.json"),
+    ]),
+    /not the retained checkpoint or its successor/,
+  );
+
+  const tampered = JSON.parse(await readFile(entry2, "utf8"));
+  tampered.payload.sourceRevision = "f".repeat(40);
+  const tamperedPath = join(files.root, "publication-tampered.json");
+  await writeFile(tamperedPath, JSON.stringify(tampered));
+  await assert.rejects(
+    execute(process.execPath, [
+      ...verificationArgs,
+      "--entry",
+      tamperedPath,
+      "--checkpoint",
+      checkpoint1,
+      "--at",
+      String(NOW + 1),
+      "--output-checkpoint",
+      join(files.root, "tampered-checkpoint.json"),
+    ]),
+    /signature is invalid/,
+  );
+});
+
+test("refuses to reuse a bundle key as the publication key", async () => {
+  const files = await fixture();
+  const signedManifest = join(files.root, "same-key-manifest.signed.json");
+  const signedGate = join(files.root, "same-key-gate.signed.json");
+  await run(
+    "sign-manifest",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.manifestPath,
+    "--output",
+    signedManifest,
+  );
+  await run(
+    "sign-gate",
+    "--private-key",
+    files.privatePath,
+    "--input",
+    files.gatePath,
+    "--manifest",
+    signedManifest,
+    "--at",
+    String(NOW),
+    "--output",
+    signedGate,
+  );
+  await assert.rejects(
+    execute(process.execPath, [
+      cli,
+      "publish-release",
+      ...bundleArgs(files, signedGate, signedManifest),
+      "--publication-private-key",
+      files.privatePath,
+      "--publication-key-generation",
+      KEY_GENERATION,
+      "--previous",
+      "genesis",
+      "--at",
+      String(NOW),
+      "--output",
+      join(files.root, "same-key-publication.json"),
+    ]),
+    /publication key must be independent/,
+  );
 });
 
 test("binds the generation into signatures and rejects downgrade or relabeling", async () => {

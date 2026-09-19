@@ -560,6 +560,11 @@ test("CLI-signed bundles pass real Chrome WebCrypto and remain read-only", async
   assert(
     dataRequests.every((entry) => !/^eth_(?:send|sign)/.test(entry.rpc ?? "")),
   );
+  assert.equal(
+    requests.some((entry) => /publication|checkpoint|receipt/.test(entry.path)),
+    false,
+    "the browser must not treat the offline publication log as authority",
+  );
 
   const rejectingWitnessInput = join(root, "rejecting-witness.json");
   const rejectingWitnessOutput = join(root, "rejecting-witness.signed.json");
