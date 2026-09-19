@@ -777,9 +777,35 @@ consistency, availability or freshness on behalf of an adapter. The adapter is
 an explicit deployment trust boundary and must establish those properties
 before returning. A locally supplied evidence file is not a conforming adapter
 and is not deployment approval.
-This release uses operations-checkpoint schema 3. Older stores fail closed;
-do not edit them in place. Bootstrap a separately reviewed schema-3 store from an
-independently queried custody head and retain the old store for audit.
+This release uses operations-checkpoint schema 4. Schema-3 stores fail closed.
+Never edit `checkpoint.json` in place. A schema-3 store that has never accepted
+an external anchor head (`externalAnchorSequence` is `null`) can be migrated
+offline into a new directory after obtaining its exact canonical checkpoint
+SHA-256 through a separate authenticated review:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs migrate-v3-to-v4 \
+  --source-store <reviewed-schema-3-store> \
+  --destination-store <new-nonexistent-schema-4-store> \
+  --expected-v3-checkpoint-sha256 <externally-approved-sha256>
+```
+
+The command takes the source operations lock, rejects a hash mismatch rather
+than adopting local state, audits and copies the complete referenced rotation
+chain, writes a canonical migration record containing the old checkpoint, and
+writes the schema-4 checkpoint last. The source is never modified apart from
+the temporary operations lock and remains the unambiguous backup. The
+destination must not exist; an interrupted attempt leaves an occupied but
+non-runnable directory for manual inspection and must not be resumed or
+silently replaced.
+
+A schema-3 store with a non-null external anchor sequence cannot be migrated:
+schema 3 did not retain the authenticated acceptance chain required by schema
+4. Resetting that sequence, inventing records, or trusting a locally supplied
+head would permit rollback. Retain that store for audit and bootstrap a new,
+separately reviewed schema-4 store from an independently queried custody and
+anchor-log state instead. This command performs no network access, activation,
+transport request, deployment, or fund movement.
 
 Commit with `witnessed-verify` or `witnessed-rotate`. Supply both the ordinary
 expected checkpoint hash and the externally queried witness head hash (or

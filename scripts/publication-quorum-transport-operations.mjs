@@ -43,6 +43,7 @@ const HEAD = "checkpoint.json";
 const LOCK = ".operations.lock";
 const ROTATIONS = "rotations";
 const ANCHOR_ACCEPTANCES = "anchor-acceptances";
+const V3_MIGRATION_RECORD = "migration-v3-checkpoint.json";
 export const MTLS_PROFILE_ROTATION_DOMAIN =
   "POSTERN_PUBLICATION_QUORUM_MTLS_PROFILE_ROTATION_V1\n";
 export const OPERATIONS_ANCHOR_DOMAIN =
@@ -277,6 +278,51 @@ function validateCheckpoint(value) {
   return value;
 }
 
+function validateV3Checkpoint(value) {
+  exactKeys(value, [
+    "schemaVersion", "manifestSha256", "generation", "status",
+    "expectedHeadSha256", "pendingRequestId", "authorizationSha256",
+    "authorityKeyId", "authorityKeyGeneration", "authorityPublicKeyBase64Url",
+    "rotationSequence", "previousRotationSha256", "pendingRotationSha256",
+    "externalAnchorSequence",
+  ], "schema-3 operations checkpoint");
+  if (value.schemaVersion !== 3 || !Number.isSafeInteger(value.generation) || value.generation < 0)
+    fail("schema-3 operations checkpoint version or generation is invalid");
+  requireHash(value.manifestSha256, "schema-3 manifest hash");
+  requireHead(value.expectedHeadSha256);
+  if (!["inactive", "ready", "pending", "rotating"].includes(value.status))
+    fail("schema-3 operations checkpoint status is invalid");
+  if ((value.status === "pending") !==
+      (typeof value.pendingRequestId === "string" && HEX.test(value.pendingRequestId)))
+    fail("schema-3 operations checkpoint pending request is invalid");
+  if (value.status === "inactive" ? value.authorizationSha256 !== null :
+      typeof value.authorizationSha256 !== "string" || !HEX.test(value.authorizationSha256))
+    fail("schema-3 operations checkpoint authorization is invalid");
+  const authorityAbsent = value.authorityKeyId === null &&
+    value.authorityKeyGeneration === null && value.authorityPublicKeyBase64Url === null;
+  if (value.status === "inactive") {
+    if (!authorityAbsent) fail("inactive schema-3 operations checkpoint must not have an authority");
+  } else {
+    const authority = authorityFromRaw(
+      value.authorityPublicKeyBase64Url,
+      value.authorityKeyGeneration,
+    );
+    if (value.authorityKeyId !== authority.keyId)
+      fail("schema-3 operations checkpoint authority key ID does not match");
+  }
+  if (!Number.isSafeInteger(value.rotationSequence) || value.rotationSequence < 0)
+    fail("schema-3 operations checkpoint rotation sequence is invalid");
+  if (value.previousRotationSha256 !== "genesis")
+    requireHash(value.previousRotationSha256, "schema-3 previous rotation hash");
+  if ((value.status === "rotating") !==
+      (typeof value.pendingRotationSha256 === "string" && HEX.test(value.pendingRotationSha256)))
+    fail("schema-3 operations checkpoint pending rotation is invalid");
+  if (value.externalAnchorSequence !== null &&
+      (!Number.isSafeInteger(value.externalAnchorSequence) || value.externalAnchorSequence < 1))
+    fail("schema-3 operations checkpoint external anchor sequence is invalid");
+  return value;
+}
+
 async function requireDirectory(root) {
   const metadata = await lstat(root).catch(() => null);
   if (!metadata?.isDirectory() || metadata.isSymbolicLink()) fail("operations store must be a real directory");
@@ -331,18 +377,18 @@ async function withLock(root, operation) {
   let handle;
   try {
     handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
-    await handle.sync();
-    await syncDirectory(root);
-    return await operation();
   } catch (error) {
     if (error?.code === "EEXIST") fail("operations store is locked; inspect before recovery");
     throw error;
+  }
+  try {
+    await handle.sync();
+    await syncDirectory(root);
+    return await operation();
   } finally {
-    await handle?.close();
-    if (handle) {
-      await unlink(path).catch(() => {});
-      await syncDirectory(root);
-    }
+    await handle.close();
+    await unlink(path).catch(() => {});
+    await syncDirectory(root);
   }
 }
 
@@ -606,6 +652,113 @@ async function auditRotationChain(root, checkpoint) {
     initialManifestSha256: expectedManifestSha256,
     initialAuthorityKeyId: expectedAuthority.keyId,
   };
+}
+
+async function collectRotationArtifacts(root, checkpoint) {
+  const records = [];
+  let expectedRecordSha256 = checkpoint.previousRotationSha256;
+  let expectedSequence = checkpoint.rotationSequence;
+  while (expectedSequence > 0) {
+    const record = await secureJson(
+      join(root, ROTATIONS, `${expectedRecordSha256}.json`),
+      `schema-3 rotation record ${expectedSequence}`,
+    );
+    const { rotation } = validateRotationRecord(record);
+    if (canonicalSha256(record) !== expectedRecordSha256 ||
+        rotation.rotationSequence !== expectedSequence)
+      fail("schema-3 rotation record does not match its retained hash or sequence");
+    records.push({ sha256: expectedRecordSha256, value: record });
+    expectedRecordSha256 = rotation.previousRotationSha256;
+    expectedSequence -= 1;
+  }
+  let pending = null;
+  if (checkpoint.status === "rotating") {
+    const value = validateRotationPayload(await secureJson(
+      join(root, ROTATIONS, `${checkpoint.pendingRotationSha256}.json`),
+      "schema-3 pending rotation",
+    ));
+    if (canonicalSha256(value) !== checkpoint.pendingRotationSha256)
+      fail("schema-3 pending rotation does not match its retained hash");
+    pending = { sha256: checkpoint.pendingRotationSha256, value };
+  }
+  return { records, pending };
+}
+
+export async function migrateOperationsStoreV3ToV4({
+  sourceRoot,
+  destinationRoot,
+  expectedV3CheckpointSha256,
+}) {
+  requireHash(expectedV3CheckpointSha256, "externally approved schema-3 checkpoint hash");
+  if (resolve(sourceRoot) === resolve(destinationRoot))
+    fail("schema migration must create a separate destination; in-place migration is forbidden");
+  return withLock(sourceRoot, async () => {
+    const sourceCheckpoint = validateV3Checkpoint(await secureJson(
+      join(sourceRoot, HEAD),
+      "schema-3 operations checkpoint",
+    ));
+    if (canonicalSha256(sourceCheckpoint) !== expectedV3CheckpointSha256)
+      fail("schema-3 checkpoint does not match the externally approved hash; refusing TOFU");
+    if (sourceCheckpoint.externalAnchorSequence !== null)
+      fail("schema-3 store has accepted an external anchor head without retaining its evidence chain; safe migration is impossible");
+    await auditRotationChain(sourceRoot, sourceCheckpoint);
+    const artifacts = await collectRotationArtifacts(sourceRoot, sourceCheckpoint);
+    const nextCheckpoint = {
+      ...sourceCheckpoint,
+      schemaVersion: 4,
+      externalAnchorAcceptanceCount: 0,
+      externalAnchorAcceptanceSha256: null,
+    };
+    const destinationCheckpointSha256 = canonicalSha256(nextCheckpoint);
+    const migration = {
+      schemaVersion: 1,
+      kind: "operations-checkpoint-v3-v4-migration",
+      sourceCheckpointSha256: expectedV3CheckpointSha256,
+      destinationCheckpointSha256,
+      copiedRotationRecordCount: artifacts.records.length,
+      sourceCheckpoint,
+    };
+
+    // mkdir is the no-clobber publication boundary. A failed attempt leaves an
+    // occupied, non-runnable directory because checkpoint.json is written last.
+    await mkdir(destinationRoot, { mode: 0o700 });
+    await chmod(destinationRoot, 0o700);
+    await requireDirectory(destinationRoot);
+    const rotations = join(destinationRoot, ROTATIONS);
+    const acceptances = join(destinationRoot, ANCHOR_ACCEPTANCES);
+    await mkdir(rotations, { mode: 0o700 });
+    await chmod(rotations, 0o700);
+    await mkdir(acceptances, { mode: 0o700 });
+    await chmod(acceptances, 0o700);
+    for (const artifact of artifacts.records)
+      await writeNewJson(join(rotations, `${artifact.sha256}.json`), artifact.value, 0o400);
+    if (artifacts.pending &&
+        !artifacts.records.some(({ sha256 }) => sha256 === artifacts.pending.sha256))
+      await writeNewJson(
+        join(rotations, `${artifacts.pending.sha256}.json`),
+        artifacts.pending.value,
+        0o400,
+      );
+    await syncDirectory(rotations);
+    await syncDirectory(acceptances);
+    await writeNewJson(join(destinationRoot, V3_MIGRATION_RECORD), migration, 0o400);
+    await syncDirectory(destinationRoot);
+    if (canonicalSha256(validateV3Checkpoint(await secureJson(
+      join(sourceRoot, HEAD),
+      "schema-3 operations checkpoint after copy",
+    ))) !== expectedV3CheckpointSha256)
+      fail("schema-3 checkpoint changed during migration");
+    await writeNewJson(join(destinationRoot, HEAD), nextCheckpoint, 0o400);
+    await syncDirectory(destinationRoot);
+    const audit = await auditOperationsStore(destinationRoot);
+    return {
+      sourceCheckpointSha256: expectedV3CheckpointSha256,
+      destinationCheckpointSha256,
+      migrationRecordSha256: canonicalSha256(migration),
+      sourcePreserved: true,
+      audit,
+    };
+  });
 }
 
 export async function auditOperationsStore(root) {
@@ -1032,6 +1185,18 @@ async function main() {
     const result = await initializeOperationsStore(v["--store"], await securePublicJson(v["--manifest"], "preflight manifest"), v["--expected-manifest-sha256"], v["--initial-head-sha256"]);
     console.log(canonicalJson(result)); return;
   }
+  if (command === "migrate-v3-to-v4") {
+    const v = parse(args, [
+      "--source-store", "--destination-store", "--expected-v3-checkpoint-sha256",
+    ]);
+    const result = await migrateOperationsStoreV3ToV4({
+      sourceRoot: v["--source-store"],
+      destinationRoot: v["--destination-store"],
+      expectedV3CheckpointSha256: v["--expected-v3-checkpoint-sha256"],
+    });
+    console.log(canonicalJson(result));
+    return;
+  }
   if (command === "activate") {
     const v = parse(args, ["--store", "--authorization", "--expected-authorization-sha256"]);
     const result = await activateOperationsStore(v["--store"], await secureJson(v["--authorization"], "activation authorization"), v["--expected-authorization-sha256"]);
@@ -1150,7 +1315,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)

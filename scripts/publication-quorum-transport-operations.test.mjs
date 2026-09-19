@@ -6,7 +6,7 @@ import { chmod, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { canonicalSha256, describeKey } from "./live-auth/envelope.mjs";
+import { canonicalJson, canonicalSha256, describeKey } from "./live-auth/envelope.mjs";
 import {
   activateOperationsStore,
   auditOperationsStore,
@@ -18,6 +18,7 @@ import {
   initializeOperationsStore,
   inspectPendingRotation,
   inspectOperationsStore,
+  migrateOperationsStoreV3ToV4,
   prepareOperationsRotation,
   prepareOperationsAnchorStatement,
   signOperationsAnchorStatement,
@@ -91,6 +92,19 @@ async function externalAnchorLog(store, privateKey, keyGeneration, logSequence) 
   return { readLatestHead: async () => structuredClone(head) };
 }
 
+async function downgradeFixtureCheckpointToV3(store, overrides = {}) {
+  const path = join(store, "checkpoint.json");
+  const checkpoint = JSON.parse(await readFile(path, "utf8"));
+  delete checkpoint.externalAnchorAcceptanceCount;
+  delete checkpoint.externalAnchorAcceptanceSha256;
+  checkpoint.schemaVersion = 3;
+  Object.assign(checkpoint, overrides);
+  await chmod(path, 0o600);
+  await writeFile(path, `${canonicalJson(checkpoint)}\n`, { mode: 0o600 });
+  await chmod(path, 0o400);
+  return checkpoint;
+}
+
 test("preflight rejects unsafe key permissions and a certificate/key substitution", async () => {
   const value = await fixture();
   await chmod(value.client.key, 0o644);
@@ -103,6 +117,123 @@ test("preflight rejects unsafe key permissions and a certificate/key substitutio
   await assert.rejects(
     buildClientPreflight({ ...value.config, tlsPrivateKeyPath: rogue.key }, value.witness),
     /does not match the client certificate/,
+  );
+});
+
+test("migrates an explicitly approved schema-3 checkpoint into a separate audited schema-4 store", async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestHash = canonicalSha256(manifest);
+  const source = join(value.root, "schema-3-source");
+  const destination = join(value.root, "schema-4-destination");
+  await initializeOperationsStore(source, manifest, manifestHash, "genesis");
+  const priorIdentity = describeKey(value.authority.publicKey);
+  const activation = {
+    schemaVersion: 1,
+    authorizationId: "migration-bootstrap",
+    manifestSha256: manifestHash,
+    expectedHeadSha256: "genesis",
+    enabled: true,
+    authorityKeyId: priorIdentity.keyId,
+    authorityKeyGeneration: 1,
+    authorityPublicKeyBase64Url: priorIdentity.publicKeyBase64Url,
+  };
+  await activateOperationsStore(source, activation, canonicalSha256(activation));
+  const nextManifest = { ...manifest, serverCertificateSha256: "9".repeat(64) };
+  const nextKeys = generateKeyPairSync("ed25519");
+  const nextIdentity = describeKey(nextKeys.publicKey);
+  const prepared = await prepareOperationsRotation({
+    root: source,
+    priorManifest: manifest,
+    nextManifest,
+    expectedNextManifestSha256: canonicalSha256(nextManifest),
+    nextAuthority: { ...nextIdentity, keyGeneration: 2 },
+  });
+  await commitOperationsRotation({
+    root: source,
+    priorManifest: manifest,
+    nextManifest,
+    rotation: prepared.rotation,
+    priorAuthorization: authorizeOperationsRotation(
+      prepared.rotation, "prior-authorization", value.authority.privateKey, 1,
+    ),
+    nextAcceptance: authorizeOperationsRotation(
+      prepared.rotation, "next-acceptance", nextKeys.privateKey, 2,
+    ),
+  });
+  const v3 = await downgradeFixtureCheckpointToV3(source);
+  const expectedV3Hash = canonicalSha256(v3);
+
+  const result = await migrateOperationsStoreV3ToV4({
+    sourceRoot: source,
+    destinationRoot: destination,
+    expectedV3CheckpointSha256: expectedV3Hash,
+  });
+  assert.equal(result.sourceCheckpointSha256, expectedV3Hash);
+  assert.equal(result.sourcePreserved, true);
+  assert.equal(result.audit.valid, true);
+  assert.equal(result.audit.verifiedRecords, 1);
+  assert.equal(result.audit.verifiedAnchorAcceptances, 0);
+  const retainedSource = JSON.parse(await readFile(join(source, "checkpoint.json"), "utf8"));
+  assert.deepEqual(retainedSource, v3);
+  const migrated = await inspectOperationsStore(destination);
+  assert.equal(migrated.schemaVersion, 4);
+  assert.equal(migrated.externalAnchorSequence, null);
+  assert.equal(migrated.externalAnchorAcceptanceCount, 0);
+  assert.equal(migrated.externalAnchorAcceptanceSha256, null);
+  const { lockPresent, ...migratedCheckpoint } = migrated;
+  assert.equal(lockPresent, false);
+  assert.equal(canonicalSha256(migratedCheckpoint), result.destinationCheckpointSha256);
+  const migration = JSON.parse(await readFile(
+    join(destination, "migration-v3-checkpoint.json"),
+    "utf8",
+  ));
+  assert.equal(migration.sourceCheckpointSha256, expectedV3Hash);
+  assert.deepEqual(migration.sourceCheckpoint, v3);
+  await assert.rejects(
+    migrateOperationsStoreV3ToV4({
+      sourceRoot: source,
+      destinationRoot: destination,
+      expectedV3CheckpointSha256: expectedV3Hash,
+    }),
+    { code: "EEXIST" },
+  );
+});
+
+test("schema-3 migration refuses TOFU, in-place replacement, and missing acceptance history", async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestHash = canonicalSha256(manifest);
+  const source = join(value.root, "unsafe-schema-3-source");
+  await initializeOperationsStore(source, manifest, manifestHash, "genesis");
+  const v3 = await downgradeFixtureCheckpointToV3(source);
+  const expectedV3Hash = canonicalSha256(v3);
+  await assert.rejects(
+    migrateOperationsStoreV3ToV4({
+      sourceRoot: source,
+      destinationRoot: join(value.root, "wrong-hash-destination"),
+      expectedV3CheckpointSha256: "0".repeat(64),
+    }),
+    /refusing TOFU/,
+  );
+  await assert.rejects(
+    migrateOperationsStoreV3ToV4({
+      sourceRoot: source,
+      destinationRoot: source,
+      expectedV3CheckpointSha256: expectedV3Hash,
+    }),
+    /in-place migration is forbidden/,
+  );
+  const accepted = await downgradeFixtureCheckpointToV3(source, {
+    externalAnchorSequence: 7,
+  });
+  await assert.rejects(
+    migrateOperationsStoreV3ToV4({
+      sourceRoot: source,
+      destinationRoot: join(value.root, "history-destination"),
+      expectedV3CheckpointSha256: canonicalSha256(accepted),
+    }),
+    /safe migration is impossible/,
   );
 });
 
