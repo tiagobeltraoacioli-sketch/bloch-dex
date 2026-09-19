@@ -52,6 +52,18 @@ function ensure(condition: unknown, message: string): asserts condition {
   if (!condition) throw runtimeError(message);
 }
 
+function assertGateActive(deadline: number): void {
+  ensure(deadline > Date.now(), 'signed gate has expired');
+}
+
+function gateDeadline(expiresAt: number): number {
+  ensure(Number.isSafeInteger(expiresAt), 'signed gate expiry is invalid');
+  const deadline = expiresAt * 1_000;
+  ensure(Number.isSafeInteger(deadline), 'signed gate expiry is invalid');
+  assertGateActive(deadline);
+  return deadline;
+}
+
 function blockTag(value: unknown): boolean {
   return value === 'latest' || (typeof value === 'string' && QUANTITY.test(value));
 }
@@ -180,11 +192,18 @@ export class ReadOnlyRpcProvider implements Provider {
   readonly #url: string;
   readonly #fetch: RuntimeFetch;
   readonly #timeoutMs: number;
+  readonly #gateDeadline: number;
   readonly #controllers = new Set<AbortController>();
   #nextId = 1;
   #closed = false;
 
-  constructor(url: string, allowedOrigins: readonly string[], timeoutMs = 8_000, fetchFn = fetch) {
+  constructor(
+    url: string,
+    allowedOrigins: readonly string[],
+    expiresAt: number,
+    timeoutMs = 8_000,
+    fetchFn = fetch,
+  ) {
     ensure(
       Number.isSafeInteger(timeoutMs) && timeoutMs >= 250 && timeoutMs <= 30_000,
       'RPC timeout is invalid',
@@ -202,16 +221,21 @@ export class ReadOnlyRpcProvider implements Provider {
     );
     this.#url = parsed.toString();
     this.#timeoutMs = timeoutMs;
+    this.#gateDeadline = gateDeadline(expiresAt);
     this.#fetch = (...args) => fetchFn(...args);
   }
 
   async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
     ensure(!this.#closed, 'RPC provider is closed');
+    assertGateActive(this.#gateDeadline);
     const params = args.params ?? [];
     validateRequest(args.method, params);
     const id = this.#nextId++;
     ensure(Number.isSafeInteger(this.#nextId), 'RPC request ID exhausted');
-    const pending = withAbort(undefined, this.#timeoutMs);
+    const pending = withAbort(
+      undefined,
+      Math.min(this.#timeoutMs, this.#gateDeadline - Date.now()),
+    );
     this.#controllers.add(pending.controller);
     try {
       const response = await this.#fetch(this.#url, {
@@ -240,8 +264,10 @@ export class ReadOnlyRpcProvider implements Provider {
           'result' in envelope,
         'RPC response envelope is invalid',
       );
+      assertGateActive(this.#gateDeadline);
       return envelope.result;
     } catch (error) {
+      if (Date.now() >= this.#gateDeadline) throw runtimeError('signed gate has expired');
       if (pending.signal.aborted) throw runtimeError('RPC request timed out or was aborted');
       if (error instanceof Error && error.message.startsWith('Live read runtime unavailable:'))
         throw error;
@@ -263,10 +289,7 @@ export async function loadDeploymentRegistry(
   options: LiveRuntimeOptions,
   signal?: AbortSignal,
 ): Promise<DeploymentRegistry> {
-  ensure(
-    Number.isSafeInteger(options.expiresAt) && options.expiresAt > Math.floor(Date.now() / 1_000),
-    'signed gate has expired',
-  );
+  const deadline = gateDeadline(options.expiresAt);
   let page: URL;
   let registryUrl: URL;
   try {
@@ -290,7 +313,7 @@ export async function loadDeploymentRegistry(
     Number.isSafeInteger(timeoutMs) && timeoutMs >= 250 && timeoutMs <= 30_000,
     'registry timeout is invalid',
   );
-  const pending = withAbort(signal, timeoutMs);
+  const pending = withAbort(signal, Math.min(timeoutMs, deadline - Date.now()));
   try {
     const response = await (options.fetchFn ?? fetch)(registryUrl, {
       method: 'GET',
@@ -340,8 +363,10 @@ export async function loadDeploymentRegistry(
       allowed.size > 0 && allowed.has(new URL(registry.chain.rpcUrl).origin),
       'registry RPC origin is not allowlisted',
     );
+    assertGateActive(deadline);
     return registry;
   } catch (error) {
+    if (Date.now() >= deadline) throw runtimeError('signed gate has expired');
     if (pending.signal.aborted) throw runtimeError('registry request timed out or was aborted');
     if (error instanceof Error && error.message.startsWith('Live read')) throw error;
     throw runtimeError('registry request failed');
@@ -370,6 +395,7 @@ export class LiveReaderFactory {
       provider = new ReadOnlyRpcProvider(
         registry.chain.rpcUrl,
         this.#options.allowedRpcOrigins,
+        this.#options.expiresAt,
         this.#options.timeoutMs,
         this.#options.fetchFn,
       );

@@ -13,6 +13,7 @@ import { createSigningFixture, type SigningFixture } from './live-auth-helpers';
 
 const address = (byte: string) => `0x${byte.repeat(40)}` as Address;
 const hash = (byte: string) => `0x${byte.repeat(64)}` as Hex;
+const futureExpiry = () => Math.floor(Date.now() / 1_000) + 3_600;
 let signing: SigningFixture;
 
 beforeAll(async () => {
@@ -120,6 +121,7 @@ describe('read-only RPC provider', () => {
     const provider = new ReadOnlyRpcProvider(
       'https://rpc.invalid/',
       ['https://rpc.invalid'],
+      futureExpiry(),
       1_000,
       fetchFn,
     );
@@ -134,6 +136,7 @@ describe('read-only RPC provider', () => {
     const provider = new ReadOnlyRpcProvider(
       'https://rpc.invalid/',
       ['https://rpc.invalid'],
+      futureExpiry(),
       1_000,
       fetchFn,
     );
@@ -159,11 +162,13 @@ describe('read-only RPC provider', () => {
 
   it('rejects unallowlisted origins and invalid response envelopes', async () => {
     expect(
-      () => new ReadOnlyRpcProvider('https://other.invalid/', ['https://rpc.invalid']),
+      () =>
+        new ReadOnlyRpcProvider('https://other.invalid/', ['https://rpc.invalid'], futureExpiry()),
     ).toThrow(/not allowlisted/);
     const provider = new ReadOnlyRpcProvider(
       'https://rpc.invalid/',
       ['https://rpc.invalid'],
+      futureExpiry(),
       1_000,
       vi.fn(async () => json({ jsonrpc: '2.0', id: 99, result: '0x1' })),
     );
@@ -174,6 +179,7 @@ describe('read-only RPC provider', () => {
     const oversized = new ReadOnlyRpcProvider(
       'https://rpc.invalid/',
       ['https://rpc.invalid'],
+      futureExpiry(),
       1_000,
       vi.fn(async () =>
         json(
@@ -183,6 +189,14 @@ describe('read-only RPC provider', () => {
       ),
     );
     await expect(oversized.request({ method: 'eth_chainId' })).rejects.toThrow(/too large/);
+    expect(
+      () =>
+        new ReadOnlyRpcProvider(
+          'https://rpc.invalid/',
+          ['https://rpc.invalid'],
+          Math.floor(Date.now() / 1_000),
+        ),
+    ).toThrow(/signed gate has expired/);
   });
 
   it('aborts bounded requests on timeout and when closed', async () => {
@@ -198,6 +212,7 @@ describe('read-only RPC provider', () => {
     const provider = new ReadOnlyRpcProvider(
       'https://rpc.invalid/',
       ['https://rpc.invalid'],
+      futureExpiry(),
       250,
       fetchFn,
     );
@@ -213,6 +228,37 @@ describe('read-only RPC provider', () => {
     provider.close();
     await closed;
     await expect(provider.request({ method: 'eth_chainId' })).rejects.toThrow(/provider is closed/);
+  });
+
+  it('aborts in-flight reads at signed gate expiry and refuses later reads', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-18T12:00:00.000Z'));
+    const expiresAt = Math.floor(Date.now() / 1_000) + 1;
+    const fetchFn = vi.fn<RuntimeFetch>(
+      async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        }),
+    );
+    const provider = new ReadOnlyRpcProvider(
+      'https://rpc.invalid/',
+      ['https://rpc.invalid'],
+      expiresAt,
+      30_000,
+      fetchFn,
+    );
+
+    const expired = expect(provider.request({ method: 'eth_chainId' })).rejects.toThrow(
+      /signed gate has expired/,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expired;
+    await expect(provider.request({ method: 'eth_chainId' })).rejects.toThrow(
+      /signed gate has expired/,
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -310,6 +356,29 @@ describe('deployment registry composition', () => {
         fetchFn: vi.fn(async () => json(good)),
       }),
     ).rejects.toThrow(/RPC origin is not allowlisted/);
+  });
+
+  it('does not return a registry whose signed gate expires during verification', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-18T12:00:00.000Z'));
+    const manifest = await artifact();
+    const expiresAt = Math.floor(Date.now() / 1_000) + 1;
+    const fetchFn = vi.fn<RuntimeFetch>(async () => {
+      vi.setSystemTime(expiresAt * 1_000);
+      return json(manifest);
+    });
+
+    await expect(
+      loadDeploymentRegistry({
+        registryUrl: '/deployment/artifact.json',
+        pageOrigin: 'https://dex.invalid',
+        allowedRpcOrigins: ['https://rpc.invalid'],
+        trustAnchor: signing.trustAnchor,
+        manifestSha256: await artifactPin(manifest),
+        expiresAt,
+        fetchFn,
+      }),
+    ).rejects.toThrow(/signed gate has expired/);
   });
 
   it('reloads the registry and creates a fresh provider and adapter for every open', async () => {

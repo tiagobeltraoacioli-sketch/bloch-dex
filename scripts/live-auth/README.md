@@ -113,3 +113,8 @@ the same-origin manifest GET and allowlisted `eth_chainId` POST, verifies RPC
 credentials/referrer omission, and confirms that no wallet or fund control is
 rendered. The self-signed certificate is ignored only by this ephemeral browser
 profile; this is not a production TLS test.
+
+The signed `expiresAt` is also a hard runtime deadline. Manifest verification
+must finish before it, in-flight RPC reads are bounded by it, and an open reader
+refuses every request after it. Opening a session before expiry therefore does
+not extend the gate's authority.
