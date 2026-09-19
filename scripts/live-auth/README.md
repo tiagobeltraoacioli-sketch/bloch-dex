@@ -656,8 +656,42 @@ complete `rotations/` directory; pruning is not supported.
 
 The hash chain prevents replaying an old profile or forking a sequence and the
 audit detects local chain damage, but an external append-only anchor is still
-required to detect a self-consistent whole-store rollback. An audit result is
-therefore not deployment approval or evidence of freshness.
+required to detect a self-consistent whole-store rollback. Export a statement
+only while the checkpoint is `ready`, sign it on the authority's isolated host,
+and publish the resulting evidence to an independently operated append-only
+log:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs prepare-anchor \
+  --store <private-operations-directory> \
+  --output <new-anchor-statement.json>
+node scripts/publication-quorum-transport-operations.mjs sign-anchor \
+  --statement <new-anchor-statement.json> \
+  --private-key <current-offline-ed25519-private.pem> \
+  --key-generation <current> \
+  --output <new-anchor-evidence.json>
+node scripts/publication-quorum-transport-operations.mjs verify-anchor \
+  --store <private-operations-directory> \
+  --evidence <latest-evidence-fetched-from-external-log.json>
+```
+
+The statement commits to a deterministic stream ID derived from the audited
+genesis manifest and authority, plus the canonical checkpoint hash, checkpoint
+generation, custody head, manifest, complete rotation-chain tip and current authority. The
+signature is domain- and role-bound and must match that retained authority.
+`verify-anchor` repeats the complete rotation-chain audit and requires exact
+equality with the current ready checkpoint.
+
+The evidence file is portable proof, not an external store. Keeping it beside
+the operations store provides no rollback protection: a rollback can restore
+both files. An operator must publish each newer evidence object outside this
+host and fetch the latest accepted object for that exact stream ID from the
+independent append-only system for verification. The external system must
+enforce increasing checkpoint generations and reject a second checkpoint hash
+for an already accepted generation. This tool deliberately does not claim log inclusion,
+log consistency, availability, freshness or automatic transport gating. Until
+that external publication and latest-head retrieval are integrated and
+monitored, an audit or locally supplied evidence is not deployment approval.
 This release uses operations-checkpoint schema 2. A schema-1 store fails closed;
 do not edit it in place. Bootstrap a separately reviewed schema-2 store from an
 independently queried custody head and retain the old store for audit.

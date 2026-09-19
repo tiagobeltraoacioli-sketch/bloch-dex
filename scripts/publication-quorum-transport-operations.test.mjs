@@ -19,6 +19,9 @@ import {
   inspectPendingRotation,
   inspectOperationsStore,
   prepareOperationsRotation,
+  prepareOperationsAnchorStatement,
+  signOperationsAnchorStatement,
+  verifyOperationsAnchorEvidence,
 } from "./publication-quorum-transport-operations.mjs";
 
 const execute = promisify(execFile);
@@ -157,6 +160,62 @@ test("preflight manifest deterministically binds endpoint, pins, certificate, CA
   assert.ok((await readFile(value.client.cert)).length > 0);
 });
 
+test("signed anchor evidence binds the exact audited ready checkpoint", async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestHash = canonicalSha256(manifest);
+  const store = join(value.root, "anchored-operations");
+  await initializeOperationsStore(store, manifest, manifestHash, "genesis");
+  const identity = describeKey(value.authority.publicKey);
+  const authorization = {
+    schemaVersion: 1,
+    authorizationId: "anchor-bootstrap",
+    manifestSha256: manifestHash,
+    expectedHeadSha256: "genesis",
+    enabled: true,
+    authorityKeyId: identity.keyId,
+    authorityKeyGeneration: 1,
+    authorityPublicKeyBase64Url: identity.publicKeyBase64Url,
+  };
+  await activateOperationsStore(store, authorization, canonicalSha256(authorization));
+
+  const statement = await prepareOperationsAnchorStatement(store);
+  const evidence = signOperationsAnchorStatement(statement, value.authority.privateKey, 1);
+  assert.deepEqual(await verifyOperationsAnchorEvidence(store, evidence), {
+    valid: true,
+    streamId: statement.streamId,
+    evidenceSha256: canonicalSha256(evidence),
+    checkpointSha256: statement.checkpointSha256,
+    checkpointGeneration: 1,
+    rotationSequence: 0,
+  });
+  assert.throws(
+    () => signOperationsAnchorStatement(
+      statement,
+      generateKeyPairSync("ed25519").privateKey,
+      1,
+    ),
+    /signing key does not match/,
+  );
+  const tampered = structuredClone(evidence);
+  tampered.payload.statement.checkpointGeneration = 2;
+  await assert.rejects(
+    verifyOperationsAnchorEvidence(store, tampered),
+    /signature is invalid|does not match/,
+  );
+
+  await beginTransportRequest(store, manifestHash, "genesis", "d".repeat(64));
+  await assert.rejects(
+    prepareOperationsAnchorStatement(store),
+    /only a ready operations checkpoint/,
+  );
+  await commitTransportRequest(store, "d".repeat(64), "e".repeat(64));
+  await assert.rejects(
+    verifyOperationsAnchorEvidence(store, evidence),
+    /does not match the current audited checkpoint/,
+  );
+});
+
 test("rotates a pinned mTLS profile only after independent old and new authorization", async () => {
   const value = await fixture();
   const priorManifest = await buildClientPreflight(value.config, value.witness);
@@ -175,6 +234,7 @@ test("rotates a pinned mTLS profile only after independent old and new authoriza
     authorityPublicKeyBase64Url: priorIdentity.publicKeyBase64Url,
   };
   await activateOperationsStore(store, activation, canonicalSha256(activation));
+  const initialAnchor = await prepareOperationsAnchorStatement(store);
 
   const nextManifest = await buildClientPreflight({
     ...value.config,
@@ -265,6 +325,18 @@ test("rotates a pinned mTLS profile only after independent old and new authoriza
   assert.equal(audit.verifiedRecords, 1);
   assert.equal(audit.rotationSequence, 1);
   assert.equal(audit.initialAuthorityKeyId, priorIdentity.keyId);
+  const rotatedAnchor = await prepareOperationsAnchorStatement(store);
+  assert.equal(rotatedAnchor.streamId, initialAnchor.streamId);
+  assert.notEqual(rotatedAnchor.checkpointSha256, initialAnchor.checkpointSha256);
+  const rotatedEvidence = signOperationsAnchorStatement(
+    rotatedAnchor,
+    nextKeys.privateKey,
+    2,
+  );
+  assert.equal(
+    (await verifyOperationsAnchorEvidence(store, rotatedEvidence)).rotationSequence,
+    1,
+  );
   await assert.rejects(
     commitOperationsRotation({
       root: store,

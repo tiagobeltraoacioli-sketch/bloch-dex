@@ -44,6 +44,8 @@ const LOCK = ".operations.lock";
 const ROTATIONS = "rotations";
 export const MTLS_PROFILE_ROTATION_DOMAIN =
   "POSTERN_PUBLICATION_QUORUM_MTLS_PROFILE_ROTATION_V1\n";
+export const OPERATIONS_ANCHOR_DOMAIN =
+  "POSTERN_PUBLICATION_QUORUM_OPERATIONS_ANCHOR_V1\n";
 const MAX_JSON = 64_000;
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const RAW_ED25519 = /^[A-Za-z0-9_-]{43}$/;
@@ -399,6 +401,58 @@ function checkpointAuthority(checkpoint) {
   };
 }
 
+function validateAnchorStatement(value) {
+  exactKeys(value, [
+    "schemaVersion", "kind", "streamId", "checkpointSha256", "checkpointGeneration",
+    "manifestSha256", "expectedHeadSha256", "rotationSequence",
+    "previousRotationSha256", "authority",
+  ], "operations anchor statement");
+  if (value.schemaVersion !== 1 || value.kind !== "operations-checkpoint-anchor")
+    fail("operations anchor statement identity is invalid");
+  requireHash(value.streamId, "operations anchor stream ID");
+  requireHash(value.checkpointSha256, "anchored checkpoint hash");
+  if (!Number.isSafeInteger(value.checkpointGeneration) || value.checkpointGeneration < 1)
+    fail("anchored checkpoint generation is invalid");
+  requireHash(value.manifestSha256, "anchored manifest hash");
+  requireHead(value.expectedHeadSha256);
+  if (!Number.isSafeInteger(value.rotationSequence) || value.rotationSequence < 0)
+    fail("anchored rotation sequence is invalid");
+  if (value.previousRotationSha256 !== "genesis")
+    requireHash(value.previousRotationSha256, "anchored previous rotation hash");
+  exactKeys(value.authority, [
+    "keyId", "keyGeneration", "publicKeyBase64Url",
+  ], "anchor authority");
+  const authority = authorityFromRaw(
+    value.authority.publicKeyBase64Url,
+    value.authority.keyGeneration,
+  );
+  if (value.authority.keyId !== authority.keyId)
+    fail("anchor authority key ID does not match");
+  return value;
+}
+
+function anchorStatement(checkpoint, chain) {
+  if (checkpoint.status !== "ready")
+    fail("only a ready operations checkpoint can be externally anchored");
+  return validateAnchorStatement({
+    schemaVersion: 1,
+    kind: "operations-checkpoint-anchor",
+    streamId: canonicalSha256({
+      schemaVersion: 1,
+      kind: "operations-anchor-stream",
+      initialManifestSha256: chain.initialManifestSha256,
+      initialAuthorityKeyId: chain.initialAuthorityKeyId,
+    }),
+    checkpointSha256: canonicalSha256(checkpoint),
+    checkpointGeneration: checkpoint.generation,
+    manifestSha256: checkpoint.manifestSha256,
+    expectedHeadSha256: checkpoint.expectedHeadSha256,
+    rotationSequence: checkpoint.rotationSequence,
+    previousRotationSha256: checkpoint.previousRotationSha256,
+    authority: checkpointAuthority(checkpoint),
+  });
+}
+
 export async function prepareOperationsRotation({
   root,
   priorManifest,
@@ -558,6 +612,65 @@ export async function auditOperationsStore(root) {
     pendingRotationSha256,
     ...chain,
   };
+}
+
+export async function prepareOperationsAnchorStatement(root) {
+  return withLock(root, async () => {
+    const checkpoint = validateCheckpoint(await secureJson(
+      join(root, HEAD),
+      "operations checkpoint",
+    ));
+    const chain = await auditRotationChain(root, checkpoint);
+    return anchorStatement(checkpoint, chain);
+  });
+}
+
+export function signOperationsAnchorStatement(statementInput, privateKey, keyGeneration) {
+  const statement = validateAnchorStatement(statementInput);
+  const identity = describeKey(privateKey);
+  if (identity.keyId !== statement.authority.keyId ||
+      keyGeneration !== statement.authority.keyGeneration)
+    fail("anchor signing key does not match the retained operations authority");
+  return signEnvelope(
+    { role: "operations-checkpoint-anchor", statement },
+    privateKey,
+    OPERATIONS_ANCHOR_DOMAIN,
+    keyGeneration,
+  );
+}
+
+export async function verifyOperationsAnchorEvidence(root, evidence) {
+  return withLock(root, async () => {
+    const checkpoint = validateCheckpoint(await secureJson(
+      join(root, HEAD),
+      "operations checkpoint",
+    ));
+    const chain = await auditRotationChain(root, checkpoint);
+    const current = anchorStatement(checkpoint, chain);
+    const authority = authorityFromRaw(
+      current.authority.publicKeyBase64Url,
+      current.authority.keyGeneration,
+    );
+    const payload = verifyEnvelope(
+      evidence,
+      authority.publicKey,
+      OPERATIONS_ANCHOR_DOMAIN,
+      authority.keyGeneration,
+    );
+    exactKeys(payload, ["role", "statement"], "operations anchor evidence payload");
+    const statement = validateAnchorStatement(payload.statement);
+    if (payload.role !== "operations-checkpoint-anchor" ||
+        canonicalJson(statement) !== canonicalJson(current))
+      fail("external anchor evidence does not match the current audited checkpoint");
+    return {
+      valid: true,
+      streamId: current.streamId,
+      evidenceSha256: canonicalSha256(evidence),
+      checkpointSha256: current.checkpointSha256,
+      checkpointGeneration: current.checkpointGeneration,
+      rotationSequence: current.rotationSequence,
+    };
+  });
 }
 
 export async function commitOperationsRotation({
@@ -798,6 +911,39 @@ async function main() {
     const v = parse(args, ["--store"]);
     console.log(canonicalJson(await auditOperationsStore(v["--store"]))); return;
   }
+  if (command === "prepare-anchor") {
+    const v = parse(args, ["--store", "--output"]);
+    const statement = await prepareOperationsAnchorStatement(v["--store"]);
+    await writeNewJson(v["--output"], statement, 0o444);
+    console.log(canonicalJson({
+      streamId: statement.streamId,
+      checkpointSha256: statement.checkpointSha256,
+      checkpointGeneration: statement.checkpointGeneration,
+      active: false,
+    }));
+    return;
+  }
+  if (command === "sign-anchor") {
+    const v = parse(args, [
+      "--statement", "--private-key", "--key-generation", "--output",
+    ]);
+    const evidence = signOperationsAnchorStatement(
+      await securePublicJson(v["--statement"], "operations anchor statement"),
+      await readPrivateKey(v["--private-key"]),
+      Number(v["--key-generation"]),
+    );
+    await writeNewJson(v["--output"], evidence, 0o444);
+    console.log(canonicalJson({ evidenceSha256: canonicalSha256(evidence) }));
+    return;
+  }
+  if (command === "verify-anchor") {
+    const v = parse(args, ["--store", "--evidence"]);
+    console.log(canonicalJson(await verifyOperationsAnchorEvidence(
+      v["--store"],
+      await securePublicJson(v["--evidence"], "external anchor evidence"),
+    )));
+    return;
+  }
   if (command === "reconcile") {
     const v = parse(args, ["--store", "--manifest", "--witness-config", "--authenticated-request", "--expected-head-sha256", "--receipt"]);
     const result = await reconcileTransportRequest({
@@ -810,7 +956,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-rotation, audit, or reconcile");
+  fail("expected preflight, init, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
