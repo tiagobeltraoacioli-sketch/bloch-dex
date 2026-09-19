@@ -29,6 +29,7 @@ const execute = promisify(execFile);
 const cli = resolve("scripts/publication-quorum.mjs");
 const storeCli = resolve("scripts/publication-quorum-store.mjs");
 const witnessCli = resolve("scripts/publication-quorum-witness.mjs");
+const custodyCli = resolve("scripts/publication-quorum-witness-custody.mjs");
 const ZERO_SIGNATURE = Buffer.alloc(64).toString("base64url");
 const PUBLICATION_KEY_ID = "a".repeat(64);
 
@@ -44,12 +45,21 @@ async function runWitness(...args) {
   return execute(process.execPath, [witnessCli, ...args], { cwd: resolve(".") });
 }
 
-async function interfereAfterLock(store, args, action) {
+async function runCustody(...args) {
+  return execute(process.execPath, [custodyCli, ...args], { cwd: resolve(".") });
+}
+
+async function interfereAfterLock(
+  store,
+  args,
+  action,
+  { executable = storeCli, lockName = ".quorum.lock" } = {},
+) {
   let watcher;
   let timer;
   const observed = new Promise((resolveObserved, rejectObserved) => {
     watcher = watch(store, (_event, filename) => {
-      if (filename === ".quorum.lock") {
+      if (filename === lockName) {
         clearTimeout(timer);
         watcher.close();
         resolveObserved();
@@ -60,7 +70,7 @@ async function interfereAfterLock(store, args, action) {
       rejectObserved(new Error("timed out waiting for quorum lock"));
     }, 5_000);
   });
-  const child = spawn(process.execPath, [storeCli, ...args], {
+  const child = spawn(process.execPath, [executable, ...args], {
     cwd: resolve("."),
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -188,6 +198,31 @@ async function witnessFixture(files, name = "external-witness") {
     publicKeyBase64Url: identity.publicKeyBase64Url,
   }));
   return { privatePath, configPath };
+}
+
+async function custodyFixture(files, witness, name = "witness-custody") {
+  const keys = generateKeyPairSync("ed25519");
+  const identity = describeKey(keys.publicKey);
+  const clientPrivatePath = join(files.root, `${name}.client.private.pem`);
+  await writeFile(
+    clientPrivatePath,
+    keys.privateKey.export({ format: "pem", type: "pkcs8" }),
+    { mode: 0o600 },
+  );
+  await chmod(clientPrivatePath, 0o600);
+  const configPath = join(files.root, `${name}.json`);
+  await writeFile(configPath, JSON.stringify({
+    schemaVersion: 1,
+    custodyId: name,
+    witness: JSON.parse(await readFile(witness.configPath, "utf8")),
+    authorizedClient: {
+      clientId: "quorum-collector",
+      keyId: identity.keyId,
+      keyGeneration: 1,
+      publicKeyBase64Url: identity.publicKeyBase64Url,
+    },
+  }));
+  return { configPath, clientPrivatePath };
 }
 
 async function makeNextConfig(files, name = "next", generation = 2) {
@@ -821,6 +856,7 @@ test("serializes config rotation and persists the complete signed transition", a
 test("requires an externally chained witness receipt before durable advances", async () => {
   const files = await fixture();
   const witness = await witnessFixture(files);
+  const custody = await custodyFixture(files, witness);
   const store = join(files.root, "witnessed-store");
   const initialized = JSON.parse((await runStore(
     "init", "--store", store, "--checkpoint", files.quorum0,
@@ -831,6 +867,13 @@ test("requires an externally chained witness receipt before durable advances", a
     "--expected-checkpoint-sha256", initialized.checkpointSha256,
     "--config", files.configPath,
     "--witness-config", witness.configPath,
+  );
+  const custodyStore = join(files.root, "external-custody-store");
+  await runCustody(
+    "init",
+    "--store", custodyStore,
+    "--config", custody.configPath,
+    "--initial-checkpoint-sha256", initialized.checkpointSha256,
   );
   const entry1 = await writeEntry(files, "witnessed-entry-1", publication(1, null));
   const a1 = await attest(files, 0, entry1, "-witnessed-1");
@@ -860,15 +903,164 @@ test("requires an externally chained witness receipt before durable advances", a
     "--prior-witness-receipt", "genesis",
     "--output", request1,
   );
-  const receipt1 = join(files.root, "witness-receipt-1.json");
-  await runWitness(
-    "sign-reference",
-    "--config", witness.configPath,
-    "--private-key", witness.privatePath,
+  const authenticated1 = join(files.root, "authenticated-request-1.json");
+  await runCustody(
+    "authenticate",
+    "--config", custody.configPath,
+    "--client-private-key", custody.clientPrivatePath,
     "--request", request1,
-    "--retained-head", "genesis",
-    "--retained-checkpoint-sha256", initialized.checkpointSha256,
+    "--output", authenticated1,
+  );
+  const tamperedAuthentication = JSON.parse(
+    await readFile(authenticated1, "utf8"),
+  );
+  tamperedAuthentication.payload.nextCheckpointSha256 = "0".repeat(64);
+  const tamperedAuthenticationPath = join(
+    files.root,
+    "tampered-authenticated-request.json",
+  );
+  await writeFile(
+    tamperedAuthenticationPath,
+    JSON.stringify(tamperedAuthentication),
+  );
+  await assert.rejects(
+    runCustody(
+      "authorize",
+      "--store", custodyStore,
+      "--config", custody.configPath,
+      "--witness-private-key", witness.privatePath,
+      "--authenticated-request", tamperedAuthenticationPath,
+      "--expected-head-sha256", "genesis",
+      "--output", join(files.root, "tampered-must-not-sign.json"),
+    ),
+    /signature is invalid/,
+  );
+  const occupiedOutput = join(files.root, "occupied-receipt.json");
+  await writeFile(occupiedOutput, "occupied\n");
+  await assert.rejects(
+    runCustody(
+      "authorize",
+      "--store", custodyStore,
+      "--config", custody.configPath,
+      "--witness-private-key", witness.privatePath,
+      "--authenticated-request", authenticated1,
+      "--expected-head-sha256", "genesis",
+      "--output", occupiedOutput,
+    ),
+    /receipt output already exists/,
+  );
+  const beforeAuthorization = JSON.parse((await runCustody(
+    "inspect", "--store", custodyStore, "--config", custody.configPath,
+  )).stdout);
+  assert.equal(beforeAuthorization.head.witnessSequence, 0);
+  if (process.platform !== "win32") {
+    const racedCustodyStore = join(files.root, "raced-custody-store");
+    await runCustody(
+      "init",
+      "--store", racedCustodyStore,
+      "--config", custody.configPath,
+      "--initial-checkpoint-sha256", initialized.checkpointSha256,
+    );
+    const raced = await interfereAfterLock(
+      racedCustodyStore,
+      [
+        "authorize",
+        "--store", racedCustodyStore,
+        "--config", custody.configPath,
+        "--witness-private-key", witness.privatePath,
+        "--authenticated-request", authenticated1,
+        "--expected-head-sha256", "genesis",
+        "--output", join(files.root, "raced-receipt.json"),
+      ],
+      () => link(
+        join(racedCustodyStore, ".custody.lock"),
+        join(racedCustodyStore, ".custody.lock.alias"),
+      ),
+      { executable: custodyCli, lockName: ".custody.lock" },
+    );
+    assert.equal(raced.code, 1);
+    assert.match(raced.stderr, /lock .*preserve state and inspect/);
+    assert.equal(
+      (await stat(join(racedCustodyStore, ".custody.lock"))).nlink,
+      2,
+    );
+
+    const substitutedLockStore = join(files.root, "substituted-lock-custody");
+    await runCustody(
+      "init",
+      "--store", substitutedLockStore,
+      "--config", custody.configPath,
+      "--initial-checkpoint-sha256", initialized.checkpointSha256,
+    );
+    const substitutedLock = await interfereAfterLock(
+      substitutedLockStore,
+      [
+        "authorize",
+        "--store", substitutedLockStore,
+        "--config", custody.configPath,
+        "--witness-private-key", witness.privatePath,
+        "--authenticated-request", authenticated1,
+        "--expected-head-sha256", "genesis",
+        "--output", join(files.root, "substituted-lock-receipt.json"),
+      ],
+      async () => {
+        await rename(
+          join(substitutedLockStore, ".custody.lock"),
+          join(substitutedLockStore, ".custody.lock.displaced"),
+        );
+        await writeFile(
+          join(substitutedLockStore, ".custody.lock"),
+          `${canonicalJson({ schemaVersion: 1, pid: 888_888 })}\n`,
+          { mode: 0o600 },
+        );
+        await chmod(join(substitutedLockStore, ".custody.lock"), 0o600);
+      },
+      { executable: custodyCli, lockName: ".custody.lock" },
+    );
+    assert.equal(substitutedLock.code, 1);
+    assert.match(
+      substitutedLock.stderr,
+      /custody lock identity changed; preserve state and inspect/,
+    );
+    assert.equal(
+      await readFile(join(substitutedLockStore, ".custody.lock"), "utf8"),
+      `${canonicalJson({ schemaVersion: 1, pid: 888_888 })}\n`,
+    );
+  }
+  const receipt1 = join(files.root, "witness-receipt-1.json");
+  const custodyCommit1 = JSON.parse((await runCustody(
+    "authorize",
+    "--store", custodyStore,
+    "--config", custody.configPath,
+    "--witness-private-key", witness.privatePath,
+    "--authenticated-request", authenticated1,
+    "--expected-head-sha256", "genesis",
     "--output", receipt1,
+  )).stdout);
+  assert.equal(custodyCommit1.witnessSequence, 1);
+  const exportedReceipt1 = join(files.root, "exported-receipt-1.json");
+  await runCustody(
+    "export",
+    "--store", custodyStore,
+    "--config", custody.configPath,
+    "--receipt-sha256", custodyCommit1.receiptSha256,
+    "--output", exportedReceipt1,
+  );
+  assert.equal(
+    await readFile(exportedReceipt1, "utf8"),
+    await readFile(receipt1, "utf8"),
+  );
+  await assert.rejects(
+    runCustody(
+      "authorize",
+      "--store", custodyStore,
+      "--config", custody.configPath,
+      "--witness-private-key", witness.privatePath,
+      "--authenticated-request", authenticated1,
+      "--expected-head-sha256", "genesis",
+      "--output", join(files.root, "must-not-authorize.json"),
+    ),
+    /custody head CAS mismatch/,
   );
   const committed1 = JSON.parse((await runStore(
     "witnessed-verify",
@@ -911,17 +1103,25 @@ test("requires an externally chained witness receipt before durable advances", a
     "--prior-witness-receipt", receipt1,
     "--output", request2,
   );
-  const receipt2 = join(files.root, "witness-receipt-2.json");
-  await runWitness(
-    "sign-reference",
-    "--config", witness.configPath,
-    "--private-key", witness.privatePath,
+  const authenticated2 = join(files.root, "authenticated-request-2.json");
+  await runCustody(
+    "authenticate",
+    "--config", custody.configPath,
+    "--client-private-key", custody.clientPrivatePath,
     "--request", request2,
-    "--retained-head", receipt1,
-    "--retained-checkpoint-sha256", committed1.checkpointSha256,
+    "--output", authenticated2,
+  );
+  const receipt2 = join(files.root, "witness-receipt-2.json");
+  const receipt1Hash = canonicalSha256(JSON.parse(await readFile(receipt1)));
+  await runCustody(
+    "authorize",
+    "--store", custodyStore,
+    "--config", custody.configPath,
+    "--witness-private-key", witness.privatePath,
+    "--authenticated-request", authenticated2,
+    "--expected-head-sha256", receipt1Hash,
     "--output", receipt2,
   );
-  const receipt1Hash = canonicalSha256(JSON.parse(await readFile(receipt1)));
   await assert.rejects(
     runStore(
       "witnessed-verify",
@@ -950,6 +1150,55 @@ test("requires an externally chained witness receipt before durable advances", a
     "--witness-receipt", receipt2,
   )).stdout);
   assert.equal(committed2.sequence, 2);
+  const custodyInspection = JSON.parse((await runCustody(
+    "inspect", "--store", custodyStore, "--config", custody.configPath,
+  )).stdout);
+  assert.equal(custodyInspection.head.witnessSequence, 2);
+  const receipt2Hash = canonicalSha256(JSON.parse(await readFile(receipt2)));
+  assert.equal(
+    custodyInspection.head.receiptSha256,
+    receipt2Hash,
+  );
+  const substitutedCustodyConfig = JSON.parse(
+    await readFile(custody.configPath, "utf8"),
+  );
+  substitutedCustodyConfig.custodyId = "substituted-custody";
+  const substitutedCustodyPath = join(files.root, "substituted-custody.json");
+  await writeFile(
+    substitutedCustodyPath,
+    JSON.stringify(substitutedCustodyConfig),
+  );
+  await assert.rejects(
+    runCustody(
+      "inspect",
+      "--store", custodyStore,
+      "--config", substitutedCustodyPath,
+    ),
+    /belongs to another configuration/,
+  );
+  if (process.platform !== "win32") {
+    const retainedReceiptPath = join(
+      custodyStore,
+      "receipts",
+      `${receipt2Hash}.json`,
+    );
+    const displacedReceiptPath = `${retainedReceiptPath}.displaced`;
+    await rename(retainedReceiptPath, displacedReceiptPath);
+    await assert.rejects(
+      runCustody(
+        "inspect",
+        "--store", custodyStore,
+        "--config", custody.configPath,
+      ),
+      /retained witness receipt is missing/,
+    );
+    await rename(displacedReceiptPath, retainedReceiptPath);
+    await chmod(custodyStore, 0o755);
+    await assert.rejects(
+      runCustody("inspect", "--store", custodyStore, "--config", custody.configPath),
+      /must not grant group or other permissions/,
+    );
+  }
 });
 
 test("witnesses config rotation and rejects substitution, tamper, and shared keys", async () => {

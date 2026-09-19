@@ -455,6 +455,46 @@ authenticated service/HSM that atomically compare-and-swaps its retained
 receipt and checkpoint before releasing a signature. Merely running this
 reference command on the collector host provides no anti-rollback property.
 
+`publication-quorum-witness-custody.mjs` provides the offline filesystem CAS
+adapter for that independent boundary. Its explicit custody configuration
+contains the complete witness configuration and exactly one authorized client
+Ed25519 identity. Client and witness keys must differ; there are no fallback
+keys, default paths, default heads or unauthenticated requests. Initialize it on
+the independent host with the externally reviewed initial checkpoint hash:
+
+```sh
+node scripts/publication-quorum-witness-custody.mjs init \
+  --store <new-private-custody-directory> \
+  --config <custody.json> \
+  --initial-checkpoint-sha256 <reviewed-sha256>
+```
+
+The collector signs each prepared witness request with its separately held
+client key using `authenticate`. Transfer only that authenticated envelope to
+the custody host. The custody operator then invokes `authorize` with an explicit
+expected external head (`genesis` exactly once, otherwise the prior receipt
+SHA-256), custody config, witness key and exclusive receipt output. Authorization
+verifies the client signature, store/witness identities, sequence, predecessor
+receipt and prior checkpoint before signing.
+
+The custody CAS takes an exclusive inode-checked lock and durably writes a
+canonical intent, content-addressed receipt and atomically replaced head with
+file/directory fsync and readback. Only after the new head is confirmed does it
+release the receipt. A CAS mismatch, invalid signature, oversized input,
+symlink, hardlink, unsafe permission, config substitution or pending operation
+fails closed. `inspect` reports the retained head and ambiguous markers;
+`export` recovers a content-addressed receipt if delivery failed after the head
+advanced. In that case export the recorded receipt—never resubmit the request.
+
+This adapter is deliberately transport-neutral and starts no listener. Run it
+on a genuinely independent host and place its invocation behind reviewed mTLS,
+authorization and audit controls. The private key path is an interoperability
+boundary, not an HSM implementation. A privileged administrator or snapshot can
+still roll back a filesystem-only custody store, so production must additionally
+anchor its head in hardware-backed monotonic or independently append-only
+storage. The CLI must not be colocated with the collector or treated as proof
+that those operational controls exist.
+
 Commit with `witnessed-verify` or `witnessed-rotate`. Supply both the ordinary
 expected checkpoint hash and the externally queried witness head hash (or
 `genesis` only for the first receipt), the prior receipt, and the new signed
