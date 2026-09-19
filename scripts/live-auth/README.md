@@ -410,6 +410,67 @@ restore older state. Production use therefore still requires an externally
 retained authenticated checkpoint hash (preferably hardware-backed or an
 independent append-only service), backups, host hardening and auditor gossip.
 
+#### External anti-rollback witness protocol
+
+For the production-oriented path, do not use the unwitnessed `verify` or
+`rotate` commands. The witnessed commands bind every proposed transition to a
+separate Ed25519 witness chain before changing the filesystem checkpoint. A
+reviewed witness configuration fixes a unique random 32-byte `storeId`, a
+lowercase witness ID, and an Ed25519 public key ID, generation and raw public
+key. The witness key must be independent from every publication and auditor
+key.
+
+Bind an existing store once with `bind-witness`, supplying its externally
+retained checkpoint hash, current auditor config and reviewed witness config.
+The binding is an immutable canonical policy file. Once present, the legacy
+unwitnessed `verify` and `rotate` paths fail closed, and every witnessed command
+requires the exact pinned witness-config hash, store ID and key identity.
+
+First run `prepare-witnessed-verify` or `prepare-witnessed-rotate` with the same
+transition arguments shown above, plus the witness configuration, the prior
+witness receipt (or `genesis`), and an exclusive output path. The request binds
+the exact prior and next checkpoint hashes, complete unsigned transition-record
+hash, transition kind, store ID, witness sequence and predecessor receipt hash.
+Preparation is read-only and refuses a locked or pending store. The later commit
+recomputes the transition under the exclusive store lock, so a stale request
+cannot authorize a different head.
+
+Transfer that canonical request to the independent witness. A reference offline
+signer is included for interoperability tests and ceremonies:
+
+```sh
+node scripts/publication-quorum-witness.mjs sign-reference \
+  --config <witness.json> \
+  --private-key <external-ed25519-private.pem> \
+  --request <prepared-request.json> \
+  --retained-head <genesis-or-prior-receipt.json> \
+  --retained-checkpoint-sha256 <witness-retained-checkpoint-sha256> \
+  --output <witness-receipt.json>
+```
+
+The reference signer checks the direct witness-receipt link and retained
+checkpoint before signing, but it deliberately does not implement the external
+service's monotonic database. Production signing must run behind an independent
+authenticated service/HSM that atomically compare-and-swaps its retained
+receipt and checkpoint before releasing a signature. Merely running this
+reference command on the collector host provides no anti-rollback property.
+
+Commit with `witnessed-verify` or `witnessed-rotate`. Supply both the ordinary
+expected checkpoint hash and the externally queried witness head hash (or
+`genesis` only for the first receipt), the prior receipt, and the new signed
+receipt. The collector verifies the signature, store identity, monotonic
+sequence, prior receipt, externally retained head and exact re-derived
+transition. Its durable content-addressed record contains the complete quorum
+transition and witness receipt. A tampered, forked, stale, cross-store or
+wrong-key receipt fails before checkpoint mutation.
+
+The external head must be obtained through an authenticated channel directly
+from the independent witness for every commit; accepting a value restored from
+the same disk defeats rollback detection. This protocol is transport-neutral
+and does not itself supply mTLS, HSM custody, service availability, global
+gossip or recovery authorization. The original unwitnessed commands remain for
+backward-compatible offline review and are not the production path.
+
 This CLI does not independently re-verify the publication signature or bundle;
 the supplied publication checkpoint is the explicit handoff from
 `verify-release`/`verify-rotation`. Auditors must run that verification

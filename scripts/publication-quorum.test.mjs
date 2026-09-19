@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { watch } from "node:fs";
 import {
   chmod,
@@ -28,6 +28,7 @@ import {
 const execute = promisify(execFile);
 const cli = resolve("scripts/publication-quorum.mjs");
 const storeCli = resolve("scripts/publication-quorum-store.mjs");
+const witnessCli = resolve("scripts/publication-quorum-witness.mjs");
 const ZERO_SIGNATURE = Buffer.alloc(64).toString("base64url");
 const PUBLICATION_KEY_ID = "a".repeat(64);
 
@@ -37,6 +38,10 @@ async function run(...args) {
 
 async function runStore(...args) {
   return execute(process.execPath, [storeCli, ...args], { cwd: resolve(".") });
+}
+
+async function runWitness(...args) {
+  return execute(process.execPath, [witnessCli, ...args], { cwd: resolve(".") });
 }
 
 async function interfereAfterLock(store, args, action) {
@@ -161,6 +166,28 @@ async function fixture() {
     quorum0,
   );
   return { root, auditors, configPath, quorum0 };
+}
+
+async function witnessFixture(files, name = "external-witness") {
+  const keys = generateKeyPairSync("ed25519");
+  const identity = describeKey(keys.publicKey);
+  const privatePath = join(files.root, `${name}.private.pem`);
+  const configPath = join(files.root, `${name}.json`);
+  await writeFile(
+    privatePath,
+    keys.privateKey.export({ format: "pem", type: "pkcs8" }),
+    { mode: 0o600 },
+  );
+  await chmod(privatePath, 0o600);
+  await writeFile(configPath, JSON.stringify({
+    schemaVersion: 1,
+    storeId: randomBytes(32).toString("hex"),
+    witnessId: name,
+    keyId: identity.keyId,
+    keyGeneration: 1,
+    publicKeyBase64Url: identity.publicKeyBase64Url,
+  }));
+  return { privatePath, configPath };
 }
 
 async function makeNextConfig(files, name = "next", generation = 2) {
@@ -789,6 +816,245 @@ test("serializes config rotation and persists the complete signed transition", a
   const inspected = JSON.parse((await runStore("inspect", "--store", store)).stdout);
   assert.equal(inspected.checkpoint.quorumConfigGeneration, 2);
   assert.equal(inspected.checkpointSha256, committed.checkpointSha256);
+});
+
+test("requires an externally chained witness receipt before durable advances", async () => {
+  const files = await fixture();
+  const witness = await witnessFixture(files);
+  const store = join(files.root, "witnessed-store");
+  const initialized = JSON.parse((await runStore(
+    "init", "--store", store, "--checkpoint", files.quorum0,
+  )).stdout);
+  await runStore(
+    "bind-witness",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--config", files.configPath,
+    "--witness-config", witness.configPath,
+  );
+  const entry1 = await writeEntry(files, "witnessed-entry-1", publication(1, null));
+  const a1 = await attest(files, 0, entry1, "-witnessed-1");
+  const b1 = await attest(files, 1, entry1, "-witnessed-1");
+  const attestations1 = join(files.root, "witnessed-attestations-1.json");
+  await writeFile(attestations1, JSON.stringify([a1, b1]));
+  await assert.rejects(
+    runStore(
+      "verify",
+      "--store", store,
+      "--expected-checkpoint-sha256", initialized.checkpointSha256,
+      "--config", files.configPath,
+      "--entry", entry1.entryPath,
+      "--attestations", attestations1,
+    ),
+    /policy requires a witnessed command/,
+  );
+  const request1 = join(files.root, "witness-request-1.json");
+  await runStore(
+    "prepare-witnessed-verify",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--config", files.configPath,
+    "--entry", entry1.entryPath,
+    "--attestations", attestations1,
+    "--witness-config", witness.configPath,
+    "--prior-witness-receipt", "genesis",
+    "--output", request1,
+  );
+  const receipt1 = join(files.root, "witness-receipt-1.json");
+  await runWitness(
+    "sign-reference",
+    "--config", witness.configPath,
+    "--private-key", witness.privatePath,
+    "--request", request1,
+    "--retained-head", "genesis",
+    "--retained-checkpoint-sha256", initialized.checkpointSha256,
+    "--output", receipt1,
+  );
+  const committed1 = JSON.parse((await runStore(
+    "witnessed-verify",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--expected-witness-receipt-sha256", "genesis",
+    "--config", files.configPath,
+    "--entry", entry1.entryPath,
+    "--attestations", attestations1,
+    "--witness-config", witness.configPath,
+    "--prior-witness-receipt", "genesis",
+    "--witness-receipt", receipt1,
+  )).stdout);
+  assert.equal(committed1.sequence, 1);
+  assert.match(committed1.witnessReceiptSha256, /^[0-9a-f]{64}$/);
+  const stored1 = JSON.parse(await readFile(
+    join(store, "records", `${committed1.recordSha256}.json`), "utf8",
+  ));
+  assert.equal(stored1.kind, "externally-witnessed-quorum-transition");
+  assert.equal(stored1.transition.kind, "publication-quorum-advance");
+
+  const entry2 = await writeEntry(
+    files,
+    "witnessed-entry-2",
+    publication(2, canonicalSha256(JSON.parse(await readFile(entry1.entryPath)))),
+  );
+  const a2 = await attest(files, 0, entry2, "-witnessed-2");
+  const b2 = await attest(files, 1, entry2, "-witnessed-2");
+  const attestations2 = join(files.root, "witnessed-attestations-2.json");
+  await writeFile(attestations2, JSON.stringify([a2, b2]));
+  const request2 = join(files.root, "witness-request-2.json");
+  await runStore(
+    "prepare-witnessed-verify",
+    "--store", store,
+    "--expected-checkpoint-sha256", committed1.checkpointSha256,
+    "--config", files.configPath,
+    "--entry", entry2.entryPath,
+    "--attestations", attestations2,
+    "--witness-config", witness.configPath,
+    "--prior-witness-receipt", receipt1,
+    "--output", request2,
+  );
+  const receipt2 = join(files.root, "witness-receipt-2.json");
+  await runWitness(
+    "sign-reference",
+    "--config", witness.configPath,
+    "--private-key", witness.privatePath,
+    "--request", request2,
+    "--retained-head", receipt1,
+    "--retained-checkpoint-sha256", committed1.checkpointSha256,
+    "--output", receipt2,
+  );
+  const receipt1Hash = canonicalSha256(JSON.parse(await readFile(receipt1)));
+  await assert.rejects(
+    runStore(
+      "witnessed-verify",
+      "--store", store,
+      "--expected-checkpoint-sha256", committed1.checkpointSha256,
+      "--expected-witness-receipt-sha256", "genesis",
+      "--config", files.configPath,
+      "--entry", entry2.entryPath,
+      "--attestations", attestations2,
+      "--witness-config", witness.configPath,
+      "--prior-witness-receipt", receipt1,
+      "--witness-receipt", receipt2,
+    ),
+    /head says genesis/,
+  );
+  const committed2 = JSON.parse((await runStore(
+    "witnessed-verify",
+    "--store", store,
+    "--expected-checkpoint-sha256", committed1.checkpointSha256,
+    "--expected-witness-receipt-sha256", receipt1Hash,
+    "--config", files.configPath,
+    "--entry", entry2.entryPath,
+    "--attestations", attestations2,
+    "--witness-config", witness.configPath,
+    "--prior-witness-receipt", receipt1,
+    "--witness-receipt", receipt2,
+  )).stdout);
+  assert.equal(committed2.sequence, 2);
+});
+
+test("witnesses config rotation and rejects substitution, tamper, and shared keys", async () => {
+  const files = await fixture();
+  const witness = await witnessFixture(files, "rotation-witness");
+  const next = await makeNextConfig(files, "witnessed-next", 2);
+  const oldA = await approveRotation(files, next, "prior-authorization", files.auditors[0], files.quorum0, "witness-old-a");
+  const oldB = await approveRotation(files, next, "prior-authorization", files.auditors[1], files.quorum0, "witness-old-b");
+  const newA = await approveRotation(files, next, "next-acceptance", next.auditors[0], files.quorum0, "witness-new-a");
+  const newB = await approveRotation(files, next, "next-acceptance", next.auditors[1], files.quorum0, "witness-new-b");
+  const oldPath = join(files.root, "witness-old.json");
+  const newPath = join(files.root, "witness-new.json");
+  await writeFile(oldPath, JSON.stringify([oldA, oldB]));
+  await writeFile(newPath, JSON.stringify([newA, newB]));
+  const store = join(files.root, "witnessed-rotation-store");
+  const initialized = JSON.parse((await runStore(
+    "init", "--store", store, "--checkpoint", files.quorum0,
+  )).stdout);
+  await runStore(
+    "bind-witness",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--config", files.configPath,
+    "--witness-config", witness.configPath,
+  );
+  const request = join(files.root, "rotation-witness-request.json");
+  await runStore(
+    "prepare-witnessed-rotate",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--prior-config", files.configPath,
+    "--next-config", next.configPath,
+    "--prior-approvals", oldPath,
+    "--next-acceptances", newPath,
+    "--witness-config", witness.configPath,
+    "--prior-witness-receipt", "genesis",
+    "--output", request,
+  );
+  const receipt = join(files.root, "rotation-witness-receipt.json");
+  await runWitness(
+    "sign-reference",
+    "--config", witness.configPath,
+    "--private-key", witness.privatePath,
+    "--request", request,
+    "--retained-head", "genesis",
+    "--retained-checkpoint-sha256", initialized.checkpointSha256,
+    "--output", receipt,
+  );
+  const tampered = JSON.parse(await readFile(receipt, "utf8"));
+  tampered.payload.nextCheckpointSha256 = "f".repeat(64);
+  const tamperedPath = join(files.root, "tampered-witness-receipt.json");
+  await writeFile(tamperedPath, JSON.stringify(tampered));
+  await assert.rejects(
+    runStore(
+      "witnessed-rotate",
+      "--store", store,
+      "--expected-checkpoint-sha256", initialized.checkpointSha256,
+      "--expected-witness-receipt-sha256", "genesis",
+      "--prior-config", files.configPath,
+      "--next-config", next.configPath,
+      "--prior-approvals", oldPath,
+      "--next-acceptances", newPath,
+      "--witness-config", witness.configPath,
+      "--prior-witness-receipt", "genesis",
+      "--witness-receipt", tamperedPath,
+    ),
+    /signature is invalid/,
+  );
+  const committed = JSON.parse((await runStore(
+    "witnessed-rotate",
+    "--store", store,
+    "--expected-checkpoint-sha256", initialized.checkpointSha256,
+    "--expected-witness-receipt-sha256", "genesis",
+    "--prior-config", files.configPath,
+    "--next-config", next.configPath,
+    "--prior-approvals", oldPath,
+    "--next-acceptances", newPath,
+    "--witness-config", witness.configPath,
+    "--prior-witness-receipt", "genesis",
+    "--witness-receipt", receipt,
+  )).stdout);
+  assert.equal(committed.configGeneration, 2);
+
+  const auditor = files.auditors[0];
+  const sharedConfig = join(files.root, "shared-witness.json");
+  await writeFile(sharedConfig, JSON.stringify({
+    schemaVersion: 1,
+    storeId: randomBytes(32).toString("hex"),
+    witnessId: "shared-witness",
+    keyId: auditor.keyId,
+    keyGeneration: auditor.keyGeneration,
+    publicKeyBase64Url: auditor.publicKeyBase64Url,
+  }));
+  const secondStore = join(files.root, "shared-witness-store");
+  await runStore("init", "--store", secondStore, "--checkpoint", files.quorum0);
+  await assert.rejects(
+    runStore(
+      "bind-witness",
+      "--store", secondStore,
+      "--expected-checkpoint-sha256", initialized.checkpointSha256,
+      "--config", files.configPath,
+      "--witness-config", sharedConfig,
+    ),
+    /external witness key must be independent/,
+  );
 });
 
 test("rejects lock races, symlinks, hardlinks, and unsafe store permissions", async () => {
