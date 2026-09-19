@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { lstatSync, renameSync, unlinkSync, watch as watchCallback, writeFileSync } from "node:fs";
-import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, symlink, unlink, watch, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, symlink, unlink, watch, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,6 +76,19 @@ function operationsBoundedReadRaceLoaderArguments() {
   }
   const loader = new URL(
     "./fixtures/operations-bounded-read-race-loader.mjs", import.meta.url,
+  );
+  return ["--experimental-loader", loader.href];
+}
+
+function operationsInitRaceLoaderArguments() {
+  if (supportsModuleRegister(process.versions.node)) {
+    const registration = new URL(
+      "./fixtures/register-operations-init-race-loader.mjs", import.meta.url,
+    );
+    return ["--import", registration.href];
+  }
+  const loader = new URL(
+    "./fixtures/operations-init-race-loader.mjs", import.meta.url,
   );
   return ["--experimental-loader", loader.href];
 }
@@ -233,6 +246,175 @@ test("lock reconciliation bounds growth after the initial size check", async () 
   );
   assert.equal((await lstat(lockPath)).size > 64_000, true);
   assert.equal((await lstat(output)).size, 0);
+});
+
+test("initialization pins the new store across pathname replacement", {
+  skip: process.platform !== "linux" && "descriptor-relative initialization requires Linux",
+}, async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestPath = join(value.root, "initialization-manifest.json");
+  const store = join(value.root, "initialization-race-store");
+  await writeFile(manifestPath, `${canonicalJson(manifest)}\n`, {
+    flag: "wx", mode: 0o444,
+  });
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+
+  await assert.rejects(
+    execute(process.execPath, [
+      ...operationsInitRaceLoaderArguments(),
+      cli, "init",
+      "--store", store,
+      "--manifest", manifestPath,
+      "--expected-manifest-sha256", canonicalSha256(manifest),
+      "--initial-head-sha256", "genesis",
+    ], {
+      env: {
+        ...process.env,
+        POSTERN_OPERATIONS_INIT_RACE_TARGET: store,
+        POSTERN_OPERATIONS_INIT_RACE_MODE: "before-publication",
+      },
+      timeout: raceSubprocessTimeoutMs,
+      killSignal: "SIGKILL",
+      maxBuffer: 64 * 1024,
+    }),
+    /path became occupied (before|during) create-only publication|was not published create-only/,
+  );
+  await assert.rejects(lstat(join(store, "checkpoint.json")), { code: "ENOENT" });
+  assert.equal((await lstat(store)).isDirectory(), true);
+  assert.equal(await readFile(join(store, "attacker-marker"), "utf8"), "preserve me\n");
+  const staging = (await readdir(value.root)).find(name =>
+    name.startsWith(".initialization-race-store.initialize."));
+  assert.ok(staging);
+  assert.equal((await lstat(join(value.root, staging, "checkpoint.json"))).isFile(), true);
+});
+
+test("initialization binds its first open to the just-created directory", {
+  skip: process.platform !== "linux" && "descriptor-relative initialization requires Linux",
+}, async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestPath = join(value.root, "created-identity-manifest.json");
+  const store = join(value.root, "created-identity-race-store");
+  await writeFile(manifestPath, `${canonicalJson(manifest)}\n`, {
+    flag: "wx", mode: 0o444,
+  });
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+
+  await assert.rejects(execute(process.execPath, [
+    ...operationsInitRaceLoaderArguments(), cli, "init",
+    "--store", store, "--manifest", manifestPath,
+    "--expected-manifest-sha256", canonicalSha256(manifest),
+    "--initial-head-sha256", "genesis",
+  ], { env: { ...process.env, POSTERN_OPERATIONS_INIT_RACE_TARGET: store,
+    POSTERN_OPERATIONS_INIT_RACE_MODE: "before-open" },
+  timeout: raceSubprocessTimeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }),
+  /new operations staging store identity or permissions are invalid/);
+  await assert.rejects(lstat(store), { code: "ENOENT" });
+  const names = await readdir(value.root);
+  const displaced = names.find(name =>
+    name.startsWith(".created-identity-race-store.initialize.") && name.endsWith(".displaced"));
+  const replacement = names.find(name =>
+    name.startsWith(".created-identity-race-store.initialize.") && !name.endsWith(".displaced"));
+  assert.ok(displaced); assert.ok(replacement);
+  assert.deepEqual(await readdir(join(value.root, displaced)), []);
+  assert.deepEqual(await readdir(join(value.root, replacement)), []);
+});
+
+test("initialization closes the namespace after its final checkpoint read", {
+  skip: process.platform !== "linux" && "descriptor-relative initialization requires Linux",
+}, async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestPath = join(value.root, "final-namespace-manifest.json");
+  const store = join(value.root, "final-namespace-race-store");
+  await writeFile(manifestPath, `${canonicalJson(manifest)}\n`, {
+    flag: "wx", mode: 0o444,
+  });
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+
+  await assert.rejects(execute(process.execPath, [
+    ...operationsInitRaceLoaderArguments(), cli, "init",
+    "--store", store, "--manifest", manifestPath,
+    "--expected-manifest-sha256", canonicalSha256(manifest),
+    "--initial-head-sha256", "genesis",
+  ], { env: { ...process.env, POSTERN_OPERATIONS_INIT_RACE_TARGET: store,
+    POSTERN_OPERATIONS_INIT_RACE_MODE: "after-final-read" },
+  timeout: raceSubprocessTimeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }),
+  /unexpected initialization artifacts after final checkpoint read/);
+  assert.equal(await readFile(join(store, "late-intruder"), "utf8"),
+    "late initialization artifact\n");
+  assert.equal((await lstat(join(store, "checkpoint.json"))).isFile(), true);
+});
+
+test("initialization validates the published root last", {
+  skip: process.platform !== "linux" && "descriptor-relative initialization requires Linux",
+}, async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestPath = join(value.root, "final-root-manifest.json");
+  const store = join(value.root, "final-root-race-store");
+  await writeFile(manifestPath, `${canonicalJson(manifest)}\n`, { flag: "wx", mode: 0o444 });
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  await assert.rejects(execute(process.execPath, [
+    ...operationsInitRaceLoaderArguments(), cli, "init", "--store", store,
+    "--manifest", manifestPath, "--expected-manifest-sha256", canonicalSha256(manifest),
+    "--initial-head-sha256", "genesis",
+  ], { env: { ...process.env, POSTERN_OPERATIONS_INIT_RACE_TARGET: store,
+    POSTERN_OPERATIONS_INIT_RACE_MODE: "before-final-root" },
+  timeout: raceSubprocessTimeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }),
+  /new operations store after final checkpoint read changed/);
+  assert.deepEqual(await readdir(store), []);
+  assert.equal((await lstat(join(`${store}.displaced-final`, "checkpoint.json"))).isFile(), true);
+});
+
+test("initialization fails closed when renameat2 helper is unavailable", {
+  skip: process.platform !== "linux" && "renameat2 initialization requires Linux",
+}, async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestPath = join(value.root, "unavailable-helper-manifest.json");
+  const store = join(value.root, "unavailable-helper-store");
+  await writeFile(manifestPath, `${canonicalJson(manifest)}\n`, { flag: "wx", mode: 0o444 });
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  await assert.rejects(execute(process.execPath, [
+    ...operationsInitRaceLoaderArguments(), cli, "init", "--store", store,
+    "--manifest", manifestPath, "--expected-manifest-sha256", canonicalSha256(manifest),
+    "--initial-head-sha256", "genesis",
+  ], { env: { ...process.env, POSTERN_OPERATIONS_INIT_RACE_TARGET: store,
+    POSTERN_OPERATIONS_INIT_RACE_MODE: "helper-unavailable" },
+  timeout: raceSubprocessTimeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }),
+  /atomic create-only operations store publication is unavailable/);
+  await assert.rejects(lstat(store), { code: "ENOENT" });
+  const staging = (await readdir(value.root)).find(name =>
+    name.startsWith(".unavailable-helper-store.initialize."));
+  assert.ok(staging);
+  assert.equal((await lstat(join(value.root, staging, "checkpoint.json"))).isFile(), true);
+});
+
+test("renameat2 helper ignores hostile Python startup configuration", {
+  skip: process.platform !== "linux" && "renameat2 initialization requires Linux",
+}, async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestPath = join(value.root, "isolated-helper-manifest.json");
+  const store = join(value.root, "isolated-helper-store");
+  const hostile = join(value.root, "hostile-python");
+  const marker = join(value.root, "sitecustomize-ran");
+  await mkdir(hostile, { mode: 0o700 });
+  await writeFile(join(hostile, "sitecustomize.py"),
+    `from pathlib import Path\nPath(${JSON.stringify(marker)}).write_text("executed\\n")\n`,
+    { flag: "wx", mode: 0o600 });
+  await writeFile(manifestPath, `${canonicalJson(manifest)}\n`, { flag: "wx", mode: 0o444 });
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  await execute(process.execPath, [cli, "init", "--store", store,
+    "--manifest", manifestPath, "--expected-manifest-sha256", canonicalSha256(manifest),
+    "--initial-head-sha256", "genesis"], {
+    env: { ...process.env, PYTHONPATH: hostile, PYTHONSTARTUP: join(hostile, "sitecustomize.py") },
+    timeout: raceSubprocessTimeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024,
+  });
+  await assert.rejects(lstat(marker), { code: "ENOENT" });
+  assert.equal((await lstat(join(store, "checkpoint.json"))).isFile(), true);
 });
 
 test("preflight pins secure input bytes and their pathname across the read", async (context) => {

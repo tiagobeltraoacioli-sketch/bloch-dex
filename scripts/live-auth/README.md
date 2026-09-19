@@ -539,7 +539,22 @@ channel; do not approve a digest obtained only from the machine being enrolled.
 
 Create a private checkpoint store with `init`, supplying that externally
 approved manifest digest and the independently queried custody head. The store
-is deliberately inactive. Activation requires a canonical authorization file
+is deliberately inactive. On Linux, initialization builds the store in a
+random private staging directory, pins that inode before creating any child or
+checkpoint, then publishes the same inode with a no-clobber rename. A raced
+public destination is preserved and causes failure. Publication invokes Linux
+`renameat2(RENAME_NOREPLACE)` directly through fixed `/usr/bin/python3` code;
+the helper runs with `-I -S`, an empty environment and the already pinned
+parent descriptor. After publication it syncs that parent and proves its
+pathname still identifies the retained descriptor. An absent helper,
+unsupported syscall, or invalid flag fails closed without a rename fallback. It addresses every write
+through `/proc/self/fd`, and revalidates the root plus both private child
+directories after the directory sync. It also requires the exact three-entry
+initial namespace and empty history directories both before and after the final
+checkpoint read. A concurrent pathname
+replacement fails closed: the replacement is never populated, while the
+displaced, incomplete tree is preserved for investigation and must not be
+activated or retried in place. Activation requires a canonical authorization file
 that binds the manifest digest and initial head. The authorization must also
 pin an Ed25519 rotation authority as `authorityKeyId`,
 `authorityKeyGeneration` and `authorityPublicKeyBase64Url`; its separately

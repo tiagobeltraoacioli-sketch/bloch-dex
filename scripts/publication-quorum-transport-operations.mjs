@@ -6,6 +6,7 @@ import {
   createPublicKey,
   randomBytes,
 } from "node:crypto";
+import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import {
   chmod,
@@ -60,6 +61,48 @@ const LOCK_CLEANUP_DIRECTORY = /^\.operations\.lock\.cleanup\.[1-9][0-9]*\.[0-9a
 const LOCK_RETAINED_NAME = /^retained-[0-9a-f]{64}$/;
 const DESCRIPTOR_RELATIVE_PATH = /^\/proc\/self\/fd\/[1-9][0-9]*(?:\/.*)?$/;
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+const RENAME_NOREPLACE_PROGRAM = String.raw`import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+try:
+    renameat2 = libc.renameat2
+except AttributeError:
+    sys.exit(38)
+renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+renameat2.restype = ctypes.c_int
+PARENT_FD = 3
+RENAME_NOREPLACE = 1
+result = renameat2(PARENT_FD, os.fsencode(sys.argv[1]), PARENT_FD, os.fsencode(sys.argv[2]), RENAME_NOREPLACE)
+if result != 0:
+    sys.exit(ctypes.get_errno())`;
+
+async function executeRenameNoReplace(parentFd, sourceName, destinationName) {
+  await new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn("/usr/bin/python3", [
+      "-I", "-S", "-c", RENAME_NOREPLACE_PROGRAM,
+      sourceName, destinationName,
+    ], {
+      env: {},
+      stdio: ["ignore", "ignore", "pipe", parentFd],
+    });
+    let stderr = Buffer.alloc(0);
+    const timeout = setTimeout(() => child.kill("SIGKILL"), 10_000);
+    child.stderr.on("data", (chunk) => {
+      if (stderr.length <= 64 * 1024)
+        stderr = Buffer.concat([stderr, chunk]).subarray(0, 64 * 1024 + 1);
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      rejectPromise(error);
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(timeout);
+      if (code === 0) resolvePromise();
+      else rejectPromise(Object.assign(new Error(
+        `renameat2 helper failed${signal ? ` with signal ${signal}` : ""}: ${stderr.toString("utf8")}`,
+      ), { code }));
+    });
+  });
+}
 
 function fail(message) {
   throw new Error(`publication quorum transport operations: ${message}`);
@@ -824,36 +867,118 @@ export async function initializeOperationsStore(root, manifest, expectedManifest
   if (canonicalSha256(manifest) !== expectedManifestSha256)
     fail("preflight manifest does not match the externally approved hash; refusing TOFU");
   requireHead(initialHead);
-  await mkdir(root, { mode: 0o700 });
-  await chmod(root, 0o700);
-  await requireDirectory(root);
-  await mkdir(join(root, ROTATIONS), { mode: 0o700 });
-  await chmod(join(root, ROTATIONS), 0o700);
-  await mkdir(join(root, ANCHOR_ACCEPTANCES), { mode: 0o700 });
-  await chmod(join(root, ANCHOR_ACCEPTANCES), 0o700);
-  const checkpoint = {
-    schemaVersion: 4,
-    manifestSha256: expectedManifestSha256,
-    generation: 0,
-    status: "inactive",
-    expectedHeadSha256: initialHead,
-    pendingRequestId: null,
-    authorizationSha256: null,
-    authorityKeyId: null,
-    authorityKeyGeneration: null,
-    authorityPublicKeyBase64Url: null,
-    rotationSequence: 0,
-    previousRotationSha256: "genesis",
-    pendingRotationSha256: null,
-    externalAnchorSequence: null,
-    externalAnchorAcceptanceCount: 0,
-    externalAnchorAcceptanceSha256: null,
-  };
-  await writeNewDurableJson(
-    join(root, HEAD), checkpoint, 0o400, "initial operations checkpoint",
+  const resolvedRoot = resolve(root);
+  const parent = await realpath(dirname(resolvedRoot));
+  if (join(parent, basename(resolvedRoot)) !== resolvedRoot)
+    fail("new operations store parent path must not traverse symlinks");
+  const parentDirectory = await openPinnedDirectory(
+    parent, "operations initialization parent",
   );
-  await syncDirectory(root);
-  return checkpoint;
+  const stagingName =
+    `.${basename(resolvedRoot)}.initialize.${randomBytes(32).toString("hex")}`;
+  const staging = join(parentDirectory.anchoredPath, stagingName);
+  await mkdir(staging, { mode: 0o700 });
+  await requirePinnedDirectoryIdentity(
+    parentDirectory, "operations initialization parent after staging creation",
+  );
+  parentDirectory.metadata = await parentDirectory.handle.stat({ bigint: true });
+  const createdRoot = await lstat(staging, { bigint: true });
+  if (!createdRoot.isDirectory() || createdRoot.isSymbolicLink() ||
+      (typeof process.getuid === "function" &&
+        createdRoot.uid !== BigInt(process.getuid())))
+    fail("new operations store creation identity is invalid");
+  await requireDirectory(staging);
+  const rootDirectory = await openPinnedDirectory(
+    staging, "new operations staging store", null, createdRoot,
+  );
+  let rotationsDirectory;
+  let acceptancesDirectory;
+  try {
+    await setPinnedDirectoryMode(rootDirectory, 0o700, "new operations store");
+    const anchoredRoot = rootDirectory.anchoredPath;
+
+    await mkdir(join(anchoredRoot, ROTATIONS), { mode: 0o700 });
+    rotationsDirectory = await openPinnedDirectory(
+      join(anchoredRoot, ROTATIONS), "new rotation directory",
+    );
+    await setPinnedDirectoryMode(
+      rotationsDirectory, 0o700, "new rotation directory",
+    );
+    await requirePinnedDirectoryIdentity(
+      rootDirectory, "new operations store after rotation directory creation",
+    );
+    rootDirectory.metadata = await rootDirectory.handle.stat({ bigint: true });
+
+    await mkdir(join(anchoredRoot, ANCHOR_ACCEPTANCES), { mode: 0o700 });
+    acceptancesDirectory = await openPinnedDirectory(
+      join(anchoredRoot, ANCHOR_ACCEPTANCES), "new anchor acceptance directory",
+    );
+    await setPinnedDirectoryMode(
+      acceptancesDirectory, 0o700, "new anchor acceptance directory",
+    );
+    await requirePinnedDirectoryIdentity(
+      rootDirectory, "new operations store after acceptance directory creation",
+    );
+    rootDirectory.metadata = await rootDirectory.handle.stat({ bigint: true });
+
+    const checkpoint = {
+      schemaVersion: 4,
+      manifestSha256: expectedManifestSha256,
+      generation: 0,
+      status: "inactive",
+      expectedHeadSha256: initialHead,
+      pendingRequestId: null,
+      authorizationSha256: null,
+      authorityKeyId: null,
+      authorityKeyGeneration: null,
+      authorityPublicKeyBase64Url: null,
+      rotationSequence: 0,
+      previousRotationSha256: "genesis",
+      pendingRotationSha256: null,
+      externalAnchorSequence: null,
+      externalAnchorAcceptanceCount: 0,
+      externalAnchorAcceptanceSha256: null,
+    };
+    await writeNewDurableJson(
+      join(anchoredRoot, HEAD), checkpoint, 0o400,
+      "initial operations checkpoint",
+    );
+    await rootDirectory.handle.sync();
+    await requirePinnedDirectory(
+      rotationsDirectory, "new rotation directory after initialization",
+    );
+    await requirePinnedDirectory(
+      acceptancesDirectory, "new anchor acceptance directory after initialization",
+    );
+    await requirePinnedDirectoryIdentity(
+      rootDirectory, "new operations store after initialization",
+    );
+    rootDirectory.metadata = await rootDirectory.handle.stat({ bigint: true });
+    await requireExactInitialOperationsNamespace(
+      rootDirectory, rotationsDirectory, acceptancesDirectory,
+      null,
+      "after initialization",
+    );
+    await publishPinnedInitializationDirectory(
+      parentDirectory, rootDirectory, stagingName, resolvedRoot,
+    );
+    const retained = validateCheckpoint(await secureJson(
+      join(anchoredRoot, HEAD), "retained initial operations checkpoint",
+    ));
+    if (canonicalJson(retained) !== canonicalJson(checkpoint))
+      fail("retained initial operations checkpoint differs from its durable candidate");
+    await requireExactInitialOperationsNamespace(
+      rootDirectory, rotationsDirectory, acceptancesDirectory,
+      parentDirectory,
+      "after final checkpoint read",
+    );
+    return checkpoint;
+  } finally {
+    await acceptancesDirectory?.handle.close();
+    await rotationsDirectory?.handle.close();
+    await rootDirectory.handle.close();
+    await parentDirectory.handle.close();
+  }
 }
 
 export async function activateOperationsStore(root, authorization, expectedAuthorizationSha256) {
@@ -1880,7 +2005,9 @@ function sameIntegralMetadata(left, right) {
   return INTEGRAL_METADATA.every((name) => left?.[name] === right?.[name]);
 }
 
-async function openPinnedDirectory(path, field, exactMode = null) {
+async function openPinnedDirectory(
+  path, field, exactMode = null, expectedMetadata = null,
+) {
   let handle;
   try {
     handle = await open(
@@ -1891,6 +2018,8 @@ async function openPinnedDirectory(path, field, exactMode = null) {
     const linked = await lstat(path, { bigint: true });
     if (!opened.isDirectory() || !linked.isDirectory() || linked.isSymbolicLink() ||
         !sameIntegralMetadata(opened, linked) ||
+        (expectedMetadata !== null &&
+          !sameIntegralMetadata(expectedMetadata, opened)) ||
         (exactMode !== null && (opened.mode & 0o777n) !== BigInt(exactMode)) ||
         (typeof process.getuid === "function" && opened.uid !== BigInt(process.getuid())))
       fail(`${field} identity or permissions are invalid`);
@@ -1907,6 +2036,93 @@ async function openPinnedDirectory(path, field, exactMode = null) {
     if (error?.code === "ELOOP") fail(`${field} must not be a symlink`);
     throw error;
   }
+}
+
+async function requireExactInitialOperationsNamespace(
+  rootDirectory, rotationsDirectory, acceptancesDirectory, parentDirectory, phase,
+) {
+  const [rootEntries, rotationEntries, acceptanceEntries] = await Promise.all([
+    readdir(rootDirectory.anchoredPath),
+    readdir(rotationsDirectory.anchoredPath),
+    readdir(acceptancesDirectory.anchoredPath),
+  ]);
+  if (canonicalJson(rootEntries.sort()) !== canonicalJson([
+    ANCHOR_ACCEPTANCES, HEAD, ROTATIONS,
+  ].sort()) || rotationEntries.length !== 0 || acceptanceEntries.length !== 0)
+    fail(`new operations store contains unexpected initialization artifacts ${phase}`);
+  await requirePinnedDirectory(
+    rotationsDirectory, `new rotation directory ${phase}`,
+  );
+  await requirePinnedDirectory(
+    acceptancesDirectory, `new anchor acceptance directory ${phase}`,
+  );
+  if (parentDirectory) await requirePinnedDirectory(
+    parentDirectory, `operations initialization parent ${phase}`,
+  );
+  // Root is intentionally last: no child/name validation can follow and open
+  // another final-window substitution before the caller returns.
+  await requirePinnedDirectory(
+    rootDirectory, `new operations store ${phase}`,
+  );
+}
+
+async function publishPinnedInitializationDirectory(
+  parentDirectory, rootDirectory, stagingName, resolvedRoot,
+) {
+  if (process.platform !== "linux")
+    fail("safe operations store publication requires Linux no-clobber rename support");
+  await requirePinnedDirectory(
+    rootDirectory, "operations staging store before publication",
+  );
+  const occupied = await lstat(resolvedRoot).then(() => true, (error) => {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  });
+  if (occupied) fail("new operations store path became occupied before publication");
+  // Invoke the kernel primitive directly. The fixed program has no shell,
+  // lookup, fallback or check-then-rename path. Python exits with errno, so
+  // EEXIST is distinguishable and ENOSYS/EINVAL remain fail-closed.
+  let publicationError = null;
+  try {
+    await executeRenameNoReplace(
+      parentDirectory.handle.fd, stagingName, basename(resolvedRoot),
+    );
+  } catch (error) {
+    publicationError = error;
+  }
+  rootDirectory.path = resolvedRoot;
+  try {
+    await requirePinnedDirectoryIdentity(
+      rootDirectory, "published operations store",
+    );
+  } catch (identityError) {
+    if (publicationError?.code === 17)
+      fail("new operations store path became occupied during create-only publication");
+    if (publicationError)
+      fail("atomic create-only operations store publication is unavailable");
+    throw identityError;
+  }
+  if (publicationError)
+    fail("atomic create-only operations store publication is unavailable");
+  // The rename legitimately changes directory ctime; establish the published
+  // pathname as the new exact baseline only after its inode was matched.
+  rootDirectory.metadata = await rootDirectory.handle.stat({ bigint: true });
+  await requirePinnedDirectory(rootDirectory, "published operations store");
+  const stagingPresent = await lstat(join(parentDirectory.anchoredPath, stagingName))
+    .then(() => true, (error) => {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  });
+  if (stagingPresent)
+    fail("operations staging store was not published create-only");
+  await parentDirectory.handle.sync();
+  await requirePinnedDirectoryIdentity(
+    parentDirectory, "operations initialization parent after publication sync",
+  );
+  parentDirectory.metadata = await parentDirectory.handle.stat({ bigint: true });
+  await requirePinnedDirectory(
+    parentDirectory, "operations initialization parent after publication sync",
+  );
 }
 
 async function requirePinnedDirectory(directory, field) {
@@ -1928,6 +2144,19 @@ async function requirePinnedDirectoryIdentity(directory, field) {
       !sameIntegralMetadata(opened, linked) ||
       !identity.every((name) => directory.metadata[name] === opened[name]))
     fail(`${field} identity changed while the output was being prepared`);
+}
+
+async function setPinnedDirectoryMode(directory, mode, field) {
+  await directory.handle.chmod(mode);
+  const opened = await directory.handle.stat({ bigint: true });
+  const linked = await lstat(directory.path, { bigint: true });
+  if (!opened.isDirectory() || !linked.isDirectory() || linked.isSymbolicLink() ||
+      !sameIntegralMetadata(opened, linked) ||
+      (opened.mode & 0o777n) !== BigInt(mode) ||
+      (typeof process.getuid === "function" &&
+        opened.uid !== BigInt(process.getuid())))
+    fail(`${field} changed while its permissions were being fixed`);
+  directory.metadata = opened;
 }
 
 async function readCleanupDirectory(rootDirectory, cleanupDirectory) {
