@@ -421,6 +421,7 @@ export async function prepareOperationsRotation({
     fail("next rotation authority key ID does not match");
   return withLock(root, async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
+    await auditRotationChain(root, current);
     if (current.status !== "ready")
       fail("operations store must be ready before starting mTLS profile rotation");
     if (canonicalSha256(priorManifest) !== current.manifestSha256)
@@ -479,6 +480,86 @@ function verifyRotationAuthorization(envelope, role, rotation, authority) {
     fail("rotation authorization does not bind the exact role and transition");
 }
 
+function validateRotationRecord(value) {
+  exactKeys(value, [
+    "schemaVersion", "rotation", "priorAuthorization", "nextAcceptance",
+  ], "mTLS profile rotation record");
+  if (value.schemaVersion !== 1) fail("mTLS profile rotation record version is invalid");
+  const rotation = validateRotationPayload(value.rotation);
+  verifyRotationAuthorization(
+    value.priorAuthorization, "prior-authorization", rotation, rotation.priorAuthority,
+  );
+  verifyRotationAuthorization(
+    value.nextAcceptance, "next-acceptance", rotation, rotation.nextAuthority,
+  );
+  return { record: value, rotation };
+}
+
+async function auditRotationChain(root, checkpoint) {
+  const rotations = join(root, ROTATIONS);
+  await requireDirectory(rotations);
+  let expectedRecordSha256 = checkpoint.previousRotationSha256;
+  let expectedSequence = checkpoint.rotationSequence;
+  let expectedManifestSha256 = checkpoint.manifestSha256;
+  let expectedAuthority = checkpointAuthority(checkpoint);
+  let verifiedRecords = 0;
+  while (expectedSequence > 0) {
+    if (expectedRecordSha256 === "genesis")
+      fail("rotation chain terminates before its retained sequence");
+    const { record, rotation } = validateRotationRecord(await secureJson(
+      join(rotations, `${expectedRecordSha256}.json`),
+      `rotation record ${expectedSequence}`,
+    ));
+    if (canonicalSha256(record) !== expectedRecordSha256)
+      fail("rotation record content does not match its retained hash");
+    if (rotation.rotationSequence !== expectedSequence ||
+        rotation.nextManifestSha256 !== expectedManifestSha256 ||
+        canonicalJson(rotation.nextAuthority) !== canonicalJson(expectedAuthority))
+      fail("rotation record breaks the retained sequence, manifest, or authority chain");
+    expectedRecordSha256 = rotation.previousRotationSha256;
+    expectedManifestSha256 = rotation.priorManifestSha256;
+    expectedAuthority = rotation.priorAuthority;
+    expectedSequence -= 1;
+    verifiedRecords += 1;
+  }
+  if (expectedRecordSha256 !== "genesis")
+    fail("rotation chain has a non-genesis predecessor at sequence zero");
+  return {
+    verifiedRecords,
+    initialManifestSha256: expectedManifestSha256,
+    initialAuthorityKeyId: expectedAuthority.keyId,
+  };
+}
+
+export async function auditOperationsStore(root) {
+  await requireDirectory(root);
+  const checkpoint = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
+  const chain = await auditRotationChain(root, checkpoint);
+  let pendingRotationSha256 = null;
+  if (checkpoint.status === "rotating") {
+    const rotation = validateRotationPayload(await secureJson(
+      join(root, ROTATIONS, `${checkpoint.pendingRotationSha256}.json`),
+      "pending rotation",
+    ));
+    if (canonicalSha256(rotation) !== checkpoint.pendingRotationSha256 ||
+        rotation.rotationSequence !== checkpoint.rotationSequence + 1 ||
+        rotation.previousRotationSha256 !== checkpoint.previousRotationSha256 ||
+        rotation.priorManifestSha256 !== checkpoint.manifestSha256 ||
+        rotation.expectedHeadSha256 !== checkpoint.expectedHeadSha256 ||
+        canonicalJson(rotation.priorAuthority) !== canonicalJson(checkpointAuthority(checkpoint)))
+      fail("pending rotation breaks the retained checkpoint chain");
+    pendingRotationSha256 = checkpoint.pendingRotationSha256;
+  }
+  return {
+    valid: true,
+    checkpointGeneration: checkpoint.generation,
+    rotationSequence: checkpoint.rotationSequence,
+    previousRotationSha256: checkpoint.previousRotationSha256,
+    pendingRotationSha256,
+    ...chain,
+  };
+}
+
 export async function commitOperationsRotation({
   root,
   priorManifest,
@@ -493,6 +574,7 @@ export async function commitOperationsRotation({
   const rotationSha256 = canonicalSha256(rotation);
   return withLock(root, async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
+    await auditRotationChain(root, current);
     if (current.status !== "rotating" || current.pendingRotationSha256 !== rotationSha256)
       fail("rotation does not match the retained pending transition");
     if (canonicalSha256(priorManifest) !== current.manifestSha256 ||
@@ -558,6 +640,7 @@ export async function beginTransportRequest(root, manifestSha256, expectedHead, 
   requireHash(requestId, "request ID");
   return withLock(root, async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
+    await auditRotationChain(root, current);
     if (current.manifestSha256 !== manifestSha256) fail("runtime configuration differs from the approved preflight manifest");
     if (current.status === "inactive") fail("operations store is inactive; explicit reviewed activation is required");
     if (current.status === "rotating") fail("mTLS profile rotation is pending; requests remain blocked until durable commit");
@@ -711,6 +794,10 @@ async function main() {
     const v = parse(args, ["--store"]);
     console.log(canonicalJson(await inspectPendingRotation(v["--store"]))); return;
   }
+  if (command === "audit") {
+    const v = parse(args, ["--store"]);
+    console.log(canonicalJson(await auditOperationsStore(v["--store"]))); return;
+  }
   if (command === "reconcile") {
     const v = parse(args, ["--store", "--manifest", "--witness-config", "--authenticated-request", "--expected-head-sha256", "--receipt"]);
     const result = await reconcileTransportRequest({
@@ -723,7 +810,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-rotation, or reconcile");
+  fail("expected preflight, init, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-rotation, audit, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)

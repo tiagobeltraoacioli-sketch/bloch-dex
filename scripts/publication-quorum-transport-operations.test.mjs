@@ -2,13 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { canonicalSha256, describeKey } from "./live-auth/envelope.mjs";
 import {
   activateOperationsStore,
+  auditOperationsStore,
   authorizeOperationsRotation,
   beginTransportRequest,
   buildClientPreflight,
@@ -201,6 +202,10 @@ test("rotates a pinned mTLS profile only after independent old and new authoriza
     nextAuthority: { ...nextIdentity, keyGeneration: 2 },
   });
   assert.equal((await inspectPendingRotation(store)).rotationSha256, prepared.rotationSha256);
+  const pendingAudit = await auditOperationsStore(store);
+  assert.equal(pendingAudit.valid, true);
+  assert.equal(pendingAudit.verifiedRecords, 0);
+  assert.equal(pendingAudit.pendingRotationSha256, prepared.rotationSha256);
   await assert.rejects(
     beginTransportRequest(store, priorHash, "genesis", "8".repeat(64)),
     /rotation is pending.*blocked until durable commit/,
@@ -255,6 +260,11 @@ test("rotates a pinned mTLS profile only after independent old and new authoriza
   assert.equal(committed.checkpoint.rotationSequence, 1);
   assert.equal(committed.checkpoint.previousRotationSha256, committed.rotationRecordSha256);
   assert.equal(committed.checkpoint.authorityKeyId, nextIdentity.keyId);
+  const audit = await auditOperationsStore(store);
+  assert.equal(audit.valid, true);
+  assert.equal(audit.verifiedRecords, 1);
+  assert.equal(audit.rotationSequence, 1);
+  assert.equal(audit.initialAuthorityKeyId, priorIdentity.keyId);
   await assert.rejects(
     commitOperationsRotation({
       root: store,
@@ -266,7 +276,11 @@ test("rotates a pinned mTLS profile only after independent old and new authoriza
     }),
     /does not match the retained pending transition/,
   );
-  await beginTransportRequest(store, nextHash, "genesis", "9".repeat(64));
+  await unlink(join(store, "rotations", `${committed.rotationRecordSha256}.json`));
+  await assert.rejects(
+    beginTransportRequest(store, nextHash, "genesis", "9".repeat(64)),
+    { code: "ENOENT" },
+  );
 });
 
 test("refuses mTLS rotation downgrade, rollback, shared keys, and stale profile chains", async () => {

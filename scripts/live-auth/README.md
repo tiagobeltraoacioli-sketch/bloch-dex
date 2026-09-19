@@ -638,8 +638,26 @@ There is intentionally no cancel, force, rollback or unsigned migration path.
 An invalid, incomplete or interrupted rotation remains blocked in `rotating`;
 use `inspect` and `inspect-rotation`, recover the two exact authorizations, and
 repeat only `commit-rotation`. Never edit the checkpoint or replace the store.
-The hash chain prevents replaying an old profile or forking a sequence, but an
-external append-only anchor is still required to detect whole-store rollback.
+Run a full local chain audit after copying or restoring an operations store:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs audit \
+  --store <private-operations-directory>
+```
+
+`audit` walks from the retained checkpoint to genesis, verifies every
+content-addressed record and both role-bound signatures, and checks exact
+sequence, manifest and authority continuity. It also verifies a pending
+rotation against the retained checkpoint. Starting transport, preparing a new
+rotation and committing a rotation repeat the committed-chain audit while
+holding the store lock, so a missing, modified or spliced historical record
+blocks the operation before network I/O or checkpoint mutation. Retain the
+complete `rotations/` directory; pruning is not supported.
+
+The hash chain prevents replaying an old profile or forking a sequence and the
+audit detects local chain damage, but an external append-only anchor is still
+required to detect a self-consistent whole-store rollback. An audit result is
+therefore not deployment approval or evidence of freshness.
 This release uses operations-checkpoint schema 2. A schema-1 store fails closed;
 do not edit it in place. Bootstrap a separately reviewed schema-2 store from an
 independently queried custody head and retain the old store for audit.
