@@ -93,6 +93,19 @@ function operationsInitRaceLoaderArguments() {
   return ["--experimental-loader", loader.href];
 }
 
+function operationsMigrationRaceLoaderArguments() {
+  if (supportsModuleRegister(process.versions.node)) {
+    const registration = new URL(
+      "./fixtures/register-operations-migration-race-loader.mjs", import.meta.url,
+    );
+    return ["--import", registration.href];
+  }
+  const loader = new URL(
+    "./fixtures/operations-migration-race-loader.mjs", import.meta.url,
+  );
+  return ["--experimental-loader", loader.href];
+}
+
 async function certificate(root, name) {
   const key = join(root, `${name}.key`);
   const cert = join(root, `${name}.crt`);
@@ -170,6 +183,49 @@ async function downgradeFixtureCheckpointToV3(store, overrides = {}) {
   await writeFile(path, `${canonicalJson(checkpoint)}\n`, { mode: 0o600 });
   await chmod(path, 0o400);
   return checkpoint;
+}
+
+async function migrationSourceWithRotation(value, name) {
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestHash = canonicalSha256(manifest);
+  const source = join(value.root, name);
+  await initializeOperationsStore(source, manifest, manifestHash, "genesis");
+  const priorIdentity = describeKey(value.authority.publicKey);
+  const activation = {
+    schemaVersion: 1,
+    authorizationId: `migration-${canonicalSha256(name).slice(0, 16)}`,
+    manifestSha256: manifestHash,
+    expectedHeadSha256: "genesis",
+    enabled: true,
+    authorityKeyId: priorIdentity.keyId,
+    authorityKeyGeneration: 1,
+    authorityPublicKeyBase64Url: priorIdentity.publicKeyBase64Url,
+  };
+  await activateOperationsStore(source, activation, canonicalSha256(activation));
+  const nextManifest = { ...manifest, serverCertificateSha256: "9".repeat(64) };
+  const nextKeys = generateKeyPairSync("ed25519");
+  const nextIdentity = describeKey(nextKeys.publicKey);
+  const prepared = await prepareOperationsRotation({
+    root: source,
+    priorManifest: manifest,
+    nextManifest,
+    expectedNextManifestSha256: canonicalSha256(nextManifest),
+    nextAuthority: { ...nextIdentity, keyGeneration: 2 },
+  });
+  await commitOperationsRotation({
+    root: source,
+    priorManifest: manifest,
+    nextManifest,
+    rotation: prepared.rotation,
+    priorAuthorization: authorizeOperationsRotation(
+      prepared.rotation, "prior-authorization", value.authority.privateKey, 1,
+    ),
+    nextAcceptance: authorizeOperationsRotation(
+      prepared.rotation, "next-acceptance", nextKeys.privateKey, 2,
+    ),
+  });
+  const checkpoint = await downgradeFixtureCheckpointToV3(source);
+  return { source, expectedV3Hash: canonicalSha256(checkpoint) };
 }
 
 test("preflight rejects unsafe key permissions and a certificate/key substitution", async () => {
@@ -614,8 +670,91 @@ test("migrates an explicitly approved schema-3 checkpoint into a separate audite
       destinationRoot: destination,
       expectedV3CheckpointSha256: expectedV3Hash,
     }),
-    { code: "EEXIST" },
+    /path became occupied before publication/,
   );
+});
+
+test("migration pins its destination during copy and before checkpoint publication", {
+  skip: process.platform !== "linux" && "descriptor-relative migration requires Linux",
+}, async t => {
+  const value = await fixture();
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  for (const mode of ["during-copy", "before-checkpoint"]) {
+    await t.test(mode, async () => {
+      const { source, expectedV3Hash } = await migrationSourceWithRotation(
+        value, `migration-race-source-${mode}`,
+      );
+      const destination = join(value.root, `migration-race-destination-${mode}`);
+      await assert.rejects(execute(process.execPath, [
+        ...operationsMigrationRaceLoaderArguments(), cli, "migrate-v3-to-v4",
+        "--source-store", source,
+        "--destination-store", destination,
+        "--expected-v3-checkpoint-sha256", expectedV3Hash,
+      ], {
+        env: {
+          ...process.env,
+          POSTERN_OPERATIONS_MIGRATION_RACE_TARGET: destination,
+          POSTERN_OPERATIONS_MIGRATION_RACE_MODE: mode,
+        },
+        timeout: raceSubprocessTimeoutMs,
+        killSignal: "SIGKILL",
+        maxBuffer: 64 * 1024,
+      }), /migration destination .*changed/);
+      assert.deepEqual(await readdir(destination), [],
+        "the replacement pathname must remain untouched");
+      const displaced = `${destination}.displaced`;
+      assert.equal((await lstat(displaced)).isDirectory(), true);
+      assert.equal((await readdir(join(displaced, "rotations"))).length, 1);
+      await assert.rejects(lstat(join(displaced, "checkpoint.json")), { code: "ENOENT" });
+      if (mode === "before-checkpoint")
+        assert.equal((await lstat(join(displaced, "migration-v3-checkpoint.json"))).isFile(), true);
+      await assert.rejects(lstat(join(source, ".operations.lock")), { code: "ENOENT" });
+    });
+  }
+});
+
+test("migration closes child-check and final-success namespace races", {
+  skip: process.platform !== "linux" && "descriptor-relative migration requires Linux",
+}, async t => {
+  const value = await fixture();
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  const cases = [
+    ["replace-rotations-between-checks", "rotations"],
+    ["replace-acceptances-between-checks", "anchor-acceptances"],
+    ["root-after-final-audit", null],
+  ];
+  for (const [mode, child] of cases) {
+    await t.test(mode, async () => {
+      const { source, expectedV3Hash } = await migrationSourceWithRotation(
+        value, `migration-namespace-source-${mode}`,
+      );
+      const destination = join(value.root, `migration-namespace-destination-${mode}`);
+      await assert.rejects(execute(process.execPath, [
+        ...operationsMigrationRaceLoaderArguments(), cli, "migrate-v3-to-v4",
+        "--source-store", source,
+        "--destination-store", destination,
+        "--expected-v3-checkpoint-sha256", expectedV3Hash,
+      ], {
+        env: {
+          ...process.env,
+          POSTERN_OPERATIONS_MIGRATION_RACE_TARGET: destination,
+          POSTERN_OPERATIONS_MIGRATION_RACE_MODE: mode,
+        },
+        timeout: raceSubprocessTimeoutMs,
+        killSignal: "SIGKILL",
+        maxBuffer: 64 * 1024,
+      }), /migration destination .*changed/);
+      if (child) {
+        assert.deepEqual(await readdir(join(destination, child)), []);
+        assert.equal((await lstat(join(destination, `${child}.displaced`))).isDirectory(), true);
+        await assert.rejects(lstat(join(destination, "checkpoint.json")), { code: "ENOENT" });
+      } else {
+        assert.deepEqual(await readdir(destination), []);
+        assert.equal((await lstat(join(`${destination}.displaced`, "checkpoint.json"))).isFile(), true);
+      }
+      await assert.rejects(lstat(join(source, ".operations.lock")), { code: "ENOENT" });
+    });
+  }
 });
 
 test("schema-3 migration refuses TOFU, in-place replacement, and missing acceptance history", async () => {
@@ -1085,6 +1224,32 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     assert.equal((await inspectOperationsStore(store)).lockPresent, false);
   });
 
+  await context.test("store pathname substitution never redirects a locked mutation", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("store-path-race");
+    const displaced = `${store}.displaced`;
+    const racingAnchorLog = {
+      readLatestHead: async (query) => {
+        const head = await anchorLog.readLatestHead(query);
+        await rename(store, displaced);
+        await mkdir(store, { mode: 0o700 });
+        return head;
+      },
+    };
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "b".repeat(64), racingAnchorLog,
+      ),
+      /operations store after locked operation identity changed/,
+    );
+    assert.deepEqual(await readdir(store), [],
+      "the replacement pathname must never receive locked-operation writes");
+    const retained = JSON.parse(await readFile(join(displaced, "checkpoint.json"), "utf8"));
+    assert.equal(retained.status, "ready");
+    assert.equal(retained.pendingRequestId, null);
+    assert.equal((await readdir(join(displaced, "anchor-acceptances"))).length, 0);
+    await assert.rejects(lstat(join(displaced, ".operations.lock")), { code: "ENOENT" });
+  });
+
   await context.test("checkpoint substitution at publication preserves the durable candidate", async () => {
     const { store, manifestHash, anchorLog } = await activatedStore("publication-race");
     await beginTransportRequest(
@@ -1282,8 +1447,7 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     );
     assert.equal((await lstat(lockPath)).nlink, 2);
     assert.equal((await lstat(aliasPath)).nlink, 2);
-    assert.equal((await inspectOperationsStore(store)).status, "pending");
-    const completed = JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8"));
+    assert.equal((await inspectOperationsStore(store)).status, "ready");
     const lock = JSON.parse(await readFile(lockPath, "utf8"));
     assert.equal(lock.schemaVersion, 2);
     assert.equal(lock.operation, "begin-request");
@@ -1292,10 +1456,10 @@ test("operations lock release preserves hardlinked or substituted locks", async 
       root: store,
       expectedLockSha256: canonicalSha256(lock),
       expectedStartingCheckpointSha256: canonicalSha256(starting),
-      expectedCompletedCheckpointSha256: canonicalSha256(completed),
+      expectedCompletedCheckpointSha256: "8".repeat(64),
     });
     assert.equal(receipt.kind, "operations-lock-reconciliation-receipt");
-    assert.equal(receipt.outcome, "committed");
+    assert.equal(receipt.outcome, "not-committed");
     assert.equal(receipt.lockLinkCount, 2);
     assert.equal(receipt.lockRemoved, false);
     assert.equal((await lstat(lockPath)).nlink, 2);
@@ -1304,7 +1468,7 @@ test("operations lock release preserves hardlinked or substituted locks", async 
         root: store,
         expectedLockSha256: "9".repeat(64),
         expectedStartingCheckpointSha256: canonicalSha256(starting),
-        expectedCompletedCheckpointSha256: canonicalSha256(completed),
+        expectedCompletedCheckpointSha256: "8".repeat(64),
       }),
       /lock does not match the externally approved hash/,
     );
@@ -1312,10 +1476,10 @@ test("operations lock release preserves hardlinked or substituted locks", async 
       reconcileOperationsLock({
         root: store,
         expectedLockSha256: canonicalSha256(lock),
-        expectedStartingCheckpointSha256: canonicalSha256(starting),
+        expectedStartingCheckpointSha256: "7".repeat(64),
         expectedCompletedCheckpointSha256: "8".repeat(64),
       }),
-      /checkpoint matches neither externally approved outcome/,
+      /lock does not bind the externally approved starting checkpoint/,
     );
   });
 
@@ -1342,9 +1506,12 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     );
     assert.match(await readFile(lockPath, "utf8"), /"operation":"evilx-request"/);
     const checkpoint = await inspectOperationsStore(store);
-    assert.equal(checkpoint.status, "pending");
+    assert.equal(checkpoint.status, "ready");
     assert.equal(checkpoint.lockPresent, true);
-    assert.notEqual(canonicalSha256(starting), canonicalSha256(checkpoint));
+    assert.deepEqual(
+      JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8")),
+      starting,
+    );
   });
 
   await context.test("final-window lock substitution is retained in a tombstone", async () => {
@@ -1604,7 +1771,10 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     );
     assert.equal(await readFile(lockPath, "utf8"), replacement);
     assert.match(await readFile(displacedPath, "utf8"), /"pid":\d+/);
-    assert.equal((await inspectOperationsStore(store)).status, "pending");
+    const checkpoint = await inspectOperationsStore(store);
+    assert.equal(checkpoint.status, "ready");
+    assert.equal(checkpoint.pendingRequestId, null);
+    assert.deepEqual(await readdir(join(store, "anchor-acceptances")), []);
   });
 });
 

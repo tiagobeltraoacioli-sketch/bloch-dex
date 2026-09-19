@@ -617,6 +617,27 @@ changes the checkpoint during either window therefore cannot have its state
 silently overwritten. The changed checkpoint and any already retained
 content-addressed acceptance are preserved for inspection; the command does
 not merge, roll back, delete, or otherwise guess which state is authoritative.
+Every locked operation pins the canonical mode-`0700` store directory and
+addresses its lock, checkpoint and histories only through `/proc/self/fd` for
+the operation's full lifetime. The configured pathname must still identify
+that inode after lock cleanup. Replacing the store during an external call can
+therefore neither redirect writes into the replacement nor make the command
+report success; the pinned tree retains the exact completed or ambiguous state
+for inspection.
+The lock descriptor, pathname, exact bytes and stable metadata are also
+revalidated before and after every external call and mutation boundary. A
+replaced, rewritten or hardlinked lock is retained as incident evidence and
+blocks checkpoint/history publication. Multi-store verification revalidates
+every acquired lock at the shared operation boundaries.
+Schema-3 migration publishes a privately staged destination with an atomic
+create-only rename, then retains descriptors for that exact root and both
+history directories. All copied records, the migration record, the final
+checkpoint and the audit use descriptor-relative paths; child identities and
+the configured destination pathname are revalidated after each phase. Each
+namespace check brackets both child checks with an integral root snapshot, so
+a child-name replacement changes root link/time metadata and fails closed. A
+final destination snapshot runs only after source validation and lock cleanup,
+immediately before the migration can report success.
 
 Absence, timeout, malformed output, stale sequence, wrong stream, bad signature
 or mismatched checkpoint fails before either an acceptance or transport state is

@@ -545,7 +545,7 @@ async function writeContentAddressedRecovery(path, value, field) {
   }
 }
 
-async function replaceCheckpoint(root, expectedCurrent, next) {
+async function replaceCheckpoint(root, expectedCurrent, next, lockAuthority = null) {
   const target = join(root, HEAD);
   const temporary = join(root, `.${basename(HEAD)}.${process.pid}.${Date.now()}.tmp`);
   const predecessor = join(
@@ -556,29 +556,37 @@ async function replaceCheckpoint(root, expectedCurrent, next) {
     root,
     `.checkpoint.candidate.${canonicalSha256(next)}.json`,
   );
+  await lockAuthority?.validate("before temporary checkpoint creation");
   await writeNewDurableJson(temporary, next, 0o400, "temporary operations checkpoint");
+  await lockAuthority?.validate("after temporary checkpoint creation");
   await requireUnchangedCheckpoint(root, expectedCurrent, "at checkpoint publication boundary");
   await writeContentAddressedRecovery(
     candidate,
     next,
     "checkpoint recovery candidate",
   );
+  await lockAuthority?.validate("after checkpoint recovery publication");
   await writeContentAddressedRecovery(
     predecessor,
     expectedCurrent,
     "checkpoint recovery predecessor",
   );
+  await lockAuthority?.validate("after checkpoint predecessor recovery publication");
   await syncDirectory(root);
   await requireUnchangedCheckpoint(root, expectedCurrent, "before predecessor removal");
   let predecessorRemoved = false;
   try {
+    await lockAuthority?.validate("before checkpoint predecessor removal");
     await unlink(target);
     predecessorRemoved = true;
     await syncDirectory(root);
+    await lockAuthority?.validate("after checkpoint predecessor removal");
     await link(temporary, target);
     await syncDirectory(root);
+    await lockAuthority?.validate("after checkpoint candidate publication");
     await unlink(temporary);
     await syncDirectory(root);
+    await lockAuthority?.validate("after temporary checkpoint cleanup");
     if (canonicalJson(await secureJson(target, "published operations checkpoint")) !==
         canonicalJson(next))
       fail("published operations checkpoint differs from the durable candidate");
@@ -602,7 +610,8 @@ async function requireUnchangedCheckpoint(root, expected, phase) {
     fail(`operations checkpoint changed ${phase}; preserve state and inspect`);
 }
 
-async function writeDurableRecord(path, value, mode, parent) {
+async function writeDurableRecord(path, value, mode, parent, lockAuthority = null) {
+  await lockAuthority?.validate("before history record publication");
   try {
     await writeNewDurableJson(path, value, mode, "operations history record");
   } catch (error) {
@@ -611,6 +620,7 @@ async function writeDurableRecord(path, value, mode, parent) {
       fail("rotation record path is occupied by different content");
   }
   await syncDirectory(parent);
+  await lockAuthority?.validate("after history record publication");
 }
 
 function validateOperationsLock(value) {
@@ -666,6 +676,36 @@ async function acquireLock(root, operation) {
   } catch (error) {
     await handle?.close();
     if (error?.code === "EEXIST") fail("operations store is locked; inspect before recovery");
+    throw error;
+  }
+}
+
+async function requirePinnedOperationsLock(lock, phase) {
+  try {
+    const openedBefore = await lock.handle.stat({ bigint: true });
+    const observed = Buffer.alloc(lock.bytes.length);
+    const { bytesRead } = await lock.handle.read(observed, 0, observed.length, 0);
+    const openedAfter = await lock.handle.stat({ bigint: true });
+    const linked = await lstat(lock.path, { bigint: true });
+    const stable = ["dev", "ino", "uid", "gid", "mode", "nlink", "size", "mtimeNs", "ctimeNs"];
+    if (bytesRead !== lock.bytes.length || !observed.equals(lock.bytes) ||
+        !openedBefore.isFile() || !openedAfter.isFile() ||
+        !linked.isFile() || linked.isSymbolicLink() ||
+        openedBefore.nlink !== 1n ||
+        !stable.every((field) => openedBefore[field] === openedAfter[field] &&
+          openedAfter[field] === linked[field]) ||
+        openedAfter.dev !== lock.dev || openedAfter.ino !== lock.ino ||
+        openedAfter.uid !== lock.uid || openedAfter.gid !== lock.gid ||
+        openedAfter.mode !== lock.mode || openedAfter.size !== lock.size ||
+        openedAfter.mtimeNs !== lock.mtimeNs || openedAfter.ctimeNs !== lock.ctimeNs)
+      fail(`operations lock identity changed; preserve state and inspect (${phase})`);
+  } catch (cause) {
+    if (cause?.preserveOperationsLock === true) throw cause;
+    const error = new Error(
+      `publication quorum transport operations: operations lock identity changed; preserve state and inspect (${phase})`,
+      { cause },
+    );
+    error.preserveOperationsLock = true;
     throw error;
   }
 }
@@ -830,19 +870,75 @@ async function withLock(
   { directoryAlreadyPinned = false } = {},
 ) {
   if (!directoryAlreadyPinned) await requireDirectory(root);
-  const lock = await acquireLock(root, operationName);
+  if (process.platform !== "linux")
+    fail("safe locked operations require Linux descriptor-relative filesystem access");
+  const directoryPath = directoryAlreadyPinned && /^\/proc\/self\/fd\/[1-9][0-9]*$/.test(root)
+    ? `${root}/.` : root;
+  const directory = await openPinnedDirectory(
+    directoryPath, "operations store for locked operation", 0o700,
+  );
+  const anchoredRoot = `${directory.anchoredPath}/.`;
+  let lock = null;
   let preserve = false;
+  let finalValidation = null;
   try {
-    return await operation();
+    lock = await acquireLock(anchoredRoot, operationName);
+    const validate = async (phase) => {
+      await requirePinnedDirectoryIdentity(directory, `operations store ${phase}`);
+      await requirePinnedOperationsLock(lock, phase);
+      await requirePinnedDirectoryIdentity(directory, `operations store ${phase} final`);
+    };
+    const boundary = async (phase, callback) => {
+      await validate(`before ${phase}`);
+      let result;
+      let callbackError = null;
+      try { result = await callback(); } catch (error) { callbackError = error; }
+      try {
+        await validate(`after ${phase}`);
+      } catch (validationError) {
+        if (callbackError)
+          validationError.cause = new AggregateError(
+            [callbackError, validationError.cause].filter(Boolean),
+            `locked ${phase} and authority validation both failed`,
+          );
+        throw validationError;
+      }
+      if (callbackError) throw callbackError;
+      return result;
+    };
+    const authority = Object.freeze({
+      validate,
+      external: (phase, callback) => boundary(`external ${phase}`, callback),
+      mutate: (phase, callback) => boundary(`mutation ${phase}`, callback),
+      deferFinalValidation(callback) {
+        if (typeof callback !== "function" || finalValidation !== null)
+          fail("locked operation final validation is invalid");
+        finalValidation = callback;
+      },
+    });
+    await authority.validate("after lock acquisition");
+    const result = await operation(anchoredRoot, authority);
+    await authority.validate("after locked operation");
+    return result;
   } catch (error) {
     preserve = error?.preserveOperationsLock === true;
     throw error;
   } finally {
-    if (preserve) {
-      await lock.handle.close();
-      await syncDirectory(root);
-    } else {
-      await releaseLock(root, lock);
+    try {
+      if (lock) {
+        if (preserve) {
+          await lock.handle.close();
+          await syncDirectory(anchoredRoot);
+        } else {
+          await releaseLock(anchoredRoot, lock);
+        }
+      }
+      await requirePinnedDirectoryIdentity(
+        directory, "operations store after locked operation",
+      );
+      if (finalValidation) await finalValidation();
+    } finally {
+      await directory.handle.close();
     }
   }
 }
@@ -855,9 +951,26 @@ async function withOrderedLocks(roots, operationName, operation) {
   if (new Set(canonicalRoots).size !== canonicalRoots.length)
     fail("each operations store lock target must be distinct");
   const orderedRoots = [...canonicalRoots].sort();
+  const anchoredRoots = new Map();
+  const authorities = new Map();
   const acquire = (index) => index === orderedRoots.length
-    ? operation(canonicalRoots)
-    : withLock(orderedRoots[index], operationName, () => acquire(index + 1));
+    ? (async () => {
+      const orderedAuthorities = canonicalRoots.map(root => authorities.get(root));
+      for (const authority of orderedAuthorities)
+        await authority.validate("before multi-store operation");
+      const result = await operation(
+        canonicalRoots.map(root => anchoredRoots.get(root)),
+        orderedAuthorities,
+      );
+      for (const authority of [...orderedAuthorities].reverse())
+        await authority.validate("after multi-store operation");
+      return result;
+    })()
+    : withLock(orderedRoots[index], operationName, (anchoredRoot, authority) => {
+      anchoredRoots.set(orderedRoots[index], anchoredRoot);
+      authorities.set(orderedRoots[index], authority);
+      return acquire(index + 1);
+    });
   return acquire(0);
 }
 
@@ -997,8 +1110,8 @@ export async function activateOperationsStore(root, authorization, expectedAutho
   );
   if (authorization.authorityKeyId !== authority.keyId)
     fail("activation authority key ID does not match");
-  return withLock(root, "activate", async () => {
-    const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
+  return withLock(root, "activate", async (lockedRoot, lockAuthority) => {
+    const current = validateCheckpoint(await secureJson(join(lockedRoot, HEAD), "operations checkpoint"));
     if (current.status !== "inactive" || current.generation !== 0) fail("operations store is already activated or advanced");
     if (authorization.manifestSha256 !== current.manifestSha256 || authorization.expectedHeadSha256 !== current.expectedHeadSha256)
       fail("activation authorization does not bind the retained checkpoint");
@@ -1009,7 +1122,8 @@ export async function activateOperationsStore(root, authorization, expectedAutho
       authorityKeyGeneration: authority.keyGeneration,
       authorityPublicKeyBase64Url: authority.publicKeyBase64Url,
     };
-    await replaceCheckpoint(root, current, next);
+    await lockAuthority.mutate("activation checkpoint publication", () =>
+      replaceCheckpoint(lockedRoot, current, next, lockAuthority));
     return next;
   });
 }
@@ -1094,10 +1208,10 @@ export async function prepareOperationsRotation({
   );
   if (nextAuthority?.keyId !== parsedNextAuthority.keyId)
     fail("next rotation authority key ID does not match");
-  return withLock(root, "prepare-rotation", async () => {
-    const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
-    await auditRotationChain(root, current);
-    await auditAnchorAcceptanceChain(root, current);
+  return withLock(root, "prepare-rotation", async (lockedRoot, lockAuthority) => {
+    const current = validateCheckpoint(await secureJson(join(lockedRoot, HEAD), "operations checkpoint"));
+    await auditRotationChain(lockedRoot, current);
+    await auditAnchorAcceptanceChain(lockedRoot, current);
     if (current.status !== "ready")
       fail("operations store must be ready before starting mTLS profile rotation");
     if (canonicalSha256(priorManifest) !== current.manifestSha256)
@@ -1118,16 +1232,19 @@ export async function prepareOperationsRotation({
       },
     });
     const rotationSha256 = canonicalSha256(rotation);
-    const rotations = join(root, ROTATIONS);
+    const rotations = join(lockedRoot, ROTATIONS);
     await requireDirectory(rotations);
-    await writeDurableRecord(join(rotations, `${rotationSha256}.json`), rotation, 0o400, rotations);
+    await lockAuthority.mutate("pending rotation record publication", () =>
+      writeDurableRecord(join(rotations, `${rotationSha256}.json`), rotation, 0o400, rotations,
+        lockAuthority));
     const next = {
       ...current,
       generation: current.generation + 1,
       status: "rotating",
       pendingRotationSha256: rotationSha256,
     };
-    await replaceCheckpoint(root, current, next);
+    await lockAuthority.mutate("pending rotation checkpoint publication", () =>
+      replaceCheckpoint(lockedRoot, current, next, lockAuthority));
     return { rotation, rotationSha256, checkpoint: next };
   });
 }
@@ -1257,6 +1374,33 @@ async function collectRotationArtifacts(root, checkpoint) {
   return { records, pending };
 }
 
+async function requirePinnedMigrationDestination(
+  rootDirectory, rotationsDirectory, acceptancesDirectory, phase,
+) {
+  const rootBefore = await rootDirectory.handle.stat({ bigint: true });
+  const namedBefore = await lstat(rootDirectory.path, { bigint: true });
+  if (!rootBefore.isDirectory() || !namedBefore.isDirectory() ||
+      namedBefore.isSymbolicLink() ||
+      !sameIntegralMetadata(rootBefore, namedBefore))
+    fail(`migration destination ${phase} changed before namespace validation`);
+  await requirePinnedDirectoryIdentity(
+    rotationsDirectory, `migration rotation directory ${phase}`,
+  );
+  await requirePinnedDirectoryIdentity(
+    acceptancesDirectory, `migration acceptance directory ${phase}`,
+  );
+  // Re-read the complete root snapshot last. Replacing either child mutates
+  // the root's link count, mtime and/or ctime, closing the sequential
+  // child-validation window even when the root inode itself is retained.
+  const rootAfter = await rootDirectory.handle.stat({ bigint: true });
+  const namedAfter = await lstat(rootDirectory.path, { bigint: true });
+  if (!rootAfter.isDirectory() || !namedAfter.isDirectory() ||
+      namedAfter.isSymbolicLink() ||
+      !sameIntegralMetadata(rootBefore, rootAfter) ||
+      !sameIntegralMetadata(rootAfter, namedAfter))
+    fail(`migration destination ${phase} changed during namespace validation`);
+}
+
 export async function migrateOperationsStoreV3ToV4({
   sourceRoot,
   destinationRoot,
@@ -1264,17 +1408,17 @@ export async function migrateOperationsStoreV3ToV4({
 }) {
   requireHash(expectedV3CheckpointSha256, "externally approved schema-3 checkpoint hash");
   await requireSeparateTrees(sourceRoot, destinationRoot);
-  return withLock(sourceRoot, "migrate-v3-to-v4", async () => {
+  return withLock(sourceRoot, "migrate-v3-to-v4", async (lockedSourceRoot, lockAuthority) => {
     const sourceCheckpoint = validateV3Checkpoint(await secureJson(
-      join(sourceRoot, HEAD),
+      join(lockedSourceRoot, HEAD),
       "schema-3 operations checkpoint",
     ));
     if (canonicalSha256(sourceCheckpoint) !== expectedV3CheckpointSha256)
       fail("schema-3 checkpoint does not match the externally approved hash; refusing TOFU");
     if (sourceCheckpoint.externalAnchorSequence !== null)
       fail("schema-3 store has accepted an external anchor head without retaining its evidence chain; safe migration is impossible");
-    await auditRotationChain(sourceRoot, sourceCheckpoint);
-    const artifacts = await collectRotationArtifacts(sourceRoot, sourceCheckpoint);
+    await auditRotationChain(lockedSourceRoot, sourceCheckpoint);
+    const artifacts = await collectRotationArtifacts(lockedSourceRoot, sourceCheckpoint);
     const nextCheckpoint = {
       ...sourceCheckpoint,
       schemaVersion: 4,
@@ -1291,61 +1435,158 @@ export async function migrateOperationsStoreV3ToV4({
       sourceCheckpoint,
     };
 
-    // mkdir is the no-clobber publication boundary. A failed attempt leaves an
-    // occupied, non-runnable directory because checkpoint.json is written last.
-    await mkdir(destinationRoot, { mode: 0o700 });
-    await chmod(destinationRoot, 0o700);
-    await requireDirectory(destinationRoot);
-    const rotations = join(destinationRoot, ROTATIONS);
-    const acceptances = join(destinationRoot, ANCHOR_ACCEPTANCES);
-    await mkdir(rotations, { mode: 0o700 });
-    await chmod(rotations, 0o700);
-    await mkdir(acceptances, { mode: 0o700 });
-    await chmod(acceptances, 0o700);
-    for (const artifact of artifacts.records)
-      await writeNewDurableJson(
-        join(rotations, `${artifact.sha256}.json`),
-        artifact.value,
-        0o400,
-        "migrated rotation record",
-      );
-    if (artifacts.pending &&
-        !artifacts.records.some(({ sha256 }) => sha256 === artifacts.pending.sha256))
-      await writeNewDurableJson(
-        join(rotations, `${artifacts.pending.sha256}.json`),
-        artifacts.pending.value,
-        0o400,
-        "migrated pending rotation",
-      );
-    await syncDirectory(rotations);
-    await syncDirectory(acceptances);
-    await writeNewDurableJson(
-      join(destinationRoot, V3_MIGRATION_RECORD),
-      migration,
-      0o400,
-      "schema-3 migration record",
+    const resolvedDestination = resolve(destinationRoot);
+    const destinationParent = await realpath(dirname(resolvedDestination));
+    if (join(destinationParent, basename(resolvedDestination)) !== resolvedDestination)
+      fail("migration destination parent path must not traverse symlinks");
+    const parentDirectory = await openPinnedDirectory(
+      destinationParent, "migration destination parent",
     );
-    await syncDirectory(destinationRoot);
-    if (canonicalSha256(validateV3Checkpoint(await secureJson(
-      join(sourceRoot, HEAD),
-      "schema-3 operations checkpoint after copy",
-    ))) !== expectedV3CheckpointSha256)
-      fail("schema-3 checkpoint changed during migration");
-    await writeNewDurableJson(
-      join(destinationRoot, HEAD),
-      nextCheckpoint,
-      0o400,
-      "migrated operations checkpoint",
-    );
-    await syncDirectory(destinationRoot);
-    const audit = await auditOperationsStore(destinationRoot);
-    return {
-      sourceCheckpointSha256: expectedV3CheckpointSha256,
-      destinationCheckpointSha256,
-      migrationRecordSha256: canonicalSha256(migration),
-      sourcePreserved: true,
-      audit,
-    };
+    const stagingName =
+      `.${basename(resolvedDestination)}.migrate.${randomBytes(32).toString("hex")}`;
+    const staging = join(parentDirectory.anchoredPath, stagingName);
+    let rootDirectory;
+    let rotationsDirectory;
+    let acceptancesDirectory;
+    let finalValidationDeferred = false;
+    try {
+      await lockAuthority.validate("before migration destination creation");
+      await mkdir(staging, { mode: 0o700 });
+      await requirePinnedDirectoryIdentity(
+        parentDirectory, "migration destination parent after staging creation",
+      );
+      parentDirectory.metadata = await parentDirectory.handle.stat({ bigint: true });
+      const createdRoot = await lstat(staging, { bigint: true });
+      rootDirectory = await openPinnedDirectory(
+        staging, "migration staging destination", null, createdRoot,
+      );
+      await setPinnedDirectoryMode(rootDirectory, 0o700, "migration destination");
+      await publishPinnedInitializationDirectory(
+        parentDirectory, rootDirectory, stagingName, resolvedDestination,
+      );
+      await lockAuthority.validate("after migration destination publication");
+      const anchoredRoot = `${rootDirectory.anchoredPath}/.`;
+
+      await mkdir(join(anchoredRoot, ROTATIONS), { mode: 0o700 });
+      rotationsDirectory = await openPinnedDirectory(
+        join(anchoredRoot, ROTATIONS), "migration rotation directory",
+      );
+      await setPinnedDirectoryMode(
+        rotationsDirectory, 0o700, "migration rotation directory",
+      );
+      await requirePinnedDirectoryIdentity(
+        rootDirectory, "migration destination after rotation directory creation",
+      );
+      await mkdir(join(anchoredRoot, ANCHOR_ACCEPTANCES), { mode: 0o700 });
+      acceptancesDirectory = await openPinnedDirectory(
+        join(anchoredRoot, ANCHOR_ACCEPTANCES), "migration acceptance directory",
+      );
+      await setPinnedDirectoryMode(
+        acceptancesDirectory, 0o700, "migration acceptance directory",
+      );
+      await requirePinnedMigrationDestination(
+        rootDirectory, rotationsDirectory, acceptancesDirectory, "before copy",
+      );
+
+      for (const artifact of artifacts.records) {
+        await lockAuthority.validate("before migrated rotation record publication");
+        await writeNewDurableJson(
+          join(rotationsDirectory.anchoredPath, `${artifact.sha256}.json`),
+          artifact.value,
+          0o400,
+          "migrated rotation record",
+        );
+        await requirePinnedMigrationDestination(
+          rootDirectory, rotationsDirectory, acceptancesDirectory, "after rotation copy",
+        );
+      }
+      if (artifacts.pending &&
+          !artifacts.records.some(({ sha256 }) => sha256 === artifacts.pending.sha256)) {
+        await lockAuthority.validate("before migrated pending rotation publication");
+        await writeNewDurableJson(
+          join(rotationsDirectory.anchoredPath, `${artifacts.pending.sha256}.json`),
+          artifacts.pending.value,
+          0o400,
+          "migrated pending rotation",
+        );
+        await requirePinnedMigrationDestination(
+          rootDirectory, rotationsDirectory, acceptancesDirectory,
+          "after pending rotation copy",
+        );
+      }
+      await rotationsDirectory.handle.sync();
+      await acceptancesDirectory.handle.sync();
+      await lockAuthority.validate("before migration record publication");
+      await writeNewDurableJson(
+        join(anchoredRoot, V3_MIGRATION_RECORD),
+        migration,
+        0o400,
+        "schema-3 migration record",
+      );
+      await rootDirectory.handle.sync();
+      await requirePinnedMigrationDestination(
+        rootDirectory, rotationsDirectory, acceptancesDirectory,
+        "after migration record publication",
+      );
+      await lockAuthority.validate("after migration artifact copy");
+      if (canonicalSha256(validateV3Checkpoint(await secureJson(
+        join(lockedSourceRoot, HEAD),
+        "schema-3 operations checkpoint after copy",
+      ))) !== expectedV3CheckpointSha256)
+        fail("schema-3 checkpoint changed during migration");
+      await requirePinnedMigrationDestination(
+        rootDirectory, rotationsDirectory, acceptancesDirectory,
+        "before checkpoint publication",
+      );
+      await lockAuthority.validate("before migration checkpoint publication");
+      await writeNewDurableJson(
+        join(anchoredRoot, HEAD),
+        nextCheckpoint,
+        0o400,
+        "migrated operations checkpoint",
+      );
+      await rootDirectory.handle.sync();
+      await requirePinnedMigrationDestination(
+        rootDirectory, rotationsDirectory, acceptancesDirectory,
+        "after checkpoint publication",
+      );
+      const audit = await auditOperationsStore(anchoredRoot);
+      // Source authority is deliberately validated before the final destination
+      // namespace snapshot. No source validation or filesystem read follows it.
+      await lockAuthority.validate("after migration final audit");
+      await requirePinnedMigrationDestination(
+        rootDirectory, rotationsDirectory, acceptancesDirectory, "after final audit",
+      );
+      const result = {
+        sourceCheckpointSha256: expectedV3CheckpointSha256,
+        destinationCheckpointSha256,
+        migrationRecordSha256: canonicalSha256(migration),
+        sourcePreserved: true,
+        audit,
+      };
+      lockAuthority.deferFinalValidation(async () => {
+        try {
+          await requirePinnedMigrationDestination(
+            rootDirectory, rotationsDirectory, acceptancesDirectory,
+            "immediately before migration success",
+          );
+        } finally {
+          await acceptancesDirectory.handle.close();
+          await rotationsDirectory.handle.close();
+          await rootDirectory.handle.close();
+          await parentDirectory.handle.close();
+        }
+      });
+      finalValidationDeferred = true;
+      return result;
+    } finally {
+      if (!finalValidationDeferred) {
+        await acceptancesDirectory?.handle.close();
+        await rotationsDirectory?.handle.close();
+        await rootDirectory?.handle.close();
+        await parentDirectory.handle.close();
+      }
+    }
   });
 }
 
@@ -1498,13 +1739,13 @@ async function prepareOperationsAnchorStatementAtRoot(
   root,
   directoryAlreadyPinned = false,
 ) {
-  return withLock(root, "prepare-anchor", async () => {
+  return withLock(root, "prepare-anchor", async (lockedRoot) => {
     const checkpoint = validateCheckpoint(await secureJson(
-      join(root, HEAD),
+      join(lockedRoot, HEAD),
       "operations checkpoint",
     ));
-    const chain = await auditRotationChain(root, checkpoint);
-    await auditAnchorAcceptanceChain(root, checkpoint);
+    const chain = await auditRotationChain(lockedRoot, checkpoint);
+    await auditAnchorAcceptanceChain(lockedRoot, checkpoint);
     return anchorStatement(checkpoint, chain);
   }, { directoryAlreadyPinned });
 }
@@ -1548,12 +1789,12 @@ function verifyAnchorEvidenceForCheckpoint(checkpoint, chain, evidence) {
 }
 
 export async function verifyOperationsAnchorEvidence(root, evidence) {
-  return withLock(root, "verify-anchor", async () => {
+  return withLock(root, "verify-anchor", async (lockedRoot) => {
     const checkpoint = validateCheckpoint(await secureJson(
-      join(root, HEAD),
+      join(lockedRoot, HEAD),
       "operations checkpoint",
     ));
-    const chain = await auditRotationChain(root, checkpoint);
+    const chain = await auditRotationChain(lockedRoot, checkpoint);
     const { current, evidenceSha256 } = verifyAnchorEvidenceForCheckpoint(
       checkpoint,
       chain,
@@ -1707,10 +1948,10 @@ export async function commitOperationsRotation({
   validatePreflightManifest(nextManifest);
   const rotation = validateRotationPayload(rotationInput);
   const rotationSha256 = canonicalSha256(rotation);
-  return withLock(root, "commit-rotation", async () => {
-    const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
-    await auditRotationChain(root, current);
-    await auditAnchorAcceptanceChain(root, current);
+  return withLock(root, "commit-rotation", async (lockedRoot, lockAuthority) => {
+    const current = validateCheckpoint(await secureJson(join(lockedRoot, HEAD), "operations checkpoint"));
+    await auditRotationChain(lockedRoot, current);
+    await auditAnchorAcceptanceChain(lockedRoot, current);
     if (current.status !== "rotating" || current.pendingRotationSha256 !== rotationSha256)
       fail("rotation does not match the retained pending transition");
     if (canonicalSha256(priorManifest) !== current.manifestSha256 ||
@@ -1736,9 +1977,11 @@ export async function commitOperationsRotation({
       nextAcceptance,
     };
     const recordSha256 = canonicalSha256(record);
-    const rotations = join(root, ROTATIONS);
+    const rotations = join(lockedRoot, ROTATIONS);
     await requireDirectory(rotations);
-    await writeDurableRecord(join(rotations, `${recordSha256}.json`), record, 0o400, rotations);
+    await lockAuthority.mutate("rotation record publication", () =>
+      writeDurableRecord(join(rotations, `${recordSha256}.json`), record, 0o400, rotations,
+        lockAuthority));
     const next = {
       ...current,
       generation: current.generation + 1,
@@ -1752,7 +1995,8 @@ export async function commitOperationsRotation({
       previousRotationSha256: recordSha256,
       pendingRotationSha256: null,
     };
-    await replaceCheckpoint(root, current, next);
+    await lockAuthority.mutate("rotation checkpoint publication", () =>
+      replaceCheckpoint(lockedRoot, current, next, lockAuthority));
     return { checkpoint: next, rotationRecordSha256: recordSha256 };
   });
 }
@@ -1780,10 +2024,10 @@ export async function beginTransportRequest(
   requireHash(manifestSha256, "manifest hash");
   requireHead(expectedHead);
   requireHash(requestId, "request ID");
-  return withLock(root, "begin-request", async () => {
-    const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
-    const chain = await auditRotationChain(root, current);
-    await auditAnchorAcceptanceChain(root, current);
+  return withLock(root, "begin-request", async (lockedRoot, lockAuthority) => {
+    const current = validateCheckpoint(await secureJson(join(lockedRoot, HEAD), "operations checkpoint"));
+    const chain = await auditRotationChain(lockedRoot, current);
+    await auditAnchorAcceptanceChain(lockedRoot, current);
     if (current.manifestSha256 !== manifestSha256) fail("runtime configuration differs from the approved preflight manifest");
     if (current.status === "inactive") fail("operations store is inactive; explicit reviewed activation is required");
     if (current.status === "rotating") fail("mTLS profile rotation is pending; requests remain blocked until durable commit");
@@ -1791,12 +2035,11 @@ export async function beginTransportRequest(
     if (current.expectedHeadSha256 !== expectedHead) fail("expected custody head is stale or rolled back");
     if (current.externalAnchorAcceptanceCount === Number.MAX_SAFE_INTEGER)
       fail("external anchor acceptance counter is exhausted");
-    const { head: externalHead, query } = await requireLatestExternalAnchor(
-      current,
-      chain,
-      anchorLog,
+    const { head: externalHead, query } = await lockAuthority.external(
+      "anchor query",
+      () => requireLatestExternalAnchor(current, chain, anchorLog),
     );
-    await requireUnchangedCheckpoint(root, current, "during external anchor query");
+    await requireUnchangedCheckpoint(lockedRoot, current, "during external anchor query");
     const acceptance = validateAnchorAcceptance({
       schemaVersion: 1,
       kind: "operations-anchor-acceptance",
@@ -1805,14 +2048,11 @@ export async function beginTransportRequest(
       head: externalHead,
     }).acceptance;
     const acceptanceSha256 = canonicalSha256(acceptance);
-    const acceptances = join(root, ANCHOR_ACCEPTANCES);
+    const acceptances = join(lockedRoot, ANCHOR_ACCEPTANCES);
     await requireDirectory(acceptances);
-    await writeDurableRecord(
-      join(acceptances, `${acceptanceSha256}.json`),
-      acceptance,
-      0o400,
-      acceptances,
-    );
+    await lockAuthority.mutate("anchor acceptance publication", () => writeDurableRecord(
+      join(acceptances, `${acceptanceSha256}.json`), acceptance, 0o400, acceptances, lockAuthority,
+    ));
     const next = {
       ...current,
       generation: current.generation + 1,
@@ -1822,8 +2062,9 @@ export async function beginTransportRequest(
       externalAnchorAcceptanceCount: current.externalAnchorAcceptanceCount + 1,
       externalAnchorAcceptanceSha256: acceptanceSha256,
     };
-    await requireUnchangedCheckpoint(root, current, "before pending transition");
-    await replaceCheckpoint(root, current, next);
+    await requireUnchangedCheckpoint(lockedRoot, current, "before pending transition");
+    await lockAuthority.mutate("pending checkpoint publication", () =>
+      replaceCheckpoint(lockedRoot, current, next, lockAuthority));
     return next;
   });
 }
@@ -1831,14 +2072,15 @@ export async function beginTransportRequest(
 export async function commitTransportRequest(root, requestId, receiptSha256) {
   requireHash(requestId, "request ID");
   requireHash(receiptSha256, "receipt hash");
-  return withLock(root, "commit-request", async () => {
-    const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
+  return withLock(root, "commit-request", async (lockedRoot, lockAuthority) => {
+    const current = validateCheckpoint(await secureJson(join(lockedRoot, HEAD), "operations checkpoint"));
     if (current.status !== "pending" || current.pendingRequestId !== requestId)
       fail("pending request does not match the confirmed transport response");
-    await auditRotationChain(root, current);
-    await auditAnchorAcceptanceChain(root, current);
+    await auditRotationChain(lockedRoot, current);
+    await auditAnchorAcceptanceChain(lockedRoot, current);
     const next = { ...current, generation: current.generation + 1, status: "ready", expectedHeadSha256: receiptSha256, pendingRequestId: null };
-    await replaceCheckpoint(root, current, next);
+    await lockAuthority.mutate("completed checkpoint publication", () =>
+      replaceCheckpoint(lockedRoot, current, next, lockAuthority));
     return next;
   });
 }
