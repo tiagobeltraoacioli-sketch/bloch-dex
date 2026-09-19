@@ -4,6 +4,7 @@ import {
   createHash,
   createPrivateKey,
   createPublicKey,
+  randomBytes,
 } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -13,6 +14,7 @@ import {
   mkdir,
   open,
   realpath,
+  rename,
   unlink,
 } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -518,7 +520,7 @@ async function acquireLock(root, operation) {
   const path = join(root, LOCK);
   let handle;
   try {
-    handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
+    handle = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
     const startingCheckpoint = await secureJson(
       join(root, HEAD),
       "operations checkpoint before lock",
@@ -529,11 +531,12 @@ async function acquireLock(root, operation) {
       operation,
       startingCheckpointSha256: canonicalSha256(startingCheckpoint),
     });
-    await handle.writeFile(`${canonicalJson(record)}\n`);
+    const bytes = Buffer.from(`${canonicalJson(record)}\n`, "utf8");
+    await handle.writeFile(bytes);
     await handle.sync();
-    const metadata = await handle.stat();
-    if (!metadata.isFile() || metadata.nlink !== 1 || (metadata.mode & 0o077) !== 0 ||
-        (typeof process.getuid === "function" && metadata.uid !== process.getuid()))
+    const metadata = await handle.stat({ bigint: true });
+    if (!metadata.isFile() || metadata.nlink !== 1n || (metadata.mode & 0o077n) !== 0n ||
+        (typeof process.getuid === "function" && metadata.uid !== BigInt(process.getuid())))
       fail("new operations lock is unsafe; preserve state and inspect");
     await syncDirectory(root);
     return {
@@ -544,6 +547,11 @@ async function acquireLock(root, operation) {
       uid: metadata.uid,
       gid: metadata.gid,
       mode: metadata.mode,
+      size: metadata.size,
+      mtimeNs: metadata.mtimeNs,
+      ctimeNs: metadata.ctimeNs,
+      bytes,
+      record,
     };
   } catch (error) {
     await handle?.close();
@@ -552,29 +560,156 @@ async function acquireLock(root, operation) {
   }
 }
 
-async function releaseLock(root, lock) {
-  let unlinked = false;
+async function ensureActiveLockPoison(root, lock, evidencePaths) {
+  for (const evidencePath of evidencePaths) {
+    if (!evidencePath) continue;
+    try {
+      await link(evidencePath, lock.path);
+      await syncDirectory(root);
+      return;
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        await syncDirectory(root);
+        return;
+      }
+      // A raced-away tombstone or recovery is not the last resort: try the
+      // next independently retained source before recreating canonical bytes.
+    }
+  }
+
   try {
-    const opened = await lock.handle.stat();
-    const linked = await lstat(lock.path).catch((error) => {
+    await writeNewDurableJson(
+      lock.path,
+      lock.record,
+      0o600,
+      "operations lock poison marker",
+    );
+  } catch (error) {
+    if (error?.code !== "EEXIST") {
+      const present = await lstat(lock.path).then(() => true, (statError) => {
+        if (statError?.code === "ENOENT") return false;
+        throw statError;
+      });
+      if (!present) throw error;
+    }
+  }
+  await syncDirectory(root);
+}
+
+async function releaseLock(root, lock) {
+  const recovery = join(
+    root,
+    `.operations.lock.recovery.${hashBytes(lock.bytes)}.json`,
+  );
+  const cleanup = join(
+    root,
+    `.operations.lock.cleanup.${process.pid}.${randomBytes(16).toString("hex")}`,
+  );
+  let retainedPath;
+  let moved = false;
+  let failure = null;
+  try {
+    const openedBefore = await lock.handle.stat({ bigint: true });
+    const observed = Buffer.alloc(lock.bytes.length);
+    const { bytesRead } = await lock.handle.read(observed, 0, observed.length, 0);
+    const opened = await lock.handle.stat({ bigint: true });
+    const linked = await lstat(lock.path, { bigint: true }).catch((error) => {
       if (error?.code === "ENOENT") return null;
       throw error;
     });
-    if (!linked || !opened.isFile() || opened.nlink !== 1 ||
+    if (!linked || bytesRead !== lock.bytes.length || !observed.equals(lock.bytes) ||
+        !openedBefore.isFile() || openedBefore.nlink !== 1n ||
+        openedBefore.dev !== lock.dev || openedBefore.ino !== lock.ino ||
+        openedBefore.uid !== lock.uid || openedBefore.gid !== lock.gid ||
+        openedBefore.mode !== lock.mode || openedBefore.size !== lock.size ||
+        openedBefore.mtimeNs !== lock.mtimeNs || openedBefore.ctimeNs !== lock.ctimeNs ||
+        !opened.isFile() || opened.nlink !== 1n ||
         opened.dev !== lock.dev || opened.ino !== lock.ino ||
         opened.uid !== lock.uid || opened.gid !== lock.gid || opened.mode !== lock.mode ||
-        !linked.isFile() || linked.isSymbolicLink() || linked.nlink !== 1 ||
+        opened.size !== lock.size || opened.mtimeNs !== lock.mtimeNs ||
+        opened.ctimeNs !== lock.ctimeNs ||
+        !linked.isFile() || linked.isSymbolicLink() || linked.nlink !== 1n ||
         linked.dev !== lock.dev || linked.ino !== lock.ino ||
-        linked.uid !== lock.uid || linked.gid !== lock.gid || linked.mode !== lock.mode)
+        linked.uid !== lock.uid || linked.gid !== lock.gid || linked.mode !== lock.mode ||
+        linked.size !== lock.size || linked.mtimeNs !== lock.mtimeNs ||
+        linked.ctimeNs !== lock.ctimeNs)
       fail("operations lock identity changed; preserve state and inspect before recovery");
-    await unlink(lock.path);
-    const after = await lock.handle.stat();
-    if (after.nlink !== 0 || after.dev !== lock.dev || after.ino !== lock.ino)
-      fail("operations lock unlink outcome is ambiguous; preserve state and inspect before recovery");
-    unlinked = true;
-  } finally {
+
+    await writeContentAddressedRecovery(
+      recovery,
+      lock.record,
+      "operations lock recovery evidence",
+    );
+    await syncDirectory(root);
+    await mkdir(cleanup, { mode: 0o700 });
+    await syncDirectory(root);
+
+    // Generate the destination only after reserving the private cleanup
+    // namespace. Until the atomic rename publishes it, no filesystem observer
+    // can discover this 256-bit basename and race an object into that exact
+    // destination. This avoids rename(2)'s overwrite semantics without a
+    // check-then-rename window.
+    retainedPath = join(cleanup, `retained-${randomBytes(32).toString("hex")}`);
+    await rename(lock.path, retainedPath);
+    moved = true;
+    await syncDirectory(cleanup);
+    await syncDirectory(root);
+
+    const active = await lstat(lock.path, { bigint: true }).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    const retainedNamed = await lstat(retainedPath, { bigint: true });
+    const after = await lock.handle.stat({ bigint: true });
+    const retained = Buffer.alloc(lock.bytes.length);
+    const retainedRead = await lock.handle.read(retained, 0, retained.length, 0);
+    const closing = await lock.handle.stat({ bigint: true });
+    if (active || retainedRead.bytesRead !== lock.bytes.length || !retained.equals(lock.bytes) ||
+        after.nlink !== 1n || after.dev !== lock.dev || after.ino !== lock.ino ||
+        after.uid !== lock.uid || after.gid !== lock.gid || after.mode !== lock.mode ||
+        after.size !== lock.size || after.mtimeNs !== lock.mtimeNs ||
+        !retainedNamed.isFile() || retainedNamed.isSymbolicLink() ||
+        retainedNamed.nlink !== 1n || retainedNamed.dev !== after.dev ||
+        retainedNamed.ino !== after.ino || retainedNamed.uid !== after.uid ||
+        retainedNamed.gid !== after.gid || retainedNamed.mode !== after.mode ||
+        retainedNamed.size !== after.size || retainedNamed.mtimeNs !== after.mtimeNs ||
+        retainedNamed.ctimeNs !== after.ctimeNs ||
+        closing.nlink !== 1n || closing.dev !== after.dev || closing.ino !== after.ino ||
+        closing.uid !== after.uid || closing.gid !== after.gid ||
+        closing.mode !== after.mode || closing.size !== after.size ||
+        closing.mtimeNs !== after.mtimeNs || closing.ctimeNs !== after.ctimeNs)
+      fail("operations lock cleanup outcome is ambiguous; preserve tombstone and recovery evidence");
+  } catch (error) {
+    failure = error;
+  }
+
+  try {
     await lock.handle.close();
-    if (unlinked) await syncDirectory(root);
+    if (moved) {
+      await syncDirectory(cleanup);
+      await syncDirectory(root);
+    }
+  } catch (error) {
+    failure = failure
+      ? new AggregateError([failure, error],
+        "publication quorum transport operations: lock cleanup and finalization both failed")
+      : error;
+  }
+
+  if (failure) {
+    try {
+      // Every failed release stays visibly locked, including failures before
+      // rename and failures after the staged pathname itself is displaced.
+      // Each publication is create-only; an independently raced active object
+      // is evidence and already serves as the poison marker.
+      await ensureActiveLockPoison(root, lock, [retainedPath, recovery]);
+    } catch (poisonError) {
+      throw new AggregateError(
+        [failure, poisonError],
+        "publication quorum transport operations: ambiguous lock cleanup could not restore the active poison marker",
+      );
+    }
+    throw failure;
   }
 }
 

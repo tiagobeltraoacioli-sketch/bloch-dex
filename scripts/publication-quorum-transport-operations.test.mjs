@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { lstatSync, unlinkSync, watch as watchCallback, writeFileSync } from "node:fs";
+import { lstatSync, renameSync, unlinkSync, watch as watchCallback, writeFileSync } from "node:fs";
 import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, symlink, unlink, watch, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -729,6 +729,241 @@ test("operations lock release preserves hardlinked or substituted locks", async 
       }),
       /checkpoint matches neither externally approved outcome/,
     );
+  });
+
+  await context.test("same-inode lock rewrite", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("rewritten-lock");
+    const lockPath = join(store, ".operations.lock");
+    const starting = JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8"));
+    const racingAnchorLog = {
+      readLatestHead: async (query) => {
+        const head = await anchorLog.readLatestHead(query);
+        const original = await readFile(lockPath, "utf8");
+        const rewritten = original.replace('"operation":"begin-request"',
+          '"operation":"evilx-request"');
+        assert.equal(Buffer.byteLength(rewritten), Buffer.byteLength(original));
+        await writeFile(lockPath, rewritten);
+        return head;
+      },
+    };
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "f".repeat(64), racingAnchorLog,
+      ),
+      /operations lock identity changed; preserve state and inspect/,
+    );
+    assert.match(await readFile(lockPath, "utf8"), /"operation":"evilx-request"/);
+    const checkpoint = await inspectOperationsStore(store);
+    assert.equal(checkpoint.status, "pending");
+    assert.equal(checkpoint.lockPresent, true);
+    assert.notEqual(canonicalSha256(starting), canonicalSha256(checkpoint));
+  });
+
+  await context.test("final-window lock substitution is retained in a tombstone", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("cleanup-lock-race");
+    const lockPath = join(store, ".operations.lock");
+    const displacedPath = join(store, ".operations.lock.displaced-at-cleanup");
+    const intruder = "final-window intruder must be preserved\n";
+    const existingNames = new Set(await readdir(store));
+    let resolveSubstitution;
+    let rejectSubstitution;
+    const substitution = new Promise((resolve, reject) => {
+      resolveSubstitution = resolve;
+      rejectSubstitution = reject;
+    });
+    const observer = watchCallback(store, (_event, filename) => {
+      if (!filename?.startsWith(".operations.lock.cleanup.")) return;
+      try {
+        renameSync(lockPath, displacedPath);
+        writeFileSync(lockPath, intruder, { flag: "wx", mode: 0o600 });
+        observer.close();
+        resolveSubstitution();
+      } catch (error) {
+        observer.close();
+        rejectSubstitution(error);
+      }
+    });
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "0".repeat(64), anchorLog,
+      ),
+      /operations lock cleanup outcome is ambiguous; preserve tombstone and recovery evidence/,
+    );
+    await substitution;
+
+    const names = await readdir(store);
+    const cleanups = names.filter(name => name.startsWith(".operations.lock.cleanup.") &&
+      !existingNames.has(name));
+    const recoveries = names.filter(name => name.startsWith(".operations.lock.recovery.") &&
+      !existingNames.has(name));
+    assert.equal(cleanups.length, 1);
+    assert.equal(recoveries.length, 1);
+    const retainedNames = await readdir(join(store, cleanups[0]));
+    assert.equal(retainedNames.length, 1);
+    const retainedPath = join(store, cleanups[0], retainedNames[0]);
+    assert.match(retainedNames[0], /^retained-[0-9a-f]{64}$/);
+    assert.equal(await readFile(retainedPath, "utf8"), intruder);
+    const original = await readFile(displacedPath, "utf8");
+    assert.deepEqual(
+      JSON.parse(await readFile(join(store, recoveries[0]), "utf8")),
+      JSON.parse(original),
+    );
+    assert.equal((await lstat(join(store, recoveries[0]))).mode & 0o777, 0o400);
+    assert.equal(await readFile(lockPath, "utf8"), intruder);
+    assert.equal((await lstat(lockPath)).nlink, 2);
+    assert.equal((await lstat(retainedPath)).nlink, 2);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, true);
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "1".repeat(64), anchorLog,
+      ),
+      /operations store is locked; inspect before recovery/,
+    );
+  });
+
+  await context.test("rename-away without replacement restores poison from recovery", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("cleanup-missing-source");
+    const lockPath = join(store, ".operations.lock");
+    const displacedPath = join(store, ".operations.lock.displaced-before-cleanup");
+    const existingNames = new Set(await readdir(store));
+    let resolveDisplacement;
+    let rejectDisplacement;
+    const displacement = new Promise((resolve, reject) => {
+      resolveDisplacement = resolve;
+      rejectDisplacement = reject;
+    });
+    const observer = watchCallback(store, (_event, filename) => {
+      if (!filename?.startsWith(".operations.lock.cleanup.")) return;
+      try {
+        renameSync(lockPath, displacedPath);
+        observer.close();
+        resolveDisplacement();
+      } catch (error) {
+        observer.close();
+        rejectDisplacement(error);
+      }
+    });
+
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "3".repeat(64), anchorLog,
+      ),
+      /ENOENT|no such file or directory/i,
+    );
+    await displacement;
+
+    const recoveryNames = (await readdir(store)).filter(name =>
+      name.startsWith(".operations.lock.recovery.") && !existingNames.has(name));
+    assert.equal(recoveryNames.length, 1);
+    const recoveryPath = join(store, recoveryNames[0]);
+    assert.equal(await readFile(lockPath, "utf8"), await readFile(displacedPath, "utf8"));
+    assert.equal(await readFile(lockPath, "utf8"), await readFile(recoveryPath, "utf8"));
+    assert.equal((await lstat(lockPath)).nlink, 2);
+    assert.equal((await lstat(recoveryPath)).nlink, 2);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, true);
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "4".repeat(64), anchorLog,
+      ),
+      /operations store is locked; inspect before recovery/,
+    );
+  });
+
+  await context.test("raced-away retained tombstone restores poison from recovery", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("cleanup-missing-retained");
+    const lockPath = join(store, ".operations.lock");
+    const displacedPath = join(store, ".operations.lock.displaced-retained");
+    const existingNames = new Set(await readdir(store));
+    let resolveDisplacement;
+    let rejectDisplacement;
+    const displacement = new Promise((resolve, reject) => {
+      resolveDisplacement = resolve;
+      rejectDisplacement = reject;
+    });
+    const rootObserver = watchCallback(store, (_event, filename) => {
+      if (!filename?.startsWith(".operations.lock.cleanup.")) return;
+      try {
+        const cleanup = join(store, filename);
+        const cleanupObserver = watchCallback(cleanup, (_cleanupEvent, retainedName) => {
+          if (!retainedName?.startsWith("retained-")) return;
+          try {
+            renameSync(join(cleanup, retainedName), displacedPath);
+            cleanupObserver.close();
+            resolveDisplacement();
+          } catch (error) {
+            cleanupObserver.close();
+            rejectDisplacement(error);
+          }
+        });
+        rootObserver.close();
+      } catch (error) {
+        rootObserver.close();
+        rejectDisplacement(error);
+      }
+    });
+
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "5".repeat(64), anchorLog,
+      ),
+      /ENOENT|no such file or directory/i,
+    );
+    await displacement;
+
+    const recoveryNames = (await readdir(store)).filter(name =>
+      name.startsWith(".operations.lock.recovery.") && !existingNames.has(name));
+    assert.equal(recoveryNames.length, 1);
+    const recoveryPath = join(store, recoveryNames[0]);
+    assert.equal(await readFile(lockPath, "utf8"), await readFile(displacedPath, "utf8"));
+    assert.equal(await readFile(lockPath, "utf8"), await readFile(recoveryPath, "utf8"));
+    assert.equal((await lstat(lockPath)).nlink, 2);
+    assert.equal((await lstat(recoveryPath)).nlink, 2);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, true);
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "6".repeat(64), anchorLog,
+      ),
+      /operations store is locked; inspect before recovery/,
+    );
+  });
+
+  await context.test("predictable cleanup destination occupation is never overwritten", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("cleanup-destination-race");
+    const occupied = "predictable cleanup occupant must survive\n";
+    const existingNames = new Set(await readdir(store));
+    let resolveOccupation;
+    let rejectOccupation;
+    const occupation = new Promise((resolve, reject) => {
+      resolveOccupation = resolve;
+      rejectOccupation = reject;
+    });
+    const observer = watchCallback(store, (_event, filename) => {
+      if (!filename?.startsWith(".operations.lock.cleanup.")) return;
+      try {
+        writeFileSync(join(store, filename, "lock"), occupied, { flag: "wx", mode: 0o600 });
+        observer.close();
+        resolveOccupation();
+      } catch (error) {
+        observer.close();
+        rejectOccupation(error);
+      }
+    });
+
+    await beginTransportRequest(
+      store, manifestHash, "genesis", "2".repeat(64), anchorLog,
+    );
+    await occupation;
+
+    const cleanupNames = (await readdir(store)).filter(name =>
+      name.startsWith(".operations.lock.cleanup.") && !existingNames.has(name));
+    assert.equal(cleanupNames.length, 1);
+    const cleanup = join(store, cleanupNames[0]);
+    const retainedNames = (await readdir(cleanup)).filter(name => name !== "lock");
+    assert.equal(await readFile(join(cleanup, "lock"), "utf8"), occupied);
+    assert.equal(retainedNames.length, 1);
+    assert.match(retainedNames[0], /^retained-[0-9a-f]{64}$/);
+    assert.match(await readFile(join(cleanup, retainedNames[0]), "utf8"), /"pid":\d+/);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, false);
   });
 
   await context.test("pre-commit failure is classified without removing the lock", async () => {

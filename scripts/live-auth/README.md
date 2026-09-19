@@ -651,9 +651,24 @@ approval. The tool does not activate a service or make any connection during
 preflight, initialization, activation or profile rotation.
 
 Every command that mutates an existing operations store creates an exclusive,
-durable lock and records its inode identity. Before removing the lock, the
-command revalidates the open file and pathname, including ownership, mode and
-single-link count.
+durable lock and records its exact canonical bytes and integral inode metadata,
+including nanosecond timestamps. Before releasing the active name, the command
+revalidates those bytes and metadata through both the still-open descriptor and
+the pathname, writes an independent content-addressed recovery copy, creates a
+private cleanup directory, and atomically moves the active pathname into that
+directory under a 256-bit random basename generated only after the directory is
+reserved. The unpublished destination therefore cannot be discovered and
+occupied before the rename. The tool then revalidates and fsyncs the moved inode
+and both directories.
+Cleanup tombstones are intentionally retained instead of unlinked. A substituted,
+hard-linked or same-inode rewritten lock, including a substitution in the final
+movement window, is therefore preserved for explicit reconciliation rather than
+deleted. Every release failure restores the active lock name without overwrite:
+first from an accessible tombstone, then from the content-addressed recovery,
+and finally by creating the original canonical bytes with `O_EXCL`. An
+independently raced occupant already at the active name is preserved as the
+poison marker. A retry therefore cannot mutate the store before operator
+inspection even if the original active name or staged tombstone was displaced.
 
 Operational state uses a stricter publication sequence than ordinary portable
 CLI output. A new checkpoint candidate or content-addressed history record is
