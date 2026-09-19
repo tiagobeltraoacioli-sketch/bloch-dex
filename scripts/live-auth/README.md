@@ -86,3 +86,30 @@ owners and recorded outside this repository.
 The signatures authenticate release authorization, not truth of chain data.
 Independent review of the manifest identities, browser support, clock policy,
 RPC behavior and operational custody remains mandatory.
+
+## Browser acceptance
+
+The acceptance test uses only ephemeral test keys, a one-day self-signed test
+certificate and an HTTPS server bound to `127.0.0.1`. It builds the actual
+frontend with the ephemeral public-key pin, creates gate/manifest envelopes via
+the CLI, and drives an installed Chrome/Chromium through its local DevTools
+endpoint:
+
+```sh
+node --test scripts/live-auth/browser-acceptance.test.mjs
+```
+
+Set `POSTERN_CHROME` to an explicit browser executable when it is not in a
+standard location. The test requires `openssl` to create its temporary localhost
+certificate and skips when Chrome/Chromium is absent. It disables Chrome
+background networking and does not contact a real RPC. The local fake RPC
+intentionally returns the wrong chain ID after recording the request, so the UI
+must end in an unavailable read-only state.
+
+The test proves that Chrome WebCrypto accepts the CLI signatures, that the exact
+manifest pin and gate clock policy are enforced, and that expired, wrong-key and
+missing gates make no manifest or RPC request. For the valid gate it permits only
+the same-origin manifest GET and allowlisted `eth_chainId` POST, verifies RPC
+credentials/referrer omission, and confirms that no wallet or fund control is
+rendered. The self-signed certificate is ignored only by this ephemeral browser
+profile; this is not a production TLS test.

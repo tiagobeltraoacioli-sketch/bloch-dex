@@ -111,6 +111,21 @@ function json(value: unknown, init?: ResponseInit): Response {
 afterEach(() => vi.useRealTimers());
 
 describe('read-only RPC provider', () => {
+  it('does not invoke a browser fetch function with the provider as its receiver', async () => {
+    const fetchFn = vi.fn(function (this: unknown, _url: RequestInfo | URL, init?: RequestInit) {
+      if (this !== undefined) throw new TypeError('Illegal invocation');
+      const request = JSON.parse(String(init?.body)) as { id: number };
+      return Promise.resolve(json({ jsonrpc: '2.0', id: request.id, result: '0x1' }));
+    });
+    const provider = new ReadOnlyRpcProvider(
+      'https://rpc.invalid/',
+      ['https://rpc.invalid'],
+      1_000,
+      fetchFn,
+    );
+    await expect(provider.request({ method: 'eth_chainId' })).resolves.toBe('0x1');
+  });
+
   it('allows only exact read methods and safe RPC call parameters', async () => {
     const fetchFn = vi.fn<RuntimeFetch>(async (_url, init) => {
       const request = JSON.parse(String(init?.body)) as { id: number };

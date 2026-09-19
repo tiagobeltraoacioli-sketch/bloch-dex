@@ -202,7 +202,7 @@ export class ReadOnlyRpcProvider implements Provider {
     );
     this.#url = parsed.toString();
     this.#timeoutMs = timeoutMs;
-    this.#fetch = fetchFn;
+    this.#fetch = (...args) => fetchFn(...args);
   }
 
   async request(args: { method: string; params?: unknown[] }): Promise<unknown> {
