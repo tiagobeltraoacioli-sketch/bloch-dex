@@ -224,6 +224,90 @@ reuse fails against the advanced checkpoint. Auditors must still exchange and
 compare independently retained checkpoint hashes to discover equivocation;
 this local, offline mechanism is not a claim of globally visible transparency.
 
+### Offline multi-auditor confirmation
+
+`publication-quorum.mjs` adds an independent threshold confirmation layer over
+an already verified publication receipt. Its reviewed configuration contains a
+lexicographically sorted list of two or more auditor IDs, raw Ed25519 public
+keys, their derived key IDs and generations, plus a threshold of at least two.
+Auditor IDs and keys must both be unique, and auditor keys must differ from the
+current and (during rotation) prior publication keys. Configuration is
+deliberately not discovered from the release or a network service.
+
+```json
+{
+  "schemaVersion": 1,
+  "threshold": 2,
+  "auditors": [
+    {
+      "auditorId": "operations-a",
+      "keyId": "<sha256-of-raw-ed25519-key>",
+      "keyGeneration": 1,
+      "publicKeyBase64Url": "<32-byte-raw-ed25519-key>"
+    },
+    {
+      "auditorId": "security-b",
+      "keyId": "<sha256-of-raw-ed25519-key>",
+      "keyGeneration": 1,
+      "publicKeyBase64Url": "<32-byte-raw-ed25519-key>"
+    }
+  ]
+}
+```
+
+Bootstrap a retained quorum checkpoint from the publication checkpoint whose
+head was reviewed out of band:
+
+```sh
+node scripts/publication-quorum.mjs init \
+  --config <auditors.json> \
+  --publication-checkpoint <reviewed-publication-checkpoint.json> \
+  --output-checkpoint <quorum-checkpoint.json>
+```
+
+Each auditor first verifies and retains the publication checkpoint using the
+publication commands above. On its offline system it then signs the exact
+canonical receipt hash and its complete head (sequence, predecessor, current
+publication key ID and generation):
+
+```sh
+node scripts/publication-quorum.mjs attest \
+  --config <auditors.json> \
+  --auditor-id <configured-id> \
+  --private-key <auditor-ed25519-private.pem> \
+  --entry <publication-entry-or-rotation.json> \
+  --publication-checkpoint <auditor-retained-publication-checkpoint.json> \
+  --output <auditor-attestation.json>
+```
+
+An offline collector places the individual attestation objects in a JSON array
+and advances its checkpoint only from the exact direct predecessor:
+
+```sh
+node scripts/publication-quorum.mjs verify \
+  --config <auditors.json> \
+  --entry <publication-entry-or-rotation.json> \
+  --attestations <attestation-array.json> \
+  --checkpoint <retained-quorum-checkpoint.json> \
+  --output-checkpoint <next-quorum-checkpoint.json>
+```
+
+Verification rejects duplicate auditor IDs or keys, unknown/substituted
+auditors, invalid signatures, a changed configuration, too few distinct
+signers, receipt tampering, replay, rollback, forks and publication-key
+transitions that do not start at the retained head. Outputs are exclusive and
+read-only (`0444` on POSIX); that mode is only accident protection, so each
+checkpoint still needs independent authenticated, anti-rollback storage.
+
+This CLI does not independently re-verify the publication signature or bundle;
+the supplied publication checkpoint is the explicit handoff from
+`verify-release`/`verify-rotation`. Auditors must run that verification
+independently before attesting. The configuration and bootstrap checkpoint are
+trust anchors and must be reviewed through a separate authenticated process.
+The browser neither produces nor consumes quorum attestations. This mechanism
+does not provide transport, gossip, witness consistency or globally visible
+transparency, and a threshold compromise can still attest a fork.
+
 ## Rotation and recovery
 
 Rotation is intentionally single-key and explicit. Increment the reviewed key
