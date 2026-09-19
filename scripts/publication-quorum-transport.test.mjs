@@ -20,13 +20,22 @@ import {
   buildClientPreflight,
   initializeOperationsStore,
   inspectOperationsStore,
+  prepareOperationsAnchorStatement,
+  signOperationsAnchorStatement,
 } from "./publication-quorum-transport-operations.mjs";
 
 const execute = promisify(execFile);
 const custodyCli = resolve("scripts/publication-quorum-witness-custody.mjs");
 const transportCli = resolve("scripts/publication-quorum-witness-transport.mjs");
+const anchorAdapters = new Map();
 
 async function run(cli, ...args) {
+  if (cli === transportCli && args[0] === "request" &&
+      !args.includes("--external-anchor-log-adapter")) {
+    const storeIndex = args.indexOf("--operations-store");
+    const adapter = storeIndex >= 0 ? anchorAdapters.get(args[storeIndex + 1]) : null;
+    if (adapter) args.push("--external-anchor-log-adapter", adapter);
+  }
   return execute(process.execPath, [cli, ...args], { cwd: resolve(".") });
 }
 
@@ -202,7 +211,8 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
     const manifest = await buildClientPreflight(selectedConfig, witnessConfig);
     const manifestSha256 = canonicalSha256(manifest);
     await initializeOperationsStore(store, manifest, manifestSha256, head);
-    const authority = describeKey(generateKeyPairSync("ed25519").publicKey);
+    const authorityKeys = generateKeyPairSync("ed25519");
+    const authority = describeKey(authorityKeys.publicKey);
     const authorization = {
       schemaVersion: 1,
       authorizationId: `${name}-approval`,
@@ -214,6 +224,24 @@ test("mTLS transport pins both peers and performs a create-once custody CAS", as
       authorityPublicKeyBase64Url: authority.publicKeyBase64Url,
     };
     await activateOperationsStore(store, authorization, canonicalSha256(authorization));
+    const statement = await prepareOperationsAnchorStatement(store);
+    const evidence = signOperationsAnchorStatement(statement, authorityKeys.privateKey, 1);
+    const externalHead = {
+      schemaVersion: 1,
+      kind: "operations-anchor-log-head",
+      streamId: statement.streamId,
+      logSequence: 1,
+      evidenceSha256: canonicalSha256(evidence),
+      evidence,
+    };
+    const adapter = join(root, `${name}-external-anchor-adapter.mjs`);
+    await writeFile(
+      adapter,
+      `export async function readLatestHead() { return ${JSON.stringify(externalHead)}; }\n`,
+      { mode: 0o444 },
+    );
+    await chmod(adapter, 0o444);
+    anchorAdapters.set(store, adapter);
     return store;
   }
 

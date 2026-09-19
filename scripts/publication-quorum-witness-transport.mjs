@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { X509Certificate } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import { createServer, request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
@@ -453,7 +453,30 @@ async function sendOnce(config, body) {
 function usage() {
   console.error(`Usage:
   node scripts/publication-quorum-witness-transport.mjs serve --config <server.json>
-  node scripts/publication-quorum-witness-transport.mjs request --config <client.json> --witness-config <witness.json> --operations-store <private-directory> --authenticated-request <envelope.json> --expected-head-sha256 <genesis-or-sha256> --output <receipt.json>`);
+  node scripts/publication-quorum-witness-transport.mjs request --config <client.json> --witness-config <witness.json> --operations-store <private-directory> --external-anchor-log-adapter <absolute-module.mjs> --authenticated-request <envelope.json> --expected-head-sha256 <genesis-or-sha256> --output <receipt.json>`);
+}
+
+async function loadExternalAnchorLogAdapter(path) {
+  if (!isAbsolute(path)) fail("external anchor log adapter path must be absolute");
+  const metadata = await lstat(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1)
+    fail("external anchor log adapter must be a regular single-link file");
+  if (typeof process.getuid === "function" && metadata.uid !== process.getuid())
+    fail("external anchor log adapter must be owned by the current user");
+  if ((metadata.mode & 0o022) !== 0)
+    fail("external anchor log adapter must not be writable by group or other users");
+  if (await realpath(path) !== path)
+    fail("external anchor log adapter path must not traverse symlinks");
+  const loaded = await import(pathToFileURL(path).href);
+  const after = await lstat(path);
+  if (after.dev !== metadata.dev || after.ino !== metadata.ino ||
+      after.nlink !== metadata.nlink || after.size !== metadata.size ||
+      after.mtimeMs !== metadata.mtimeMs || after.ctimeMs !== metadata.ctimeMs ||
+      after.mode !== metadata.mode || after.uid !== metadata.uid)
+    fail("external anchor log adapter changed while it was being loaded");
+  if (typeof loaded.readLatestHead !== "function")
+    fail("external anchor log adapter must export readLatestHead");
+  return Object.freeze({ readLatestHead: loaded.readLatestHead });
 }
 
 async function main() {
@@ -476,7 +499,8 @@ async function main() {
   if (command === "request") {
     const names = [
       "--config", "--witness-config", "--authenticated-request",
-      "--operations-store", "--expected-head-sha256", "--output",
+      "--operations-store", "--external-anchor-log-adapter",
+      "--expected-head-sha256", "--output",
     ];
     if (args.length !== names.length * 2) fail("request arguments are incomplete");
     const values = {};
@@ -516,11 +540,15 @@ async function main() {
     } = await import("./publication-quorum-transport-operations.mjs");
     const manifest = await buildClientPreflight(config, witness);
     const manifestSha256 = canonicalSha256(manifest);
+    const anchorLog = await loadExternalAnchorLogAdapter(
+      values["--external-anchor-log-adapter"],
+    );
     await beginTransportRequest(
       values["--operations-store"],
       manifestSha256,
       expectedHeadSha256,
       body.requestId,
+      anchorLog,
     );
     const response = await sendOnce(config, body);
     try {

@@ -77,6 +77,20 @@ async function fixture() {
   };
 }
 
+async function externalAnchorLog(store, privateKey, keyGeneration, logSequence) {
+  const statement = await prepareOperationsAnchorStatement(store);
+  const evidence = signOperationsAnchorStatement(statement, privateKey, keyGeneration);
+  const head = {
+    schemaVersion: 1,
+    kind: "operations-anchor-log-head",
+    streamId: statement.streamId,
+    logSequence,
+    evidenceSha256: canonicalSha256(evidence),
+    evidence,
+  };
+  return { readLatestHead: async () => structuredClone(head) };
+}
+
 test("preflight rejects unsafe key permissions and a certificate/key substitution", async () => {
   const value = await fixture();
   await chmod(value.client.key, 0o644);
@@ -127,7 +141,12 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
     beginTransportRequest(store, "3".repeat(64), "genesis", "4".repeat(64)),
     /runtime configuration differs/,
   );
-  await beginTransportRequest(store, manifestHash, "genesis", "4".repeat(64));
+  await assert.rejects(
+    beginTransportRequest(store, manifestHash, "genesis", "4".repeat(64)),
+    /authenticated external anchor log adapter is required/,
+  );
+  const anchorLog = await externalAnchorLog(store, value.authority.privateKey, 1, 7);
+  await beginTransportRequest(store, manifestHash, "genesis", "4".repeat(64), anchorLog);
   await assert.rejects(
     beginTransportRequest(store, manifestHash, "genesis", "4".repeat(64)),
     /prior outcome is ambiguous.*never retry/,
@@ -135,6 +154,7 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
   const pending = await inspectOperationsStore(store);
   assert.equal(pending.status, "pending");
   assert.equal(pending.pendingRequestId, "4".repeat(64));
+  assert.equal(pending.externalAnchorSequence, 7);
 
   await commitTransportRequest(store, "4".repeat(64), "5".repeat(64));
   await assert.rejects(
@@ -204,7 +224,23 @@ test("signed anchor evidence binds the exact audited ready checkpoint", async ()
     /signature is invalid|does not match/,
   );
 
-  await beginTransportRequest(store, manifestHash, "genesis", "d".repeat(64));
+  const anchorLog = {
+    readLatestHead: async () => ({
+      schemaVersion: 1,
+      kind: "operations-anchor-log-head",
+      streamId: statement.streamId,
+      logSequence: 1,
+      evidenceSha256: canonicalSha256(evidence),
+      evidence,
+    }),
+  };
+  await beginTransportRequest(
+    store,
+    manifestHash,
+    "genesis",
+    "d".repeat(64),
+    anchorLog,
+  );
   await assert.rejects(
     prepareOperationsAnchorStatement(store),
     /only a ready operations checkpoint/,
@@ -214,6 +250,39 @@ test("signed anchor evidence binds the exact audited ready checkpoint", async ()
     verifyOperationsAnchorEvidence(store, evidence),
     /does not match the current audited checkpoint/,
   );
+  const advancedStatement = await prepareOperationsAnchorStatement(store);
+  const advancedEvidence = signOperationsAnchorStatement(
+    advancedStatement,
+    value.authority.privateKey,
+    1,
+  );
+  const head = (logSequence, selectedEvidence = advancedEvidence) => ({
+    readLatestHead: async () => ({
+      schemaVersion: 1,
+      kind: "operations-anchor-log-head",
+      streamId: advancedStatement.streamId,
+      logSequence,
+      evidenceSha256: canonicalSha256(selectedEvidence),
+      evidence: selectedEvidence,
+    }),
+  });
+  await assert.rejects(
+    beginTransportRequest(
+      store, manifestHash, "e".repeat(64), "f".repeat(64), head(1),
+    ),
+    /external anchor log head is stale or rolled back/,
+  );
+  assert.equal((await inspectOperationsStore(store)).status, "ready");
+  await assert.rejects(
+    beginTransportRequest(
+      store, manifestHash, "e".repeat(64), "f".repeat(64), head(2, evidence),
+    ),
+    /does not match the current audited checkpoint/,
+  );
+  await beginTransportRequest(
+    store, manifestHash, "e".repeat(64), "f".repeat(64), head(2),
+  );
+  assert.equal((await inspectOperationsStore(store)).externalAnchorSequence, 2);
 });
 
 test("rotates a pinned mTLS profile only after independent old and new authorization", async () => {

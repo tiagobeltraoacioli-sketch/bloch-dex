@@ -565,12 +565,35 @@ node scripts/publication-quorum-transport-operations.mjs activate \
   --expected-authorization-sha256 <out-of-band-reviewed-sha256>
 ```
 
-Every transport `request` requires `--operations-store`. Before network I/O it
-recomputes the preflight identity, compares the retained head, and durably moves
-the checkpoint from `ready` to `pending`. A configuration substitution, rollback,
-inactive store or existing pending request fails closed. Only a fully verified
+Every transport `request` requires `--operations-store` and
+`--external-anchor-log-adapter <absolute-module.mjs>`. The owner-controlled,
+non-group-writable module must export an async `readLatestHead(query)` function.
+Immediately before network I/O, while holding the operations lock, the client
+passes it an immutable query containing the exact stream ID, checkpoint hash and
+generation. The adapter must query an authenticated, independently operated
+append-only log and return its latest accepted head in this form:
+
+```json
+{"evidence":{"...":"signed operations anchor evidence"},"evidenceSha256":"<sha256>","kind":"operations-anchor-log-head","logSequence":42,"schemaVersion":1,"streamId":"<query streamId>"}
+```
+
+The client requires the signed evidence to match the exact audited ready
+checkpoint and requires `logSequence` to increase beyond the last accepted
+external sequence. Only then does it durably move the checkpoint from `ready`
+to `pending`; absence, timeout, malformed output, stale sequence, wrong stream,
+bad signature or mismatched checkpoint fails before transport. It also
+recomputes the preflight identity and compares the retained custody head. A
+configuration substitution, rollback, inactive store or existing pending
+request therefore fails closed. Only a fully verified
 and durably written receipt advances the retained head and returns the store to
 `ready`; therefore a timeout or malformed response cannot be retried accidentally.
+
+The repository deliberately provides no production adapter and does not choose
+an endpoint, credentials, TLS policy or freshness source. Supplying a module
+that reads a file on the operations host, caches a response, trusts an
+unauthenticated API or merely echoes the query defeats this gate. A deployment
+adapter must authenticate the independent log, verify its own inclusion and
+consistency semantics, reject equivocation and return only the live latest head.
 
 If delivery was ambiguous, run `inspect`, inspect the independent custody head,
 and export its content-addressed receipt. When custody did advance, `reconcile`
@@ -680,7 +703,9 @@ genesis manifest and authority, plus the canonical checkpoint hash, checkpoint
 generation, custody head, manifest, complete rotation-chain tip and current authority. The
 signature is domain- and role-bound and must match that retained authority.
 `verify-anchor` repeats the complete rotation-chain audit and requires exact
-equality with the current ready checkpoint.
+equality with the current ready checkpoint. The transport path performs that
+same verification through the injected latest-head adapter and additionally
+retains the accepted external log sequence.
 
 The evidence file is portable proof, not an external store. Keeping it beside
 the operations store provides no rollback protection: a rollback can restore
@@ -688,12 +713,13 @@ both files. An operator must publish each newer evidence object outside this
 host and fetch the latest accepted object for that exact stream ID from the
 independent append-only system for verification. The external system must
 enforce increasing checkpoint generations and reject a second checkpoint hash
-for an already accepted generation. This tool deliberately does not claim log inclusion,
-log consistency, availability, freshness or automatic transport gating. Until
-that external publication and latest-head retrieval are integrated and
-monitored, an audit or locally supplied evidence is not deployment approval.
-This release uses operations-checkpoint schema 2. A schema-1 store fails closed;
-do not edit it in place. Bootstrap a separately reviewed schema-2 store from an
+for an already accepted generation. The core does not claim log inclusion, log
+consistency, availability or freshness on behalf of an adapter. The adapter is
+an explicit deployment trust boundary and must establish those properties
+before returning. A locally supplied evidence file is not a conforming adapter
+and is not deployment approval.
+This release uses operations-checkpoint schema 3. Older stores fail closed;
+do not edit them in place. Bootstrap a separately reviewed schema-3 store from an
 independently queried custody head and retain the old store for audit.
 
 Commit with `witnessed-verify` or `witnessed-rotate`. Supply both the ordinary

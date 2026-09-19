@@ -232,8 +232,9 @@ function validateCheckpoint(value) {
     "expectedHeadSha256", "pendingRequestId", "authorizationSha256",
     "authorityKeyId", "authorityKeyGeneration", "authorityPublicKeyBase64Url",
     "rotationSequence", "previousRotationSha256", "pendingRotationSha256",
+    "externalAnchorSequence",
   ], "operations checkpoint");
-  if (value.schemaVersion !== 2 || !Number.isSafeInteger(value.generation) || value.generation < 0)
+  if (value.schemaVersion !== 3 || !Number.isSafeInteger(value.generation) || value.generation < 0)
     fail("operations checkpoint version or generation is invalid");
   requireHash(value.manifestSha256, "manifest hash");
   requireHead(value.expectedHeadSha256);
@@ -257,6 +258,9 @@ function validateCheckpoint(value) {
   if ((value.status === "rotating") !==
       (typeof value.pendingRotationSha256 === "string" && HEX.test(value.pendingRotationSha256)))
     fail("operations checkpoint pending rotation is invalid");
+  if (value.externalAnchorSequence !== null &&
+      (!Number.isSafeInteger(value.externalAnchorSequence) || value.externalAnchorSequence < 1))
+    fail("operations checkpoint external anchor sequence is invalid");
   return value;
 }
 
@@ -341,7 +345,7 @@ export async function initializeOperationsStore(root, manifest, expectedManifest
   await mkdir(join(root, ROTATIONS), { mode: 0o700 });
   await chmod(join(root, ROTATIONS), 0o700);
   const checkpoint = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     manifestSha256: expectedManifestSha256,
     generation: 0,
     status: "inactive",
@@ -354,6 +358,7 @@ export async function initializeOperationsStore(root, manifest, expectedManifest
     rotationSequence: 0,
     previousRotationSha256: "genesis",
     pendingRotationSha256: null,
+    externalAnchorSequence: null,
   };
   await writeNewJson(join(root, HEAD), checkpoint, 0o400);
   await syncDirectory(root);
@@ -639,6 +644,26 @@ export function signOperationsAnchorStatement(statementInput, privateKey, keyGen
   );
 }
 
+function verifyAnchorEvidenceForCheckpoint(checkpoint, chain, evidence) {
+  const current = anchorStatement(checkpoint, chain);
+  const authority = authorityFromRaw(
+    current.authority.publicKeyBase64Url,
+    current.authority.keyGeneration,
+  );
+  const payload = verifyEnvelope(
+    evidence,
+    authority.publicKey,
+    OPERATIONS_ANCHOR_DOMAIN,
+    authority.keyGeneration,
+  );
+  exactKeys(payload, ["role", "statement"], "operations anchor evidence payload");
+  const statement = validateAnchorStatement(payload.statement);
+  if (payload.role !== "operations-checkpoint-anchor" ||
+      canonicalJson(statement) !== canonicalJson(current))
+    fail("external anchor evidence does not match the current audited checkpoint");
+  return { current, evidenceSha256: canonicalSha256(evidence) };
+}
+
 export async function verifyOperationsAnchorEvidence(root, evidence) {
   return withLock(root, async () => {
     const checkpoint = validateCheckpoint(await secureJson(
@@ -646,31 +671,63 @@ export async function verifyOperationsAnchorEvidence(root, evidence) {
       "operations checkpoint",
     ));
     const chain = await auditRotationChain(root, checkpoint);
-    const current = anchorStatement(checkpoint, chain);
-    const authority = authorityFromRaw(
-      current.authority.publicKeyBase64Url,
-      current.authority.keyGeneration,
-    );
-    const payload = verifyEnvelope(
+    const { current, evidenceSha256 } = verifyAnchorEvidenceForCheckpoint(
+      checkpoint,
+      chain,
       evidence,
-      authority.publicKey,
-      OPERATIONS_ANCHOR_DOMAIN,
-      authority.keyGeneration,
     );
-    exactKeys(payload, ["role", "statement"], "operations anchor evidence payload");
-    const statement = validateAnchorStatement(payload.statement);
-    if (payload.role !== "operations-checkpoint-anchor" ||
-        canonicalJson(statement) !== canonicalJson(current))
-      fail("external anchor evidence does not match the current audited checkpoint");
     return {
       valid: true,
       streamId: current.streamId,
-      evidenceSha256: canonicalSha256(evidence),
+      evidenceSha256,
       checkpointSha256: current.checkpointSha256,
       checkpointGeneration: current.checkpointGeneration,
       rotationSequence: current.rotationSequence,
     };
   });
+}
+
+function validateExternalAnchorHead(value, streamId) {
+  exactKeys(value, [
+    "schemaVersion", "kind", "streamId", "logSequence", "evidenceSha256", "evidence",
+  ], "external anchor log head");
+  if (value.schemaVersion !== 1 || value.kind !== "operations-anchor-log-head")
+    fail("external anchor log head identity is invalid");
+  if (value.streamId !== streamId) fail("external anchor log returned the wrong stream");
+  if (!Number.isSafeInteger(value.logSequence) || value.logSequence < 1)
+    fail("external anchor log sequence is invalid");
+  requireHash(value.evidenceSha256, "external anchor evidence hash");
+  if (canonicalSha256(value.evidence) !== value.evidenceSha256)
+    fail("external anchor log evidence hash does not match");
+  return value;
+}
+
+async function requireLatestExternalAnchor(checkpoint, chain, anchorLog) {
+  if (!anchorLog || typeof anchorLog !== "object" ||
+      typeof anchorLog.readLatestHead !== "function")
+    fail("an authenticated external anchor log adapter is required before transport");
+  const expected = anchorStatement(checkpoint, chain);
+  const query = Object.freeze({
+    schemaVersion: 1,
+    kind: "operations-anchor-log-query",
+    streamId: expected.streamId,
+    checkpointSha256: expected.checkpointSha256,
+    checkpointGeneration: expected.checkpointGeneration,
+  });
+  let returned;
+  try {
+    returned = await anchorLog.readLatestHead(query);
+  } catch (error) {
+    fail(`external anchor log latest-head query failed: ${error?.message ?? "unknown error"}`);
+  }
+  const head = validateExternalAnchorHead(returned, expected.streamId);
+  if (checkpoint.externalAnchorSequence !== null &&
+      head.logSequence <= checkpoint.externalAnchorSequence)
+    fail("external anchor log head is stale or rolled back");
+  const verified = verifyAnchorEvidenceForCheckpoint(checkpoint, chain, head.evidence);
+  if (verified.evidenceSha256 !== head.evidenceSha256)
+    fail("external anchor log evidence identity is inconsistent");
+  return head;
 }
 
 export async function commitOperationsRotation({
@@ -747,19 +804,32 @@ export async function inspectPendingRotation(root) {
   return { rotationSha256: checkpoint.pendingRotationSha256, rotation };
 }
 
-export async function beginTransportRequest(root, manifestSha256, expectedHead, requestId) {
+export async function beginTransportRequest(
+  root,
+  manifestSha256,
+  expectedHead,
+  requestId,
+  anchorLog,
+) {
   requireHash(manifestSha256, "manifest hash");
   requireHead(expectedHead);
   requireHash(requestId, "request ID");
   return withLock(root, async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
-    await auditRotationChain(root, current);
+    const chain = await auditRotationChain(root, current);
     if (current.manifestSha256 !== manifestSha256) fail("runtime configuration differs from the approved preflight manifest");
     if (current.status === "inactive") fail("operations store is inactive; explicit reviewed activation is required");
     if (current.status === "rotating") fail("mTLS profile rotation is pending; requests remain blocked until durable commit");
     if (current.status === "pending") fail("a prior outcome is ambiguous; inspect custody and reconcile, never retry");
     if (current.expectedHeadSha256 !== expectedHead) fail("expected custody head is stale or rolled back");
-    const next = { ...current, generation: current.generation + 1, status: "pending", pendingRequestId: requestId };
+    const externalHead = await requireLatestExternalAnchor(current, chain, anchorLog);
+    const next = {
+      ...current,
+      generation: current.generation + 1,
+      status: "pending",
+      pendingRequestId: requestId,
+      externalAnchorSequence: externalHead.logSequence,
+    };
     await replaceCheckpoint(root, next);
     return next;
   });
