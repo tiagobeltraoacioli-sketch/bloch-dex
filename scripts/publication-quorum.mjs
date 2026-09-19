@@ -15,6 +15,8 @@ import {
 
 export const AUDITOR_ATTESTATION_DOMAIN =
   "POSTERN_LIVE_PUBLICATION_AUDITOR_ATTESTATION_V1\n";
+export const AUDITOR_CONFIG_ROTATION_DOMAIN =
+  "POSTERN_LIVE_AUDITOR_CONFIG_ROTATION_V1\n";
 
 const HEX = /^[0-9a-f]{64}$/;
 const B64_KEY = /^[A-Za-z0-9_-]{43}$/;
@@ -62,8 +64,13 @@ function publicKeyFromRaw(value) {
 }
 
 export function validateAuditorConfig(config) {
-  exactKeys(config, ["schemaVersion", "threshold", "auditors"], "config");
+  exactKeys(
+    config,
+    ["schemaVersion", "configGeneration", "threshold", "auditors"],
+    "config",
+  );
   if (config.schemaVersion !== 1) fail("config schema is unsupported");
+  positiveInteger(config.configGeneration, "config generation");
   if (!Array.isArray(config.auditors) || config.auditors.length < 2)
     fail("config requires at least two auditors");
   if (config.auditors.length > 32) fail("config has too many auditors");
@@ -172,6 +179,8 @@ function validateQuorumCheckpoint(checkpoint) {
     [
       "schemaVersion",
       "quorumConfigSha256",
+      "quorumConfigGeneration",
+      "previousQuorumRotationSha256",
       "threshold",
       "publicationKeyId",
       "publicationKeyGeneration",
@@ -181,8 +190,12 @@ function validateQuorumCheckpoint(checkpoint) {
     "quorum checkpoint",
   );
   if (
-    checkpoint.schemaVersion !== 1 ||
+    checkpoint.schemaVersion !== 2 ||
     !HEX.test(checkpoint.quorumConfigSha256) ||
+    !Number.isSafeInteger(checkpoint.quorumConfigGeneration) ||
+    checkpoint.quorumConfigGeneration < 1 ||
+    (checkpoint.previousQuorumRotationSha256 !== null &&
+      !HEX.test(checkpoint.previousQuorumRotationSha256)) ||
     !Number.isSafeInteger(checkpoint.threshold) ||
     checkpoint.threshold < 2 ||
     !HEX.test(checkpoint.publicationKeyId) ||
@@ -196,6 +209,96 @@ function validateQuorumCheckpoint(checkpoint) {
   )
     fail("quorum checkpoint is invalid");
   return checkpoint;
+}
+
+function configRotationPayload(priorConfig, nextConfig, checkpoint) {
+  return {
+    schemaVersion: 1,
+    priorConfigGeneration: priorConfig.configGeneration,
+    nextConfigGeneration: nextConfig.configGeneration,
+    priorConfigSha256: configIdentity(priorConfig),
+    nextConfigSha256: configIdentity(nextConfig),
+    priorQuorumCheckpointSha256: canonicalSha256(checkpoint),
+    previousQuorumRotationSha256: checkpoint.previousQuorumRotationSha256,
+    publicationKeyId: checkpoint.publicationKeyId,
+    publicationKeyGeneration: checkpoint.publicationKeyGeneration,
+    sequence: checkpoint.sequence,
+    entrySha256: checkpoint.entrySha256,
+  };
+}
+
+const CONFIG_ROTATION_FIELDS = [
+  "schemaVersion",
+  "priorConfigGeneration",
+  "nextConfigGeneration",
+  "priorConfigSha256",
+  "nextConfigSha256",
+  "priorQuorumCheckpointSha256",
+  "previousQuorumRotationSha256",
+  "publicationKeyId",
+  "publicationKeyGeneration",
+  "sequence",
+  "entrySha256",
+];
+
+function validateConfigRotationPayload(payload) {
+  exactKeys(payload, CONFIG_ROTATION_FIELDS, "config rotation payload");
+  if (
+    payload.schemaVersion !== 1 ||
+    !Number.isSafeInteger(payload.priorConfigGeneration) ||
+    payload.priorConfigGeneration < 1 ||
+    payload.nextConfigGeneration !== payload.priorConfigGeneration + 1 ||
+    !HEX.test(payload.priorConfigSha256) ||
+    !HEX.test(payload.nextConfigSha256) ||
+    payload.priorConfigSha256 === payload.nextConfigSha256 ||
+    !HEX.test(payload.priorQuorumCheckpointSha256) ||
+    (payload.previousQuorumRotationSha256 !== null &&
+      !HEX.test(payload.previousQuorumRotationSha256)) ||
+    !HEX.test(payload.publicationKeyId) ||
+    !Number.isSafeInteger(payload.publicationKeyGeneration) ||
+    payload.publicationKeyGeneration < 1 ||
+    !Number.isSafeInteger(payload.sequence) ||
+    payload.sequence < 0 ||
+    (payload.sequence === 0
+      ? payload.entrySha256 !== null
+      : !HEX.test(payload.entrySha256))
+  )
+    fail("config rotation payload is invalid");
+  return payload;
+}
+
+function rotationApprovalPayload(role, auditorId, rotation) {
+  return { ...rotation, role, auditorId };
+}
+
+function validateRotationApprovalPayload(payload) {
+  const { role, auditorId, ...rotation } = payload ?? {};
+  exactKeys(
+    payload,
+    [...CONFIG_ROTATION_FIELDS, "role", "auditorId"],
+    "config rotation approval payload",
+  );
+  if (
+    (role !== "prior-authorization" && role !== "next-acceptance") ||
+    typeof auditorId !== "string" ||
+    !AUDITOR_ID.test(auditorId)
+  )
+    fail("config rotation approval identity is invalid");
+  return { role, auditorId, rotation: validateConfigRotationPayload(rotation) };
+}
+
+function requireRotationInputs(priorConfig, nextConfig, checkpoint) {
+  if (
+    checkpoint.quorumConfigSha256 !== configIdentity(priorConfig) ||
+    checkpoint.quorumConfigGeneration !== priorConfig.configGeneration ||
+    checkpoint.threshold !== priorConfig.threshold
+  )
+    fail("checkpoint does not match the prior auditor config");
+  if (nextConfig.configGeneration !== priorConfig.configGeneration + 1)
+    fail("next config generation must increase by exactly one");
+  requireIndependentAuditors(priorConfig, checkpoint.publicationKeyId);
+  requireIndependentAuditors(nextConfig, checkpoint.publicationKeyId);
+  return configRotationPayload(priorConfig, nextConfig, checkpoint);
 }
 
 function attestationPayload(configSha256, auditorId, head) {
@@ -263,7 +366,9 @@ function usage() {
   console.error(`Usage:
   node scripts/publication-quorum.mjs init --config <auditors.json> --publication-checkpoint <checkpoint.json> --output-checkpoint <quorum-checkpoint.json>
   node scripts/publication-quorum.mjs attest --config <auditors.json> --auditor-id <id> --private-key <ed25519-private.pem> --entry <publication-entry.json> --publication-checkpoint <checkpoint.json> --output <attestation.json>
-  node scripts/publication-quorum.mjs verify --config <auditors.json> --entry <publication-entry.json> --attestations <attestations.json> --checkpoint <quorum-checkpoint.json> --output-checkpoint <next-quorum-checkpoint.json>`);
+  node scripts/publication-quorum.mjs verify --config <auditors.json> --entry <publication-entry.json> --attestations <attestations.json> --checkpoint <quorum-checkpoint.json> --output-checkpoint <next-quorum-checkpoint.json>
+  node scripts/publication-quorum.mjs attest-config-rotation --prior-config <auditors.json> --next-config <auditors.json> --role <prior-authorization|next-acceptance> --auditor-id <id> --private-key <ed25519-private.pem> --checkpoint <quorum-checkpoint.json> --output <approval.json>
+  node scripts/publication-quorum.mjs rotate-config --prior-config <auditors.json> --next-config <auditors.json> --prior-approvals <approvals.json> --next-acceptances <acceptances.json> --checkpoint <quorum-checkpoint.json> --output-checkpoint <next-quorum-checkpoint.json>`);
 }
 
 async function main() {
@@ -284,8 +389,10 @@ async function main() {
     await writeNewJson(
       values["--output-checkpoint"],
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         quorumConfigSha256: configIdentity(config),
+        quorumConfigGeneration: config.configGeneration,
+        previousQuorumRotationSha256: null,
         threshold: config.threshold,
         publicationKeyId: publication.publicationKeyId,
         publicationKeyGeneration: publication.publicationKeyGeneration,
@@ -294,6 +401,156 @@ async function main() {
       },
       0o444,
     );
+    return;
+  }
+  if (command === "attest-config-rotation") {
+    const values = parse(command, args, [
+      "--prior-config",
+      "--next-config",
+      "--role",
+      "--auditor-id",
+      "--private-key",
+      "--checkpoint",
+      "--output",
+    ]);
+    const priorConfig = validateAuditorConfig(
+      await readJson(values["--prior-config"], 64_000),
+    );
+    const nextConfig = validateAuditorConfig(
+      await readJson(values["--next-config"], 64_000),
+    );
+    const checkpoint = validateQuorumCheckpoint(
+      await readJson(values["--checkpoint"], 4_096),
+    );
+    const rotation = requireRotationInputs(priorConfig, nextConfig, checkpoint);
+    const role = values["--role"];
+    const config = role === "prior-authorization"
+      ? priorConfig
+      : role === "next-acceptance"
+        ? nextConfig
+        : fail("rotation role is invalid");
+    const auditor = config.auditors.find(
+      (candidate) => candidate.auditorId === values["--auditor-id"],
+    );
+    if (!auditor) fail("auditor is not configured for rotation role");
+    const privateKey = await readPrivateKey(values["--private-key"]);
+    if (describeKey(privateKey).keyId !== auditor.keyId)
+      fail("private key does not match configured auditor");
+    await writeNewJson(
+      values["--output"],
+      signEnvelope(
+        rotationApprovalPayload(role, auditor.auditorId, rotation),
+        privateKey,
+        AUDITOR_CONFIG_ROTATION_DOMAIN,
+        auditor.keyGeneration,
+      ),
+      0o444,
+    );
+    return;
+  }
+  if (command === "rotate-config") {
+    const values = parse(command, args, [
+      "--prior-config",
+      "--next-config",
+      "--prior-approvals",
+      "--next-acceptances",
+      "--checkpoint",
+      "--output-checkpoint",
+    ]);
+    const priorConfig = validateAuditorConfig(
+      await readJson(values["--prior-config"], 64_000),
+    );
+    const nextConfig = validateAuditorConfig(
+      await readJson(values["--next-config"], 64_000),
+    );
+    const checkpoint = validateQuorumCheckpoint(
+      await readJson(values["--checkpoint"], 4_096),
+    );
+    const expectedRotation = requireRotationInputs(
+      priorConfig,
+      nextConfig,
+      checkpoint,
+    );
+    const priorApprovals = await readJson(values["--prior-approvals"], 512_000);
+    const nextAcceptances = await readJson(values["--next-acceptances"], 512_000);
+    if (
+      !Array.isArray(priorApprovals) ||
+      priorApprovals.length > priorConfig.auditors.length ||
+      !Array.isArray(nextAcceptances) ||
+      nextAcceptances.length > nextConfig.auditors.length
+    )
+      fail("rotation approvals must be bounded arrays");
+    const usedIds = new Set();
+    const usedKeys = new Set();
+    function verifyApprovals(envelopes, config, role) {
+      const seen = new Set();
+      let priorSignerId = null;
+      for (const envelope of envelopes) {
+        const claimedId = envelope?.payload?.auditorId;
+        if (typeof claimedId !== "string" || seen.has(claimedId))
+          fail("duplicate or invalid rotation approval");
+        if (priorSignerId !== null && claimedId <= priorSignerId)
+          fail("rotation approvals must be uniquely sorted by auditor ID");
+        priorSignerId = claimedId;
+        const auditor = config.auditors.find(
+          (candidate) => candidate.auditorId === claimedId,
+        );
+        if (!auditor) fail("rotation approver is not configured for its role");
+        validateSignatureShape(envelope.signature, "rotation approval signature");
+        const approved = validateRotationApprovalPayload(
+          verifyEnvelope(
+            envelope,
+            publicKeyFromRaw(auditor.publicKeyBase64Url),
+            AUDITOR_CONFIG_ROTATION_DOMAIN,
+            auditor.keyGeneration,
+          ),
+        );
+        if (
+          approved.role !== role ||
+          canonicalJson(approved.rotation) !== canonicalJson(expectedRotation)
+        )
+          fail("rotation approval does not bind the exact transition");
+        if (usedIds.has(auditor.auditorId) || usedKeys.has(auditor.keyId))
+          fail("rotation thresholds must use independent identities and keys");
+        seen.add(auditor.auditorId);
+        usedIds.add(auditor.auditorId);
+        usedKeys.add(auditor.keyId);
+      }
+      if (seen.size < config.threshold)
+        fail(`${role} threshold is not met`);
+      return seen.size;
+    }
+    const priorCount = verifyApprovals(
+      priorApprovals,
+      priorConfig,
+      "prior-authorization",
+    );
+    const nextCount = verifyApprovals(
+      nextAcceptances,
+      nextConfig,
+      "next-acceptance",
+    );
+    const rotationRecord = {
+      schemaVersion: 1,
+      payload: expectedRotation,
+      priorApprovals,
+      nextAcceptances,
+    };
+    const nextCheckpoint = {
+      ...checkpoint,
+      quorumConfigSha256: configIdentity(nextConfig),
+      quorumConfigGeneration: nextConfig.configGeneration,
+      previousQuorumRotationSha256: canonicalSha256(rotationRecord),
+      threshold: nextConfig.threshold,
+    };
+    await writeNewJson(values["--output-checkpoint"], nextCheckpoint, 0o444);
+    console.log(canonicalJson({
+      rotated: true,
+      configGeneration: nextConfig.configGeneration,
+      priorApprovals: priorCount,
+      nextAcceptances: nextCount,
+      rotationSha256: nextCheckpoint.previousQuorumRotationSha256,
+    }));
     return;
   }
   if (command === "attest") {
@@ -362,6 +619,7 @@ async function main() {
     );
     if (
       checkpoint.quorumConfigSha256 !== configSha256 ||
+      checkpoint.quorumConfigGeneration !== config.configGeneration ||
       checkpoint.threshold !== config.threshold
     )
       fail("checkpoint does not match the auditor config");
@@ -420,8 +678,10 @@ async function main() {
     }
     if (seen.size < config.threshold) fail("auditor threshold is not met");
     const next = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       quorumConfigSha256: configSha256,
+      quorumConfigGeneration: config.configGeneration,
+      previousQuorumRotationSha256: checkpoint.previousQuorumRotationSha256,
       threshold: config.threshold,
       publicationKeyId: head.keyId,
       publicationKeyGeneration: head.keyGeneration,

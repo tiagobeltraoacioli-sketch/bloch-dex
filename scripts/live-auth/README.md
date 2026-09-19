@@ -237,6 +237,7 @@ deliberately not discovered from the release or a network service.
 ```json
 {
   "schemaVersion": 1,
+  "configGeneration": 1,
   "threshold": 2,
   "auditors": [
     {
@@ -256,7 +257,10 @@ deliberately not discovered from the release or a network service.
 ```
 
 Bootstrap a retained quorum checkpoint from the publication checkpoint whose
-head was reviewed out of band:
+head was reviewed out of band. This now creates quorum-checkpoint schema 2;
+legacy schema-1 quorum checkpoints are deliberately rejected and must not be
+silently migrated. Before production use, bootstrap schema 2 once from the
+independently retained publication checkpoint:
 
 ```sh
 node scripts/publication-quorum.mjs init \
@@ -298,6 +302,50 @@ signers, receipt tampering, replay, rollback, forks and publication-key
 transitions that do not start at the retained head. Outputs are exclusive and
 read-only (`0444` on POSIX); that mode is only accident protection, so each
 checkpoint still needs independent authenticated, anti-rollback storage.
+
+The quorum configuration itself rotates through a separate, versioned offline
+transition. Set `configGeneration` to exactly the retained generation plus one,
+review both complete canonical configuration files, and have independently
+chosen threshold groups sign the same retained checkpoint and publication head.
+Old members authorize removal; new members accept responsibility:
+
+```sh
+node scripts/publication-quorum.mjs attest-config-rotation \
+  --prior-config <auditors-generation-N.json> \
+  --next-config <auditors-generation-N-plus-1.json> \
+  --role prior-authorization \
+  --auditor-id <configured-id> \
+  --private-key <auditor-ed25519-private.pem> \
+  --checkpoint <retained-quorum-checkpoint.json> \
+  --output <rotation-approval.json>
+
+node scripts/publication-quorum.mjs rotate-config \
+  --prior-config <auditors-generation-N.json> \
+  --next-config <auditors-generation-N-plus-1.json> \
+  --prior-approvals <sorted-old-approval-array.json> \
+  --next-acceptances <sorted-new-acceptance-array.json> \
+  --checkpoint <retained-quorum-checkpoint.json> \
+  --output-checkpoint <next-quorum-checkpoint.json>
+```
+
+Run the attestation command for each old signer with `prior-authorization` and
+for each new signer with `next-acceptance`. Each approval array must be sorted
+by auditor ID. The signed transition binds both config
+digests and generations, the canonical retained checkpoint digest, the prior
+rotation digest, and the exact publication key, sequence and entry hash. A
+rotation does not consume a publication sequence or change its head. The
+resulting checkpoint commits to the complete ordered approval record so the
+next transition is chained to it.
+
+An auditor ID or key may count in only one side of a transition, even if it is
+present in both configurations. Operators must select disjoint old and new
+threshold subsets; this prevents one identity from being counted twice as both
+authorization and acceptance. Invalid thresholds, duplicates, config
+substitution, generation skips/downgrades, tampering, replay, and a transition
+from any checkpoint other than the exact retained predecessor fail closed.
+Like publication verification, preventing two collectors from advancing the
+same predecessor requires authenticated compare-and-swap storage and auditor
+checkpoint comparison outside this CLI.
 
 This CLI does not independently re-verify the publication signature or bundle;
 the supplied publication checkpoint is the explicit handoff from
