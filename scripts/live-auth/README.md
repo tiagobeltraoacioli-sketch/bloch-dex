@@ -642,6 +642,39 @@ Treat the operation outcome as ambiguous: do not delete either lock path or
 retry. Inspect the checkpoint and retained evidence first, then follow a
 separately reviewed recovery procedure.
 
+New locks are canonical schema-2 intent records. They bind the operation name
+and the canonical SHA-256 of the checkpoint read after exclusive lock creation,
+before the operation is allowed to proceed. The PID is diagnostic only. For an
+orphaned or deliberately preserved lock, an offline reviewer can classify the
+checkpoint against independently approved before/after hashes and emit a
+portable receipt:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs reconcile-lock \
+  --store <private-operations-directory> \
+  --expected-lock-sha256 <authenticated-canonical-lock-sha256> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <independently-derived-after-sha256> \
+  --output <new-lock-reconciliation-receipt.json>
+```
+
+The reviewer accepts only the exact lock intent and one of the two approved
+checkpoint outcomes, audits the complete retained history, and rereads both
+objects before producing the receipt. It supports a preserved hardlink by
+recording the observed link count. A substituted pathname, legacy PID-only
+lock, malformed lock, unapproved third checkpoint, concurrent change, or audit
+failure is rejected. The completed hash must be derived from the authorized
+operation inputs; copying the locally observed hash into the command would be
+TOFU and defeats the classification.
+
+Reconciliation is intentionally read-only: `lockRemoved` is always false and
+neither the primary lock nor any alias is removed. A receipt proves only which
+approved checkpoint was observed during this audit. It is not permission to
+delete a lock, retry an external side effect, activate the service, or move
+funds. Preserve the receipt, its digest, the lock and all aliases for a separate
+operator-approved recovery process. Schema-1 PID-only locks predate the bound
+starting checkpoint and cannot be reconciled by this command.
+
 ### Pinned mTLS profile rotation
 
 Generate the replacement preflight manifest first and approve its digest over

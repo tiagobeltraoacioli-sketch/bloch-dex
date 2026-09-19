@@ -52,6 +52,7 @@ const MAX_JSON = 64_000;
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const RAW_ED25519 = /^[A-Za-z0-9_-]{43}$/;
 const TRANSPORT_PATH = /^\/[A-Za-z0-9/_-]{1,127}$/;
+const LOCK_OPERATION = /^[a-z][a-z0-9-]{0,62}$/;
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 function fail(message) {
@@ -408,12 +409,35 @@ async function writeDurableRecord(path, value, mode, parent) {
   await syncDirectory(parent);
 }
 
-async function acquireLock(root) {
+function validateOperationsLock(value) {
+  exactKeys(value, [
+    "schemaVersion", "pid", "operation", "startingCheckpointSha256",
+  ], "operations lock");
+  if (value.schemaVersion !== 2 || !Number.isSafeInteger(value.pid) || value.pid < 1 ||
+      typeof value.operation !== "string" || !LOCK_OPERATION.test(value.operation))
+    fail("operations lock identity is invalid");
+  requireHash(value.startingCheckpointSha256, "operations lock starting checkpoint hash");
+  return value;
+}
+
+async function acquireLock(root, operation) {
+  if (typeof operation !== "string" || !LOCK_OPERATION.test(operation))
+    fail("operations lock operation is invalid");
   const path = join(root, LOCK);
   let handle;
   try {
     handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
-    await handle.writeFile(`${canonicalJson({ schemaVersion: 1, pid: process.pid })}\n`);
+    const startingCheckpoint = await secureJson(
+      join(root, HEAD),
+      "operations checkpoint before lock",
+    );
+    const record = validateOperationsLock({
+      schemaVersion: 2,
+      pid: process.pid,
+      operation,
+      startingCheckpointSha256: canonicalSha256(startingCheckpoint),
+    });
+    await handle.writeFile(`${canonicalJson(record)}\n`);
     await handle.sync();
     const metadata = await handle.stat();
     if (!metadata.isFile() || metadata.nlink !== 1 || (metadata.mode & 0o077) !== 0 ||
@@ -462,9 +486,9 @@ async function releaseLock(root, lock) {
   }
 }
 
-async function withLock(root, operation) {
+async function withLock(root, operationName, operation) {
   await requireDirectory(root);
-  const lock = await acquireLock(root);
+  const lock = await acquireLock(root, operationName);
   try {
     return await operation();
   } finally {
@@ -472,7 +496,7 @@ async function withLock(root, operation) {
   }
 }
 
-async function withOrderedLocks(roots, operation) {
+async function withOrderedLocks(roots, operationName, operation) {
   const canonicalRoots = await Promise.all(roots.map(async (root) => {
     await requireDirectory(root);
     return realpath(root);
@@ -482,7 +506,7 @@ async function withOrderedLocks(roots, operation) {
   const orderedRoots = [...canonicalRoots].sort();
   const acquire = (index) => index === orderedRoots.length
     ? operation(canonicalRoots)
-    : withLock(orderedRoots[index], () => acquire(index + 1));
+    : withLock(orderedRoots[index], operationName, () => acquire(index + 1));
   return acquire(0);
 }
 
@@ -538,7 +562,7 @@ export async function activateOperationsStore(root, authorization, expectedAutho
   );
   if (authorization.authorityKeyId !== authority.keyId)
     fail("activation authority key ID does not match");
-  return withLock(root, async () => {
+  return withLock(root, "activate", async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     if (current.status !== "inactive" || current.generation !== 0) fail("operations store is already activated or advanced");
     if (authorization.manifestSha256 !== current.manifestSha256 || authorization.expectedHeadSha256 !== current.expectedHeadSha256)
@@ -635,7 +659,7 @@ export async function prepareOperationsRotation({
   );
   if (nextAuthority?.keyId !== parsedNextAuthority.keyId)
     fail("next rotation authority key ID does not match");
-  return withLock(root, async () => {
+  return withLock(root, "prepare-rotation", async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     await auditRotationChain(root, current);
     await auditAnchorAcceptanceChain(root, current);
@@ -785,7 +809,7 @@ export async function migrateOperationsStoreV3ToV4({
 }) {
   requireHash(expectedV3CheckpointSha256, "externally approved schema-3 checkpoint hash");
   await requireSeparateTrees(sourceRoot, destinationRoot);
-  return withLock(sourceRoot, async () => {
+  return withLock(sourceRoot, "migrate-v3-to-v4", async () => {
     const sourceCheckpoint = validateV3Checkpoint(await secureJson(
       join(sourceRoot, HEAD),
       "schema-3 operations checkpoint",
@@ -865,7 +889,7 @@ export async function verifyOperationsStoreV3ToV4Migration({
   requireHash(expectedV4CheckpointSha256, "externally approved schema-4 checkpoint hash");
   requireHash(expectedMigrationRecordSha256, "externally approved migration record hash");
   await requireSeparateTrees(sourceRoot, destinationRoot);
-  return withOrderedLocks([sourceRoot, destinationRoot], async ([
+  return withOrderedLocks([sourceRoot, destinationRoot], "verify-v3-to-v4", async ([
     canonicalSourceRoot,
     canonicalDestinationRoot,
   ]) => {
@@ -990,7 +1014,7 @@ export async function auditOperationsStore(root) {
 }
 
 export async function prepareOperationsAnchorStatement(root) {
-  return withLock(root, async () => {
+  return withLock(root, "prepare-anchor", async () => {
     const checkpoint = validateCheckpoint(await secureJson(
       join(root, HEAD),
       "operations checkpoint",
@@ -1036,7 +1060,7 @@ function verifyAnchorEvidenceForCheckpoint(checkpoint, chain, evidence) {
 }
 
 export async function verifyOperationsAnchorEvidence(root, evidence) {
-  return withLock(root, async () => {
+  return withLock(root, "verify-anchor", async () => {
     const checkpoint = validateCheckpoint(await secureJson(
       join(root, HEAD),
       "operations checkpoint",
@@ -1190,7 +1214,7 @@ export async function commitOperationsRotation({
   validatePreflightManifest(nextManifest);
   const rotation = validateRotationPayload(rotationInput);
   const rotationSha256 = canonicalSha256(rotation);
-  return withLock(root, async () => {
+  return withLock(root, "commit-rotation", async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     await auditRotationChain(root, current);
     await auditAnchorAcceptanceChain(root, current);
@@ -1263,7 +1287,7 @@ export async function beginTransportRequest(
   requireHash(manifestSha256, "manifest hash");
   requireHead(expectedHead);
   requireHash(requestId, "request ID");
-  return withLock(root, async () => {
+  return withLock(root, "begin-request", async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     const chain = await auditRotationChain(root, current);
     await auditAnchorAcceptanceChain(root, current);
@@ -1312,7 +1336,7 @@ export async function beginTransportRequest(
 export async function commitTransportRequest(root, requestId, receiptSha256) {
   requireHash(requestId, "request ID");
   requireHash(receiptSha256, "receipt hash");
-  return withLock(root, async () => {
+  return withLock(root, "commit-request", async () => {
     const current = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
     if (current.status !== "pending" || current.pendingRequestId !== requestId)
       fail("pending request does not match the confirmed transport response");
@@ -1348,6 +1372,117 @@ export async function reconcileTransportRequest({
   if (canonicalJson(payload) !== canonicalJson(authenticatedRequest?.payload))
     fail("reconciliation receipt does not authorize the pending request");
   return commitTransportRequest(root, requestId, canonicalSha256(receipt));
+}
+
+async function readOperationsLockSnapshot(root) {
+  const path = join(root, LOCK);
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | NOFOLLOW);
+    const before = await handle.stat();
+    if (!before.isFile() || before.nlink < 1 || before.size < 1 || before.size > MAX_JSON)
+      fail("operations lock is not a bounded regular file");
+    if (typeof process.getuid === "function" && before.uid !== process.getuid())
+      fail("operations lock must be owned by the current user");
+    if ((before.mode & 0o077) !== 0)
+      fail("operations lock must not grant group or other permissions");
+    const bytes = await handle.readFile();
+    const after = await handle.stat();
+    const linked = await lstat(path);
+    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
+        after.nlink !== before.nlink || after.size !== before.size ||
+        after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
+        after.mode !== before.mode || after.uid !== before.uid || after.gid !== before.gid ||
+        bytes.length !== after.size || !linked.isFile() || linked.isSymbolicLink() ||
+        linked.dev !== after.dev || linked.ino !== after.ino || linked.nlink !== after.nlink ||
+        linked.mode !== after.mode || linked.uid !== after.uid || linked.gid !== after.gid)
+      fail("operations lock changed while it was being reconciled");
+    let value;
+    try { value = JSON.parse(bytes.toString("utf8")); } catch {
+      fail("operations lock is not valid JSON");
+    }
+    if (`${canonicalJson(value)}\n` !== bytes.toString("utf8"))
+      fail("operations lock is not canonical JSON");
+    return {
+      value: validateOperationsLock(value),
+      sha256: canonicalSha256(value),
+      linkCount: after.nlink,
+    };
+  } catch (error) {
+    if (error?.code === "ELOOP") fail("operations lock must not be a symlink");
+    if (error?.code === "ENOENT") fail("operations store has no lock to reconcile");
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function reconcileOperationsLock({
+  root,
+  expectedLockSha256,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+}) {
+  requireHash(expectedLockSha256, "externally approved operations lock hash");
+  requireHash(
+    expectedStartingCheckpointSha256,
+    "externally approved starting checkpoint hash",
+  );
+  requireHash(
+    expectedCompletedCheckpointSha256,
+    "externally approved completed checkpoint hash",
+  );
+  if (expectedStartingCheckpointSha256 === expectedCompletedCheckpointSha256)
+    fail("starting and completed checkpoint hashes must differ");
+  await requireDirectory(root);
+
+  const lock = await readOperationsLockSnapshot(root);
+  if (lock.sha256 !== expectedLockSha256)
+    fail("operations lock does not match the externally approved hash");
+  if (lock.value.startingCheckpointSha256 !== expectedStartingCheckpointSha256)
+    fail("operations lock does not bind the externally approved starting checkpoint");
+
+  const checkpoint = await secureJson(join(root, HEAD), "reconciliation checkpoint");
+  const checkpointSha256 = canonicalSha256(checkpoint);
+  let outcome;
+  if (checkpointSha256 === expectedStartingCheckpointSha256) outcome = "not-committed";
+  else if (checkpointSha256 === expectedCompletedCheckpointSha256) outcome = "committed";
+  else fail("checkpoint matches neither externally approved outcome");
+
+  let audit;
+  if (checkpoint?.schemaVersion === 4) {
+    validateCheckpoint(checkpoint);
+    audit = await auditOperationsStore(root);
+  } else if (checkpoint?.schemaVersion === 3) {
+    const source = validateV3Checkpoint(checkpoint);
+    audit = await auditRotationChain(root, source);
+  } else {
+    fail("reconciliation checkpoint schema is unsupported");
+  }
+
+  const closingCheckpoint = await secureJson(
+    join(root, HEAD),
+    "reconciliation checkpoint after audit",
+  );
+  const closingLock = await readOperationsLockSnapshot(root);
+  if (canonicalSha256(closingCheckpoint) !== checkpointSha256 ||
+      closingLock.sha256 !== lock.sha256 || closingLock.linkCount !== lock.linkCount ||
+      canonicalJson(closingLock.value) !== canonicalJson(lock.value))
+    fail("lock or checkpoint changed during reconciliation");
+
+  return {
+    schemaVersion: 1,
+    kind: "operations-lock-reconciliation-receipt",
+    operation: lock.value.operation,
+    lockSha256: lock.sha256,
+    lockLinkCount: lock.linkCount,
+    startingCheckpointSha256: expectedStartingCheckpointSha256,
+    observedCheckpointSha256: checkpointSha256,
+    completedCheckpointSha256: expectedCompletedCheckpointSha256,
+    outcome,
+    audit,
+    lockRemoved: false,
+  };
 }
 
 export async function inspectOperationsStore(root) {
@@ -1479,6 +1614,28 @@ async function main() {
     const v = parse(args, ["--store"]);
     console.log(canonicalJson(await inspectOperationsStore(v["--store"]))); return;
   }
+  if (command === "reconcile-lock") {
+    const v = parse(args, [
+      "--store", "--expected-lock-sha256",
+      "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--output",
+    ]);
+    const receipt = await reconcileOperationsLock({
+      root: v["--store"],
+      expectedLockSha256: v["--expected-lock-sha256"],
+      expectedStartingCheckpointSha256:
+        v["--expected-starting-checkpoint-sha256"],
+      expectedCompletedCheckpointSha256:
+        v["--expected-completed-checkpoint-sha256"],
+    });
+    await writeNewJson(v["--output"], receipt, 0o444);
+    console.log(canonicalJson({
+      reconciliationReceiptSha256: canonicalSha256(receipt),
+      outcome: receipt.outcome,
+      lockRemoved: false,
+    }));
+    return;
+  }
   if (command === "inspect-rotation") {
     const v = parse(args, ["--store"]);
     console.log(canonicalJson(await inspectPendingRotation(v["--store"]))); return;
@@ -1532,7 +1689,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, reconcile-lock, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)

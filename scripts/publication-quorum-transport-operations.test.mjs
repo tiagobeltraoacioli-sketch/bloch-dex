@@ -21,6 +21,7 @@ import {
   migrateOperationsStoreV3ToV4,
   prepareOperationsRotation,
   prepareOperationsAnchorStatement,
+  reconcileOperationsLock,
   signOperationsAnchorStatement,
   verifyOperationsAnchorEvidence,
   verifyOperationsStoreV3ToV4Migration,
@@ -418,6 +419,7 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     const { store, manifestHash, anchorLog } = await activatedStore("hardlink-lock");
     const lockPath = join(store, ".operations.lock");
     const aliasPath = join(store, ".operations.lock.alias");
+    const starting = JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8"));
     const racingAnchorLog = {
       readLatestHead: async (query) => {
         await link(lockPath, aliasPath);
@@ -433,6 +435,70 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     assert.equal((await lstat(lockPath)).nlink, 2);
     assert.equal((await lstat(aliasPath)).nlink, 2);
     assert.equal((await inspectOperationsStore(store)).status, "pending");
+    const completed = JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8"));
+    const lock = JSON.parse(await readFile(lockPath, "utf8"));
+    assert.equal(lock.schemaVersion, 2);
+    assert.equal(lock.operation, "begin-request");
+    assert.equal(lock.startingCheckpointSha256, canonicalSha256(starting));
+    const receipt = await reconcileOperationsLock({
+      root: store,
+      expectedLockSha256: canonicalSha256(lock),
+      expectedStartingCheckpointSha256: canonicalSha256(starting),
+      expectedCompletedCheckpointSha256: canonicalSha256(completed),
+    });
+    assert.equal(receipt.kind, "operations-lock-reconciliation-receipt");
+    assert.equal(receipt.outcome, "committed");
+    assert.equal(receipt.lockLinkCount, 2);
+    assert.equal(receipt.lockRemoved, false);
+    assert.equal((await lstat(lockPath)).nlink, 2);
+    await assert.rejects(
+      reconcileOperationsLock({
+        root: store,
+        expectedLockSha256: "9".repeat(64),
+        expectedStartingCheckpointSha256: canonicalSha256(starting),
+        expectedCompletedCheckpointSha256: canonicalSha256(completed),
+      }),
+      /lock does not match the externally approved hash/,
+    );
+    await assert.rejects(
+      reconcileOperationsLock({
+        root: store,
+        expectedLockSha256: canonicalSha256(lock),
+        expectedStartingCheckpointSha256: canonicalSha256(starting),
+        expectedCompletedCheckpointSha256: "8".repeat(64),
+      }),
+      /checkpoint matches neither externally approved outcome/,
+    );
+  });
+
+  await context.test("pre-commit failure is classified without removing the lock", async () => {
+    const { store, manifestHash } = await activatedStore("uncommitted-lock");
+    const lockPath = join(store, ".operations.lock");
+    const aliasPath = join(store, ".operations.lock.alias");
+    const starting = JSON.parse(await readFile(join(store, "checkpoint.json"), "utf8"));
+    const racingAnchorLog = {
+      readLatestHead: async () => {
+        await link(lockPath, aliasPath);
+        throw new Error("independent anchor unavailable");
+      },
+    };
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "a".repeat(64), racingAnchorLog,
+      ),
+      /operations lock identity changed; preserve state and inspect/,
+    );
+    const lock = JSON.parse(await readFile(lockPath, "utf8"));
+    const receipt = await reconcileOperationsLock({
+      root: store,
+      expectedLockSha256: canonicalSha256(lock),
+      expectedStartingCheckpointSha256: canonicalSha256(starting),
+      expectedCompletedCheckpointSha256: "b".repeat(64),
+    });
+    assert.equal(receipt.outcome, "not-committed");
+    assert.equal(receipt.observedCheckpointSha256, canonicalSha256(starting));
+    assert.equal(receipt.lockRemoved, false);
+    assert.equal((await lstat(lockPath)).nlink, 2);
   });
 
   await context.test("pathname substitution race", async () => {
