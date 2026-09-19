@@ -593,6 +593,16 @@ walk this chain, verify every content address and evidence signature, require a
 single stream and enforce strictly increasing log sequences. Missing, modified,
 forked or count-downgraded local evidence therefore blocks further use.
 
+The checkpoint used to build the external query is not trusted merely because
+the operations lock still exists. Immediately after the external call returns,
+and again after durably retaining the acceptance but before the `pending`
+rename, `begin-request` rereads the canonical checkpoint and requires exact
+equality with its pre-query snapshot. A non-conforming local writer that
+changes the checkpoint during either window therefore cannot have its state
+silently overwritten. The changed checkpoint and any already retained
+content-addressed acceptance are preserved for inspection; the command does
+not merge, roll back, delete, or otherwise guess which state is authoritative.
+
 Absence, timeout, malformed output, stale sequence, wrong stream, bad signature
 or mismatched checkpoint fails before either an acceptance or transport state is
 committed. The client also

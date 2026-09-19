@@ -398,6 +398,15 @@ async function replaceCheckpoint(root, next) {
   await syncDirectory(root);
 }
 
+async function requireUnchangedCheckpoint(root, expected, phase) {
+  const observed = validateCheckpoint(await secureJson(
+    join(root, HEAD),
+    `operations checkpoint ${phase}`,
+  ));
+  if (canonicalJson(observed) !== canonicalJson(expected))
+    fail(`operations checkpoint changed ${phase}; preserve state and inspect`);
+}
+
 async function writeDurableRecord(path, value, mode, parent) {
   try {
     await writeNewJson(path, value, mode);
@@ -1303,6 +1312,7 @@ export async function beginTransportRequest(
       chain,
       anchorLog,
     );
+    await requireUnchangedCheckpoint(root, current, "during external anchor query");
     const acceptance = validateAnchorAcceptance({
       schemaVersion: 1,
       kind: "operations-anchor-acceptance",
@@ -1328,6 +1338,7 @@ export async function beginTransportRequest(
       externalAnchorAcceptanceCount: current.externalAnchorAcceptanceCount + 1,
       externalAnchorAcceptanceSha256: acceptanceSha256,
     };
+    await requireUnchangedCheckpoint(root, current, "before pending transition");
     await replaceCheckpoint(root, next);
     return next;
   });

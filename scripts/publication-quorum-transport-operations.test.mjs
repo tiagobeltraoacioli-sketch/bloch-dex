@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { chmod, link, lstat, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -440,6 +440,35 @@ test("operations lock release preserves hardlinked or substituted locks", async 
     const anchorLog = await externalAnchorLog(store, value.authority.privateKey, 1, 1);
     return { store, manifestHash, anchorLog };
   }
+
+  await context.test("checkpoint substitution during external query is preserved", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("checkpoint-race");
+    const checkpointPath = join(store, "checkpoint.json");
+    const original = JSON.parse(await readFile(checkpointPath, "utf8"));
+    const substituted = { ...original, generation: original.generation + 10 };
+    const racingAnchorLog = {
+      readLatestHead: async (query) => {
+        const head = await anchorLog.readLatestHead(query);
+        await chmod(checkpointPath, 0o600);
+        await writeFile(checkpointPath, `${canonicalJson(substituted)}\n`);
+        await chmod(checkpointPath, 0o400);
+        return head;
+      },
+    };
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "6".repeat(64), racingAnchorLog,
+      ),
+      /checkpoint changed during external anchor query; preserve state and inspect/,
+    );
+    assert.deepEqual(
+      JSON.parse(await readFile(checkpointPath, "utf8")),
+      substituted,
+      "the operation must not overwrite the concurrently observed checkpoint",
+    );
+    assert.deepEqual(await readdir(join(store, "anchor-acceptances")), []);
+    assert.equal((await inspectOperationsStore(store)).lockPresent, false);
+  });
 
   await context.test("hardlink race", async () => {
     const { store, manifestHash, anchorLog } = await activatedStore("hardlink-lock");
