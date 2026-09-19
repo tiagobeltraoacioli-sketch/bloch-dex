@@ -32,6 +32,26 @@ import {
 } from "./publication-quorum-transport-operations.mjs";
 
 const execute = promisify(execFile);
+const raceSubprocessTimeoutMs = 10_000;
+
+function supportsModuleRegister(version) {
+  const match = /^(\d+)\.(\d+)\./.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major >= 21 || major === 20 && minor >= 6 || major === 18 && minor >= 19;
+}
+
+function secureBytesRaceLoaderArguments() {
+  if (supportsModuleRegister(process.versions.node)) {
+    const registration = new URL(
+      "./fixtures/register-secure-bytes-race-loader.mjs", import.meta.url,
+    );
+    return ["--import", registration.href];
+  }
+  const loader = new URL("./fixtures/secure-bytes-race-loader.mjs", import.meta.url);
+  return ["--experimental-loader", loader.href];
+}
 
 async function certificate(root, name) {
   const key = join(root, `${name}.key`);
@@ -125,6 +145,78 @@ test("preflight rejects unsafe key permissions and a certificate/key substitutio
     buildClientPreflight({ ...value.config, tlsPrivateKeyPath: rogue.key }, value.witness),
     /does not match the client certificate/,
   );
+  const invalidKey = join(value.root, "invalid-client.key");
+  await writeFile(invalidKey, "not a private key\n", { flag: "wx", mode: 0o600 });
+  await assert.rejects(
+    buildClientPreflight({ ...value.config, tlsPrivateKeyPath: invalidKey }, value.witness),
+    /client certificate or TLS key is invalid/,
+  );
+});
+
+test("secure-input race harness selects a supported loader mode", () => {
+  assert.equal(supportsModuleRegister("18.18.2"), false);
+  assert.equal(supportsModuleRegister("18.19.0"), true);
+  assert.equal(supportsModuleRegister("19.9.0"), false);
+  assert.equal(supportsModuleRegister("20.5.1"), false);
+  assert.equal(supportsModuleRegister("20.6.0"), true);
+  assert.equal(supportsModuleRegister("21.0.0"), true);
+  assert.equal(supportsModuleRegister("not-a-version"), false);
+});
+
+test("preflight pins secure input bytes and their pathname across the read", async (context) => {
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  for (const mode of [
+    "grow-during-read", "same-inode-rewrite", "hardlink-after-eof",
+    "pathname-replacement",
+  ]) {
+    await context.test(mode, async () => {
+      const value = await fixture();
+      const configPath = join(value.root, `${mode}-config.json`);
+      const witnessPath = join(value.root, `${mode}-witness.json`);
+      const outputPath = join(value.root, `${mode}-manifest.json`);
+      const original = await readFile(value.server.cert);
+      await writeFile(configPath, `${canonicalJson(value.config)}\n`, {
+        flag: "wx", mode: 0o444,
+      });
+      await writeFile(witnessPath, `${canonicalJson(value.witness)}\n`, {
+        flag: "wx", mode: 0o444,
+      });
+
+      await assert.rejects(
+        execute(process.execPath, [
+          ...secureBytesRaceLoaderArguments(),
+          cli, "preflight",
+          "--config", configPath,
+          "--witness-config", witnessPath,
+          "--output", outputPath,
+        ], {
+          env: {
+            ...process.env,
+            POSTERN_SECURE_BYTES_RACE_TARGET: value.server.cert,
+            POSTERN_SECURE_BYTES_RACE_MODE: mode,
+          },
+          timeout: raceSubprocessTimeoutMs,
+          killSignal: "SIGKILL",
+          maxBuffer: 64 * 1024,
+        }),
+        mode === "grow-during-read"
+          ? /server CA size is invalid/
+          : /server CA changed while it was being read/,
+      );
+      await assert.rejects(lstat(outputPath), { code: "ENOENT" });
+      if (mode === "grow-during-read") {
+        assert.ok((await lstat(value.server.cert)).size > 64_000);
+      } else if (mode === "pathname-replacement") {
+        assert.deepEqual(await readFile(`${value.server.cert}.displaced`), original);
+        assert.deepEqual(await readFile(value.server.cert), original);
+      } else if (mode === "hardlink-after-eof") {
+        assert.deepEqual(await readFile(`${value.server.cert}.alias`), original);
+        assert.equal((await lstat(value.server.cert)).nlink, 2);
+      } else {
+        assert.deepEqual(await readFile(value.server.cert), original);
+      }
+    });
+  }
 });
 
 test("migrates an explicitly approved schema-3 checkpoint into a separate audited schema-4 store", async () => {

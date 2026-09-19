@@ -100,22 +100,38 @@ async function secureBytes(path, privateFile, field) {
   let handle;
   try {
     handle = await open(path, constants.O_RDONLY | NOFOLLOW);
-    const before = await handle.stat();
-    if (!before.isFile() || before.nlink !== 1) fail(`${field} must be a regular single-link file`);
-    if (typeof process.getuid === "function" && before.uid !== process.getuid())
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.nlink !== 1n) fail(`${field} must be a regular single-link file`);
+    if (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid()))
       fail(`${field} must be owned by the current user`);
-    if (privateFile && (before.mode & 0o077) !== 0)
+    if (privateFile && (before.mode & 0o077n) !== 0n)
       fail(`${field} must not grant group or other permissions`);
-    if (!privateFile && (before.mode & 0o022) !== 0)
+    if (!privateFile && (before.mode & 0o022n) !== 0n)
       fail(`${field} must not be writable by group or other users`);
-    if (before.size < 1 || before.size > MAX_JSON) fail(`${field} size is invalid`);
-    const bytes = await handle.readFile();
-    const after = await handle.stat();
-    if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
-        after.nlink !== 1 || after.size !== before.size ||
-        after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
-        after.mode !== before.mode || after.uid !== before.uid || after.gid !== before.gid ||
-        bytes.length !== after.size)
+    if (before.size < 1n || before.size > BigInt(MAX_JSON))
+      fail(`${field} size is invalid`);
+
+    // Do not let a regular file grow without bound after the initial stat.
+    // Reading one byte beyond the protocol limit makes growth fail closed
+    // without allocating according to attacker-controlled post-stat size.
+    const buffer = Buffer.alloc(MAX_JSON + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer, length, buffer.length - length, null,
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > MAX_JSON) fail(`${field} size is invalid`);
+    const bytes = buffer.subarray(0, length);
+    const after = await handle.stat({ bigint: true });
+    const linked = await lstat(path, { bigint: true });
+    const stable = [
+      "dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs",
+    ].every((name) => before[name] === after[name] && after[name] === linked[name]);
+    if (!stable || !after.isFile() || !linked.isFile() || linked.isSymbolicLink() ||
+        after.nlink !== 1n || BigInt(bytes.length) !== after.size)
       fail(`${field} changed while it was being read`);
     return bytes;
   } catch (error) {
@@ -143,6 +159,10 @@ export async function buildClientPreflight(configInput, witnessInput) {
     key = createPrivateKey(keyBytes);
   } catch {
     fail("client certificate or TLS key is invalid");
+  } finally {
+    // createPrivateKey owns the resulting KeyObject; retain the source bytes
+    // only until that import attempt has completed, including on parse errors.
+    keyBytes.fill(0);
   }
   const certificateKey = certificate.publicKey.export({ format: "der", type: "spki" });
   const privatePublicKey = createPublicKey(key).export({ format: "der", type: "spki" });

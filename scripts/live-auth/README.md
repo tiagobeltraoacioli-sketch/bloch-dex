@@ -843,6 +843,15 @@ authorization to retry an operation. There is currently no cleanup executor;
 the plan and all evidence must remain preserved pending a separate archival and
 deletion policy.
 
+All external files consumed by this workflow share a bounded pinned-input
+reader. It reads at most the 64,000-byte (64 kB) protocol limit plus one
+detection byte and
+compares device, inode, mode, ownership, link count, size, nanosecond mtime and
+nanosecond ctime across the open descriptor and the closing pathname. Growth,
+same-inode rewriting, pathname replacement, symlinks and hardlinks therefore
+fail closed before an artifact can influence a plan or receipt; a raced file is
+left untouched for investigation.
+
 ### Pinned mTLS profile rotation
 
 Generate the replacement preflight manifest first and approve its digest over
