@@ -632,6 +632,16 @@ issuance, revocation checking, HSM storage, rollback-proof hardware or deploymen
 approval. The tool does not activate a service or make any connection during
 preflight, initialization, activation or profile rotation.
 
+Every command that mutates an existing operations store creates an exclusive,
+durable lock and records its inode identity. Before removing the lock, the
+command revalidates the open file and pathname, including ownership, mode and
+single-link count.
+If the lock is removed, replaced, hardlinked or otherwise changed while an
+operation is running, cleanup preserves the observed files and fails closed.
+Treat the operation outcome as ambiguous: do not delete either lock path or
+retry. Inspect the checkpoint and retained evidence first, then follow a
+separately reviewed recovery procedure.
+
 ### Pinned mTLS profile rotation
 
 Generate the replacement preflight manifest first and approve its digest over

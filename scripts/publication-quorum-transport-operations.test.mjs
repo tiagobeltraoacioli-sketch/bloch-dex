@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
-import { chmod, lstat, mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdtemp, readFile, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -389,6 +389,74 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
   const committed = await inspectOperationsStore(store);
   assert.equal(committed.expectedHeadSha256, "5".repeat(64));
   assert.equal(committed.generation, 3);
+});
+
+test("operations lock release preserves hardlinked or substituted locks", async (context) => {
+  async function activatedStore(name) {
+    const value = await fixture();
+    const manifest = await buildClientPreflight(value.config, value.witness);
+    const manifestHash = canonicalSha256(manifest);
+    const store = join(value.root, name);
+    await initializeOperationsStore(store, manifest, manifestHash, "genesis");
+    const identity = describeKey(value.authority.publicKey);
+    const authorization = {
+      schemaVersion: 1,
+      authorizationId: `${name}-bootstrap`,
+      manifestSha256: manifestHash,
+      expectedHeadSha256: "genesis",
+      enabled: true,
+      authorityKeyId: identity.keyId,
+      authorityKeyGeneration: 1,
+      authorityPublicKeyBase64Url: identity.publicKeyBase64Url,
+    };
+    await activateOperationsStore(store, authorization, canonicalSha256(authorization));
+    const anchorLog = await externalAnchorLog(store, value.authority.privateKey, 1, 1);
+    return { store, manifestHash, anchorLog };
+  }
+
+  await context.test("hardlink race", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("hardlink-lock");
+    const lockPath = join(store, ".operations.lock");
+    const aliasPath = join(store, ".operations.lock.alias");
+    const racingAnchorLog = {
+      readLatestHead: async (query) => {
+        await link(lockPath, aliasPath);
+        return anchorLog.readLatestHead(query);
+      },
+    };
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "7".repeat(64), racingAnchorLog,
+      ),
+      /operations lock identity changed; preserve state and inspect/,
+    );
+    assert.equal((await lstat(lockPath)).nlink, 2);
+    assert.equal((await lstat(aliasPath)).nlink, 2);
+    assert.equal((await inspectOperationsStore(store)).status, "pending");
+  });
+
+  await context.test("pathname substitution race", async () => {
+    const { store, manifestHash, anchorLog } = await activatedStore("substituted-lock");
+    const lockPath = join(store, ".operations.lock");
+    const displacedPath = join(store, ".operations.lock.displaced");
+    const replacement = "replacement lock must be preserved\n";
+    const racingAnchorLog = {
+      readLatestHead: async (query) => {
+        await rename(lockPath, displacedPath);
+        await writeFile(lockPath, replacement, { mode: 0o600, flag: "wx" });
+        return anchorLog.readLatestHead(query);
+      },
+    };
+    await assert.rejects(
+      beginTransportRequest(
+        store, manifestHash, "genesis", "8".repeat(64), racingAnchorLog,
+      ),
+      /operations lock identity changed; preserve state and inspect/,
+    );
+    assert.equal(await readFile(lockPath, "utf8"), replacement);
+    assert.match(await readFile(displacedPath, "utf8"), /"pid":\d+/);
+    assert.equal((await inspectOperationsStore(store)).status, "pending");
+  });
 });
 
 test("preflight manifest deterministically binds endpoint, pins, certificate, CA, and witness", async () => {

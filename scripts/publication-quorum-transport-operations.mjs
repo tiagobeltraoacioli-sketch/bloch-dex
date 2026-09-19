@@ -408,24 +408,67 @@ async function writeDurableRecord(path, value, mode, parent) {
   await syncDirectory(parent);
 }
 
-async function withLock(root, operation) {
-  await requireDirectory(root);
+async function acquireLock(root) {
   const path = join(root, LOCK);
   let handle;
   try {
     handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
+    await handle.writeFile(`${canonicalJson({ schemaVersion: 1, pid: process.pid })}\n`);
+    await handle.sync();
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.nlink !== 1 || (metadata.mode & 0o077) !== 0 ||
+        (typeof process.getuid === "function" && metadata.uid !== process.getuid()))
+      fail("new operations lock is unsafe; preserve state and inspect");
+    await syncDirectory(root);
+    return {
+      handle,
+      path,
+      dev: metadata.dev,
+      ino: metadata.ino,
+      uid: metadata.uid,
+      gid: metadata.gid,
+      mode: metadata.mode,
+    };
   } catch (error) {
+    await handle?.close();
     if (error?.code === "EEXIST") fail("operations store is locked; inspect before recovery");
     throw error;
   }
+}
+
+async function releaseLock(root, lock) {
+  let unlinked = false;
   try {
-    await handle.sync();
-    await syncDirectory(root);
+    const opened = await lock.handle.stat();
+    const linked = await lstat(lock.path).catch((error) => {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    });
+    if (!linked || !opened.isFile() || opened.nlink !== 1 ||
+        opened.dev !== lock.dev || opened.ino !== lock.ino ||
+        opened.uid !== lock.uid || opened.gid !== lock.gid || opened.mode !== lock.mode ||
+        !linked.isFile() || linked.isSymbolicLink() || linked.nlink !== 1 ||
+        linked.dev !== lock.dev || linked.ino !== lock.ino ||
+        linked.uid !== lock.uid || linked.gid !== lock.gid || linked.mode !== lock.mode)
+      fail("operations lock identity changed; preserve state and inspect before recovery");
+    await unlink(lock.path);
+    const after = await lock.handle.stat();
+    if (after.nlink !== 0 || after.dev !== lock.dev || after.ino !== lock.ino)
+      fail("operations lock unlink outcome is ambiguous; preserve state and inspect before recovery");
+    unlinked = true;
+  } finally {
+    await lock.handle.close();
+    if (unlinked) await syncDirectory(root);
+  }
+}
+
+async function withLock(root, operation) {
+  await requireDirectory(root);
+  const lock = await acquireLock(root);
+  try {
     return await operation();
   } finally {
-    await handle.close();
-    await unlink(path).catch(() => {});
-    await syncDirectory(root);
+    await releaseLock(root, lock);
   }
 }
 
