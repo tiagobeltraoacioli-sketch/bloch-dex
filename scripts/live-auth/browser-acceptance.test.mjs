@@ -46,7 +46,7 @@ function manifest(rpcUrl) {
     host: "bloch-dex",
     frontendMode: "preview",
     liquidityEnabled: false,
-    chain: { id: 31337, genesisHash: H1, rpcUrl },
+    chain: { id: 84001, genesisHash: H1, rpcUrl },
     deployment: {
       blockNumber: 12,
       blockHash: H2,
@@ -78,18 +78,30 @@ function manifest(rpcUrl) {
       },
     ],
     assetPlan: {
-      blochL1: { nativeSymbol: "BLCH", evmExecution: false,
-        authorizationBoundary: "external-post-quantum" },
-      bridgeAsset: { sourceChain: "ethereum-mainnet", sourceChainId: 1,
+      blochL1: {
+        nativeSymbol: "BLCH",
+        evmExecution: false,
+        authorizationBoundary: "external-post-quantum",
+      },
+      bridgeAsset: {
+        sourceChain: "ethereum-mainnet",
+        sourceChainId: 1,
         sourceSymbol: "USDC",
-        sourceTokenAddress: "0xa0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".toLowerCase(),
-        destinationSymbol: "bUSDC", destinationTokenAddress: contract("06").address },
-      pilotPool: { baseSymbol: "BLCH", onchainBaseSymbol: "WBLCH",
-        quoteSymbol: "bUSDC", liquidityEnabled: false,
+        sourceTokenAddress:
+          "0xa0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48".toLowerCase(),
+        destinationSymbol: "bUSDC",
+        destinationTokenAddress: contract("06").address,
+      },
+      pilotPool: {
+        baseSymbol: "BLCH",
+        onchainBaseSymbol: "WBLCH",
+        quoteSymbol: "bUSDC",
+        liquidityEnabled: false,
         maxBaseBaseUnits: "10000000000000000000",
         maxQuoteBaseUnits: "10000000",
         policyCapApproval: { path: "approvals/pilot-cap.json", sha256: H1 },
-        requiresSeparateApproval: true },
+        requiresSeparateApproval: true,
+      },
     },
   };
   return {

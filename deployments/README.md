@@ -22,8 +22,8 @@ reviewed JSON file and run the local preflight:
 node scripts/staging/preflight.mjs --config /path/to/reviewed-staging.json
 ```
 
-The preflight requires a positive chain ID, nonzero genesis/deployment/pair
-hashes, a public HTTPS RPC origin without credentials, query data or a secret
+The preflight requires chain ID 84001, nonzero genesis/deployment/pair hashes,
+a public HTTPS RPC origin without credentials, query data or a secret
 path, and unique nonzero addresses plus runtime-code hashes for the factory, router, lens,
 collector and wrapped-native contract. The target must remain `bloch-dex` in
 `preview` mode with liquidity explicitly disabled. It performs no RPC, SSH,
@@ -37,6 +37,13 @@ and the machine-checked manifest. The signed read-only frontend independently
 rechecks both role code hashes, the factory's exact authority, zero fee recipient
 and zero pending authority, plus the collector's immutable treasury binding at
 the same pinned snapshot used for the other deployment checks.
+
+Chain 84001 is the only network currently implemented by the DEX wallet and QR
+connection paths. The staging schema therefore rejects 700771, retired 8400 and
+every other chain even if an RPC answers there. This is a compatibility gate,
+not a production-network selection: migrating to the L2 executor's current
+700771 placeholder requires a coordinated chain/genesis decision and changes to
+the DEX, wallet, bridge envelope and their signed deployment evidence.
 
 Schema version 4 also requires 2–64 reviewed token entries. Each pins a unique
 address, runtime-code hash, 2–12 character ASCII symbol, display name and 0–36

@@ -1,10 +1,13 @@
 import { validAccounts, walletDisplayName, type WalletOption, type Provider } from './wallet';
 import type SignClientType from '@walletconnect/sign-client';
+import {
+  DEX_STAGING_CAIP_CHAIN as CHAIN,
+  DEX_STAGING_CHAIN_HEX as CHAIN_HEX,
+  DEX_STAGING_CHAIN_ID,
+} from './network-identity';
 const projectId = 'e263eead656b6d61ecdee75a71e100bb';
 let client: SignClientType | undefined;
 let appkit: Awaited<ReturnType<typeof createModal>> | undefined;
-const CHAIN = 'eip155:84001';
-const CHAIN_HEX = '0x14821';
 const METHODS = ['eth_accounts', 'eth_chainId'];
 const EVENTS = ['accountsChanged', 'chainChanged'];
 
@@ -29,7 +32,9 @@ export function normalizeWalletNamespace(value: Namespace | undefined) {
     chains = value?.chains;
   const account = Array.isArray(accounts) && accounts.length === 1 ? accounts[0] : null;
   const address =
-    typeof account === 'string' && /^eip155:84001:0x[a-fA-F0-9]{40}$/.test(account)
+    typeof account === 'string' &&
+    account.startsWith(`${CHAIN}:`) &&
+    /^0x[a-fA-F0-9]{40}$/.test(account.slice(CHAIN.length + 1))
       ? account.split(':')[2]
       : null;
   if (
@@ -67,7 +72,7 @@ export function normalizeWalletSessionEvent(message: SessionEvent, topic: string
         typeof value === 'string' &&
         value.length <= 66 &&
         /^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value) &&
-        BigInt(value) === 84001n;
+        BigInt(value) === BigInt(DEX_STAGING_CHAIN_ID);
     } catch {}
     return supported
       ? { disconnect: false, event: 'chainChanged', value: CHAIN_HEX }
@@ -135,9 +140,9 @@ async function createModal() {
     manualWCControl: true,
     networks: [
       defineChain({
-        id: 84001,
+        id: DEX_STAGING_CHAIN_ID,
         chainNamespace: 'eip155',
-        caipNetworkId: 'eip155:84001',
+        caipNetworkId: CHAIN,
         name: 'Bloch L2 experimental testnet',
         nativeCurrency: { name: 'Test Ether', symbol: 'ETH', decimals: 18 },
         rpcUrls: { default: { http: ['https://blochdex.com/rpc'] } },

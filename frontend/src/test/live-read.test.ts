@@ -90,7 +90,7 @@ function registry() {
     host: 'bloch-dex',
     frontendMode: 'preview',
     liquidityEnabled: false,
-    chain: { id: 31337, genesisHash, rpcUrl: 'https://rpc.invalid/' },
+    chain: { id: 84001, genesisHash, rpcUrl: 'https://rpc.invalid/' },
     deployment: {
       blockNumber: 10,
       blockHash: deploymentHash,
@@ -194,7 +194,7 @@ function fixture(
   const request = vi.fn(async (args: { method: string; params?: unknown[] }): Promise<unknown> => {
     requests.push(args);
     const params = args.params ?? [];
-    if (args.method === 'eth_chainId') return overrides.chainId ?? '0x7a69';
+    if (args.method === 'eth_chainId') return overrides.chainId ?? '0x14821';
     if (args.method === 'eth_getBlockByNumber') {
       if (params[0] === '0x0') return { number: '0x0', hash: overrides.genesisHash ?? genesisHash };
       if (params[0] === '0xa') return { number: '0xa', hash: deploymentHash };
@@ -370,6 +370,9 @@ function fixture(
 describe('fail-closed live deployment reads', () => {
   it('rejects an incomplete or transaction-enabled registry before provider access', async () => {
     expect(() => parseDeploymentRegistry({})).toThrow('fields');
+    const wrongChain = registry();
+    wrongChain.chain.id = 700771;
+    expect(() => parseDeploymentRegistry(wrongChain)).toThrow('supported staging network 84001');
     const enabled = registry();
     enabled.liquidityEnabled = true;
     const f = fixture();

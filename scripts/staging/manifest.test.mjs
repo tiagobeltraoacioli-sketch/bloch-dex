@@ -31,7 +31,7 @@ const valid = () => ({
   host: "bloch-dex",
   frontendMode: "preview",
   liquidityEnabled: false,
-  chain: { id: 31337, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
+  chain: { id: 84001, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
   deployment: {
     blockNumber: 12,
     blockHash: H2,
@@ -77,9 +77,12 @@ test("accepts a complete disabled-liquidity staging configuration", () => {
 });
 
 test("committed template carries no approved deployment or pilot exposure", async () => {
-  const template = JSON.parse(await readFile(
-    new URL("../../deployments/staging.template.json", import.meta.url), "utf8",
-  ));
+  const template = JSON.parse(
+    await readFile(
+      new URL("../../deployments/staging.template.json", import.meta.url),
+      "utf8",
+    ),
+  );
   assert.equal(template.assetPlan.pilotPool.maxBaseBaseUnits, null);
   assert.equal(template.assetPlan.pilotPool.maxQuoteBaseUnits, null);
   assert.equal(template.assetPlan.pilotPool.policyCapApproval, null);
@@ -89,6 +92,7 @@ test("committed template carries no approved deployment or pilot exposure", asyn
 test("fails closed for every missing identity field", () => {
   for (const mutate of [
     (value) => (value.chain.id = null),
+    (value) => (value.chain.id = 700771),
     (value) => (value.chain.genesisHash = null),
     (value) => (value.chain.rpcUrl = null),
     (value) => (value.deployment.blockHash = null),
@@ -116,9 +120,9 @@ test("refuses liquidity, live mode, insecure RPC and unsafe token policy", () =>
     (value) =>
       (value.deployment.router.address = value.deployment.factory.address),
     (value) =>
-      (value.deployment.feeAuthority.address = value.deployment.treasury.address),
-    (value) =>
-      (value.deployment.treasury.address = value.tokens[1].address),
+      (value.deployment.feeAuthority.address =
+        value.deployment.treasury.address),
+    (value) => (value.deployment.treasury.address = value.tokens[1].address),
     (value) => (value.tokens[1].address = value.tokens[0].address),
     (value) => (value.tokens[1].policy.feeOnTransfer = true),
     (value) => (value.tokens[1].policy.rebasing = true),
@@ -136,16 +140,21 @@ test("pins the Bloch L1 and Ethereum USDC/bUSDC pilot decision", () => {
     (value) => (value.assetPlan.blochL1.evmExecution = true),
     (value) => (value.assetPlan.blochL1.authorizationBoundary = "evm-account"),
     (value) => (value.assetPlan.bridgeAsset.sourceChainId = 11155111),
-    (value) => (value.assetPlan.bridgeAsset.sourceTokenAddress = contract("07").address),
-    (value) => (value.assetPlan.bridgeAsset.destinationTokenAddress = contract("07").address),
+    (value) =>
+      (value.assetPlan.bridgeAsset.sourceTokenAddress = contract("07").address),
+    (value) =>
+      (value.assetPlan.bridgeAsset.destinationTokenAddress =
+        contract("07").address),
     (value) => (value.assetPlan.pilotPool.onchainBaseSymbol = "BLCH"),
     (value) => (value.assetPlan.pilotPool.liquidityEnabled = true),
     (value) => (value.assetPlan.pilotPool.requiresSeparateApproval = false),
-    (value) => (value.assetPlan.pilotPool.maxBaseBaseUnits = "10000000000000000001"),
+    (value) =>
+      (value.assetPlan.pilotPool.maxBaseBaseUnits = "10000000000000000001"),
     (value) => (value.assetPlan.pilotPool.maxQuoteBaseUnits = "10000001"),
     (value) => (value.assetPlan.pilotPool.maxQuoteBaseUnits = "01000000"),
     (value) => (value.assetPlan.pilotPool.policyCapApproval = null),
-    (value) => (value.assetPlan.pilotPool.policyCapApproval.path = "../pilot-cap.json"),
+    (value) =>
+      (value.assetPlan.pilotPool.policyCapApproval.path = "../pilot-cap.json"),
     (value) => (value.tokens[1].symbol = "USDC"),
     (value) => (value.tokens[1].decimals = 18),
   ];
@@ -194,11 +203,17 @@ test("preflight reads a bounded canonical cap envelope and pins every financial 
   const configPath = join(root, "staging.json");
   const approvalPath = join(root, "approvals", "pilot-cap.json");
   await writeFile(approvalPath, bytes, { mode: 0o600, flag: "wx" });
-  await writeFile(configPath, JSON.stringify(value), { mode: 0o600, flag: "wx" });
+  await writeFile(configPath, JSON.stringify(value), {
+    mode: 0o600,
+    flag: "wx",
+  });
   assert.deepEqual(await readAndValidateConfig(configPath), value);
 
   await writeFile(approvalPath, `${bytes}\n`);
-  await assert.rejects(readAndValidateConfig(configPath), /does not match its pinned hash/);
+  await assert.rejects(
+    readAndValidateConfig(configPath),
+    /does not match its pinned hash/,
+  );
   const oversized = "x".repeat(8193);
   await writeFile(approvalPath, oversized);
   value.assetPlan.pilotPool.policyCapApproval.sha256 = `0x${sha256(oversized)}`;
@@ -223,14 +238,20 @@ test("preflight reads a bounded canonical cap envelope and pins every financial 
     await writeFile(approvalPath, changedBytes, { mode: 0o444 });
     value.assetPlan.pilotPool.policyCapApproval.sha256 = `0x${sha256(changedBytes)}`;
     await writeFile(configPath, JSON.stringify(value), { mode: 0o444 });
-    await assert.rejects(readAndValidateConfig(configPath), /staging preflight:/);
+    await assert.rejects(
+      readAndValidateConfig(configPath),
+      /staging preflight:/,
+    );
   }
 });
 
 test("rejects noncanonical address and hash casing", () => {
   for (const mutate of [
-    (value) => (value.deployment.factory.address = value.deployment.factory.address.toUpperCase()),
-    (value) => (value.chain.genesisHash = value.chain.genesisHash.toUpperCase()),
+    (value) =>
+      (value.deployment.factory.address =
+        value.deployment.factory.address.toUpperCase()),
+    (value) =>
+      (value.chain.genesisHash = value.chain.genesisHash.toUpperCase()),
   ]) {
     const value = valid();
     mutate(value);

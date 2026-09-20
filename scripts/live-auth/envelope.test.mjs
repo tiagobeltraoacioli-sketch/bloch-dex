@@ -27,7 +27,7 @@ function configuration() {
     host: "bloch-dex",
     frontendMode: "preview",
     liquidityEnabled: false,
-    chain: { id: 31337, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
+    chain: { id: 84001, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
     deployment: {
       blockNumber: 12,
       blockHash: H2,
@@ -59,18 +59,29 @@ function configuration() {
       },
     ],
     assetPlan: {
-      blochL1: { nativeSymbol: "BLCH", evmExecution: false,
-        authorizationBoundary: "external-post-quantum" },
-      bridgeAsset: { sourceChain: "ethereum-mainnet", sourceChainId: 1,
+      blochL1: {
+        nativeSymbol: "BLCH",
+        evmExecution: false,
+        authorizationBoundary: "external-post-quantum",
+      },
+      bridgeAsset: {
+        sourceChain: "ethereum-mainnet",
+        sourceChainId: 1,
         sourceSymbol: "USDC",
         sourceTokenAddress: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-        destinationSymbol: "bUSDC", destinationTokenAddress: contract("06").address },
-      pilotPool: { baseSymbol: "BLCH", onchainBaseSymbol: "WBLCH",
-        quoteSymbol: "bUSDC", liquidityEnabled: false,
+        destinationSymbol: "bUSDC",
+        destinationTokenAddress: contract("06").address,
+      },
+      pilotPool: {
+        baseSymbol: "BLCH",
+        onchainBaseSymbol: "WBLCH",
+        quoteSymbol: "bUSDC",
+        liquidityEnabled: false,
         maxBaseBaseUnits: "10000000000000000000",
         maxQuoteBaseUnits: "10000000",
         policyCapApproval: { path: "approvals/pilot-cap.json", sha256: H1 },
-        requiresSeparateApproval: true },
+        requiresSeparateApproval: true,
+      },
     },
   };
 }
@@ -123,10 +134,7 @@ async function fixture() {
   const witnessPath = join(root, "witness.signed.json");
   const publicationPrivatePath = join(root, "publication-private.pem");
   const publicationPublicPath = join(root, "publication-public.pem");
-  const nextPublicationPrivatePath = join(
-    root,
-    "next-publication-private.pem",
-  );
+  const nextPublicationPrivatePath = join(root, "next-publication-private.pem");
   const nextPublicationPublicPath = join(root, "next-publication-public.pem");
   await writeFile(
     privatePath,
@@ -625,11 +633,7 @@ test("rotates the offline publication key with a dual-signed chained entry", asy
     "--at",
     String(NOW + 1),
   ];
-  await execute(process.execPath, [
-    ...rotateArgs,
-    "--output",
-    rotation,
-  ]);
+  await execute(process.execPath, [...rotateArgs, "--output", rotation]);
   const checkpoint2 = join(files.root, "rotation-checkpoint-2.json");
   const verifyRotationArgs = [
     cli,
@@ -782,9 +786,8 @@ test("rotates the offline publication key with a dual-signed chained entry", asy
   );
 
   const sameKeyArgs = [...rotateArgs];
-  sameKeyArgs[
-    sameKeyArgs.indexOf("--next-publication-private-key") + 1
-  ] = files.publicationPrivatePath;
+  sameKeyArgs[sameKeyArgs.indexOf("--next-publication-private-key") + 1] =
+    files.publicationPrivatePath;
   await assert.rejects(
     execute(process.execPath, [
       ...sameKeyArgs,

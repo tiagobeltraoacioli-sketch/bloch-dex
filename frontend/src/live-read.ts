@@ -7,6 +7,7 @@ import {
   type Hex,
 } from 'viem';
 import { validAddress, type Provider } from './wallet';
+import { DEX_STAGING_CHAIN_ID } from './network-identity';
 
 type ContractIdentity = { address: Address; runtimeCodeHash: Hex };
 export type RegistryToken = ContractIdentity & {
@@ -283,7 +284,10 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
     'chain identity is missing',
   );
   exactFields(chain, ['id', 'genesisHash', 'rpcUrl'], 'chain');
-  requireValue(Number.isSafeInteger(chain.id) && Number(chain.id) > 0, 'chain ID is invalid');
+  requireValue(
+    Number.isSafeInteger(chain.id) && Number(chain.id) === DEX_STAGING_CHAIN_ID,
+    `chain ID must equal the supported staging network ${DEX_STAGING_CHAIN_ID}`,
+  );
   requireValue(validHash(chain.genesisHash), 'genesis hash is invalid');
   requireValue(typeof chain.rpcUrl === 'string' && chain.rpcUrl.length > 0, 'RPC URL is missing');
   let rpc: URL;
