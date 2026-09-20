@@ -55,6 +55,8 @@ export const OPERATIONS_ANCHOR_DOMAIN =
   "POSTERN_PUBLICATION_QUORUM_OPERATIONS_ANCHOR_V1\n";
 export const OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN =
   "POSTERN_OPERATIONS_CHECKPOINT_RECOVERY_INSPECTION_RECEIPT_V1\n";
+export const OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_ROTATION_DOMAIN =
+  "POSTERN_OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_AUTHORITY_ROTATION_V1\n";
 const MAX_JSON = 64_000;
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const RAW_ED25519 = /^[A-Za-z0-9_-]{43}$/;
@@ -2170,6 +2172,29 @@ export async function createOperationsCheckpointRecoveryInspectionReceipt({
   );
 }
 
+function verifiedCheckpointRecoveryInspectionReceipt(receipt, publicKey, keyGeneration) {
+  const receiptCanonical = canonicalJson(receipt);
+  const retainedReceipt = JSON.parse(receiptCanonical);
+  const payload = verifyEnvelope(
+    retainedReceipt, publicKey, OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
+    keyGeneration,
+  );
+  exactKeys(payload, [
+    "schemaVersion", "kind", "receiptSequence", "previousReceiptSha256",
+    "inspectionSha256", "inspection", "filesRemoved", "retryAuthorized",
+    "cleanupAuthorized",
+  ], "checkpoint recovery inspection receipt payload");
+  validateReceiptChainPosition(payload.receiptSequence, payload.previousReceiptSha256);
+  const inspection = validateCheckpointRecoveryInspection(payload.inspection);
+  if (payload.schemaVersion !== 1 ||
+      payload.kind !== "operations-checkpoint-recovery-inspection-receipt" ||
+      payload.inspectionSha256 !== canonicalSha256(inspection) ||
+      payload.filesRemoved !== false || payload.retryAuthorized !== false ||
+      payload.cleanupAuthorized !== false)
+    fail("checkpoint recovery inspection receipt payload is invalid");
+  return { receiptCanonical, retainedReceipt, payload, inspection };
+}
+
 export function verifyOperationsCheckpointRecoveryInspectionReceipt({
   receipt,
   publicKey,
@@ -2185,27 +2210,13 @@ export function verifyOperationsCheckpointRecoveryInspectionReceipt({
   requireHash(expectedCompletedCheckpointSha256, "expected receipt completed checkpoint hash");
   if (!["committed", "not-committed"].includes(expectedOutcome))
     fail("expected checkpoint recovery receipt outcome is invalid");
-  const receiptCanonical = canonicalJson(receipt);
-  const retainedReceipt = JSON.parse(receiptCanonical);
-  const payload = verifyEnvelope(
-    retainedReceipt, publicKey, OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
-    keyGeneration,
-  );
-  exactKeys(payload, [
-    "schemaVersion", "kind", "receiptSequence", "previousReceiptSha256",
-    "inspectionSha256", "inspection", "filesRemoved", "retryAuthorized",
-    "cleanupAuthorized",
-  ], "checkpoint recovery inspection receipt payload");
-  const inspection = validateCheckpointRecoveryInspection(payload.inspection);
-  if (payload.schemaVersion !== 1 ||
-      payload.kind !== "operations-checkpoint-recovery-inspection-receipt" ||
-      payload.receiptSequence !== expectedReceiptSequence ||
+  const { receiptCanonical, payload, inspection } =
+    verifiedCheckpointRecoveryInspectionReceipt(receipt, publicKey, keyGeneration);
+  if (payload.receiptSequence !== expectedReceiptSequence ||
       payload.previousReceiptSha256 !== expectedPreviousReceiptSha256 ||
-      payload.inspectionSha256 !== canonicalSha256(inspection) ||
       inspection.startingCheckpointSha256 !== expectedStartingCheckpointSha256 ||
       inspection.completedCheckpointSha256 !== expectedCompletedCheckpointSha256 ||
-      inspection.outcome !== expectedOutcome || payload.filesRemoved !== false ||
-      payload.retryAuthorized !== false || payload.cleanupAuthorized !== false)
+      inspection.outcome !== expectedOutcome)
     fail("checkpoint recovery inspection receipt does not match the externally approved chain position");
   return {
     schemaVersion: 1,
@@ -2220,6 +2231,172 @@ export function verifyOperationsCheckpointRecoveryInspectionReceipt({
     filesRemoved: false,
     retryAuthorized: false,
     cleanupAuthorized: false,
+  };
+}
+
+function receiptAuthorityDescriptor(publicKey, keyGeneration) {
+  positiveInteger(keyGeneration, "checkpoint recovery receipt authority key generation");
+  const identity = describeKey(publicKey);
+  return {
+    keyId: identity.keyId,
+    keyGeneration,
+    publicKeyBase64Url: identity.publicKeyBase64Url,
+  };
+}
+
+function validateCheckpointRecoveryReceiptAuthorityRotation(value) {
+  value = JSON.parse(canonicalJson(value));
+  exactKeys(value, [
+    "schemaVersion", "kind", "previousReceiptSha256", "previousReceiptSequence",
+    "nextReceiptSequence", "previousAuthority", "nextAuthority",
+  ], "checkpoint recovery receipt authority rotation");
+  if (value.schemaVersion !== 1 ||
+      value.kind !== "operations-checkpoint-recovery-receipt-authority-rotation")
+    fail("checkpoint recovery receipt authority rotation identity is invalid");
+  requireHash(value.previousReceiptSha256, "rotation previous receipt hash");
+  positiveInteger(value.previousReceiptSequence, "rotation previous receipt sequence");
+  if (value.previousReceiptSequence === Number.MAX_SAFE_INTEGER ||
+      value.nextReceiptSequence !== value.previousReceiptSequence + 1)
+    fail("checkpoint recovery receipt authority rotation sequence is invalid");
+  for (const [field, authority] of [
+    ["previous", value.previousAuthority], ["next", value.nextAuthority],
+  ]) {
+    exactKeys(
+      authority, ["keyId", "keyGeneration", "publicKeyBase64Url"],
+      `${field} checkpoint recovery receipt authority`,
+    );
+    const parsed = authorityFromRaw(
+      authority.publicKeyBase64Url, authority.keyGeneration,
+    );
+    if (authority.keyId !== parsed.keyId)
+      fail(`${field} checkpoint recovery receipt authority key ID does not match`);
+  }
+  if (value.previousAuthority.keyId === value.nextAuthority.keyId ||
+      value.nextAuthority.keyGeneration <= value.previousAuthority.keyGeneration)
+    fail("checkpoint recovery receipt rotation requires a new key with increasing generation");
+  return value;
+}
+
+export function prepareOperationsCheckpointRecoveryReceiptAuthorityRotation({
+  previousReceipt,
+  expectedPreviousReceiptSha256,
+  previousPublicKey,
+  previousKeyGeneration,
+  nextPublicKey,
+  nextKeyGeneration,
+}) {
+  requireHash(expectedPreviousReceiptSha256, "externally pinned previous receipt hash");
+  const verified = verifiedCheckpointRecoveryInspectionReceipt(
+    previousReceipt, previousPublicKey, previousKeyGeneration,
+  );
+  if (hashBytes(Buffer.from(verified.receiptCanonical, "utf8")) !==
+      expectedPreviousReceiptSha256)
+    fail("receipt authority rotation previous receipt does not match the external pin");
+  if (verified.payload.receiptSequence === Number.MAX_SAFE_INTEGER)
+    fail("checkpoint recovery receipt sequence is exhausted");
+  return validateCheckpointRecoveryReceiptAuthorityRotation({
+    schemaVersion: 1,
+    kind: "operations-checkpoint-recovery-receipt-authority-rotation",
+    previousReceiptSha256: expectedPreviousReceiptSha256,
+    previousReceiptSequence: verified.payload.receiptSequence,
+    nextReceiptSequence: verified.payload.receiptSequence + 1,
+    previousAuthority: receiptAuthorityDescriptor(
+      previousPublicKey, previousKeyGeneration,
+    ),
+    nextAuthority: receiptAuthorityDescriptor(nextPublicKey, nextKeyGeneration),
+  });
+}
+
+export function authorizeOperationsCheckpointRecoveryReceiptAuthorityRotation(
+  rotationInput, role, privateKey, keyGeneration,
+) {
+  const rotation = validateCheckpointRecoveryReceiptAuthorityRotation(rotationInput);
+  if (!["previous-authorization", "next-acceptance"].includes(role))
+    fail("checkpoint recovery receipt rotation role is invalid");
+  const expected = role === "previous-authorization"
+    ? rotation.previousAuthority : rotation.nextAuthority;
+  const identity = describeKey(privateKey);
+  if (identity.keyId !== expected.keyId || keyGeneration !== expected.keyGeneration)
+    fail("checkpoint recovery receipt rotation signing key does not match its role");
+  return signEnvelope(
+    { role, rotation }, privateKey,
+    OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_ROTATION_DOMAIN, keyGeneration,
+  );
+}
+
+function verifyCheckpointRecoveryReceiptRotationAuthorization(
+  envelope, role, rotation, authority,
+) {
+  const retainedEnvelope = JSON.parse(canonicalJson(envelope));
+  const parsed = authorityFromRaw(
+    authority.publicKeyBase64Url, authority.keyGeneration,
+  );
+  const payload = verifyEnvelope(
+    retainedEnvelope, parsed.publicKey,
+    OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_ROTATION_DOMAIN,
+    authority.keyGeneration,
+  );
+  exactKeys(payload, ["role", "rotation"], "receipt rotation authorization payload");
+  if (payload.role !== role || canonicalJson(payload.rotation) !== canonicalJson(rotation))
+    fail("checkpoint recovery receipt rotation authorization does not bind the rotation");
+}
+
+export function verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
+  receipt,
+  previousReceipt,
+  rotation: rotationInput,
+  previousAuthorization,
+  nextAcceptance,
+  expectedPreviousReceiptSha256,
+  expectedPreviousPublicKey,
+  expectedPreviousKeyGeneration,
+  expectedNextPublicKey,
+  expectedNextKeyGeneration,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+  expectedOutcome,
+}) {
+  requireHash(expectedPreviousReceiptSha256, "externally pinned previous receipt hash");
+  const rotation = validateCheckpointRecoveryReceiptAuthorityRotation(rotationInput);
+  const previousAuthority = receiptAuthorityDescriptor(
+    expectedPreviousPublicKey, expectedPreviousKeyGeneration,
+  );
+  const nextAuthority = receiptAuthorityDescriptor(
+    expectedNextPublicKey, expectedNextKeyGeneration,
+  );
+  const previousVerified = verifiedCheckpointRecoveryInspectionReceipt(
+    previousReceipt, expectedPreviousPublicKey, expectedPreviousKeyGeneration,
+  );
+  if (hashBytes(Buffer.from(previousVerified.receiptCanonical, "utf8")) !==
+        expectedPreviousReceiptSha256 ||
+      previousVerified.payload.receiptSequence !== rotation.previousReceiptSequence)
+    fail("checkpoint recovery receipt rotation does not bind the pinned previous receipt");
+  if (rotation.previousReceiptSha256 !== expectedPreviousReceiptSha256 ||
+      canonicalJson(rotation.previousAuthority) !== canonicalJson(previousAuthority) ||
+      canonicalJson(rotation.nextAuthority) !== canonicalJson(nextAuthority))
+    fail("checkpoint recovery receipt rotation differs from the externally pinned authorities");
+  verifyCheckpointRecoveryReceiptRotationAuthorization(
+    previousAuthorization, "previous-authorization", rotation, previousAuthority,
+  );
+  verifyCheckpointRecoveryReceiptRotationAuthorization(
+    nextAcceptance, "next-acceptance", rotation, nextAuthority,
+  );
+  const verification = verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt,
+    publicKey: expectedNextPublicKey,
+    keyGeneration: expectedNextKeyGeneration,
+    expectedReceiptSequence: rotation.nextReceiptSequence,
+    expectedPreviousReceiptSha256,
+    expectedStartingCheckpointSha256,
+    expectedCompletedCheckpointSha256,
+    expectedOutcome,
+  });
+  return {
+    ...verification,
+    kind: "operations-checkpoint-recovery-inspection-receipt-rotation-verification",
+    previousSignerKeyId: previousAuthority.keyId,
+    previousSignerKeyGeneration: previousAuthority.keyGeneration,
+    authorityRotated: true,
   };
 }
 
@@ -3688,6 +3865,111 @@ async function main() {
     console.log(canonicalJson(verification));
     return;
   }
+  if (command === "prepare-checkpoint-evidence-receipt-authority-rotation") {
+    const v = parse(args, [
+      "--store", "--previous-receipt", "--expected-previous-receipt-sha256",
+      "--previous-public-key", "--previous-key-generation", "--next-public-key",
+      "--next-key-generation", "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let rotation;
+    try {
+      rotation = prepareOperationsCheckpointRecoveryReceiptAuthorityRotation({
+        previousReceipt: await securePublicJson(
+          v["--previous-receipt"], "previous checkpoint recovery receipt",
+        ),
+        expectedPreviousReceiptSha256: v["--expected-previous-receipt-sha256"],
+        previousPublicKey: await readPublicKey(v["--previous-public-key"]),
+        previousKeyGeneration: Number(v["--previous-key-generation"]),
+        nextPublicKey: await readPublicKey(v["--next-public-key"]),
+        nextKeyGeneration: Number(v["--next-key-generation"]),
+      });
+      await writeReservedOperationsOutput(reservation, rotation);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson({
+      rotationSha256: canonicalSha256(rotation),
+      nextReceiptSequence: rotation.nextReceiptSequence,
+    }));
+    return;
+  }
+  if (command === "authorize-checkpoint-evidence-receipt-authority-rotation") {
+    const v = parse(args, [
+      "--store", "--rotation", "--role", "--private-key", "--key-generation",
+      "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let authorization;
+    try {
+      authorization = authorizeOperationsCheckpointRecoveryReceiptAuthorityRotation(
+        await securePublicJson(
+          v["--rotation"], "checkpoint recovery receipt authority rotation",
+        ),
+        v["--role"],
+        await readPrivateKey(v["--private-key"]),
+        Number(v["--key-generation"]),
+      );
+      await writeReservedOperationsOutput(reservation, authorization);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson({ authorizationSha256: canonicalSha256(authorization) }));
+    return;
+  }
+  if (command === "verify-checkpoint-evidence-receipt-after-authority-rotation") {
+    const v = parse(args, [
+      "--store", "--receipt", "--previous-receipt", "--rotation",
+      "--previous-authorization", "--next-acceptance",
+      "--expected-previous-receipt-sha256", "--previous-public-key",
+      "--previous-key-generation", "--next-public-key", "--next-key-generation",
+      "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--expected-outcome", "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let verification;
+    try {
+      verification =
+        verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
+          receipt: await securePublicJson(
+            v["--receipt"], "rotated checkpoint recovery receipt",
+          ),
+          previousReceipt: await securePublicJson(
+            v["--previous-receipt"], "previous checkpoint recovery receipt",
+          ),
+          rotation: await securePublicJson(
+            v["--rotation"], "checkpoint recovery receipt authority rotation",
+          ),
+          previousAuthorization: await securePublicJson(
+            v["--previous-authorization"], "previous receipt authority authorization",
+          ),
+          nextAcceptance: await securePublicJson(
+            v["--next-acceptance"], "next receipt authority acceptance",
+          ),
+          expectedPreviousReceiptSha256: v["--expected-previous-receipt-sha256"],
+          expectedPreviousPublicKey: await readPublicKey(v["--previous-public-key"]),
+          expectedPreviousKeyGeneration: Number(v["--previous-key-generation"]),
+          expectedNextPublicKey: await readPublicKey(v["--next-public-key"]),
+          expectedNextKeyGeneration: Number(v["--next-key-generation"]),
+          expectedStartingCheckpointSha256:
+            v["--expected-starting-checkpoint-sha256"],
+          expectedCompletedCheckpointSha256:
+            v["--expected-completed-checkpoint-sha256"],
+          expectedOutcome: v["--expected-outcome"],
+        });
+      await writeReservedOperationsOutput(reservation, verification);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson(verification));
+    return;
+  }
   if (command === "reconcile-lock") {
     const v = parse(args, [
       "--store", "--expected-lock-sha256",
@@ -3859,7 +4141,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-checkpoint-evidence, sign-checkpoint-evidence-receipt, verify-checkpoint-evidence-receipt, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-checkpoint-evidence, sign-checkpoint-evidence-receipt, verify-checkpoint-evidence-receipt, prepare-checkpoint-evidence-receipt-authority-rotation, authorize-checkpoint-evidence-receipt-authority-rotation, verify-checkpoint-evidence-receipt-after-authority-rotation, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)

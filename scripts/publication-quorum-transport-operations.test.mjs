@@ -18,6 +18,7 @@ import {
   OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
   activateOperationsStore,
   auditOperationsStore,
+  authorizeOperationsCheckpointRecoveryReceiptAuthorityRotation,
   authorizeOperationsRotation,
   beginTransportRequest,
   buildClientPreflight,
@@ -31,6 +32,7 @@ import {
   inspectRetainedOperationsLockEvidence,
   migrateOperationsStoreV3ToV4,
   prepareOperationsRotation,
+  prepareOperationsCheckpointRecoveryReceiptAuthorityRotation,
   prepareOperationsAnchorStatement,
   prepareRetainedOperationsLockCleanupPlan,
   reconcileOperationsLock,
@@ -38,6 +40,7 @@ import {
   signOperationsAnchorStatement,
   verifyOperationsAnchorEvidence,
   verifyOperationsCheckpointRecoveryInspectionReceipt,
+  verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation,
   verifyOperationsStoreV3ToV4Migration,
 } from "./publication-quorum-transport-operations.mjs";
 
@@ -1069,6 +1072,120 @@ test("checkpoint recovery evidence inspection is read-only and outcome-pinned", 
     expectedOutcome: "committed",
   }).receiptSequence, 2);
 
+  const nextReceiptAuthority = generateKeyPairSync("ed25519");
+  const receiptTwoHash = canonicalSha256(receiptTwo);
+  const authorityRotation =
+    prepareOperationsCheckpointRecoveryReceiptAuthorityRotation({
+      previousReceipt: receiptTwo,
+      expectedPreviousReceiptSha256: receiptTwoHash,
+      previousPublicKey: receiptAuthority.publicKey,
+      previousKeyGeneration: 3,
+      nextPublicKey: nextReceiptAuthority.publicKey,
+      nextKeyGeneration: 4,
+    });
+  const previousAuthorization =
+    authorizeOperationsCheckpointRecoveryReceiptAuthorityRotation(
+      authorityRotation, "previous-authorization",
+      receiptAuthority.privateKey, 3,
+    );
+  const nextAcceptance =
+    authorizeOperationsCheckpointRecoveryReceiptAuthorityRotation(
+      authorityRotation, "next-acceptance",
+      nextReceiptAuthority.privateKey, 4,
+    );
+  assert.throws(() =>
+    authorizeOperationsCheckpointRecoveryReceiptAuthorityRotation(
+      authorityRotation, "next-acceptance", receiptAuthority.privateKey, 3,
+    ), /signing key does not match its role/);
+  assert.throws(() =>
+    prepareOperationsCheckpointRecoveryReceiptAuthorityRotation({
+      previousReceipt: receiptTwo,
+      expectedPreviousReceiptSha256: "0".repeat(64),
+      previousPublicKey: receiptAuthority.publicKey,
+      previousKeyGeneration: 3,
+      nextPublicKey: nextReceiptAuthority.publicKey,
+      nextKeyGeneration: 4,
+    }), /does not match the external pin/);
+  const receiptThree = await createOperationsCheckpointRecoveryInspectionReceipt({
+    root: store,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    receiptSequence: 3,
+    previousReceiptSha256: receiptTwoHash,
+    privateKey: nextReceiptAuthority.privateKey,
+    keyGeneration: 4,
+  });
+  const rotatedVerification =
+    verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
+      receipt: receiptThree,
+      previousReceipt: receiptTwo,
+      rotation: authorityRotation,
+      previousAuthorization,
+      nextAcceptance,
+      expectedPreviousReceiptSha256: receiptTwoHash,
+      expectedPreviousPublicKey: receiptAuthority.publicKey,
+      expectedPreviousKeyGeneration: 3,
+      expectedNextPublicKey: nextReceiptAuthority.publicKey,
+      expectedNextKeyGeneration: 4,
+      expectedStartingCheckpointSha256: startingHash,
+      expectedCompletedCheckpointSha256: completedHash,
+      expectedOutcome: "committed",
+    });
+  assert.equal(rotatedVerification.authorityRotated, true);
+  assert.equal(rotatedVerification.previousSignerKeyId,
+    describeKey(receiptAuthority.publicKey).keyId);
+  assert.equal(rotatedVerification.signerKeyId,
+    describeKey(nextReceiptAuthority.publicKey).keyId);
+  assert.throws(() =>
+    verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
+      receipt: receiptThree,
+      previousReceipt: receiptTwo,
+      rotation: authorityRotation,
+      previousAuthorization: nextAcceptance,
+      nextAcceptance,
+      expectedPreviousReceiptSha256: receiptTwoHash,
+      expectedPreviousPublicKey: receiptAuthority.publicKey,
+      expectedPreviousKeyGeneration: 3,
+      expectedNextPublicKey: nextReceiptAuthority.publicKey,
+      expectedNextKeyGeneration: 4,
+      expectedStartingCheckpointSha256: startingHash,
+      expectedCompletedCheckpointSha256: completedHash,
+      expectedOutcome: "committed",
+    }), /signature key identity|authorization/);
+  const unpinnedAuthority = generateKeyPairSync("ed25519");
+  assert.throws(() =>
+    verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
+      receipt: receiptThree,
+      previousReceipt: receiptTwo,
+      rotation: authorityRotation,
+      previousAuthorization,
+      nextAcceptance,
+      expectedPreviousReceiptSha256: receiptTwoHash,
+      expectedPreviousPublicKey: receiptAuthority.publicKey,
+      expectedPreviousKeyGeneration: 3,
+      expectedNextPublicKey: unpinnedAuthority.publicKey,
+      expectedNextKeyGeneration: 4,
+      expectedStartingCheckpointSha256: startingHash,
+      expectedCompletedCheckpointSha256: completedHash,
+      expectedOutcome: "committed",
+    }), /externally pinned authorities/);
+  assert.throws(() =>
+    verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
+      receipt: receiptThree,
+      previousReceipt: receiptOne,
+      rotation: authorityRotation,
+      previousAuthorization,
+      nextAcceptance,
+      expectedPreviousReceiptSha256: receiptTwoHash,
+      expectedPreviousPublicKey: receiptAuthority.publicKey,
+      expectedPreviousKeyGeneration: 3,
+      expectedNextPublicKey: nextReceiptAuthority.publicKey,
+      expectedNextKeyGeneration: 4,
+      expectedStartingCheckpointSha256: startingHash,
+      expectedCompletedCheckpointSha256: completedHash,
+      expectedOutcome: "committed",
+    }), /pinned previous receipt/);
+
   assert.throws(() => verifyOperationsCheckpointRecoveryInspectionReceipt({
     receipt: receiptOne,
     publicKey: receiptAuthority.publicKey,
@@ -1189,12 +1306,20 @@ test("checkpoint recovery evidence inspection is read-only and outcome-pinned", 
   const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
   const receiptPrivateKeyPath = join(value.root, "inspection-receipt-private.pem");
   const receiptPublicKeyPath = join(value.root, "inspection-receipt-public.pem");
+  const nextReceiptPrivateKeyPath = join(value.root, "next-inspection-receipt-private.pem");
+  const nextReceiptPublicKeyPath = join(value.root, "next-inspection-receipt-public.pem");
   const receiptOutputPath = join(value.root, "inspection-receipt.json");
   const verificationOutputPath = join(value.root, "inspection-verification.json");
   await writeFile(receiptPrivateKeyPath, receiptAuthority.privateKey.export({
     format: "pem", type: "pkcs8",
   }), { flag: "wx", mode: 0o400 });
   await writeFile(receiptPublicKeyPath, receiptAuthority.publicKey.export({
+    format: "pem", type: "spki",
+  }), { flag: "wx", mode: 0o444 });
+  await writeFile(nextReceiptPrivateKeyPath, nextReceiptAuthority.privateKey.export({
+    format: "pem", type: "pkcs8",
+  }), { flag: "wx", mode: 0o400 });
+  await writeFile(nextReceiptPublicKeyPath, nextReceiptAuthority.publicKey.export({
     format: "pem", type: "spki",
   }), { flag: "wx", mode: 0o444 });
   const signedCli = await execute(process.execPath, [
@@ -1243,6 +1368,58 @@ test("checkpoint recovery evidence inspection is read-only and outcome-pinned", 
     "--expected-completed-checkpoint-sha256", completedHash,
     "--expected-outcome", "committed", "--output", verificationOutputPath,
   ]), /EEXIST/);
+
+  const cliRotationPath = join(value.root, "inspection-receipt-rotation.json");
+  const cliPreviousAuthorizationPath = join(value.root, "inspection-receipt-old-auth.json");
+  const cliNextAcceptancePath = join(value.root, "inspection-receipt-new-accept.json");
+  const cliRotatedReceiptPath = join(value.root, "inspection-receipt-rotated.json");
+  const cliRotatedVerificationPath = join(value.root, "inspection-rotation-verified.json");
+  await execute(process.execPath, [
+    cli, "prepare-checkpoint-evidence-receipt-authority-rotation",
+    "--store", store, "--previous-receipt", receiptOutputPath,
+    "--expected-previous-receipt-sha256", signedCliResult.receiptSha256,
+    "--previous-public-key", receiptPublicKeyPath,
+    "--previous-key-generation", "3", "--next-public-key", nextReceiptPublicKeyPath,
+    "--next-key-generation", "4", "--output", cliRotationPath,
+  ]);
+  await execute(process.execPath, [
+    cli, "authorize-checkpoint-evidence-receipt-authority-rotation",
+    "--store", store, "--rotation", cliRotationPath,
+    "--role", "previous-authorization", "--private-key", receiptPrivateKeyPath,
+    "--key-generation", "3", "--output", cliPreviousAuthorizationPath,
+  ]);
+  await execute(process.execPath, [
+    cli, "authorize-checkpoint-evidence-receipt-authority-rotation",
+    "--store", store, "--rotation", cliRotationPath,
+    "--role", "next-acceptance", "--private-key", nextReceiptPrivateKeyPath,
+    "--key-generation", "4", "--output", cliNextAcceptancePath,
+  ]);
+  await execute(process.execPath, [
+    cli, "sign-checkpoint-evidence-receipt", "--store", store,
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--receipt-sequence", "2", "--previous-receipt-sha256",
+    signedCliResult.receiptSha256, "--private-key", nextReceiptPrivateKeyPath,
+    "--key-generation", "4", "--output", cliRotatedReceiptPath,
+  ]);
+  const cliRotatedVerification = await execute(process.execPath, [
+    cli, "verify-checkpoint-evidence-receipt-after-authority-rotation",
+    "--store", store, "--receipt", cliRotatedReceiptPath,
+    "--previous-receipt", receiptOutputPath, "--rotation", cliRotationPath,
+    "--previous-authorization", cliPreviousAuthorizationPath,
+    "--next-acceptance", cliNextAcceptancePath,
+    "--expected-previous-receipt-sha256", signedCliResult.receiptSha256,
+    "--previous-public-key", receiptPublicKeyPath,
+    "--previous-key-generation", "3", "--next-public-key", nextReceiptPublicKeyPath,
+    "--next-key-generation", "4",
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--expected-outcome", "committed", "--output", cliRotatedVerificationPath,
+  ]);
+  const cliRotatedVerificationResult = JSON.parse(cliRotatedVerification.stdout);
+  assert.equal(cliRotatedVerificationResult.authorityRotated, true);
+  assert.equal(cliRotatedVerificationResult.signerKeyId,
+    describeKey(nextReceiptAuthority.publicKey).keyId);
   assert.deepEqual(await Promise.all(
     atimePaths.map(async path => (await lstat(path, { bigint: true })).atimeNs),
   ), atimesBeforeInspection);

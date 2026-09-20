@@ -827,6 +827,69 @@ does not authorize retry, cleanup, service activation, asset movement or any
 other mutation. Use a dedicated offline inspection key unless an explicit,
 reviewed policy intentionally assigns that role to another authority.
 
+Changing the offline inspection key requires explicit two-party continuity;
+supplying a different public key to the ordinary verifier is not a rotation.
+Starting from the independently retained previous receipt digest and previous
+public key, prepare one transition that fixes the exact old head, consecutive
+next receipt sequence, distinct new public key and increasing key generation:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs prepare-checkpoint-evidence-receipt-authority-rotation \
+  --store <private-operations-directory> \
+  --previous-receipt <previous-inspection-receipt.json> \
+  --expected-previous-receipt-sha256 <externally-retained-receipt-sha256> \
+  --previous-public-key <pinned-old-public-key.pem> \
+  --previous-key-generation <old-generation> \
+  --next-public-key <independently-pinned-new-public-key.pem> \
+  --next-key-generation <greater-generation> \
+  --output <new-receipt-authority-rotation.json>
+
+node scripts/publication-quorum-transport-operations.mjs authorize-checkpoint-evidence-receipt-authority-rotation \
+  --store <private-operations-directory> \
+  --rotation <new-receipt-authority-rotation.json> \
+  --role previous-authorization \
+  --private-key <old-private-key.pem> --key-generation <old-generation> \
+  --output <old-authority-authorization.json>
+
+node scripts/publication-quorum-transport-operations.mjs authorize-checkpoint-evidence-receipt-authority-rotation \
+  --store <private-operations-directory> \
+  --rotation <new-receipt-authority-rotation.json> \
+  --role next-acceptance \
+  --private-key <new-private-key.pem> --key-generation <greater-generation> \
+  --output <new-authority-acceptance.json>
+```
+
+After the new key signs the consecutive receipt whose predecessor is the
+externally retained old receipt digest, verify the complete handoff:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs verify-checkpoint-evidence-receipt-after-authority-rotation \
+  --store <private-operations-directory> \
+  --receipt <new-key-inspection-receipt.json> \
+  --previous-receipt <previous-inspection-receipt.json> \
+  --rotation <new-receipt-authority-rotation.json> \
+  --previous-authorization <old-authority-authorization.json> \
+  --next-acceptance <new-authority-acceptance.json> \
+  --expected-previous-receipt-sha256 <externally-retained-receipt-sha256> \
+  --previous-public-key <pinned-old-public-key.pem> \
+  --previous-key-generation <old-generation> \
+  --next-public-key <independently-pinned-new-public-key.pem> \
+  --next-key-generation <greater-generation> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <independently-derived-after-sha256> \
+  --expected-outcome committed \
+  --output <new-rotation-verification.json>
+```
+
+The verifier authenticates the previous receipt under the old key, requires
+its canonical digest to equal the external head, verifies the old authority's
+authorization and new authority's acceptance over the identical rotation, and
+then accepts only the immediately consecutive receipt under the new key. Every
+rotation artifact and verification output is create-only outside the operations
+store. Neither signature authorizes retry, cleanup, service activation or asset
+movement. Retain the new receipt digest and new authority pin independently
+before treating the handoff as current.
+
 If the lock is removed, replaced, hardlinked or otherwise changed while an
 operation is running, cleanup preserves the observed files and fails closed.
 Treat the operation outcome as ambiguous: do not delete either lock path or
