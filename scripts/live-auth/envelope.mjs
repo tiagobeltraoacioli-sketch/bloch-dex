@@ -143,6 +143,10 @@ export function verifyEnvelope(envelope, publicKey, domain, keyGeneration) {
   const signature = Buffer.from(envelope.signature.value, "base64url");
   if (
     signature.length !== 64 ||
+    signature.toString("base64url") !== envelope.signature.value
+  )
+    fail("signature encoding is not canonical Base64URL");
+  if (
     !verify(
       null,
       payloadBytes(domain, { keyGeneration, payload: envelope.payload }),

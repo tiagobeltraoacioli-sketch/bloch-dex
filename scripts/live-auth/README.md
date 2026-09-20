@@ -777,6 +777,56 @@ candidate, tombstone or quarantine. `filesRemoved`, `retryAuthorized` and
 `cleanupAuthorized` are always `false`: this is evidence for a separate reviewed
 reconciliation, not permission to retry or clean up.
 
+An offline reviewer can authenticate an inspection and append it to an
+externally retained receipt chain. Signing reruns the hardened inspection; it
+does not accept an operator-supplied inspection document:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs sign-checkpoint-evidence-receipt \
+  --store <private-operations-directory> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <independently-derived-after-sha256> \
+  --receipt-sequence 1 \
+  --previous-receipt-sha256 genesis \
+  --private-key <offline-inspection-private-key.pem> \
+  --key-generation <positive-integer> \
+  --output <new-inspection-receipt.json>
+
+node scripts/publication-quorum-transport-operations.mjs verify-checkpoint-evidence-receipt \
+  --store <private-operations-directory> \
+  --receipt <inspection-receipt.json> \
+  --public-key <pinned-offline-inspection-public-key.pem> \
+  --key-generation <positive-integer> \
+  --expected-receipt-sequence 1 \
+  --expected-previous-receipt-sha256 genesis \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <independently-derived-after-sha256> \
+  --expected-outcome committed \
+  --output <new-verification-result.json>
+```
+
+For every later receipt, increment the sequence and supply the canonical
+SHA-256 of the previously accepted receipt instead of `genesis`. Verification
+requires the expected sequence, predecessor digest, two approved checkpoint
+digests, outcome, public key and key generation from an independent trusted
+record. Persist the latest accepted sequence and receipt digest outside this
+operations store; the local filesystem cannot prove freshness or prevent
+rollback by itself. Both signing and verification outputs are create-only,
+descriptor-pinned, and must be outside the store.
+
+The receipt signs the complete inspection, its digest, chain position and the
+three negative capability flags. `filesRemoved`, `retryAuthorized` and
+`cleanupAuthorized` remain `false` in both the signed payload and verifier
+result. The inspection embeds both canonical checkpoints: verification
+recomputes their hashes, binds each audit's generation, rotation, pending
+rotation and anchor-acceptance fields to the corresponding checkpoint, and
+requires one exact allowed operations-state transition. Swapped or duplicated
+audit summaries are rejected even when wrapped in a valid signature. A valid
+receipt authenticates what the offline reviewer observed; it
+does not authorize retry, cleanup, service activation, asset movement or any
+other mutation. Use a dedicated offline inspection key unless an explicit,
+reviewed policy intentionally assigns that role to another authority.
+
 If the lock is removed, replaced, hardlinked or otherwise changed while an
 operation is running, cleanup preserves the observed files and fails closed.
 Treat the operation outcome as ambiguous: do not delete either lock path or

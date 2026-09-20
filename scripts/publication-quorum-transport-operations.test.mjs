@@ -8,8 +8,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { canonicalJson, canonicalSha256, describeKey } from "./live-auth/envelope.mjs";
 import {
+  canonicalJson,
+  canonicalSha256,
+  describeKey,
+  signEnvelope,
+} from "./live-auth/envelope.mjs";
+import {
+  OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
   activateOperationsStore,
   auditOperationsStore,
   authorizeOperationsRotation,
@@ -17,6 +23,7 @@ import {
   buildClientPreflight,
   commitOperationsRotation,
   commitTransportRequest,
+  createOperationsCheckpointRecoveryInspectionReceipt,
   initializeOperationsStore,
   inspectPendingRotation,
   inspectOperationsCheckpointRecoveryEvidence,
@@ -30,6 +37,7 @@ import {
   reconcileRetainedOperationsLockEvidence,
   signOperationsAnchorStatement,
   verifyOperationsAnchorEvidence,
+  verifyOperationsCheckpointRecoveryInspectionReceipt,
   verifyOperationsStoreV3ToV4Migration,
 } from "./publication-quorum-transport-operations.mjs";
 
@@ -1001,6 +1009,8 @@ test("checkpoint recovery evidence inspection is read-only and outcome-pinned", 
   });
   assert.equal(inspection.kind, "operations-checkpoint-recovery-evidence-inspection");
   assert.equal(inspection.outcome, "committed");
+  assert.deepEqual(inspection.startingCheckpoint, startingCheckpoint);
+  assert.deepEqual(inspection.completedCheckpoint, completedCheckpoint);
   assert.equal(inspection.observedCheckpointSha256, completedHash);
   assert.equal(inspection.startingAudit.valid, true);
   assert.equal(inspection.completedAudit.valid, true);
@@ -1012,7 +1022,232 @@ test("checkpoint recovery evidence inspection is read-only and outcome-pinned", 
   ), atimesBeforeInspection);
   assert.deepEqual((await readdir(store)).sort(), entriesBeforeInspection);
 
+  const receiptAuthority = generateKeyPairSync("ed25519");
+  const receiptOne = await createOperationsCheckpointRecoveryInspectionReceipt({
+    root: store,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    receiptSequence: 1,
+    previousReceiptSha256: "genesis",
+    privateKey: receiptAuthority.privateKey,
+    keyGeneration: 3,
+  });
+  const verifiedOne = verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt: receiptOne,
+    publicKey: receiptAuthority.publicKey,
+    keyGeneration: 3,
+    expectedReceiptSequence: 1,
+    expectedPreviousReceiptSha256: "genesis",
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  });
+  assert.equal(verifiedOne.receiptSha256, canonicalSha256(receiptOne));
+  assert.equal(verifiedOne.signerKeyId, describeKey(receiptAuthority.publicKey).keyId);
+  assert.equal(verifiedOne.filesRemoved, false);
+  assert.equal(verifiedOne.retryAuthorized, false);
+  assert.equal(verifiedOne.cleanupAuthorized, false);
+
+  const receiptOneHash = canonicalSha256(receiptOne);
+  const receiptTwo = await createOperationsCheckpointRecoveryInspectionReceipt({
+    root: store,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    receiptSequence: 2,
+    previousReceiptSha256: receiptOneHash,
+    privateKey: receiptAuthority.privateKey,
+    keyGeneration: 3,
+  });
+  assert.equal(verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt: receiptTwo,
+    publicKey: receiptAuthority.publicKey,
+    keyGeneration: 3,
+    expectedReceiptSequence: 2,
+    expectedPreviousReceiptSha256: receiptOneHash,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }).receiptSequence, 2);
+
+  assert.throws(() => verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt: receiptOne,
+    publicKey: receiptAuthority.publicKey,
+    keyGeneration: 3,
+    expectedReceiptSequence: 2,
+    expectedPreviousReceiptSha256: receiptOneHash,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /externally approved chain position/);
+  const substitutedReceipt = structuredClone(receiptTwo);
+  substitutedReceipt.payload.retryAuthorized = true;
+  assert.throws(() => verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt: substitutedReceipt,
+    publicKey: receiptAuthority.publicKey,
+    keyGeneration: 3,
+    expectedReceiptSequence: 2,
+    expectedPreviousReceiptSha256: receiptOneHash,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /signature/);
+  const nonCanonicalReceipt = structuredClone(receiptTwo);
+  const canonicalSignature = nonCanonicalReceipt.signature.value;
+  const base64UrlAlphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const canonicalTail = base64UrlAlphabet.indexOf(canonicalSignature.at(-1));
+  const alternativeTail = base64UrlAlphabet[canonicalTail ^ 1];
+  nonCanonicalReceipt.signature.value =
+    `${canonicalSignature.slice(0, -1)}${alternativeTail}`;
+  assert.deepEqual(
+    Buffer.from(nonCanonicalReceipt.signature.value, "base64url"),
+    Buffer.from(canonicalSignature, "base64url"),
+  );
+  assert.notEqual(canonicalSha256(nonCanonicalReceipt), canonicalSha256(receiptTwo));
+  assert.throws(() => verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt: nonCanonicalReceipt,
+    publicKey: receiptAuthority.publicKey,
+    keyGeneration: 3,
+    expectedReceiptSequence: 2,
+    expectedPreviousReceiptSha256: receiptOneHash,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /signature encoding is not canonical Base64URL/);
+  assert.throws(() => verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt: receiptTwo,
+    publicKey: generateKeyPairSync("ed25519").publicKey,
+    keyGeneration: 3,
+    expectedReceiptSequence: 2,
+    expectedPreviousReceiptSha256: receiptOneHash,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /signer|signature/);
+  const malformedPayload = structuredClone(receiptTwo.payload);
+  malformedPayload.inspection.completedAudit.verifiedRecords = -1;
+  const malformedButSignedReceipt = signEnvelope(
+    malformedPayload,
+    receiptAuthority.privateKey,
+    OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
+    3,
+  );
+  assert.throws(() => verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt: malformedButSignedReceipt,
+    publicKey: receiptAuthority.publicKey,
+    keyGeneration: 3,
+    expectedReceiptSequence: 2,
+    expectedPreviousReceiptSha256: receiptOneHash,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /completed inspection audit is invalid/);
+  for (const mutate of [
+    (candidate) => {
+      [candidate.startingAudit, candidate.completedAudit] =
+        [candidate.completedAudit, candidate.startingAudit];
+    },
+    (candidate) => {
+      candidate.startingAudit = structuredClone(candidate.completedAudit);
+    },
+  ]) {
+    const semanticallyInvalidPayload = structuredClone(receiptTwo.payload);
+    mutate(semanticallyInvalidPayload.inspection);
+    semanticallyInvalidPayload.inspectionSha256 =
+      canonicalSha256(semanticallyInvalidPayload.inspection);
+    const semanticallyInvalidReceipt = signEnvelope(
+      semanticallyInvalidPayload,
+      receiptAuthority.privateKey,
+      OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
+      3,
+    );
+    assert.throws(() => verifyOperationsCheckpointRecoveryInspectionReceipt({
+      receipt: semanticallyInvalidReceipt,
+      publicKey: receiptAuthority.publicKey,
+      keyGeneration: 3,
+      expectedReceiptSequence: 2,
+      expectedPreviousReceiptSha256: receiptOneHash,
+      expectedStartingCheckpointSha256: startingHash,
+      expectedCompletedCheckpointSha256: completedHash,
+      expectedOutcome: "committed",
+    }), /audit does not bind its checkpoint/);
+  }
+  await assert.rejects(createOperationsCheckpointRecoveryInspectionReceipt({
+    root: store,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    receiptSequence: 2,
+    previousReceiptSha256: "genesis",
+    privateKey: receiptAuthority.privateKey,
+    keyGeneration: 3,
+  }), /previous checkpoint recovery receipt hash/);
+  assert.deepEqual(await Promise.all(
+    atimePaths.map(async path => (await lstat(path, { bigint: true })).atimeNs),
+  ), atimesBeforeInspection);
+  assert.deepEqual((await readdir(store)).sort(), entriesBeforeInspection);
+
   const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  const receiptPrivateKeyPath = join(value.root, "inspection-receipt-private.pem");
+  const receiptPublicKeyPath = join(value.root, "inspection-receipt-public.pem");
+  const receiptOutputPath = join(value.root, "inspection-receipt.json");
+  const verificationOutputPath = join(value.root, "inspection-verification.json");
+  await writeFile(receiptPrivateKeyPath, receiptAuthority.privateKey.export({
+    format: "pem", type: "pkcs8",
+  }), { flag: "wx", mode: 0o400 });
+  await writeFile(receiptPublicKeyPath, receiptAuthority.publicKey.export({
+    format: "pem", type: "spki",
+  }), { flag: "wx", mode: 0o444 });
+  const signedCli = await execute(process.execPath, [
+    cli, "sign-checkpoint-evidence-receipt", "--store", store,
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--receipt-sequence", "1", "--previous-receipt-sha256", "genesis",
+    "--private-key", receiptPrivateKeyPath, "--key-generation", "3",
+    "--output", receiptOutputPath,
+  ]);
+  const signedCliResult = JSON.parse(signedCli.stdout);
+  assert.equal(signedCliResult.receiptSequence, 1);
+  assert.equal(signedCliResult.retryAuthorized, false);
+  await assert.rejects(execute(process.execPath, [
+    cli, "sign-checkpoint-evidence-receipt", "--store", store,
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--receipt-sequence", "1", "--previous-receipt-sha256", "genesis",
+    "--private-key", receiptPrivateKeyPath, "--key-generation", "3",
+    "--output", receiptOutputPath,
+  ]), /EEXIST/);
+  const verifiedCli = await execute(process.execPath, [
+    cli, "verify-checkpoint-evidence-receipt", "--store", store,
+    "--receipt", receiptOutputPath,
+    "--public-key", receiptPublicKeyPath, "--key-generation", "3",
+    "--expected-receipt-sequence", "1",
+    "--expected-previous-receipt-sha256", "genesis",
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--expected-outcome", "committed", "--output", verificationOutputPath,
+  ]);
+  const verifiedCliResult = JSON.parse(verifiedCli.stdout);
+  assert.equal(verifiedCliResult.receiptSha256, signedCliResult.receiptSha256);
+  assert.equal(verifiedCliResult.cleanupAuthorized, false);
+  assert.deepEqual(
+    JSON.parse(await readFile(verificationOutputPath, "utf8")),
+    verifiedCliResult,
+  );
+  await assert.rejects(execute(process.execPath, [
+    cli, "verify-checkpoint-evidence-receipt", "--store", store,
+    "--receipt", receiptOutputPath,
+    "--public-key", receiptPublicKeyPath, "--key-generation", "3",
+    "--expected-receipt-sequence", "1",
+    "--expected-previous-receipt-sha256", "genesis",
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--expected-outcome", "committed", "--output", verificationOutputPath,
+  ]), /EEXIST/);
+  assert.deepEqual(await Promise.all(
+    atimePaths.map(async path => (await lstat(path, { bigint: true })).atimeNs),
+  ), atimesBeforeInspection);
+  assert.deepEqual((await readdir(store)).sort(), entriesBeforeInspection);
+
   const historyName = `${completedCheckpoint.externalAnchorAcceptanceSha256}.json`;
   for (const [mode, relativeTarget] of [
     ["same-inode-post-read", `.checkpoint.previous.${startingHash}.json`],

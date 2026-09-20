@@ -53,6 +53,8 @@ export const MTLS_PROFILE_ROTATION_DOMAIN =
   "POSTERN_PUBLICATION_QUORUM_MTLS_PROFILE_ROTATION_V1\n";
 export const OPERATIONS_ANCHOR_DOMAIN =
   "POSTERN_PUBLICATION_QUORUM_OPERATIONS_ANCHOR_V1\n";
+export const OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN =
+  "POSTERN_OPERATIONS_CHECKPOINT_RECOVERY_INSPECTION_RECEIPT_V1\n";
 const MAX_JSON = 64_000;
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const RAW_ED25519 = /^[A-Za-z0-9_-]{43}$/;
@@ -1953,6 +1955,8 @@ export async function inspectOperationsCheckpointRecoveryEvidence({
       kind: "operations-checkpoint-recovery-evidence-inspection",
       startingCheckpointSha256: expectedStartingCheckpointSha256,
       completedCheckpointSha256: expectedCompletedCheckpointSha256,
+      startingCheckpoint: starting.value,
+      completedCheckpoint: completed.value,
       observedCheckpointSha256: named.sha256,
       outcome,
       startingAudit,
@@ -1968,6 +1972,255 @@ export async function inspectOperationsCheckpointRecoveryEvidence({
     await rotationsDirectory?.handle.close();
     await directory.handle.close();
   }
+}
+
+function validateCheckpointRecoveryInspection(value) {
+  exactKeys(value, [
+    "schemaVersion", "kind", "startingCheckpointSha256",
+    "completedCheckpointSha256", "startingCheckpoint", "completedCheckpoint",
+    "observedCheckpointSha256", "outcome",
+    "startingAudit", "completedAudit", "filesRemoved", "retryAuthorized",
+    "cleanupAuthorized",
+  ], "checkpoint recovery evidence inspection");
+  if (value.schemaVersion !== 1 ||
+      value.kind !== "operations-checkpoint-recovery-evidence-inspection")
+    fail("checkpoint recovery evidence inspection identity is invalid");
+  requireHash(value.startingCheckpointSha256, "inspection starting checkpoint hash");
+  requireHash(value.completedCheckpointSha256, "inspection completed checkpoint hash");
+  requireHash(value.observedCheckpointSha256, "inspection observed checkpoint hash");
+  const startingCheckpoint = validateCheckpoint(value.startingCheckpoint);
+  const completedCheckpoint = validateCheckpoint(value.completedCheckpoint);
+  validateCheckpointRecoveryAudit(value.startingAudit, "starting inspection audit");
+  validateCheckpointRecoveryAudit(value.completedAudit, "completed inspection audit");
+  validateCheckpointRecoveryAuditBinding(
+    startingCheckpoint, value.startingAudit, "starting inspection",
+  );
+  validateCheckpointRecoveryAuditBinding(
+    completedCheckpoint, value.completedAudit, "completed inspection",
+  );
+  validateCheckpointRecoveryTransition(startingCheckpoint, completedCheckpoint);
+  if (value.startingAudit.initialManifestSha256 !==
+        value.completedAudit.initialManifestSha256 ||
+      (startingCheckpoint.status !== "inactive" &&
+        value.startingAudit.initialAuthorityKeyId !==
+          value.completedAudit.initialAuthorityKeyId) ||
+      (value.startingAudit.externalAnchorStreamId !== null &&
+        value.startingAudit.externalAnchorStreamId !==
+          value.completedAudit.externalAnchorStreamId))
+    fail("checkpoint recovery audits do not describe one continuous history");
+  if (canonicalSha256(startingCheckpoint) !== value.startingCheckpointSha256 ||
+      canonicalSha256(completedCheckpoint) !== value.completedCheckpointSha256 ||
+      value.startingCheckpointSha256 === value.completedCheckpointSha256 ||
+      !["committed", "not-committed"].includes(value.outcome) ||
+      value.observedCheckpointSha256 !== (value.outcome === "committed"
+        ? value.completedCheckpointSha256 : value.startingCheckpointSha256) ||
+      value.filesRemoved !== false || value.retryAuthorized !== false ||
+      value.cleanupAuthorized !== false)
+    fail("checkpoint recovery evidence inspection outcome is invalid");
+  return value;
+}
+
+function validateCheckpointRecoveryAuditBinding(checkpoint, audit, field) {
+  if (audit.checkpointGeneration !== checkpoint.generation ||
+      audit.rotationSequence !== checkpoint.rotationSequence ||
+      audit.previousRotationSha256 !== checkpoint.previousRotationSha256 ||
+      audit.pendingRotationSha256 !== checkpoint.pendingRotationSha256 ||
+      audit.verifiedAnchorAcceptances !== checkpoint.externalAnchorAcceptanceCount)
+    fail(`${field} audit does not bind its checkpoint`);
+}
+
+function validateCheckpointRecoveryTransition(starting, completed) {
+  if (starting.generation === Number.MAX_SAFE_INTEGER ||
+      completed.generation !== starting.generation + 1)
+    fail("checkpoint recovery evidence generation transition is invalid");
+  let expected;
+  const transition = `${starting.status}->${completed.status}`;
+  if (transition === "inactive->ready" && starting.generation === 0) {
+    expected = {
+      ...starting,
+      generation: completed.generation,
+      status: "ready",
+      authorizationSha256: completed.authorizationSha256,
+      authorityKeyId: completed.authorityKeyId,
+      authorityKeyGeneration: completed.authorityKeyGeneration,
+      authorityPublicKeyBase64Url: completed.authorityPublicKeyBase64Url,
+    };
+  } else if (transition === "ready->rotating") {
+    expected = {
+      ...starting,
+      generation: completed.generation,
+      status: "rotating",
+      pendingRotationSha256: completed.pendingRotationSha256,
+    };
+  } else if (transition === "rotating->ready") {
+    if (completed.rotationSequence !== starting.rotationSequence + 1)
+      fail("checkpoint recovery rotation sequence transition is invalid");
+    expected = {
+      ...starting,
+      generation: completed.generation,
+      status: "ready",
+      manifestSha256: completed.manifestSha256,
+      authorizationSha256: completed.authorizationSha256,
+      authorityKeyId: completed.authorityKeyId,
+      authorityKeyGeneration: completed.authorityKeyGeneration,
+      authorityPublicKeyBase64Url: completed.authorityPublicKeyBase64Url,
+      rotationSequence: completed.rotationSequence,
+      previousRotationSha256: completed.previousRotationSha256,
+      pendingRotationSha256: null,
+    };
+  } else if (transition === "ready->pending") {
+    if (starting.externalAnchorAcceptanceCount === Number.MAX_SAFE_INTEGER ||
+        completed.externalAnchorAcceptanceCount !==
+          starting.externalAnchorAcceptanceCount + 1)
+      fail("checkpoint recovery anchor acceptance transition is invalid");
+    expected = {
+      ...starting,
+      generation: completed.generation,
+      status: "pending",
+      pendingRequestId: completed.pendingRequestId,
+      externalAnchorSequence: completed.externalAnchorSequence,
+      externalAnchorAcceptanceCount: completed.externalAnchorAcceptanceCount,
+      externalAnchorAcceptanceSha256: completed.externalAnchorAcceptanceSha256,
+    };
+  } else if (transition === "pending->ready") {
+    expected = {
+      ...starting,
+      generation: completed.generation,
+      status: "ready",
+      expectedHeadSha256: completed.expectedHeadSha256,
+      pendingRequestId: null,
+    };
+  } else {
+    fail("checkpoint recovery evidence status transition is invalid");
+  }
+  if (canonicalJson(expected) !== canonicalJson(completed))
+    fail("checkpoint recovery evidence changed fields outside its transition");
+}
+
+function validateCheckpointRecoveryAudit(value, field) {
+  exactKeys(value, [
+    "valid", "checkpointGeneration", "rotationSequence",
+    "previousRotationSha256", "pendingRotationSha256", "verifiedRecords",
+    "initialManifestSha256", "initialAuthorityKeyId",
+    "verifiedAnchorAcceptances", "externalAnchorStreamId",
+  ], field);
+  const nonNegativeInteger = (candidate) =>
+    Number.isSafeInteger(candidate) && candidate >= 0;
+  if (value.valid !== true || !nonNegativeInteger(value.checkpointGeneration) ||
+      !nonNegativeInteger(value.rotationSequence) ||
+      !nonNegativeInteger(value.verifiedRecords) ||
+      value.verifiedRecords !== value.rotationSequence ||
+      !nonNegativeInteger(value.verifiedAnchorAcceptances) ||
+      (value.previousRotationSha256 !== "genesis" &&
+        !HEX.test(value.previousRotationSha256)) ||
+      (value.pendingRotationSha256 !== null &&
+        !HEX.test(value.pendingRotationSha256)) ||
+      !HEX.test(value.initialManifestSha256) ||
+      (value.initialAuthorityKeyId !== null &&
+        !HEX.test(value.initialAuthorityKeyId)) ||
+      (value.externalAnchorStreamId !== null &&
+        !HEX.test(value.externalAnchorStreamId)) ||
+      (value.verifiedAnchorAcceptances === 0) !==
+        (value.externalAnchorStreamId === null))
+    fail(`${field} is invalid`);
+  return value;
+}
+
+function validateReceiptChainPosition(receiptSequence, previousReceiptSha256) {
+  positiveInteger(receiptSequence, "checkpoint recovery receipt sequence");
+  if (receiptSequence === 1) {
+    if (previousReceiptSha256 !== "genesis")
+      fail("first checkpoint recovery receipt must follow genesis");
+  } else {
+    requireHash(previousReceiptSha256, "previous checkpoint recovery receipt hash");
+  }
+}
+
+export async function createOperationsCheckpointRecoveryInspectionReceipt({
+  root,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+  previousReceiptSha256,
+  receiptSequence,
+  privateKey,
+  keyGeneration,
+}) {
+  validateReceiptChainPosition(receiptSequence, previousReceiptSha256);
+  const inspection = validateCheckpointRecoveryInspection(
+    await inspectOperationsCheckpointRecoveryEvidence({
+      root,
+      expectedStartingCheckpointSha256,
+      expectedCompletedCheckpointSha256,
+    }),
+  );
+  const payload = {
+    schemaVersion: 1,
+    kind: "operations-checkpoint-recovery-inspection-receipt",
+    receiptSequence,
+    previousReceiptSha256,
+    inspectionSha256: canonicalSha256(inspection),
+    inspection,
+    filesRemoved: false,
+    retryAuthorized: false,
+    cleanupAuthorized: false,
+  };
+  return signEnvelope(
+    payload, privateKey, OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
+    keyGeneration,
+  );
+}
+
+export function verifyOperationsCheckpointRecoveryInspectionReceipt({
+  receipt,
+  publicKey,
+  keyGeneration,
+  expectedReceiptSequence,
+  expectedPreviousReceiptSha256,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+  expectedOutcome,
+}) {
+  validateReceiptChainPosition(expectedReceiptSequence, expectedPreviousReceiptSha256);
+  requireHash(expectedStartingCheckpointSha256, "expected receipt starting checkpoint hash");
+  requireHash(expectedCompletedCheckpointSha256, "expected receipt completed checkpoint hash");
+  if (!["committed", "not-committed"].includes(expectedOutcome))
+    fail("expected checkpoint recovery receipt outcome is invalid");
+  const receiptCanonical = canonicalJson(receipt);
+  const retainedReceipt = JSON.parse(receiptCanonical);
+  const payload = verifyEnvelope(
+    retainedReceipt, publicKey, OPERATIONS_CHECKPOINT_RECOVERY_RECEIPT_DOMAIN,
+    keyGeneration,
+  );
+  exactKeys(payload, [
+    "schemaVersion", "kind", "receiptSequence", "previousReceiptSha256",
+    "inspectionSha256", "inspection", "filesRemoved", "retryAuthorized",
+    "cleanupAuthorized",
+  ], "checkpoint recovery inspection receipt payload");
+  const inspection = validateCheckpointRecoveryInspection(payload.inspection);
+  if (payload.schemaVersion !== 1 ||
+      payload.kind !== "operations-checkpoint-recovery-inspection-receipt" ||
+      payload.receiptSequence !== expectedReceiptSequence ||
+      payload.previousReceiptSha256 !== expectedPreviousReceiptSha256 ||
+      payload.inspectionSha256 !== canonicalSha256(inspection) ||
+      inspection.startingCheckpointSha256 !== expectedStartingCheckpointSha256 ||
+      inspection.completedCheckpointSha256 !== expectedCompletedCheckpointSha256 ||
+      inspection.outcome !== expectedOutcome || payload.filesRemoved !== false ||
+      payload.retryAuthorized !== false || payload.cleanupAuthorized !== false)
+    fail("checkpoint recovery inspection receipt does not match the externally approved chain position");
+  return {
+    schemaVersion: 1,
+    kind: "operations-checkpoint-recovery-inspection-receipt-verification",
+    receiptSha256: hashBytes(Buffer.from(receiptCanonical, "utf8")),
+    signerKeyId: describeKey(publicKey).keyId,
+    signerKeyGeneration: keyGeneration,
+    receiptSequence: expectedReceiptSequence,
+    previousReceiptSha256: expectedPreviousReceiptSha256,
+    inspectionSha256: payload.inspectionSha256,
+    outcome: inspection.outcome,
+    filesRemoved: false,
+    retryAuthorized: false,
+    cleanupAuthorized: false,
+  };
 }
 
 async function prepareOperationsAnchorStatementAtRoot(
@@ -3364,6 +3617,77 @@ async function main() {
     })));
     return;
   }
+  if (command === "sign-checkpoint-evidence-receipt") {
+    const v = parse(args, [
+      "--store", "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--receipt-sequence",
+      "--previous-receipt-sha256", "--private-key", "--key-generation",
+      "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let receipt;
+    try {
+      receipt = await createOperationsCheckpointRecoveryInspectionReceipt({
+        root: v["--store"],
+        expectedStartingCheckpointSha256:
+          v["--expected-starting-checkpoint-sha256"],
+        expectedCompletedCheckpointSha256:
+          v["--expected-completed-checkpoint-sha256"],
+        receiptSequence: Number(v["--receipt-sequence"]),
+        previousReceiptSha256: v["--previous-receipt-sha256"],
+        privateKey: await readPrivateKey(v["--private-key"]),
+        keyGeneration: Number(v["--key-generation"]),
+      });
+      await writeReservedOperationsOutput(reservation, receipt);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson({
+      receiptSha256: canonicalSha256(receipt),
+      receiptSequence: receipt.payload.receiptSequence,
+      outcome: receipt.payload.inspection.outcome,
+      filesRemoved: false,
+      retryAuthorized: false,
+      cleanupAuthorized: false,
+    }));
+    return;
+  }
+  if (command === "verify-checkpoint-evidence-receipt") {
+    const v = parse(args, [
+      "--store", "--receipt", "--public-key", "--key-generation",
+      "--expected-receipt-sequence", "--expected-previous-receipt-sha256",
+      "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--expected-outcome", "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let verification;
+    try {
+      verification = verifyOperationsCheckpointRecoveryInspectionReceipt({
+        receipt: await securePublicJson(
+          v["--receipt"], "checkpoint recovery inspection receipt",
+        ),
+        publicKey: await readPublicKey(v["--public-key"]),
+        keyGeneration: Number(v["--key-generation"]),
+        expectedReceiptSequence: Number(v["--expected-receipt-sequence"]),
+        expectedPreviousReceiptSha256:
+          v["--expected-previous-receipt-sha256"],
+        expectedStartingCheckpointSha256:
+          v["--expected-starting-checkpoint-sha256"],
+        expectedCompletedCheckpointSha256:
+          v["--expected-completed-checkpoint-sha256"],
+        expectedOutcome: v["--expected-outcome"],
+      });
+      await writeReservedOperationsOutput(reservation, verification);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson(verification));
+    return;
+  }
   if (command === "reconcile-lock") {
     const v = parse(args, [
       "--store", "--expected-lock-sha256",
@@ -3535,7 +3859,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-checkpoint-evidence, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-checkpoint-evidence, sign-checkpoint-evidence-receipt, verify-checkpoint-evidence-receipt, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
