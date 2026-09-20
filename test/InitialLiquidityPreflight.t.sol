@@ -24,7 +24,7 @@ contract InitialLiquidityPreflightTest is TestBase {
         wrapped = new TestWrappedNative();
         router = new BDexRouter(address(factory), address(wrapped));
         lens = new BDexLens(address(factory));
-        tokenA = new TestToken();
+        tokenA = TestToken(address(wrapped));
         tokenB = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(tokenA), address(tokenB)));
         preflight = new InitialLiquidityPreflight();
@@ -44,7 +44,12 @@ contract InitialLiquidityPreflightTest is TestBase {
             tokenACodeHash: address(tokenA).codehash,
             tokenB: address(tokenB),
             tokenBCodeHash: address(tokenB).codehash,
-            pairCodeHash: address(pair).codehash
+            pairCodeHash: address(pair).codehash,
+            plannedBaseAmount: 1 ether,
+            plannedQuoteAmount: 1_000_000,
+            approvedMaxBaseAmount: 10 ether,
+            approvedMaxQuoteAmount: 10_000_000,
+            capApprovalHash: sha256("reviewed pilot cap")
         });
     }
 
@@ -99,14 +104,7 @@ contract InitialLiquidityPreflightTest is TestBase {
         tokenA.approve(address(router), type(uint256).max);
         tokenB.approve(address(router), type(uint256).max);
         router.addLiquidity(
-            address(tokenA),
-            address(tokenB),
-            10_000,
-            10_000,
-            10_000,
-            10_000,
-            address(this),
-            block.timestamp
+            address(tokenA), address(tokenB), 10_000, 10_000, 10_000, 10_000, address(this), block.timestamp
         );
         vm.expectRevert(bytes("PREFLIGHT: PAIR_NOT_EMPTY"));
         preflight.verify(config);
@@ -125,6 +123,40 @@ contract InitialLiquidityPreflightTest is TestBase {
 
         config.pairInitCodeHash = bytes32(uint256(1));
         vm.expectRevert(bytes("PREFLIGHT: INIT_CODE_HASH"));
+        preflight.verify(config);
+    }
+
+    function testRejectsWrongPilotAssetsOrUnboundCap() public {
+        config.tokenA = address(new TestToken());
+        config.tokenACodeHash = config.tokenA.codehash;
+        vm.expectRevert(bytes("PREFLIGHT: PILOT_ASSETS"));
+        preflight.verify(config);
+        config.tokenA = address(wrapped);
+        config.tokenACodeHash = address(wrapped).codehash;
+
+        config.capApprovalHash = bytes32(0);
+        vm.expectRevert(bytes("PREFLIGHT: PILOT_CAP"));
+        preflight.verify(config);
+    }
+
+    function testRejectsZeroOverApprovedAndOverHardCapAmounts() public {
+        config.plannedBaseAmount = 0;
+        vm.expectRevert(bytes("PREFLIGHT: PILOT_CAP"));
+        preflight.verify(config);
+        config.plannedBaseAmount = 1 ether;
+
+        config.plannedQuoteAmount = config.approvedMaxQuoteAmount + 1;
+        vm.expectRevert(bytes("PREFLIGHT: PILOT_CAP"));
+        preflight.verify(config);
+        config.plannedQuoteAmount = 1_000_000;
+
+        config.approvedMaxBaseAmount = 10 ether + 1;
+        vm.expectRevert(bytes("PREFLIGHT: PILOT_CAP"));
+        preflight.verify(config);
+        config.approvedMaxBaseAmount = 10 ether;
+
+        config.approvedMaxQuoteAmount = 10_000_001;
+        vm.expectRevert(bytes("PREFLIGHT: PILOT_CAP"));
         preflight.verify(config);
     }
 }

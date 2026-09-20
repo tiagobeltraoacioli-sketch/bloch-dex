@@ -68,6 +68,11 @@ addition to the pair variables above, supply independently reviewed values for:
 | `WBLCH_ADDRESS`, `WBLCH_CODEHASH` | Wrapped-native address and expected runtime-code hash |
 | `FEE_TO_SETTER` | Expected current factory authority |
 | `PAIR_CODEHASH` | Expected pair runtime-code hash |
+| `PAIR_TOKEN_A`, `PAIR_TOKEN_A_CODEHASH` | Exact WBLCH address (equal to `WBLCH_ADDRESS`) and runtime-code hash |
+| `PAIR_TOKEN_B`, `PAIR_TOKEN_B_CODEHASH` | Exact bUSDC address and runtime-code hash |
+| `PLANNED_BASE_AMOUNT`, `PLANNED_QUOTE_AMOUNT` | Exact nonzero initial WBLCH and bUSDC base-unit amounts under review |
+| `APPROVED_MAX_BASE_AMOUNT`, `APPROVED_MAX_QUOTE_AMOUNT` | Exact approved caps, never above 10 BLCH and 10 bUSDC |
+| `CAP_APPROVAL_SHA256` | Nonzero SHA-256 of the separately checked canonical cap-approval envelope |
 
 Run it without `--broadcast`:
 
@@ -80,7 +85,11 @@ factory, proves the router uses the reviewed wrapper, requires protocol fees
 to be disabled with no pending authority transfer, and checks the canonical
 pair identity in both registry directions. It is specifically for an initial
 deposit: the LP supply, reserves and raw token balances at the pair must all be
-zero. This catches donations that have not yet been included in reserves.
+zero. This catches donations that have not yet been included in reserves. It
+also requires the base token to be the reviewed wrapper, binds the exact planned
+base/quote amounts to the approved maxima and refuses maxima above the hard
+10 BLCH / 10 bUSDC pilot limits. The emitted rehearsal record includes those
+four amounts and the cap-approval hash.
 
 The result is not an atomic reservation. Pair state, authority and code can
 change after an RPC read; proxies and mutable token policy need separate review.
@@ -115,5 +124,6 @@ rejection and inconsistent pair factory/token reporting. Mocked responses in
 the adversarial tests exercise fail-closed configuration checks; they do not
 claim protection against an operator deliberately approving malicious code.
 `test/InitialLiquidityPreflight.t.sol` additionally rejects cross-deployment
-router/lens bindings, pending or enabled protocol fees, wrong hashes and pairs
-that are donated to, synced or already funded.
+router/lens bindings, pending or enabled protocol fees, wrong hashes, wrong
+pilot assets, missing cap bindings, zero/over-cap plans and pairs that are
+donated to, synced or already funded.

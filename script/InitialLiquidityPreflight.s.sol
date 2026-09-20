@@ -25,6 +25,8 @@ interface TokenBalance {
 ///      immediately before simulating the separately reviewed add-liquidity transaction.
 contract InitialLiquidityPreflight {
     InitialLiquidityVm constant vm = InitialLiquidityVm(address(uint160(uint256(keccak256("hevm cheat code")))));
+    uint256 constant MAX_PILOT_BLCH_BASE_UNITS = 10 ether;
+    uint256 constant MAX_PILOT_BUSDC_BASE_UNITS = 10_000_000;
 
     struct Config {
         uint256 chainId;
@@ -43,6 +45,11 @@ contract InitialLiquidityPreflight {
         address tokenB;
         bytes32 tokenBCodeHash;
         bytes32 pairCodeHash;
+        uint256 plannedBaseAmount;
+        uint256 plannedQuoteAmount;
+        uint256 approvedMaxBaseAmount;
+        uint256 approvedMaxQuoteAmount;
+        bytes32 capApprovalHash;
     }
 
     event InitialLiquidityReady(
@@ -54,6 +61,13 @@ contract InitialLiquidityPreflight {
         address pair,
         address token0,
         address token1
+    );
+    event PilotLiquidityPlan(
+        uint256 plannedBaseAmount,
+        uint256 plannedQuoteAmount,
+        uint256 approvedMaxBaseAmount,
+        uint256 approvedMaxQuoteAmount,
+        bytes32 capApprovalHash
     );
 
     function run() external returns (address pair) {
@@ -73,7 +87,12 @@ contract InitialLiquidityPreflight {
             tokenACodeHash: vm.envBytes32("PAIR_TOKEN_A_CODEHASH"),
             tokenB: vm.envAddress("PAIR_TOKEN_B"),
             tokenBCodeHash: vm.envBytes32("PAIR_TOKEN_B_CODEHASH"),
-            pairCodeHash: vm.envBytes32("PAIR_CODEHASH")
+            pairCodeHash: vm.envBytes32("PAIR_CODEHASH"),
+            plannedBaseAmount: vm.envUint("PLANNED_BASE_AMOUNT"),
+            plannedQuoteAmount: vm.envUint("PLANNED_QUOTE_AMOUNT"),
+            approvedMaxBaseAmount: vm.envUint("APPROVED_MAX_BASE_AMOUNT"),
+            approvedMaxQuoteAmount: vm.envUint("APPROVED_MAX_QUOTE_AMOUNT"),
+            capApprovalHash: vm.envBytes32("CAP_APPROVAL_SHA256")
         });
         pair = verify(config);
     }
@@ -86,6 +105,15 @@ contract InitialLiquidityPreflight {
         _checkCode(config.wrapped, config.wrappedCodeHash);
         _checkCode(config.tokenA, config.tokenACodeHash);
         _checkCode(config.tokenB, config.tokenBCodeHash);
+        require(config.tokenA == config.wrapped && config.tokenB != config.wrapped, "PREFLIGHT: PILOT_ASSETS");
+        require(
+            config.plannedBaseAmount != 0 && config.plannedQuoteAmount != 0
+                && config.plannedBaseAmount <= config.approvedMaxBaseAmount
+                && config.plannedQuoteAmount <= config.approvedMaxQuoteAmount
+                && config.approvedMaxBaseAmount <= MAX_PILOT_BLCH_BASE_UNITS
+                && config.approvedMaxQuoteAmount <= MAX_PILOT_BUSDC_BASE_UNITS && config.capApprovalHash != bytes32(0),
+            "PREFLIGHT: PILOT_CAP"
+        );
 
         IUniswapV2Factory factory = IUniswapV2Factory(config.factory);
         require(
@@ -137,6 +165,13 @@ contract InitialLiquidityPreflight {
 
         emit InitialLiquidityReady(
             config.chainId, config.factory, config.router, config.lens, config.wrapped, pair, token0, token1
+        );
+        emit PilotLiquidityPlan(
+            config.plannedBaseAmount,
+            config.plannedQuoteAmount,
+            config.approvedMaxBaseAmount,
+            config.approvedMaxQuoteAmount,
+            config.capApprovalHash
         );
     }
 

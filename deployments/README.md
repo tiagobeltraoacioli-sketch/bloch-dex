@@ -62,6 +62,13 @@ custody, the bUSDC contract/address, selected EVM chain genesis, deployment
 bytecode and the exact initial-liquidity transaction require independent human
 review and a separate execution approval ceremony.
 
+The Foundry `InitialLiquidityPreflight` must receive the same WBLCH/bUSDC
+addresses, selected caps and canonical approval SHA-256, plus the exact planned
+initial amounts. It refuses zero amounts, amounts above either selected cap,
+selected caps above the hard 10 BLCH / 10 bUSDC maxima, a zero approval hash or
+a base token other than the reviewed WBLCH. Its event binds these values but
+does not verify a signature or authorize the later liquidity transaction.
+
 After the reviewed configuration exists and all tracked changes are committed,
 build a static bundle and a self-contained artifact manifest:
 
