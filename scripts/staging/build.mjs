@@ -70,6 +70,7 @@ try {
     sourceRevision,
     deploymentConfiguration: config,
     configurationSha256: sha256(stableJson(config)),
+    capApprovalVerified: false,
     frontendLockSha256: sha256(
       await import("node:fs/promises").then(({ readFile }) =>
         readFile(resolve(repository, "frontend/package-lock.json")),

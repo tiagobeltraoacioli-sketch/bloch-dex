@@ -13,7 +13,7 @@ if (args.length !== 2 || args[0] !== "--config") {
 try {
   const config = await readAndValidateConfig(resolve(args[1]));
   console.log(
-    `Staging configuration accepted: sha256:${sha256(stableJson(config))}`,
+    `Staging configuration accepted: sha256:${sha256(stableJson(config))} capApprovalVerified:false`,
   );
 } catch (error) {
   console.error(error.message);

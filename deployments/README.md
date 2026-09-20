@@ -29,13 +29,38 @@ collector and wrapped-native contract. The target must remain `bloch-dex` in
 `preview` mode with liquidity explicitly disabled. It performs no RPC, SSH,
 wallet or deployment action.
 
-Schema version 2 also requires 2–64 reviewed token entries. Each pins a unique
+Schema version 3 also requires 2–64 reviewed token entries. Each pins a unique
 address, runtime-code hash, 2–12 character ASCII symbol, display name and 0–36
 decimals. Exactly one token must be the wrapped-native deployment identity.
 Fee-on-transfer and rebasing assets are rejected because the lens quote and
 balance model does not support them. Token addresses cannot alias deployment
 infrastructure. These fields are policy assertions by the reviewer, not facts
 discovered from untrusted token metadata calls.
+
+Schema version 3 makes the initial asset decision explicit without activating
+it. Bloch L1 remains a separate, non-EVM post-quantum authorization boundary;
+the EVM pair representing the `BLCH/bUSDC` intent is therefore
+`WBLCH/bUSDC`. The bridge asset pins Ethereum mainnet chain ID 1, canonical
+USDC at `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48`, and the independently
+reviewed destination bUSDC address. The reviewed token list must contain the
+same 18-decimal WBLCH and 6-decimal bUSDC identities.
+
+The pilot remains disabled in both the top-level target and `pilotPool`. The
+validator has conservative technical maxima of 10 BLCH base units (`10e18`)
+and 10 bUSDC base units (`10e6`) per initial-liquidity side. The template keeps
+both selected caps and `policyCapApproval` null, so it cannot be mistaken for an
+approved exposure. A reviewed config must select equal-or-lower caps and provide
+a bounded `{path, sha256}` reference under `approvals/` to a canonical envelope.
+That envelope binds its schema/domain, selected EVM chain ID and genesis hash,
+WBLCH and bUSDC addresses, and both exact caps. The preflight reads it through a
+pinned regular-file descriptor, checks its canonical bytes and hash, and rejects
+any mismatch. Because signature verification remains an out-of-band human
+control, preflight/build report `capApprovalVerified:false`; the hash is not a
+claim that a signature was checked. These fields are still not amounts to transfer, a price assertion,
+approval to create the pair, or authority to deploy or add liquidity. Bridge
+custody, the bUSDC contract/address, selected EVM chain genesis, deployment
+bytecode and the exact initial-liquidity transaction require independent human
+review and a separate execution approval ceremony.
 
 After the reviewed configuration exists and all tracked changes are committed,
 build a static bundle and a self-contained artifact manifest:

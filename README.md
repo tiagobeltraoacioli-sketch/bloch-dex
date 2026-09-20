@@ -43,6 +43,13 @@ here. Chain ID 8400 is a retired scaffold, not a deployment target. The wrapped
 native token is supplied externally; `test/TestBase.sol` contains only a local
 fixture. There has been no independent audit or production qualification.
 
+The staging schema records one disabled pilot decision: native BLCH remains on
+the separate Bloch L1 authorization boundary, while a future reviewed EVM
+deployment would represent the pair as WBLCH/bUSDC and pin bUSDC to Ethereum
+mainnet USDC provenance. This is preflight metadata only; it neither validates
+bridge custody nor authorizes deployment, pair creation or liquidity. See
+[`deployments/README.md`](deployments/README.md).
+
 ## Build and validate
 
 Use Foundry **v1.7.1**. `foundry.toml` pins Solidity **0.8.24**, optimizer 200

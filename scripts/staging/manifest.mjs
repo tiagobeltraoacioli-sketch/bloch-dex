@@ -1,9 +1,15 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, lstat } from "node:fs/promises";
-import { relative, resolve, sep } from "node:path";
+import { constants } from "node:fs";
+import { open, readFile, readdir, lstat } from "node:fs/promises";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
-const HASH = /^0x[0-9a-fA-F]{64}$/;
-const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const HASH = /^0x[0-9a-f]{64}$/;
+const ADDRESS = /^0x[0-9a-f]{40}$/;
+const ETHEREUM_USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+const MAX_PILOT_BLCH_BASE_UNITS = 10n * 10n ** 18n;
+const MAX_PILOT_BUSDC_BASE_UNITS = 10n * 10n ** 6n;
+const CAP_APPROVAL_PATH = /^approvals\/[a-z0-9][a-z0-9._-]{0,95}\.json$/;
+const CAP_APPROVAL_MAX_BYTES = 8 * 1024;
 const CONTRACT_NAMES = [
   "factory",
   "router",
@@ -16,6 +22,16 @@ function required(condition, message) {
   if (!condition) throw new Error(`staging preflight: ${message}`);
 }
 
+function exactKeys(value, keys, field) {
+  required(
+    value && typeof value === "object" && !Array.isArray(value) &&
+      Object.getPrototypeOf(value) === Object.prototype &&
+      Reflect.ownKeys(value).length === keys.length &&
+      keys.every((key) => Object.hasOwn(value, key)),
+    `${field} fields are invalid`,
+  );
+}
+
 function validateHash(value, field) {
   required(
     typeof value === "string" && HASH.test(value),
@@ -24,7 +40,8 @@ function validateHash(value, field) {
   required(!/^0x0{64}$/.test(value), `${field} must not be zero`);
 }
 
-function validateContract(value, field) {
+function validateContract(value, field, contractOnly = true) {
+  if (contractOnly) exactKeys(value, ["address", "runtimeCodeHash"], field);
   required(
     value && typeof value === "object" && !Array.isArray(value),
     `${field} is required`,
@@ -42,9 +59,12 @@ function validateContract(value, field) {
 
 function validateToken(value, index) {
   const field = `tokens[${index}]`;
-  validateContract(value, field);
+  exactKeys(value, ["address", "runtimeCodeHash", "symbol", "name", "decimals",
+    "wrappedNative", "policy"], field);
+  validateContract(value, field, false);
   required(
-    typeof value.symbol === "string" && /^[A-Z0-9]{2,12}$/.test(value.symbol),
+    typeof value.symbol === "string" &&
+      (/^[A-Z0-9]{2,12}$/.test(value.symbol) || value.symbol === "bUSDC"),
     `${field}.symbol is invalid`,
   );
   required(
@@ -62,16 +82,65 @@ function validateToken(value, index) {
     typeof value.wrappedNative === "boolean",
     `${field}.wrappedNative is required`,
   );
-  required(
-    value.policy &&
-      typeof value.policy === "object" &&
-      !Array.isArray(value.policy),
-    `${field}.policy is required`,
-  );
+  exactKeys(value.policy, ["feeOnTransfer", "rebasing"], `${field}.policy`);
   required(
     value.policy.feeOnTransfer === false && value.policy.rebasing === false,
     `${field} uses an unsupported transfer policy`,
   );
+}
+
+function canonicalBaseUnits(value, maximum, field) {
+  required(
+    typeof value === "string" && /^[1-9][0-9]*$/.test(value),
+    `${field} must be a canonical positive base-unit integer`,
+  );
+  required(BigInt(value) <= maximum, `${field} exceeds the pilot safety cap`);
+}
+
+function validateAssetPlan(config) {
+  const plan = config.assetPlan;
+  exactKeys(plan, ["blochL1", "bridgeAsset", "pilotPool"], "assetPlan");
+  exactKeys(plan.blochL1,
+    ["nativeSymbol", "evmExecution", "authorizationBoundary"],
+    "assetPlan.blochL1");
+  required(plan.blochL1.nativeSymbol === "BLCH", "Bloch L1 native asset must be BLCH");
+  required(plan.blochL1.evmExecution === false,
+    "Bloch L1 must not be represented as the EVM execution environment");
+  required(plan.blochL1.authorizationBoundary === "external-post-quantum",
+    "Bloch L1 authorization must remain an external post-quantum boundary");
+
+  exactKeys(plan.bridgeAsset, ["sourceChain", "sourceChainId", "sourceSymbol",
+    "sourceTokenAddress", "destinationSymbol", "destinationTokenAddress"],
+  "assetPlan.bridgeAsset");
+  required(plan.bridgeAsset.sourceChain === "ethereum-mainnet" &&
+      plan.bridgeAsset.sourceChainId === 1 && plan.bridgeAsset.sourceSymbol === "USDC" &&
+      plan.bridgeAsset.sourceTokenAddress === ETHEREUM_USDC &&
+      plan.bridgeAsset.destinationSymbol === "bUSDC" &&
+      ADDRESS.test(plan.bridgeAsset.destinationTokenAddress),
+  "bridge asset must pin Ethereum mainnet USDC and a canonical bUSDC address");
+
+  exactKeys(plan.pilotPool, ["baseSymbol", "onchainBaseSymbol", "quoteSymbol",
+    "liquidityEnabled", "maxBaseBaseUnits", "maxQuoteBaseUnits",
+    "policyCapApproval", "requiresSeparateApproval"], "assetPlan.pilotPool");
+  required(plan.pilotPool.baseSymbol === "BLCH" &&
+      plan.pilotPool.onchainBaseSymbol === "WBLCH" &&
+      plan.pilotPool.quoteSymbol === "bUSDC",
+  "pilot pool must be the BLCH/bUSDC intent represented on-chain as WBLCH/bUSDC");
+  required(plan.pilotPool.liquidityEnabled === false,
+    "pilot pool liquidity must remain disabled");
+  required(plan.pilotPool.requiresSeparateApproval === true,
+    "pilot pool must require separate liquidity approval");
+  canonicalBaseUnits(plan.pilotPool.maxBaseBaseUnits,
+    MAX_PILOT_BLCH_BASE_UNITS, "assetPlan.pilotPool.maxBaseBaseUnits");
+  canonicalBaseUnits(plan.pilotPool.maxQuoteBaseUnits,
+    MAX_PILOT_BUSDC_BASE_UNITS, "assetPlan.pilotPool.maxQuoteBaseUnits");
+  exactKeys(plan.pilotPool.policyCapApproval, ["path", "sha256"],
+    "assetPlan.pilotPool.policyCapApproval");
+  required(typeof plan.pilotPool.policyCapApproval.path === "string" &&
+      CAP_APPROVAL_PATH.test(plan.pilotPool.policyCapApproval.path),
+  "assetPlan.pilotPool.policyCapApproval.path is invalid");
+  validateHash(plan.pilotPool.policyCapApproval.sha256,
+    "assetPlan.pilotPool.policyCapApproval.sha256");
 }
 
 export function validateStagingConfig(config) {
@@ -79,7 +148,10 @@ export function validateStagingConfig(config) {
     config && typeof config === "object" && !Array.isArray(config),
     "configuration must be an object",
   );
-  required(config.schemaVersion === 2, "schemaVersion must equal 2");
+  exactKeys(config, ["schemaVersion", "environment", "host", "frontendMode",
+    "liquidityEnabled", "chain", "deployment", "tokens", "assetPlan"],
+  "configuration");
+  required(config.schemaVersion === 3, "schemaVersion must equal 3");
   required(config.environment === "staging", "environment must equal staging");
   required(config.host === "bloch-dex", "host must equal bloch-dex");
   required(
@@ -89,10 +161,7 @@ export function validateStagingConfig(config) {
   required(config.liquidityEnabled === false, "liquidity must remain disabled");
 
   const chain = config.chain;
-  required(
-    chain && typeof chain === "object" && !Array.isArray(chain),
-    "chain is required",
-  );
+  exactKeys(chain, ["id", "genesisHash", "rpcUrl"], "chain");
   required(
     Number.isSafeInteger(chain.id) && chain.id > 0,
     "chain.id must be a positive safe integer",
@@ -119,10 +188,8 @@ export function validateStagingConfig(config) {
   );
 
   const deployment = config.deployment;
-  required(
-    deployment && typeof deployment === "object" && !Array.isArray(deployment),
-    "deployment is required",
-  );
+  exactKeys(deployment, ["blockNumber", "blockHash", "pairInitCodeHash",
+    ...CONTRACT_NAMES], "deployment");
   required(
     Number.isSafeInteger(deployment.blockNumber) && deployment.blockNumber >= 0,
     "deployment.blockNumber must be a nonnegative safe integer",
@@ -171,6 +238,14 @@ export function validateStagingConfig(config) {
     tokenAddresses.every((address) => !reserved.has(address)),
     "token address collides with deployment infrastructure",
   );
+  validateAssetPlan(config);
+  const wrappedToken = config.tokens.find((token) => token.symbol === "WBLCH");
+  const bridgeToken = config.tokens.find((token) => token.symbol === "bUSDC");
+  required(wrappedToken === wrapped[0] && wrappedToken.decimals === 18,
+    "asset plan requires the 18-decimal wrapped-native token symbol WBLCH");
+  required(bridgeToken && bridgeToken.decimals === 6 && !bridgeToken.wrappedNative &&
+      bridgeToken.address === config.assetPlan.bridgeAsset.destinationTokenAddress,
+  "asset plan bUSDC identity must match the reviewed 6-decimal token");
   return config;
 }
 
@@ -183,7 +258,72 @@ export async function readAndValidateConfig(path) {
       `staging preflight: cannot read configuration: ${error.message}`,
     );
   }
-  return validateStagingConfig(parsed);
+  const config = validateStagingConfig(parsed);
+  await verifyCapApproval(config, resolve(path));
+  return config;
+}
+
+async function verifyCapApproval(config, configPath) {
+  const reference = config.assetPlan.pilotPool.policyCapApproval;
+  const approvalPath = join(dirname(configPath), reference.path);
+  let before;
+  try { before = await lstat(approvalPath, { bigint: true }); }
+  catch (error) { throw new Error(`staging preflight: cannot read cap approval: ${error.message}`); }
+  required(before.isFile() && !before.isSymbolicLink() && before.nlink === 1n &&
+      before.size > 0n && before.size <= BigInt(CAP_APPROVAL_MAX_BYTES) &&
+      Number(before.mode & 0o022n) === 0,
+  "cap approval artifact is unsafe");
+  const handle = await open(approvalPath, constants.O_RDONLY |
+    (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+  let bytes;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    const fields = ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs"];
+    required(opened.isFile() && !opened.isSymbolicLink() && opened.nlink === 1n &&
+        opened.size > 0n && opened.size <= BigInt(CAP_APPROVAL_MAX_BYTES) &&
+        Number(opened.mode & 0o022n) === 0 &&
+        fields.every((field) => before[field] === opened[field]),
+    "cap approval artifact changed before reading");
+    const bounded = Buffer.alloc(CAP_APPROVAL_MAX_BYTES + 1);
+    let offset = 0;
+    while (offset < bounded.length) {
+      const { bytesRead } = await handle.read(
+        bounded, offset, bounded.length - offset, null,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    required(offset <= CAP_APPROVAL_MAX_BYTES, "cap approval artifact is unsafe");
+    bytes = bounded.subarray(0, offset);
+    const after = await handle.stat({ bigint: true });
+    const named = await lstat(approvalPath, { bigint: true });
+    required(fields.every((field) => before[field] === opened[field] &&
+        opened[field] === after[field] && after[field] === named[field]) &&
+        bytes.length === Number(after.size),
+    "cap approval artifact changed while reading");
+  } finally { await handle.close(); }
+  required(`0x${sha256(bytes)}` === reference.sha256,
+    "cap approval artifact does not match its pinned hash");
+  let envelope;
+  try { envelope = JSON.parse(bytes.toString("utf8")); }
+  catch { throw new Error("staging preflight: cap approval artifact is invalid JSON"); }
+  exactKeys(envelope, ["schemaVersion", "domain", "chainId", "genesisHash",
+    "wrappedNativeAddress", "bridgeAssetAddress", "maxBaseBaseUnits",
+    "maxQuoteBaseUnits"], "cap approval envelope");
+  required(bytes.equals(Buffer.from(`${stableJson(envelope)}\n`, "utf8")),
+    "cap approval envelope is not canonical JSON");
+  const expected = {
+    schemaVersion: 1,
+    domain: "postern.dex.pilot-cap-approval.v1",
+    chainId: config.chain.id,
+    genesisHash: config.chain.genesisHash,
+    wrappedNativeAddress: config.deployment.wrappedNative.address,
+    bridgeAssetAddress: config.assetPlan.bridgeAsset.destinationTokenAddress,
+    maxBaseBaseUnits: config.assetPlan.pilotPool.maxBaseBaseUnits,
+    maxQuoteBaseUnits: config.assetPlan.pilotPool.maxQuoteBaseUnits,
+  };
+  required(stableJson(envelope) === stableJson(expected),
+    "cap approval envelope does not bind the reviewed pilot policy");
 }
 
 export function stableJson(value) {

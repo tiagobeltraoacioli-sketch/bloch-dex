@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "environment": "staging",
   "host": "bloch-dex",
   "frontendMode": "preview",
@@ -19,5 +19,30 @@
     "collector": { "address": null, "runtimeCodeHash": null },
     "wrappedNative": { "address": null, "runtimeCodeHash": null }
   },
-  "tokens": null
+  "tokens": null,
+  "assetPlan": {
+    "blochL1": {
+      "nativeSymbol": "BLCH",
+      "evmExecution": false,
+      "authorizationBoundary": "external-post-quantum"
+    },
+    "bridgeAsset": {
+      "sourceChain": "ethereum-mainnet",
+      "sourceChainId": 1,
+      "sourceSymbol": "USDC",
+      "sourceTokenAddress": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "destinationSymbol": "bUSDC",
+      "destinationTokenAddress": null
+    },
+    "pilotPool": {
+      "baseSymbol": "BLCH",
+      "onchainBaseSymbol": "WBLCH",
+      "quoteSymbol": "bUSDC",
+      "liquidityEnabled": false,
+      "maxBaseBaseUnits": null,
+      "maxQuoteBaseUnits": null,
+      "policyCapApproval": null,
+      "requiresSeparateApproval": true
+    }
+  }
 }
