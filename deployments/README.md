@@ -71,6 +71,27 @@ custody, the bUSDC contract/address, selected EVM chain genesis, deployment
 bytecode and the exact initial-liquidity transaction require independent human
 review and a separate execution approval ceremony.
 
+After the reviewed config and cap envelope exist, collect a read-only RPC
+observation before signing or building anything:
+
+```sh
+node scripts/staging/verify-rpc.mjs \
+  --config /path/to/reviewed-staging.json \
+  --output /path/to/new-staging-rpc-observation.json
+```
+
+Install the locked frontend dependencies first because the verifier uses the
+same pinned `viem` Keccak implementation as the browser. The output path must
+not exist. The verifier checks the declared chain ID and genesis, requires the
+deployment block to be finalized, and reads every deployment contract, custody
+role and token at that exact block number. Contract and token bytecode must be
+nonempty; reviewed EOA roles may have empty bytecode but its Keccak hash must
+still match. It rereads both the deployment and finalized blocks after all code
+queries and refuses a changed snapshot or lost finality. The canonical output
+binds the complete configuration hash and observations but does not attest that
+the RPC is independently trustworthy. Obtain matching evidence from the
+qualified node/validator process before release approval.
+
 The Foundry `InitialLiquidityPreflight` must receive the same WBLCH/bUSDC
 addresses, selected caps and canonical approval SHA-256, plus the exact planned
 initial amounts. It refuses zero amounts, amounts above either selected cap,
@@ -98,5 +119,5 @@ separate operational steps.
 Validate this automation with Node 24:
 
 ```sh
-node --test scripts/staging/manifest.test.mjs
+node --test scripts/staging/manifest.test.mjs scripts/staging/rpc-verifier.test.mjs
 ```
