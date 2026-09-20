@@ -24,9 +24,11 @@ The original September 11 selection was Bloch L2 EVM; the amendment above
 records the current L1 priority. Historical L2 observations follow.
 The public RPC https://l2rpc.posternlabs.com returned eth_chainId 0x20d0 (8400),
 eth_blockNumber 0x1b6410, and empty code at the bridge scaffold's wrapper address
-0x4200000000000000000000000000000000000006. The DEX README calls 8400 retired;
-the L2 source describes 700771 as a placeholder. Neither source is sufficient
-as a production deployment manifest. Preserve this discrepancy until resolved.
+0x4200000000000000000000000000000000000006. The DEX README calls 8400 retired.
+Bloch L2 revision `fb042a5` selects 700771 as the testnet chain identity because
+the execution and bridge domains already bind it; 84001 is superseded. Public
+registration, a frozen production genesis and authenticated finality remain
+mandatory independent gates, so this decision is not a deployment manifest.
 
 Preparation defaults: protocol fees off; no production broadcast; no wallet
 signing from the sample-data UI; no claim of independent audit. Existing LP

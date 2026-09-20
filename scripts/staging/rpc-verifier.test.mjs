@@ -35,7 +35,7 @@ function valid() {
     frontendMode: "preview",
     liquidityEnabled: false,
     chain: {
-      id: 84001,
+      id: 700771,
       genesisHash: hash("1"),
       rpcUrl: "https://rpc.invalid/",
     },
@@ -117,7 +117,7 @@ function rpc(overrides = {}) {
   ]);
   const request = async (method, params) => {
     calls.push([method, params]);
-    if (method === "eth_chainId") return overrides.chainId ?? "0x14821";
+    if (method === "eth_chainId") return overrides.chainId ?? "0xab163";
     if (method === "eth_getCode")
       return (
         overrides.code?.(params[0], codeByAddress.get(params[0])) ??

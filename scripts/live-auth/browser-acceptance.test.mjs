@@ -46,7 +46,7 @@ function manifest(rpcUrl) {
     host: "bloch-dex",
     frontendMode: "preview",
     liquidityEnabled: false,
-    chain: { id: 84001, genesisHash: H1, rpcUrl },
+    chain: { id: 700771, genesisHash: H1, rpcUrl },
     deployment: {
       blockNumber: 12,
       blockHash: H2,

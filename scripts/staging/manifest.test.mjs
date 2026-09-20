@@ -31,7 +31,7 @@ const valid = () => ({
   host: "bloch-dex",
   frontendMode: "preview",
   liquidityEnabled: false,
-  chain: { id: 84001, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
+  chain: { id: 700771, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
   deployment: {
     blockNumber: 12,
     blockHash: H2,
@@ -92,7 +92,7 @@ test("committed template carries no approved deployment or pilot exposure", asyn
 test("fails closed for every missing identity field", () => {
   for (const mutate of [
     (value) => (value.chain.id = null),
-    (value) => (value.chain.id = 700771),
+    (value) => (value.chain.id = 84001),
     (value) => (value.chain.genesisHash = null),
     (value) => (value.chain.rpcUrl = null),
     (value) => (value.deployment.blockHash = null),

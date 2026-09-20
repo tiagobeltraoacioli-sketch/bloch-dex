@@ -27,7 +27,7 @@ function configuration() {
     host: "bloch-dex",
     frontendMode: "preview",
     liquidityEnabled: false,
-    chain: { id: 84001, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
+    chain: { id: 700771, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
     deployment: {
       blockNumber: 12,
       blockHash: H2,

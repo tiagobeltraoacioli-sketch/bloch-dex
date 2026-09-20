@@ -14,8 +14,8 @@ describe('WalletConnect session adapter', () => {
       expiry: Math.floor(Date.now() / 1000) + 600,
       namespaces: {
         eip155: {
-          accounts: ['eip155:84001:0x' + '12'.repeat(20)],
-          chains: ['eip155:84001'],
+          accounts: ['eip155:700771:0x' + '12'.repeat(20)],
+          chains: ['eip155:700771'],
           methods: ['eth_accounts', 'eth_chainId'],
           events: ['accountsChanged', 'chainChanged'],
         },
@@ -57,7 +57,7 @@ describe('WalletConnect session adapter', () => {
     handlers.get('session_event')?.({
       topic: session.topic,
       params: {
-        chainId: 'eip155:84001',
+        chainId: 'eip155:700771',
         event: { name: 'accountsChanged', data: ['0x' + '34'.repeat(20)] },
       },
     });
@@ -70,8 +70,8 @@ describe('WalletConnect session adapter', () => {
       params: {
         namespaces: {
           eip155: {
-            accounts: ['eip155:84001:0x' + '56'.repeat(20)],
-            chains: ['eip155:84001'],
+            accounts: ['eip155:700771:0x' + '56'.repeat(20)],
+            chains: ['eip155:700771'],
             methods: ['eth_accounts', 'eth_chainId'],
             events: ['accountsChanged', 'chainChanged'],
           },
@@ -103,8 +103,8 @@ describe('WalletConnect session adapter', () => {
       expiry: Math.floor(Date.now() / 1000) - 1,
       namespaces: {
         eip155: {
-          accounts: ['eip155:84001:0x' + '12'.repeat(20)],
-          chains: ['eip155:84001'],
+          accounts: ['eip155:700771:0x' + '12'.repeat(20)],
+          chains: ['eip155:700771'],
           methods: ['eth_accounts', 'eth_chainId'],
           events: ['accountsChanged', 'chainChanged'],
         },
@@ -149,8 +149,8 @@ describe('WalletConnect session adapter', () => {
         expiry: Math.floor(Date.now() / 1000) + 1,
         namespaces: {
           eip155: {
-            accounts: ['eip155:84001:0x' + '12'.repeat(20)],
-            chains: ['eip155:84001'],
+            accounts: ['eip155:700771:0x' + '12'.repeat(20)],
+            chains: ['eip155:700771'],
             methods: ['eth_accounts', 'eth_chainId'],
             events: ['accountsChanged', 'chainChanged'],
           },
@@ -199,8 +199,8 @@ describe('WalletConnect session adapter', () => {
         expiry: Math.floor(Date.now() / 1000) + 1,
         namespaces: {
           eip155: {
-            accounts: ['eip155:84001:0x' + '12'.repeat(20)],
-            chains: ['eip155:84001'],
+            accounts: ['eip155:700771:0x' + '12'.repeat(20)],
+            chains: ['eip155:700771'],
             methods: ['eth_accounts', 'eth_chainId'],
             events: ['accountsChanged', 'chainChanged'],
           },

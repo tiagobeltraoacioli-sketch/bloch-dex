@@ -5,7 +5,7 @@ The official `npx @reown/appkit-cli` React/Ethers template was generated separat
 and reviewed; the existing application was preserved. Dependencies are pinned.
 The user-supplied project ID is public configuration, not a wallet credential.
 
-Connection requests only address/network access on experimental chain 84001.
+Connection requests only address/network access on selected testnet chain 700771.
 No signed login, swaps, allowances or liquidity operations are enabled. The wallet
 independently displays origin verification and requires explicit account approval.
 Closing or cancelling AppKit rejects the pending flow and late sessions are

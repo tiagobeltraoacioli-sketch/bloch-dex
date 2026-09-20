@@ -22,7 +22,7 @@ describe('QR wallet entry', () => {
         {
           topic: 'other',
           params: {
-            chainId: 'eip155:84001',
+            chainId: 'eip155:700771',
             event: { name: 'accountsChanged', data: ['0x' + '12'.repeat(20)] },
           },
         },
@@ -34,7 +34,7 @@ describe('QR wallet entry', () => {
         {
           topic,
           params: {
-            chainId: 'eip155:84001',
+            chainId: 'eip155:700771',
             event: { name: 'accountsChanged', data: ['0x' + '12'.repeat(20)] },
           },
         },
@@ -50,45 +50,45 @@ describe('QR wallet entry', () => {
       normalizeWalletSessionEvent(
         {
           topic,
-          params: { chainId: 'eip155:84001', event: { name: 'chainChanged', data: '84001' } },
+          params: { chainId: 'eip155:700771', event: { name: 'chainChanged', data: '700771' } },
         },
         topic,
       ),
-    ).toEqual({ disconnect: false, event: 'chainChanged', value: '0x14821' });
+    ).toEqual({ disconnect: false, event: 'chainChanged', value: '0xab163' });
     for (const message of [
       { topic, params: { chainId: 'eip155:1', event: { name: 'chainChanged', data: '0x1' } } },
-      { topic, params: { chainId: 'eip155:84001', event: { name: 'accountsChanged', data: [] } } },
+      { topic, params: { chainId: 'eip155:700771', event: { name: 'accountsChanged', data: [] } } },
       {
         topic,
         params: {
-          chainId: 'eip155:84001',
+          chainId: 'eip155:700771',
           event: {
             name: 'accountsChanged',
             data: ['0x' + '12'.repeat(20), '0x' + '34'.repeat(20)],
           },
         },
       },
-      { topic, params: { chainId: 'eip155:84001', event: { name: 'chainChanged', data: '0x1' } } },
+      { topic, params: { chainId: 'eip155:700771', event: { name: 'chainChanged', data: '0x1' } } },
     ])
       expect(normalizeWalletSessionEvent(message, topic)?.disconnect).toBe(true);
     const current = '0x' + '12'.repeat(20),
       next = '0x' + '34'.repeat(20);
     const namespace = (accounts: string[]) => ({
       accounts,
-      chains: ['eip155:84001'],
+      chains: ['eip155:700771'],
       methods: ['eth_accounts', 'eth_chainId'],
       events: ['accountsChanged', 'chainChanged'],
     });
     expect(
       normalizeWalletSessionUpdate(
-        { topic, params: { namespaces: { eip155: namespace(['eip155:84001:' + current]) } } },
+        { topic, params: { namespaces: { eip155: namespace(['eip155:700771:' + current]) } } },
         topic,
         current,
       ),
     ).toBeNull();
     expect(
       normalizeWalletSessionUpdate(
-        { topic, params: { namespaces: { eip155: namespace(['eip155:84001:' + next]) } } },
+        { topic, params: { namespaces: { eip155: namespace(['eip155:700771:' + next]) } } },
         topic,
         current,
       ),
@@ -104,19 +104,19 @@ describe('QR wallet entry', () => {
       normalizeWalletSessionUpdate(
         {
           topic,
-          params: { namespaces: { eip155: namespace(['eip155:84001:' + current]), solana: {} } },
+          params: { namespaces: { eip155: namespace(['eip155:700771:' + current]), solana: {} } },
         },
         topic,
         current,
       )?.disconnect,
     ).toBe(true);
     expect(
-      normalizeWalletNamespace(namespace(['eip155:84001:' + current, 'eip155:1:' + next])),
+      normalizeWalletNamespace(namespace(['eip155:700771:' + current, 'eip155:1:' + next])),
     ).toBeNull();
-    expect(normalizeWalletNamespace(namespace(['eip155:84001:0x' + '00'.repeat(20)]))).toBeNull();
+    expect(normalizeWalletNamespace(namespace(['eip155:700771:0x' + '00'.repeat(20)]))).toBeNull();
     expect(
       normalizeWalletNamespace({
-        ...namespace(['eip155:84001:' + current]),
+        ...namespace(['eip155:700771:' + current]),
         methods: ['eth_accounts'],
       }),
     ).toBeNull();
@@ -125,7 +125,7 @@ describe('QR wallet entry', () => {
         {
           topic,
           params: {
-            chainId: 'eip155:84001',
+            chainId: 'eip155:700771',
             event: { name: 'chainChanged', data: '1'.repeat(1000) },
           },
         },
@@ -135,7 +135,7 @@ describe('QR wallet entry', () => {
     const approved = {
       topic: 'ab'.repeat(32),
       expiry: 1001,
-      namespaces: { eip155: namespace(['eip155:84001:' + current]) },
+      namespaces: { eip155: namespace(['eip155:700771:' + current]) },
       peer: { metadata: { name: 'Postern' } },
     };
     expect(normalizeApprovedWalletSession(approved, 1000)).toMatchObject({
@@ -183,7 +183,7 @@ describe('QR wallet entry', () => {
   it('restores the app dialog after the QR account becomes connected', async () => {
     const provider = {
       request: vi.fn(async ({ method }: { method: string }) =>
-        method === 'eth_chainId' ? '0x14821' : ['0x' + '12'.repeat(20)],
+        method === 'eth_chainId' ? '0xab163' : ['0x' + '12'.repeat(20)],
       ),
       disconnect: vi.fn(),
     };
