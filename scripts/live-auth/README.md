@@ -750,6 +750,33 @@ evidence for inspection; operators must not delete it merely to retry. These
 steps provide the local filesystem ordering required by the workflow, but do
 not claim protection from faulty storage that lies about fsync, rollback-proof
 hardware, or an independently retained external head.
+
+Inspect content-addressed predecessor and candidate evidence without creating a
+lock or modifying the store. Both hashes must be derived independently from the
+authorized operation inputs; copying an observed local hash is TOFU:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs inspect-checkpoint-evidence \
+  --store <private-operations-directory> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <independently-derived-after-sha256>
+```
+
+The Linux-only inspector pins the store descriptor, requires private canonical
+single-link evidence whose content matches its approved content-addressed name,
+audits the complete history for both possible checkpoints, rereads every
+checkpoint and history inode, and accepts the named checkpoint only when it is
+one of those outcomes. Root, rotation and acceptance inotify guards remain
+armed across collection and the coordinated final rebind, rejecting content,
+attribute, close-write, namespace and queue-overflow events. All evidence and
+directory descriptors use `O_NOATIME`, so inspection does not alter access-time
+evidence. The isolated guard has bounded request and shutdown deadlines; EOF,
+pipe failure or a non-responsive helper kills it and fails the inspection
+instead of hanging cleanup. It never removes or repairs a temporary, predecessor,
+candidate, tombstone or quarantine. `filesRemoved`, `retryAuthorized` and
+`cleanupAuthorized` are always `false`: this is evidence for a separate reviewed
+reconciliation, not permission to retry or clean up.
+
 If the lock is removed, replaced, hardlinked or otherwise changed while an
 operation is running, cleanup preserves the observed files and fails closed.
 Treat the operation outcome as ambiguous: do not delete either lock path or

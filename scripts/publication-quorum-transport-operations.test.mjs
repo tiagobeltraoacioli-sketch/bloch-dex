@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { lstatSync, renameSync, unlinkSync, watch as watchCallback, writeFileSync } from "node:fs";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, symlink, unlink, watch, writeFile } from "node:fs/promises";
+import { chmod, cp, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, symlink, unlink, watch, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,7 @@ import {
   commitTransportRequest,
   initializeOperationsStore,
   inspectPendingRotation,
+  inspectOperationsCheckpointRecoveryEvidence,
   inspectOperationsStore,
   inspectRetainedOperationsLockEvidence,
   migrateOperationsStoreV3ToV4,
@@ -102,6 +103,19 @@ function operationsMigrationRaceLoaderArguments() {
   }
   const loader = new URL(
     "./fixtures/operations-migration-race-loader.mjs", import.meta.url,
+  );
+  return ["--experimental-loader", loader.href];
+}
+
+function operationsCheckpointEvidenceRaceLoaderArguments() {
+  if (supportsModuleRegister(process.versions.node)) {
+    const registration = new URL(
+      "./fixtures/register-operations-checkpoint-evidence-race-loader.mjs", import.meta.url,
+    );
+    return ["--import", registration.href];
+  }
+  const loader = new URL(
+    "./fixtures/operations-checkpoint-evidence-race-loader.mjs", import.meta.url,
   );
   return ["--experimental-loader", loader.href];
 }
@@ -931,6 +945,139 @@ test("operations checkpoint refuses TOFU, activation drift, rollback, and ambigu
     (await readdir(store)).some(name => name.startsWith(".checkpoint.json.")),
     false,
   );
+});
+
+test("checkpoint recovery evidence inspection is read-only and outcome-pinned", {
+  skip: process.platform !== "linux" && "descriptor-relative inspection requires Linux",
+}, async () => {
+  const value = await fixture();
+  const manifest = await buildClientPreflight(value.config, value.witness);
+  const manifestHash = canonicalSha256(manifest);
+  const store = join(value.root, "checkpoint-recovery-evidence");
+  await initializeOperationsStore(store, manifest, manifestHash, "genesis");
+  const identity = describeKey(value.authority.publicKey);
+  const authorization = {
+    schemaVersion: 1,
+    authorizationId: "checkpoint-evidence-bootstrap",
+    manifestSha256: manifestHash,
+    expectedHeadSha256: "genesis",
+    enabled: true,
+    authorityKeyId: identity.keyId,
+    authorityKeyGeneration: 1,
+    authorityPublicKeyBase64Url: identity.publicKeyBase64Url,
+  };
+  await activateOperationsStore(
+    store, authorization, canonicalSha256(authorization),
+  );
+  const beforeRequest = await inspectOperationsStore(store);
+  const { lockPresent: _beforeLock, ...startingCheckpoint } = beforeRequest;
+  const startingHash = canonicalSha256(startingCheckpoint);
+  const anchorLog = await externalAnchorLog(store, value.authority.privateKey, 1, 1);
+  await beginTransportRequest(
+    store, manifestHash, "genesis", "d".repeat(64), anchorLog,
+  );
+  const afterRequest = await inspectOperationsStore(store);
+  const { lockPresent: _afterLock, ...completedCheckpoint } = afterRequest;
+  const completedHash = canonicalSha256(completedCheckpoint);
+  const entriesBeforeInspection = (await readdir(store)).sort();
+  const atimePaths = [
+    store,
+    join(store, "rotations"),
+    join(store, "anchor-acceptances"),
+    join(store, "checkpoint.json"),
+    join(store, `.checkpoint.previous.${startingHash}.json`),
+    join(store, `.checkpoint.candidate.${completedHash}.json`),
+    join(store, "anchor-acceptances",
+      `${completedCheckpoint.externalAnchorAcceptanceSha256}.json`),
+  ];
+  const atimesBeforeInspection = await Promise.all(
+    atimePaths.map(async path => (await lstat(path, { bigint: true })).atimeNs),
+  );
+
+  const inspection = await inspectOperationsCheckpointRecoveryEvidence({
+    root: store,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+  });
+  assert.equal(inspection.kind, "operations-checkpoint-recovery-evidence-inspection");
+  assert.equal(inspection.outcome, "committed");
+  assert.equal(inspection.observedCheckpointSha256, completedHash);
+  assert.equal(inspection.startingAudit.valid, true);
+  assert.equal(inspection.completedAudit.valid, true);
+  assert.equal(inspection.filesRemoved, false);
+  assert.equal(inspection.retryAuthorized, false);
+  assert.equal(inspection.cleanupAuthorized, false);
+  assert.deepEqual(await Promise.all(
+    atimePaths.map(async path => (await lstat(path, { bigint: true })).atimeNs),
+  ), atimesBeforeInspection);
+  assert.deepEqual((await readdir(store)).sort(), entriesBeforeInspection);
+
+  const cli = join(process.cwd(), "scripts", "publication-quorum-transport-operations.mjs");
+  const historyName = `${completedCheckpoint.externalAnchorAcceptanceSha256}.json`;
+  for (const [mode, relativeTarget] of [
+    ["same-inode-post-read", `.checkpoint.previous.${startingHash}.json`],
+    ["history-namespace", join("anchor-acceptances", historyName)],
+    ["hardlink", `.checkpoint.candidate.${completedHash}.json`],
+    ["third-head", "checkpoint.json"],
+  ]) {
+    const racedStore = join(value.root, `checkpoint-evidence-race-${mode}`);
+    await cp(store, racedStore, { recursive: true, preserveTimestamps: true });
+    const replacement = join(value.root, `checkpoint-evidence-third-${mode}.json`);
+    if (mode === "third-head") {
+      await writeFile(replacement, `${canonicalJson({
+        ...completedCheckpoint, generation: completedCheckpoint.generation + 1,
+      })}\n`, { mode: 0o400, flag: "wx" });
+    }
+    await assert.rejects(execute(process.execPath, [
+      ...operationsCheckpointEvidenceRaceLoaderArguments(), cli,
+      "inspect-checkpoint-evidence", "--store", racedStore,
+      "--expected-starting-checkpoint-sha256", startingHash,
+      "--expected-completed-checkpoint-sha256", completedHash,
+    ], { env: { ...process.env,
+      POSTERN_CHECKPOINT_EVIDENCE_RACE_TARGET: join(racedStore, relativeTarget),
+      POSTERN_CHECKPOINT_EVIDENCE_RACE_MODE: mode,
+      POSTERN_CHECKPOINT_EVIDENCE_RACE_REPLACEMENT: replacement,
+    }, timeout: raceSubprocessTimeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }),
+    /changed during retained evidence audit|changed while retained evidence was being inspected|checkpoint recovery namespace changed/);
+  }
+
+  const stoppedStore = join(value.root, "checkpoint-evidence-race-guard-sigstop");
+  await cp(store, stoppedStore, { recursive: true, preserveTimestamps: true });
+  const stoppedAt = Date.now();
+  await assert.rejects(execute(process.execPath, [
+    ...operationsCheckpointEvidenceRaceLoaderArguments(), cli,
+    "inspect-checkpoint-evidence", "--store", stoppedStore,
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+  ], { env: { ...process.env,
+    POSTERN_CHECKPOINT_EVIDENCE_RACE_TARGET: join(stoppedStore, "checkpoint.json"),
+    POSTERN_CHECKPOINT_EVIDENCE_RACE_MODE: "guard-sigstop",
+  }, timeout: raceSubprocessTimeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }),
+  /namespace guard timed out/);
+  assert.ok(Date.now() - stoppedAt < 8_000, "stopped guard cleanup must remain bounded");
+
+  await assert.rejects(
+    inspectOperationsCheckpointRecoveryEvidence({
+      root: store,
+      expectedStartingCheckpointSha256: "0".repeat(64),
+      expectedCompletedCheckpointSha256: completedHash,
+    }),
+    { code: "ENOENT" },
+  );
+  const candidate = join(store, `.checkpoint.candidate.${completedHash}.json`);
+  const displaced = `${candidate}.displaced`;
+  await rename(candidate, displaced);
+  await symlink(`.checkpoint.previous.${startingHash}.json`, candidate);
+  await assert.rejects(
+    inspectOperationsCheckpointRecoveryEvidence({
+      root: store,
+      expectedStartingCheckpointSha256: startingHash,
+      expectedCompletedCheckpointSha256: completedHash,
+    }),
+    /must not be a symlink|ELOOP/,
+  );
+  assert.equal((await lstat(candidate)).isSymbolicLink(), true);
+  assert.equal((await lstat(displaced)).isFile(), true);
 });
 
 test("operations lock release preserves hardlinked or substituted locks", async (context) => {

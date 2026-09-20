@@ -21,6 +21,7 @@ import {
 } from "node:fs/promises";
 import { isIP } from "node:net";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
   canonicalJson,
@@ -74,6 +75,124 @@ RENAME_NOREPLACE = 1
 result = renameat2(PARENT_FD, os.fsencode(sys.argv[1]), PARENT_FD, os.fsencode(sys.argv[2]), RENAME_NOREPLACE)
 if result != 0:
     sys.exit(ctypes.get_errno())`;
+const INOTIFY_GUARD_PROGRAM = String.raw`import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+if fd < 0:
+    sys.exit(ctypes.get_errno())
+mask = 0x00000002 | 0x00000004 | 0x00000008 | 0x00000040 | 0x00000080 | 0x00000100 | 0x00000200 | 0x00000400 | 0x00000800
+for inherited in range(3, 3 + int(sys.argv[1])):
+    if libc.inotify_add_watch(fd, os.fsencode('/proc/self/fd/' + str(inherited)), mask) < 0:
+        sys.exit(ctypes.get_errno())
+print('READY', flush=True)
+for command in sys.stdin:
+    if command.rstrip('\n') != 'DRAIN':
+        sys.exit(22)
+    dirty = False
+    while True:
+        try:
+            if os.read(fd, 65536):
+                dirty = True
+        except BlockingIOError:
+            break
+    print('DIRTY' if dirty else 'QUIET', flush=True)`;
+
+const NAMESPACE_GUARD_TIMEOUT_MS = 2_000;
+
+async function nextGuardLine(iterator, child) {
+  let timeout;
+  try {
+    const result = await Promise.race([
+      iterator.next(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("namespace guard timed out")),
+          NAMESPACE_GUARD_TIMEOUT_MS);
+      }),
+    ]);
+    if (result.done) throw new Error(`namespace guard exited with ${child.exitCode}`);
+    return result.value;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function writeGuardCommand(child, command) {
+  await new Promise((resolvePromise, rejectPromise) => {
+    child.stdin.write(command, error => error ? rejectPromise(error) : resolvePromise());
+  });
+}
+
+async function boundedGuardTermination(child, closed, graceful) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  if (graceful && !child.stdin.destroyed) child.stdin.end();
+  let timer;
+  const exited = await Promise.race([
+    closed.then(() => true),
+    new Promise(resolvePromise => {
+      timer = setTimeout(() => resolvePromise(false), NAMESPACE_GUARD_TIMEOUT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (exited) return;
+  child.kill("SIGKILL");
+  const killed = await Promise.race([
+    closed.then(() => true),
+    new Promise(resolvePromise => {
+      timer = setTimeout(() => resolvePromise(false), NAMESPACE_GUARD_TIMEOUT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (!killed) throw new Error("namespace guard could not be terminated");
+}
+
+async function armLinuxNamespaceGuard(directories) {
+  if (process.platform !== "linux")
+    fail("checkpoint recovery namespace guard requires Linux inotify");
+  const child = spawn("/usr/bin/python3", [
+    "-I", "-S", "-u", "-c", INOTIFY_GUARD_PROGRAM, String(directories.length),
+  ], {
+    env: {},
+    stdio: ["pipe", "pipe", "pipe", ...directories.map(directory => directory.handle.fd)],
+  });
+  // Writable streams emit `error` in addition to passing EPIPE to a write
+  // callback. The callback is authoritative; this listener prevents an
+  // unhandled process-level exception while fail-closed teardown runs.
+  child.stdin.on("error", () => {});
+  child.on("error", () => {});
+  child.stderr.resume();
+  const closed = new Promise(resolvePromise => child.once("close", resolvePromise));
+  const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
+  let closedByOwner = false;
+  const terminate = async graceful => {
+    if (closedByOwner) return;
+    closedByOwner = true;
+    await boundedGuardTermination(child, closed, graceful);
+  };
+  try {
+    if (await nextGuardLine(lines, child) !== "READY")
+      fail("checkpoint recovery namespace guard failed to arm");
+  } catch (error) {
+    child.kill("SIGKILL");
+    await terminate(false).catch(() => {});
+    throw error;
+  }
+  return {
+    async assertQuiet() {
+      try {
+        await writeGuardCommand(child, "DRAIN\n");
+        if (await nextGuardLine(lines, child) !== "QUIET")
+          fail("checkpoint recovery namespace changed during inspection");
+      } catch (error) {
+        child.kill("SIGKILL");
+        await terminate(false).catch(() => {});
+        throw error;
+      }
+    },
+    async close() {
+      await terminate(true);
+    },
+  };
+}
 
 async function executeRenameNoReplace(parentFd, sourceName, destinationName) {
   await new Promise((resolvePromise, rejectPromise) => {
@@ -1298,8 +1417,11 @@ async function requireAnchoredPrivateDirectory(path, field) {
 
 async function auditedHistoryJson(path, field, snapshots) {
   if (!snapshots) return secureJson(path, field);
-  const snapshot = await readCanonicalCheckpointSnapshot(path, field);
+  const snapshot = snapshots.retainHandles
+    ? await openCanonicalCheckpointSnapshot(path, field)
+    : await readCanonicalCheckpointSnapshot(path, field);
   snapshots.push({ path, field, bytes: snapshot.bytes, metadata: snapshot.metadata });
+  if (snapshot.handle) snapshots[snapshots.length - 1].handle = snapshot.handle;
   return snapshot.value;
 }
 
@@ -1733,6 +1855,119 @@ export async function auditOperationsStore(root) {
   await requireDirectory(root);
   const checkpoint = validateCheckpoint(await secureJson(join(root, HEAD), "operations checkpoint"));
   return auditOperationsStoreAtCheckpoint(root, checkpoint);
+}
+
+export async function inspectOperationsCheckpointRecoveryEvidence({
+  root,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+}) {
+  requireHash(expectedStartingCheckpointSha256, "externally approved starting checkpoint hash");
+  requireHash(expectedCompletedCheckpointSha256, "externally approved completed checkpoint hash");
+  if (expectedStartingCheckpointSha256 === expectedCompletedCheckpointSha256)
+    fail("starting and completed checkpoint hashes must differ");
+  if (process.platform !== "linux")
+    fail("checkpoint recovery evidence inspection requires descriptor-relative filesystem access");
+  await requireDirectory(root);
+  const directory = await openPinnedDirectory(
+    root, "checkpoint recovery evidence store", 0o700, null, true,
+  );
+  const snapshots = [];
+  snapshots.retainHandles = true;
+  let rotationsDirectory;
+  let acceptancesDirectory;
+  let namespaceGuard;
+  try {
+    rotationsDirectory = await openPinnedDirectory(
+      join(directory.anchoredPath, ROTATIONS),
+      "checkpoint recovery rotation history", 0o700, null, true,
+    );
+    acceptancesDirectory = await openPinnedDirectory(
+      join(directory.anchoredPath, ANCHOR_ACCEPTANCES),
+      "checkpoint recovery anchor acceptance history", 0o700, null, true,
+    );
+    namespaceGuard = await armLinuxNamespaceGuard([
+      directory, rotationsDirectory, acceptancesDirectory,
+    ]);
+    const startingPath = join(
+      directory.anchoredPath,
+      `.checkpoint.previous.${expectedStartingCheckpointSha256}.json`,
+    );
+    const completedPath = join(
+      directory.anchoredPath,
+      `.checkpoint.candidate.${expectedCompletedCheckpointSha256}.json`,
+    );
+    const starting = await openCanonicalCheckpointSnapshot(
+      startingPath, "checkpoint recovery predecessor",
+    );
+    snapshots.push({
+      path: startingPath, field: "checkpoint recovery predecessor", ...starting,
+    });
+    const completed = await openCanonicalCheckpointSnapshot(
+      completedPath, "checkpoint recovery candidate",
+    );
+    snapshots.push({
+      path: completedPath, field: "checkpoint recovery candidate", ...completed,
+    });
+    validateCheckpoint(starting.value);
+    validateCheckpoint(completed.value);
+    if (starting.sha256 !== expectedStartingCheckpointSha256 ||
+        completed.sha256 !== expectedCompletedCheckpointSha256)
+      fail("checkpoint recovery evidence does not match the externally approved outcomes");
+    const namedPath = join(directory.anchoredPath, HEAD);
+    const named = await openCanonicalCheckpointSnapshot(
+      namedPath, "named checkpoint recovery outcome",
+    );
+    snapshots.push({ path: namedPath, field: "named checkpoint recovery outcome", ...named });
+    validateCheckpoint(named.value);
+    const outcome = named.sha256 === expectedStartingCheckpointSha256
+      ? "not-committed"
+      : named.sha256 === expectedCompletedCheckpointSha256 ? "committed" : null;
+    if (!outcome)
+      fail("named checkpoint matches neither externally approved recovery outcome");
+
+    const startingAudit = await auditOperationsStoreAtCheckpoint(
+      directory.anchoredPath, starting.value, true, snapshots,
+    );
+    const completedAudit = await auditOperationsStoreAtCheckpoint(
+      directory.anchoredPath, completed.value, true, snapshots,
+    );
+    const retainedHead = snapshots.find(snapshot => snapshot.path === namedPath);
+    for (const retained of snapshots) {
+      if (retained !== retainedHead) await revalidateRetainedCheckpointSnapshot(retained);
+    }
+    await requirePinnedDirectory(
+      rotationsDirectory, "checkpoint recovery rotation history after audit",
+    );
+    await requirePinnedDirectory(
+      acceptancesDirectory, "checkpoint recovery anchor acceptance history after audit",
+    );
+    await requirePinnedDirectory(directory, "checkpoint recovery evidence store after audit");
+    // HEAD is the final nominal authority proof. No other pathname is read
+    // after it. The kernel queue drain is the last boundary and detects
+    // content or namespace changes after an earlier per-file revalidation.
+    await revalidateRetainedCheckpointSnapshot(retainedHead);
+    await namespaceGuard.assertQuiet();
+    return {
+      schemaVersion: 1,
+      kind: "operations-checkpoint-recovery-evidence-inspection",
+      startingCheckpointSha256: expectedStartingCheckpointSha256,
+      completedCheckpointSha256: expectedCompletedCheckpointSha256,
+      observedCheckpointSha256: named.sha256,
+      outcome,
+      startingAudit,
+      completedAudit,
+      filesRemoved: false,
+      retryAuthorized: false,
+      cleanupAuthorized: false,
+    };
+  } finally {
+    await Promise.allSettled(snapshots.map(snapshot => snapshot.handle?.close()));
+    await namespaceGuard?.close();
+    await acceptancesDirectory?.handle.close();
+    await rotationsDirectory?.handle.close();
+    await directory.handle.close();
+  }
 }
 
 async function prepareOperationsAnchorStatementAtRoot(
@@ -2221,6 +2456,50 @@ async function readCanonicalCheckpointSnapshot(path, field) {
   }
 }
 
+async function openCanonicalCheckpointSnapshot(path, field) {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | NOFOLLOW |
+      (constants.O_NOATIME ?? 0));
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.nlink !== 1n || before.size < 1n ||
+        before.size > BigInt(MAX_JSON) || (before.mode & 0o777n) !== 0o400n ||
+        (typeof process.getuid === "function" && before.uid !== BigInt(process.getuid())))
+      fail(`${field} identity or permissions are invalid`);
+    const bytes = await readBoundedHandle(handle, MAX_JSON, field);
+    const after = await handle.stat({ bigint: true });
+    const linked = await lstat(path, { bigint: true });
+    if (!sameIntegralMetadata(before, after) || !sameIntegralMetadata(after, linked) ||
+        !linked.isFile() || linked.isSymbolicLink() || bytes.length !== Number(after.size))
+      fail(`${field} changed while it was being inspected`);
+    let value;
+    try { value = JSON.parse(bytes.toString("utf8")); } catch {
+      fail(`${field} is not valid JSON`);
+    }
+    if (`${canonicalJson(value)}\n` !== bytes.toString("utf8"))
+      fail(`${field} is not canonical JSON`);
+    const retained = { handle, bytes, value, metadata: after, sha256: canonicalSha256(value) };
+    handle = null;
+    return retained;
+  } catch (error) {
+    if (error?.code === "ELOOP") fail(`${field} must not be a symlink`);
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function revalidateRetainedCheckpointSnapshot(retained) {
+  const before = await retained.handle.stat({ bigint: true });
+  const bytes = await readBoundedHandle(retained.handle, MAX_JSON, retained.field);
+  const after = await retained.handle.stat({ bigint: true });
+  const linked = await lstat(retained.path, { bigint: true });
+  if (!sameIntegralMetadata(retained.metadata, before) ||
+      !sameIntegralMetadata(before, after) || !sameIntegralMetadata(after, linked) || !linked.isFile() ||
+      linked.isSymbolicLink() || !bytes.equals(retained.bytes))
+    fail(`${retained.field} changed during retained evidence audit`);
+}
+
 async function revalidateHistorySnapshots(snapshots) {
   for (const retained of snapshots) {
     const closing = await readCanonicalCheckpointSnapshot(
@@ -2248,13 +2527,14 @@ function sameIntegralMetadata(left, right) {
 }
 
 async function openPinnedDirectory(
-  path, field, exactMode = null, expectedMetadata = null,
+  path, field, exactMode = null, expectedMetadata = null, noAtime = false,
 ) {
   let handle;
   try {
     handle = await open(
       path,
-      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | NOFOLLOW,
+      constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | NOFOLLOW |
+        (noAtime ? constants.O_NOATIME ?? 0 : 0),
     );
     const opened = await handle.stat({ bigint: true });
     const linked = await lstat(path, { bigint: true });
@@ -3070,6 +3350,20 @@ async function main() {
     const v = parse(args, ["--store"]);
     console.log(canonicalJson(await inspectOperationsStore(v["--store"]))); return;
   }
+  if (command === "inspect-checkpoint-evidence") {
+    const v = parse(args, [
+      "--store", "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256",
+    ]);
+    console.log(canonicalJson(await inspectOperationsCheckpointRecoveryEvidence({
+      root: v["--store"],
+      expectedStartingCheckpointSha256:
+        v["--expected-starting-checkpoint-sha256"],
+      expectedCompletedCheckpointSha256:
+        v["--expected-completed-checkpoint-sha256"],
+    })));
+    return;
+  }
   if (command === "reconcile-lock") {
     const v = parse(args, [
       "--store", "--expected-lock-sha256",
@@ -3241,7 +3535,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-checkpoint-evidence, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
