@@ -17,7 +17,7 @@ export type RegistryToken = ContractIdentity & {
   policy: { feeOnTransfer: false; rebasing: false };
 };
 export type DeploymentRegistry = {
-  schemaVersion: 2;
+  schemaVersion: 4;
   environment: 'staging';
   host: 'bloch-dex';
   frontendMode: 'preview';
@@ -32,8 +32,35 @@ export type DeploymentRegistry = {
     lens: ContractIdentity;
     collector: ContractIdentity;
     wrappedNative: ContractIdentity;
+    feeAuthority: ContractIdentity;
+    treasury: ContractIdentity;
   };
   tokens: readonly RegistryToken[];
+  assetPlan: {
+    blochL1: {
+      nativeSymbol: 'BLCH';
+      evmExecution: false;
+      authorizationBoundary: 'external-post-quantum';
+    };
+    bridgeAsset: {
+      sourceChain: 'ethereum-mainnet';
+      sourceChainId: 1;
+      sourceSymbol: 'USDC';
+      sourceTokenAddress: Address;
+      destinationSymbol: 'bUSDC';
+      destinationTokenAddress: Address;
+    };
+    pilotPool: {
+      baseSymbol: 'BLCH';
+      onchainBaseSymbol: 'WBLCH';
+      quoteSymbol: 'bUSDC';
+      liquidityEnabled: false;
+      maxBaseBaseUnits: string;
+      maxQuoteBaseUnits: string;
+      policyCapApproval: { path: string; sha256: Hex };
+      requiresSeparateApproval: true;
+    };
+  };
 };
 
 export type LivePoolSnapshot = {
@@ -114,9 +141,18 @@ const HASH = /^0x[0-9a-fA-F]{64}$/;
 const CODE = /^0x(?:[0-9a-fA-F]{2})+$/;
 const QUANTITY = /^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/;
 const CONTRACT_NAMES = ['factory', 'router', 'lens', 'collector', 'wrappedNative'] as const;
+const ROLE_NAMES = ['feeAuthority', 'treasury'] as const;
 const ZERO_ADDRESS = `0x${'0'.repeat(40)}` as Address;
+const ETHEREUM_USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+const MAX_PILOT_BLCH_BASE_UNITS = 10n * 10n ** 18n;
+const MAX_PILOT_BUSDC_BASE_UNITS = 10n * 10n ** 6n;
 
-const factoryAbi = parseAbi(['function INIT_CODE_PAIR_HASH() view returns (bytes32)']);
+const factoryAbi = parseAbi([
+  'function INIT_CODE_PAIR_HASH() view returns (bytes32)',
+  'function feeTo() view returns (address)',
+  'function feeToSetter() view returns (address)',
+  'function pendingFeeToSetter() view returns (address)',
+]);
 const routerAbi = parseAbi([
   'function factory() view returns (address)',
   'function WBLCH() view returns (address)',
@@ -129,6 +165,7 @@ const lensAbi = parseAbi([
 ]);
 const collectorAbi = parseAbi([
   'function factory() view returns (address)',
+  'function treasury() view returns (address)',
   'function wblch() view returns (address)',
 ]);
 const tokenAbi = parseAbi(['function balanceOf(address owner) view returns (uint256)']);
@@ -147,9 +184,23 @@ function validHash(value: unknown): value is Hex {
   return typeof value === 'string' && HASH.test(value) && !/^0x0{64}$/i.test(value);
 }
 
-function registryContract(value: unknown, field: string): ContractIdentity {
+function exactFields(
+  value: Record<string, unknown>,
+  fields: readonly string[],
+  label: string,
+): void {
+  const actual = Object.keys(value).sort();
+  const expected = [...fields].sort();
+  requireValue(
+    actual.length === expected.length && actual.every((field, index) => field === expected[index]),
+    `${label} fields are invalid`,
+  );
+}
+
+function registryContract(value: unknown, field: string, exact = true): ContractIdentity {
   requireValue(value && typeof value === 'object' && !Array.isArray(value), `${field} is missing`);
   const input = value as Record<string, unknown>;
+  if (exact) exactFields(input, ['address', 'runtimeCodeHash'], field);
   requireValue(validAddress(input.address), `${field}.address is invalid`);
   requireValue(validHash(input.runtimeCodeHash), `${field}.runtimeCodeHash is invalid`);
   return {
@@ -160,10 +211,16 @@ function registryContract(value: unknown, field: string): ContractIdentity {
 
 function registryToken(value: unknown, index: number): RegistryToken {
   const field = `tokens[${index}]`;
-  const identity = registryContract(value, field);
+  const identity = registryContract(value, field, false);
   const input = value as Record<string, unknown>;
+  exactFields(
+    input,
+    ['address', 'runtimeCodeHash', 'symbol', 'name', 'decimals', 'wrappedNative', 'policy'],
+    field,
+  );
   requireValue(
-    typeof input.symbol === 'string' && /^[A-Z0-9]{2,12}$/.test(input.symbol),
+    typeof input.symbol === 'string' &&
+      (/^[A-Z0-9]{2,12}$/.test(input.symbol) || input.symbol === 'bUSDC'),
     `${field}.symbol is invalid`,
   );
   requireValue(
@@ -178,6 +235,7 @@ function registryToken(value: unknown, index: number): RegistryToken {
   );
   requireValue(typeof input.wrappedNative === 'boolean', `${field}.wrappedNative is required`);
   const policy = input.policy as Record<string, unknown> | undefined;
+  if (policy) exactFields(policy, ['feeOnTransfer', 'rebasing'], `${field}.policy`);
   requireValue(
     policy && policy.feeOnTransfer === false && policy.rebasing === false,
     `${field} uses an unsupported transfer policy`,
@@ -196,7 +254,22 @@ function registryToken(value: unknown, index: number): RegistryToken {
 export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
   requireValue(value && typeof value === 'object' && !Array.isArray(value), 'registry is missing');
   const input = value as Record<string, unknown>;
-  requireValue(input.schemaVersion === 2, 'registry schema is unsupported');
+  exactFields(
+    input,
+    [
+      'schemaVersion',
+      'environment',
+      'host',
+      'frontendMode',
+      'liquidityEnabled',
+      'chain',
+      'deployment',
+      'tokens',
+      'assetPlan',
+    ],
+    'registry',
+  );
+  requireValue(input.schemaVersion === 4, 'registry schema is unsupported');
   requireValue(
     input.environment === 'staging' && input.host === 'bloch-dex',
     'target does not match staging',
@@ -209,6 +282,7 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
     chain && typeof chain === 'object' && !Array.isArray(chain),
     'chain identity is missing',
   );
+  exactFields(chain, ['id', 'genesisHash', 'rpcUrl'], 'chain');
   requireValue(Number.isSafeInteger(chain.id) && Number(chain.id) > 0, 'chain ID is invalid');
   requireValue(validHash(chain.genesisHash), 'genesis hash is invalid');
   requireValue(typeof chain.rpcUrl === 'string' && chain.rpcUrl.length > 0, 'RPC URL is missing');
@@ -233,6 +307,11 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
     deployment && typeof deployment === 'object' && !Array.isArray(deployment),
     'deployment is missing',
   );
+  exactFields(
+    deployment,
+    ['blockNumber', 'blockHash', 'pairInitCodeHash', ...CONTRACT_NAMES, ...ROLE_NAMES],
+    'deployment',
+  );
   requireValue(
     Number.isSafeInteger(deployment.blockNumber) && Number(deployment.blockNumber) >= 0,
     'deployment block number is invalid',
@@ -242,10 +321,16 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
   const contracts = Object.fromEntries(
     CONTRACT_NAMES.map((name) => [name, registryContract(deployment[name], `deployment.${name}`)]),
   ) as Record<(typeof CONTRACT_NAMES)[number], ContractIdentity>;
+  const roles = Object.fromEntries(
+    ROLE_NAMES.map((name) => [name, registryContract(deployment[name], `deployment.${name}`)]),
+  ) as Record<(typeof ROLE_NAMES)[number], ContractIdentity>;
   requireValue(
-    new Set(CONTRACT_NAMES.map((name) => contracts[name].address.toLowerCase())).size ===
-      CONTRACT_NAMES.length,
-    'contract addresses are not unique',
+    new Set([
+      ...CONTRACT_NAMES.map((name) => contracts[name].address.toLowerCase()),
+      ...ROLE_NAMES.map((name) => roles[name].address.toLowerCase()),
+    ]).size ===
+      CONTRACT_NAMES.length + ROLE_NAMES.length,
+    'deployment and custody addresses are not unique',
   );
   requireValue(
     Array.isArray(input.tokens) && input.tokens.length >= 2 && input.tokens.length <= 64,
@@ -261,18 +346,118 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
       wrappedTokens[0].runtimeCodeHash === contracts.wrappedNative.runtimeCodeHash,
     'wrapped-native token identity does not match deployment',
   );
-  const infrastructure = new Set(
-    (['factory', 'router', 'lens', 'collector'] as const).map((name) =>
+  const infrastructure = new Set([
+    ...(['factory', 'router', 'lens', 'collector'] as const).map((name) =>
       contracts[name].address.toLowerCase(),
     ),
-  );
+    ...ROLE_NAMES.map((name) => roles[name].address.toLowerCase()),
+  ]);
   requireValue(
     tokenAddresses.every((address) => !infrastructure.has(address)),
     'token collides with deployment infrastructure',
   );
 
+  const plan = input.assetPlan as Record<string, unknown> | undefined;
+  requireValue(plan && typeof plan === 'object' && !Array.isArray(plan), 'asset plan is missing');
+  exactFields(plan, ['blochL1', 'bridgeAsset', 'pilotPool'], 'asset plan');
+  const blochL1 = plan.blochL1 as Record<string, unknown> | undefined;
+  requireValue(
+    blochL1 && typeof blochL1 === 'object' && !Array.isArray(blochL1),
+    'Bloch L1 plan is missing',
+  );
+  exactFields(blochL1, ['nativeSymbol', 'evmExecution', 'authorizationBoundary'], 'Bloch L1 plan');
+  requireValue(
+    blochL1.nativeSymbol === 'BLCH' &&
+      blochL1.evmExecution === false &&
+      blochL1.authorizationBoundary === 'external-post-quantum',
+    'Bloch L1 boundary is invalid',
+  );
+  const bridgeAsset = plan.bridgeAsset as Record<string, unknown> | undefined;
+  requireValue(
+    bridgeAsset && typeof bridgeAsset === 'object' && !Array.isArray(bridgeAsset),
+    'bridge asset plan is missing',
+  );
+  exactFields(
+    bridgeAsset,
+    [
+      'sourceChain',
+      'sourceChainId',
+      'sourceSymbol',
+      'sourceTokenAddress',
+      'destinationSymbol',
+      'destinationTokenAddress',
+    ],
+    'bridge asset plan',
+  );
+  requireValue(
+    bridgeAsset.sourceChain === 'ethereum-mainnet' &&
+      bridgeAsset.sourceChainId === 1 &&
+      bridgeAsset.sourceSymbol === 'USDC' &&
+      bridgeAsset.sourceTokenAddress === ETHEREUM_USDC &&
+      bridgeAsset.destinationSymbol === 'bUSDC' &&
+      validAddress(bridgeAsset.destinationTokenAddress),
+    'bridge asset plan is invalid',
+  );
+  const pilotPool = plan.pilotPool as Record<string, unknown> | undefined;
+  requireValue(
+    pilotPool && typeof pilotPool === 'object' && !Array.isArray(pilotPool),
+    'pilot pool plan is missing',
+  );
+  exactFields(
+    pilotPool,
+    [
+      'baseSymbol',
+      'onchainBaseSymbol',
+      'quoteSymbol',
+      'liquidityEnabled',
+      'maxBaseBaseUnits',
+      'maxQuoteBaseUnits',
+      'policyCapApproval',
+      'requiresSeparateApproval',
+    ],
+    'pilot pool plan',
+  );
+  const baseCap = pilotPool.maxBaseBaseUnits;
+  const quoteCap = pilotPool.maxQuoteBaseUnits;
+  requireValue(
+    pilotPool.baseSymbol === 'BLCH' &&
+      pilotPool.onchainBaseSymbol === 'WBLCH' &&
+      pilotPool.quoteSymbol === 'bUSDC' &&
+      pilotPool.liquidityEnabled === false &&
+      pilotPool.requiresSeparateApproval === true &&
+      typeof baseCap === 'string' &&
+      /^[1-9][0-9]*$/.test(baseCap) &&
+      BigInt(baseCap) <= MAX_PILOT_BLCH_BASE_UNITS &&
+      typeof quoteCap === 'string' &&
+      /^[1-9][0-9]*$/.test(quoteCap) &&
+      BigInt(quoteCap) <= MAX_PILOT_BUSDC_BASE_UNITS,
+    'pilot pool policy is invalid',
+  );
+  const approval = pilotPool.policyCapApproval as Record<string, unknown> | undefined;
+  requireValue(
+    approval && typeof approval === 'object' && !Array.isArray(approval),
+    'pilot cap approval is missing',
+  );
+  exactFields(approval, ['path', 'sha256'], 'pilot cap approval');
+  requireValue(
+    typeof approval.path === 'string' &&
+      /^approvals\/[a-z0-9][a-z0-9._-]{0,95}\.json$/.test(approval.path) &&
+      validHash(approval.sha256),
+    'pilot cap approval is invalid',
+  );
+  const wrapped = tokens.find((token) => token.symbol === 'WBLCH');
+  const busdc = tokens.find((token) => token.symbol === 'bUSDC');
+  requireValue(
+    wrapped === wrappedTokens[0] &&
+      wrapped?.decimals === 18 &&
+      busdc?.decimals === 6 &&
+      !busdc.wrappedNative &&
+      busdc.address === bridgeAsset.destinationTokenAddress,
+    'pilot token identities do not match the asset plan',
+  );
+
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
@@ -287,8 +472,34 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
       blockHash: deployment.blockHash.toLowerCase() as Hex,
       pairInitCodeHash: deployment.pairInitCodeHash.toLowerCase() as Hex,
       ...contracts,
+      ...roles,
     },
     tokens,
+    assetPlan: {
+      blochL1: {
+        nativeSymbol: 'BLCH',
+        evmExecution: false,
+        authorizationBoundary: 'external-post-quantum',
+      },
+      bridgeAsset: {
+        sourceChain: 'ethereum-mainnet',
+        sourceChainId: 1,
+        sourceSymbol: 'USDC',
+        sourceTokenAddress: ETHEREUM_USDC as Address,
+        destinationSymbol: 'bUSDC',
+        destinationTokenAddress: bridgeAsset.destinationTokenAddress as Address,
+      },
+      pilotPool: {
+        baseSymbol: 'BLCH',
+        onchainBaseSymbol: 'WBLCH',
+        quoteSymbol: 'bUSDC',
+        liquidityEnabled: false,
+        maxBaseBaseUnits: baseCap,
+        maxQuoteBaseUnits: quoteCap,
+        policyCapApproval: { path: approval.path, sha256: approval.sha256.toLowerCase() as Hex },
+        requiresSeparateApproval: true,
+      },
+    },
   };
 }
 
@@ -429,6 +640,18 @@ export class LiveReadAdapter {
         `${name} code hash does not match registry`,
       );
     }
+    for (const name of ROLE_NAMES) {
+      const identity = registry.deployment[name];
+      const code = await request(provider, 'eth_getCode', [identity.address, snapshot.number]);
+      requireValue(
+        typeof code === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(code) && code.length <= 49_154,
+        `${name} code is invalid`,
+      );
+      requireValue(
+        keccak256(code as Hex).toLowerCase() === identity.runtimeCodeHash,
+        `${name} code hash does not match registry`,
+      );
+    }
     for (const token of registry.tokens) {
       if (token.address.toLowerCase() === registry.deployment.wrappedNative.address.toLowerCase())
         continue;
@@ -480,6 +703,34 @@ export class LiveReadAdapter {
       'wblch',
       snapshot.number,
     );
+    const collectorTreasury = await readFunction<Address>(
+      provider,
+      registry.deployment.collector.address,
+      collectorAbi,
+      'treasury',
+      snapshot.number,
+    );
+    const feeTo = await readFunction<Address>(
+      provider,
+      factory,
+      factoryAbi,
+      'feeTo',
+      snapshot.number,
+    );
+    const feeToSetter = await readFunction<Address>(
+      provider,
+      factory,
+      factoryAbi,
+      'feeToSetter',
+      snapshot.number,
+    );
+    const pendingFeeToSetter = await readFunction<Address>(
+      provider,
+      factory,
+      factoryAbi,
+      'pendingFeeToSetter',
+      snapshot.number,
+    );
     const initCodeHash = await readFunction<Hex>(
       provider,
       factory,
@@ -506,6 +757,16 @@ export class LiveReadAdapter {
     requireValue(
       collectorWrapped.toLowerCase() === wrapped.toLowerCase(),
       'collector wrapper binding is invalid',
+    );
+    requireValue(
+      collectorTreasury.toLowerCase() === registry.deployment.treasury.address.toLowerCase(),
+      'collector treasury binding is invalid',
+    );
+    requireValue(
+      feeTo === ZERO_ADDRESS &&
+        pendingFeeToSetter === ZERO_ADDRESS &&
+        feeToSetter.toLowerCase() === registry.deployment.feeAuthority.address.toLowerCase(),
+      'factory fee controls are not in the reviewed disabled state',
     );
     requireValue(
       initCodeHash.toLowerCase() === registry.deployment.pairInitCodeHash,

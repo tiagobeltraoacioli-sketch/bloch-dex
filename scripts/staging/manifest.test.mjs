@@ -26,7 +26,7 @@ const token = (suffix, symbol, wrappedNative = false, decimals = 18) => ({
   policy: { feeOnTransfer: false, rebasing: false },
 });
 const valid = () => ({
-  schemaVersion: 3,
+  schemaVersion: 4,
   environment: "staging",
   host: "bloch-dex",
   frontendMode: "preview",
@@ -41,6 +41,8 @@ const valid = () => ({
     lens: contract("03"),
     collector: contract("04"),
     wrappedNative: contract("05"),
+    feeAuthority: contract("07"),
+    treasury: contract("08"),
   },
   tokens: [token("05", "WBLCH", true), token("06", "bUSDC", false, 6)],
   assetPlan: {
@@ -93,6 +95,8 @@ test("fails closed for every missing identity field", () => {
     (value) => (value.deployment.pairInitCodeHash = null),
     (value) => (value.deployment.factory.address = null),
     (value) => (value.deployment.router.runtimeCodeHash = null),
+    (value) => (value.deployment.feeAuthority.address = null),
+    (value) => (value.deployment.treasury.runtimeCodeHash = null),
     (value) => (value.tokens = null),
     (value) => (value.tokens[1].runtimeCodeHash = null),
   ]) {
@@ -111,6 +115,10 @@ test("refuses liquidity, live mode, insecure RPC and unsafe token policy", () =>
     (value) => (value.chain.rpcUrl = "https://rpc.invalid/secret-key"),
     (value) =>
       (value.deployment.router.address = value.deployment.factory.address),
+    (value) =>
+      (value.deployment.feeAuthority.address = value.deployment.treasury.address),
+    (value) =>
+      (value.deployment.treasury.address = value.tokens[1].address),
     (value) => (value.tokens[1].address = value.tokens[0].address),
     (value) => (value.tokens[1].policy.feeOnTransfer = true),
     (value) => (value.tokens[1].policy.rebasing = true),
@@ -169,10 +177,13 @@ test("preflight reads a bounded canonical cap envelope and pins every financial 
   await mkdir(join(root, "approvals"));
   const value = valid();
   const envelope = {
-    schemaVersion: 1,
-    domain: "postern.dex.pilot-cap-approval.v1",
+    schemaVersion: 2,
+    domain: "postern.dex.pilot-cap-approval.v2",
     chainId: value.chain.id,
     genesisHash: value.chain.genesisHash,
+    factoryAddress: value.deployment.factory.address,
+    feeAuthorityAddress: value.deployment.feeAuthority.address,
+    treasuryAddress: value.deployment.treasury.address,
     wrappedNativeAddress: value.deployment.wrappedNative.address,
     bridgeAssetAddress: value.assetPlan.bridgeAsset.destinationTokenAddress,
     maxBaseBaseUnits: value.assetPlan.pilotPool.maxBaseBaseUnits,
@@ -197,6 +208,9 @@ test("preflight reads a bounded canonical cap envelope and pins every financial 
   for (const mutate of [
     (candidate) => (candidate.chainId += 1),
     (candidate) => (candidate.genesisHash = H2),
+    (candidate) => (candidate.factoryAddress = contract("09").address),
+    (candidate) => (candidate.feeAuthorityAddress = contract("09").address),
+    (candidate) => (candidate.treasuryAddress = contract("09").address),
     (candidate) => (candidate.wrappedNativeAddress = contract("09").address),
     (candidate) => (candidate.bridgeAssetAddress = contract("09").address),
     (candidate) => (candidate.maxBaseBaseUnits = "1"),

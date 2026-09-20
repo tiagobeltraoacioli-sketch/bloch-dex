@@ -17,6 +17,7 @@ const CONTRACT_NAMES = [
   "collector",
   "wrappedNative",
 ];
+const ROLE_NAMES = ["feeAuthority", "treasury"];
 
 function required(condition, message) {
   if (!condition) throw new Error(`staging preflight: ${message}`);
@@ -151,7 +152,7 @@ export function validateStagingConfig(config) {
   exactKeys(config, ["schemaVersion", "environment", "host", "frontendMode",
     "liquidityEnabled", "chain", "deployment", "tokens", "assetPlan"],
   "configuration");
-  required(config.schemaVersion === 3, "schemaVersion must equal 3");
+  required(config.schemaVersion === 4, "schemaVersion must equal 4");
   required(config.environment === "staging", "environment must equal staging");
   required(config.host === "bloch-dex", "host must equal bloch-dex");
   required(
@@ -189,7 +190,7 @@ export function validateStagingConfig(config) {
 
   const deployment = config.deployment;
   exactKeys(deployment, ["blockNumber", "blockHash", "pairInitCodeHash",
-    ...CONTRACT_NAMES], "deployment");
+    ...CONTRACT_NAMES, ...ROLE_NAMES], "deployment");
   required(
     Number.isSafeInteger(deployment.blockNumber) && deployment.blockNumber >= 0,
     "deployment.blockNumber must be a nonnegative safe integer",
@@ -198,13 +199,15 @@ export function validateStagingConfig(config) {
   validateHash(deployment.pairInitCodeHash, "deployment.pairInitCodeHash");
   for (const name of CONTRACT_NAMES)
     validateContract(deployment[name], `deployment.${name}`);
+  for (const name of ROLE_NAMES)
+    validateContract(deployment[name], `deployment.${name}`);
 
-  const addresses = CONTRACT_NAMES.map((name) =>
+  const addresses = [...CONTRACT_NAMES, ...ROLE_NAMES].map((name) =>
     deployment[name].address.toLowerCase(),
   );
   required(
     new Set(addresses).size === addresses.length,
-    "contract addresses must be unique",
+    "deployment and custody addresses must be unique",
   );
   required(
     Array.isArray(config.tokens) &&
@@ -230,7 +233,7 @@ export function validateStagingConfig(config) {
     "wrapped-native token identity must match the deployment",
   );
   const reserved = new Set(
-    ["factory", "router", "lens", "collector"].map((name) =>
+    ["factory", "router", "lens", "collector", ...ROLE_NAMES].map((name) =>
       deployment[name].address.toLowerCase(),
     ),
   );
@@ -308,15 +311,19 @@ async function verifyCapApproval(config, configPath) {
   try { envelope = JSON.parse(bytes.toString("utf8")); }
   catch { throw new Error("staging preflight: cap approval artifact is invalid JSON"); }
   exactKeys(envelope, ["schemaVersion", "domain", "chainId", "genesisHash",
+    "factoryAddress", "feeAuthorityAddress", "treasuryAddress",
     "wrappedNativeAddress", "bridgeAssetAddress", "maxBaseBaseUnits",
     "maxQuoteBaseUnits"], "cap approval envelope");
   required(bytes.equals(Buffer.from(`${stableJson(envelope)}\n`, "utf8")),
     "cap approval envelope is not canonical JSON");
   const expected = {
-    schemaVersion: 1,
-    domain: "postern.dex.pilot-cap-approval.v1",
+    schemaVersion: 2,
+    domain: "postern.dex.pilot-cap-approval.v2",
     chainId: config.chain.id,
     genesisHash: config.chain.genesisHash,
+    factoryAddress: config.deployment.factory.address,
+    feeAuthorityAddress: config.deployment.feeAuthority.address,
+    treasuryAddress: config.deployment.treasury.address,
     wrappedNativeAddress: config.deployment.wrappedNative.address,
     bridgeAssetAddress: config.assetPlan.bridgeAsset.destinationTokenAddress,
     maxBaseBaseUnits: config.assetPlan.pilotPool.maxBaseBaseUnits,

@@ -22,7 +22,7 @@ function contract(suffix) {
 
 function configuration() {
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     environment: "staging",
     host: "bloch-dex",
     frontendMode: "preview",
@@ -37,6 +37,8 @@ function configuration() {
       lens: contract("03"),
       collector: contract("04"),
       wrappedNative: contract("05"),
+      feeAuthority: contract("07"),
+      treasury: contract("08"),
     },
     tokens: [
       {
@@ -49,13 +51,27 @@ function configuration() {
       },
       {
         ...contract("06"),
-        symbol: "ASSET",
-        name: "Asset",
+        symbol: "bUSDC",
+        name: "Bridged USDC",
         decimals: 6,
         wrappedNative: false,
         policy: { feeOnTransfer: false, rebasing: false },
       },
     ],
+    assetPlan: {
+      blochL1: { nativeSymbol: "BLCH", evmExecution: false,
+        authorizationBoundary: "external-post-quantum" },
+      bridgeAsset: { sourceChain: "ethereum-mainnet", sourceChainId: 1,
+        sourceSymbol: "USDC",
+        sourceTokenAddress: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        destinationSymbol: "bUSDC", destinationTokenAddress: contract("06").address },
+      pilotPool: { baseSymbol: "BLCH", onchainBaseSymbol: "WBLCH",
+        quoteSymbol: "bUSDC", liquidityEnabled: false,
+        maxBaseBaseUnits: "10000000000000000000",
+        maxQuoteBaseUnits: "10000000",
+        policyCapApproval: { path: "approvals/pilot-cap.json", sha256: H1 },
+        requiresSeparateApproval: true },
+    },
   };
 }
 
@@ -72,6 +88,7 @@ function manifest(revision = "a".repeat(40)) {
     sourceRevision: revision,
     deploymentConfiguration,
     configurationSha256: sha256(stableJson(deploymentConfiguration)),
+    capApprovalVerified: false,
     frontendLockSha256: "b".repeat(64),
     files: [{ path: "index.html", bytes: 5, sha256: "c".repeat(64) }],
   };

@@ -29,7 +29,16 @@ collector and wrapped-native contract. The target must remain `bloch-dex` in
 `preview` mode with liquidity explicitly disabled. It performs no RPC, SSH,
 wallet or deployment action.
 
-Schema version 3 also requires 2–64 reviewed token entries. Each pins a unique
+Schema version 4 also requires the fee authority and treasury as distinct
+nonzero identities, including the expected runtime-code hash (the empty-code
+hash for a reviewed EOA). Neither role may alias deployment infrastructure or a
+listed token. This closes the gap between the documented custody requirements
+and the machine-checked manifest. The signed read-only frontend independently
+rechecks both role code hashes, the factory's exact authority, zero fee recipient
+and zero pending authority, plus the collector's immutable treasury binding at
+the same pinned snapshot used for the other deployment checks.
+
+Schema version 4 also requires 2–64 reviewed token entries. Each pins a unique
 address, runtime-code hash, 2–12 character ASCII symbol, display name and 0–36
 decimals. Exactly one token must be the wrapped-native deployment identity.
 Fee-on-transfer and rebasing assets are rejected because the lens quote and
@@ -51,8 +60,8 @@ and 10 bUSDC base units (`10e6`) per initial-liquidity side. The template keeps
 both selected caps and `policyCapApproval` null, so it cannot be mistaken for an
 approved exposure. A reviewed config must select equal-or-lower caps and provide
 a bounded `{path, sha256}` reference under `approvals/` to a canonical envelope.
-That envelope binds its schema/domain, selected EVM chain ID and genesis hash,
-WBLCH and bUSDC addresses, and both exact caps. The preflight reads it through a
+That version-2 envelope binds its schema/domain, selected EVM chain ID and genesis hash,
+factory, fee authority, treasury, WBLCH and bUSDC addresses, and both exact caps. The preflight reads it through a
 pinned regular-file descriptor, checks its canonical bytes and hash, and rejects
 any mismatch. Because signature verification remains an out-of-band human
 control, preflight/build report `capApprovalVerified:false`; the hash is not a

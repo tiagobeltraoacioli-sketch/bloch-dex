@@ -167,6 +167,7 @@ export function validateManifest(payload) {
       "sourceRevision",
       "deploymentConfiguration",
       "configurationSha256",
+      "capApprovalVerified",
       "frontendLockSha256",
       "files",
     ],
@@ -174,7 +175,8 @@ export function validateManifest(payload) {
   );
   if (
     payload.schemaVersion !== 1 ||
-    !/^[0-9a-f]{40}$/.test(payload.sourceRevision)
+    !/^[0-9a-f]{40}$/.test(payload.sourceRevision) ||
+    payload.capApprovalVerified !== false
   )
     fail("manifest identity is invalid");
   exactKeys(

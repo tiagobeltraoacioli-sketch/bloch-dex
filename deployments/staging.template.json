@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "environment": "staging",
   "host": "bloch-dex",
   "frontendMode": "preview",
@@ -17,7 +17,9 @@
     "router": { "address": null, "runtimeCodeHash": null },
     "lens": { "address": null, "runtimeCodeHash": null },
     "collector": { "address": null, "runtimeCodeHash": null },
-    "wrappedNative": { "address": null, "runtimeCodeHash": null }
+    "wrappedNative": { "address": null, "runtimeCodeHash": null },
+    "feeAuthority": { "address": null, "runtimeCodeHash": null },
+    "treasury": { "address": null, "runtimeCodeHash": null }
   },
   "tokens": null,
   "assetPlan": {

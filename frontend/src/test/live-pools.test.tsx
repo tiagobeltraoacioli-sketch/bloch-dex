@@ -19,7 +19,7 @@ const token1 = address('2');
 const pair = address('3');
 
 const registry = {
-  schemaVersion: 2,
+  schemaVersion: 4,
   environment: 'staging',
   host: 'bloch-dex',
   frontendMode: 'preview',
@@ -34,6 +34,8 @@ const registry = {
     lens: { address: address('6'), runtimeCodeHash: hash('6') },
     collector: { address: address('7'), runtimeCodeHash: hash('7') },
     wrappedNative: { address: address('8'), runtimeCodeHash: hash('8') },
+    feeAuthority: { address: address('9'), runtimeCodeHash: hash('9') },
+    treasury: { address: address('a'), runtimeCodeHash: hash('a') },
   },
   tokens: [
     {
@@ -57,13 +59,41 @@ const registry = {
     {
       address: token1,
       runtimeCodeHash: hash('2'),
-      symbol: 'BETA',
-      name: 'Beta',
+      symbol: 'bUSDC',
+      name: 'Bridged USDC',
       decimals: 6,
       wrappedNative: false,
       policy: { feeOnTransfer: false, rebasing: false },
     },
   ],
+  assetPlan: {
+    blochL1: {
+      nativeSymbol: 'BLCH',
+      evmExecution: false,
+      authorizationBoundary: 'external-post-quantum',
+    },
+    bridgeAsset: {
+      sourceChain: 'ethereum-mainnet',
+      sourceChainId: 1,
+      sourceSymbol: 'USDC',
+      sourceTokenAddress: address('b'),
+      destinationSymbol: 'bUSDC',
+      destinationTokenAddress: token1,
+    },
+    pilotPool: {
+      baseSymbol: 'BLCH',
+      onchainBaseSymbol: 'WBLCH',
+      quoteSymbol: 'bUSDC',
+      liquidityEnabled: false,
+      maxBaseBaseUnits: '10000000000000000000',
+      maxQuoteBaseUnits: '10000000',
+      policyCapApproval: {
+        path: 'approvals/pilot-cap.json',
+        sha256: hash('c'),
+      },
+      requiresSeparateApproval: true,
+    },
+  },
 } satisfies DeploymentRegistry;
 
 function page(reserve0 = 123n * 10n ** 18n): LivePoolPage {
@@ -109,9 +139,9 @@ describe('read-only live pool UI', () => {
     render(<LivePools reader={reader(pending)} />);
     expect(screen.getByRole('status').textContent).toContain('Loading one authenticated block');
     resolve({ available: true, value: page() });
-    expect(await screen.findByText('ALPHA / BETA')).toBeTruthy();
+    expect(await screen.findByText('ALPHA / bUSDC')).toBeTruthy();
     expect(screen.getByText('123 ALPHA')).toBeTruthy();
-    expect(screen.getByText('456 BETA')).toBeTruthy();
+    expect(screen.getByText('456 bUSDC')).toBeTruthy();
     expect(screen.getByText(/Snapshot block 32/)).toBeTruthy();
     expect(screen.getByText(/no fixture fallback/i)).toBeTruthy();
     expect(screen.queryByRole('button', { name: /swap|liquidity|approve|deposit/i })).toBeNull();
@@ -129,7 +159,7 @@ describe('read-only live pool UI', () => {
     expect(await screen.findByText(new RegExp(copy))).toBeTruthy();
     expect(screen.getByText(/was not substituted|was not displayed/)).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: /retry read/i }));
-    expect(await screen.findByText('ALPHA / BETA')).toBeTruthy();
+    expect(await screen.findByText('ALPHA / bUSDC')).toBeTruthy();
     expect(pools).toHaveBeenCalledTimes(2);
   });
 
@@ -183,7 +213,7 @@ describe('read-only live pool runtime', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('registry or RPC provider');
     expect(screen.getByText(/Preview data was not substituted/)).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: /retry deployment read/i }));
-    expect(await screen.findByText('ALPHA / BETA')).toBeTruthy();
+    expect(await screen.findByText('ALPHA / bUSDC')).toBeTruthy();
     expect(open).toHaveBeenCalledTimes(2);
   });
 

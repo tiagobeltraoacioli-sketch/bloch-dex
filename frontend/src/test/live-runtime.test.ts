@@ -22,7 +22,7 @@ beforeAll(async () => {
 
 function configuration() {
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
@@ -37,6 +37,8 @@ function configuration() {
       lens: { address: address('3'), runtimeCodeHash: hash('3') },
       collector: { address: address('4'), runtimeCodeHash: hash('4') },
       wrappedNative: { address: address('5'), runtimeCodeHash: hash('5') },
+      feeAuthority: { address: address('7'), runtimeCodeHash: hash('7') },
+      treasury: { address: address('8'), runtimeCodeHash: hash('8') },
     },
     tokens: [
       {
@@ -51,13 +53,41 @@ function configuration() {
       {
         address: address('6'),
         runtimeCodeHash: hash('6'),
-        symbol: 'ALPHA',
-        name: 'Alpha',
+        symbol: 'bUSDC',
+        name: 'Bridged USDC',
         decimals: 6,
         wrappedNative: false,
         policy: { feeOnTransfer: false, rebasing: false },
       },
     ],
+    assetPlan: {
+      blochL1: {
+        nativeSymbol: 'BLCH',
+        evmExecution: false,
+        authorizationBoundary: 'external-post-quantum',
+      },
+      bridgeAsset: {
+        sourceChain: 'ethereum-mainnet',
+        sourceChainId: 1,
+        sourceSymbol: 'USDC',
+        sourceTokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        destinationSymbol: 'bUSDC',
+        destinationTokenAddress: address('6'),
+      },
+      pilotPool: {
+        baseSymbol: 'BLCH',
+        onchainBaseSymbol: 'WBLCH',
+        quoteSymbol: 'bUSDC',
+        liquidityEnabled: false,
+        maxBaseBaseUnits: '10000000000000000000',
+        maxQuoteBaseUnits: '10000000',
+        policyCapApproval: {
+          path: 'approvals/pilot-cap.json',
+          sha256: hash('9'),
+        },
+        requiresSeparateApproval: true,
+      },
+    },
   };
 }
 
@@ -91,6 +121,7 @@ async function artifact(overrides: Record<string, unknown> = {}) {
       },
       configurationSha256: await fingerprint(deploymentConfiguration),
       deploymentConfiguration,
+      capApprovalVerified: false,
       ...overrides,
     },
     LIVE_MANIFEST_DOMAIN,
@@ -275,7 +306,7 @@ describe('deployment registry composition', () => {
       expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
       fetchFn,
     };
-    await expect(loadDeploymentRegistry(options)).resolves.toMatchObject({ schemaVersion: 2 });
+    await expect(loadDeploymentRegistry(options)).resolves.toMatchObject({ schemaVersion: 4 });
     await expect(
       loadDeploymentRegistry({
         ...options,

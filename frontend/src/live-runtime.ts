@@ -349,6 +349,10 @@ export async function loadDeploymentRegistry(
     );
     ensure(REVISION.test(String(manifest.sourceRevision)), 'artifact source revision is invalid');
     ensure(
+      manifest.capApprovalVerified === false,
+      'artifact must not claim automated cap-approval verification',
+    );
+    ensure(
       SHA256.test(String(manifest.configurationSha256)),
       'configuration fingerprint is invalid',
     );

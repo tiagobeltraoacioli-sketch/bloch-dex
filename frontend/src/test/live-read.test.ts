@@ -16,6 +16,8 @@ const addresses = {
   lens: `0x${'33'.repeat(20)}` as Address,
   collector: `0x${'44'.repeat(20)}` as Address,
   wrappedNative: `0x${'55'.repeat(20)}` as Address,
+  feeAuthority: `0x${'aa'.repeat(20)}` as Address,
+  treasury: `0x${'bb'.repeat(20)}` as Address,
   tokenA: `0x${'66'.repeat(20)}` as Address,
   tokenB: `0x${'77'.repeat(20)}` as Address,
   pair: `0x${'88'.repeat(20)}` as Address,
@@ -27,6 +29,8 @@ const codes = {
   lens: '0x6003',
   collector: '0x6004',
   wrappedNative: '0x6005',
+  feeAuthority: '0x',
+  treasury: '0x',
   tokenA: '0x6006',
   tokenB: '0x6007',
 } satisfies Partial<Record<keyof typeof addresses, Hex>>;
@@ -34,8 +38,14 @@ const genesisHash = `0x${'aa'.repeat(32)}` as Hex;
 const deploymentHash = `0x${'bb'.repeat(32)}` as Hex;
 const snapshotHash = `0x${'cc'.repeat(32)}` as Hex;
 const pairInitCodeHash = `0x${'dd'.repeat(32)}` as Hex;
+const ZERO_ADDRESS = `0x${'00'.repeat(20)}` as Address;
 
-const factoryAbi = parseAbi(['function INIT_CODE_PAIR_HASH() view returns (bytes32)']);
+const factoryAbi = parseAbi([
+  'function INIT_CODE_PAIR_HASH() view returns (bytes32)',
+  'function feeTo() view returns (address)',
+  'function feeToSetter() view returns (address)',
+  'function pendingFeeToSetter() view returns (address)',
+]);
 const routerAbi = parseAbi([
   'function factory() view returns (address)',
   'function WBLCH() view returns (address)',
@@ -48,6 +58,7 @@ const lensAbi = parseAbi([
 ]);
 const collectorAbi = parseAbi([
   'function factory() view returns (address)',
+  'function treasury() view returns (address)',
   'function wblch() view returns (address)',
 ]);
 const tokenAbi = parseAbi(['function balanceOf(address owner) view returns (uint256)']);
@@ -74,7 +85,7 @@ const balanceSelector = encodeFunctionData({
 
 function registry() {
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
@@ -90,6 +101,11 @@ function registry() {
           { address: addresses[name], runtimeCodeHash: keccak256(codes[name]) },
         ]),
       ),
+      feeAuthority: {
+        address: addresses.feeAuthority,
+        runtimeCodeHash: keccak256(codes.feeAuthority),
+      },
+      treasury: { address: addresses.treasury, runtimeCodeHash: keccak256(codes.treasury) },
     },
     tokens: [
       {
@@ -113,13 +129,38 @@ function registry() {
       {
         address: addresses.tokenB,
         runtimeCodeHash: keccak256(codes.tokenB),
-        symbol: 'TOKENB',
-        name: 'Token B',
+        symbol: 'bUSDC',
+        name: 'Bridged USDC',
         decimals: 6,
         wrappedNative: false,
         policy: { feeOnTransfer: false, rebasing: false },
       },
     ],
+    assetPlan: {
+      blochL1: {
+        nativeSymbol: 'BLCH',
+        evmExecution: false,
+        authorizationBoundary: 'external-post-quantum',
+      },
+      bridgeAsset: {
+        sourceChain: 'ethereum-mainnet',
+        sourceChainId: 1,
+        sourceSymbol: 'USDC',
+        sourceTokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        destinationSymbol: 'bUSDC',
+        destinationTokenAddress: addresses.tokenB,
+      },
+      pilotPool: {
+        baseSymbol: 'BLCH',
+        onchainBaseSymbol: 'WBLCH',
+        quoteSymbol: 'bUSDC',
+        liquidityEnabled: false,
+        maxBaseBaseUnits: '10000000000000000000',
+        maxQuoteBaseUnits: '10000000',
+        policyCapApproval: { path: 'approvals/pilot-cap.json', sha256: genesisHash },
+        requiresSeparateApproval: true,
+      },
+    },
   };
 }
 
@@ -135,7 +176,12 @@ function fixture(
     genesisHash?: Hex;
     code?: Hex;
     tokenCode?: Hex;
+    roleCode?: Hex;
     routerFactory?: Address;
+    feeTo?: Address;
+    feeToSetter?: Address;
+    pendingFeeToSetter?: Address;
+    collectorTreasury?: Address;
     reorg?: boolean;
     quoteAvailable?: boolean;
     poolExists?: boolean;
@@ -169,6 +215,7 @@ function fixture(
       if (name) {
         if (overrides.code && name === 'router') return overrides.code;
         if (overrides.tokenCode && name === 'tokenA') return overrides.tokenCode;
+        if (overrides.roleCode && name === 'treasury') return overrides.roleCode;
         return codes[name];
       }
     }
@@ -206,7 +253,34 @@ function fixture(
           functionName: 'wblch',
           result: addresses.wrappedNative,
         });
-      if (call.to === addresses.factory)
+      if (call.to === addresses.collector && signature === selector(collectorAbi, 'treasury'))
+        return encodeFunctionResult({
+          abi: collectorAbi,
+          functionName: 'treasury',
+          result: overrides.collectorTreasury ?? addresses.treasury,
+        });
+      if (call.to === addresses.factory && signature === selector(factoryAbi, 'feeTo'))
+        return encodeFunctionResult({
+          abi: factoryAbi,
+          functionName: 'feeTo',
+          result: overrides.feeTo ?? ZERO_ADDRESS,
+        });
+      if (call.to === addresses.factory && signature === selector(factoryAbi, 'feeToSetter'))
+        return encodeFunctionResult({
+          abi: factoryAbi,
+          functionName: 'feeToSetter',
+          result: overrides.feeToSetter ?? addresses.feeAuthority,
+        });
+      if (call.to === addresses.factory && signature === selector(factoryAbi, 'pendingFeeToSetter'))
+        return encodeFunctionResult({
+          abi: factoryAbi,
+          functionName: 'pendingFeeToSetter',
+          result: overrides.pendingFeeToSetter ?? ZERO_ADDRESS,
+        });
+      if (
+        call.to === addresses.factory &&
+        signature === selector(factoryAbi, 'INIT_CODE_PAIR_HASH')
+      )
         return encodeFunctionResult({
           abi: factoryAbi,
           functionName: 'INIT_CODE_PAIR_HASH',
@@ -295,7 +369,7 @@ function fixture(
 
 describe('fail-closed live deployment reads', () => {
   it('rejects an incomplete or transaction-enabled registry before provider access', async () => {
-    expect(() => parseDeploymentRegistry({})).toThrow('schema');
+    expect(() => parseDeploymentRegistry({})).toThrow('fields');
     const enabled = registry();
     enabled.liquidityEnabled = true;
     const f = fixture();
@@ -348,7 +422,12 @@ describe('fail-closed live deployment reads', () => {
     ['genesis', { genesisHash: `0x${'ee'.repeat(32)}` as Hex }, 'genesis'],
     ['runtime code', { code: '0x6009' as Hex }, 'router code hash'],
     ['token runtime code', { tokenCode: '0x6009' as Hex }, 'TOKENA token code hash'],
+    ['custody runtime code', { roleCode: '0x6009' as Hex }, 'treasury code hash'],
     ['router binding', { routerFactory: addresses.tokenA }, 'router factory'],
+    ['collector treasury', { collectorTreasury: addresses.tokenA }, 'collector treasury'],
+    ['fee recipient', { feeTo: addresses.treasury }, 'factory fee controls'],
+    ['fee authority', { feeToSetter: addresses.tokenA }, 'factory fee controls'],
+    ['pending fee authority', { pendingFeeToSetter: addresses.tokenA }, 'factory fee controls'],
     ['snapshot reorganization', { reorg: true }, 'snapshot block changed'],
   ])('rejects a mismatched %s', async (_label, override, message) => {
     const f = fixture(override);
