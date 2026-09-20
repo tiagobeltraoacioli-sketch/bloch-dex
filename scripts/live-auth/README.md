@@ -890,6 +890,76 @@ store. Neither signature authorizes retry, cleanup, service activation or asset
 movement. Retain the new receipt digest and new authority pin independently
 before treating the handoff as current.
 
+For a single externally retainable pin that carries both the accepted receipt
+tip and its authenticated authority, bootstrap an authority head from an
+already independently verified receipt. This is the only trust-on-first-use
+step: all receipt, key, generation and inspection fields remain explicit pins.
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs create-checkpoint-evidence-receipt-authority-head \
+  --store <private-operations-directory> \
+  --receipt <accepted-inspection-receipt.json> \
+  --public-key <pinned-receipt-public-key.pem> --key-generation <generation> \
+  --expected-receipt-sha256 <externally-retained-receipt-sha256> \
+  --expected-receipt-sequence <sequence> \
+  --expected-previous-receipt-sha256 <genesis-or-prior-receipt-sha256> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <approved-after-sha256> \
+  --expected-outcome <committed-or-not-committed> \
+  --output <authority-head.json>
+```
+
+Retain the canonical SHA-256 of that head outside the operations store. Normal
+receipts advance it without accepting a caller-selected key; the verifier
+reconstructs the exact Ed25519 authority from the pinned head and requires the
+next consecutive signed receipt:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs advance-checkpoint-evidence-receipt-authority-head \
+  --store <private-operations-directory> --head <authority-head.json> \
+  --expected-head-sha256 <externally-retained-authority-head-sha256> \
+  --receipt <next-inspection-receipt.json> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <approved-after-sha256> \
+  --expected-outcome <committed-or-not-committed> \
+  --output <next-authority-head.json>
+```
+
+At a key change, use the same externally retained head together with the old
+receipt and complete dual-signed rotation ceremony:
+
+```sh
+node scripts/publication-quorum-transport-operations.mjs rotate-checkpoint-evidence-receipt-authority-head \
+  --store <private-operations-directory> --head <authority-head.json> \
+  --expected-head-sha256 <externally-retained-authority-head-sha256> \
+  --receipt <new-key-inspection-receipt.json> \
+  --previous-receipt <old-key-inspection-receipt.json> \
+  --rotation <receipt-authority-rotation.json> \
+  --previous-authorization <old-authority-authorization.json> \
+  --next-acceptance <new-authority-acceptance.json> \
+  --expected-starting-checkpoint-sha256 <approved-before-sha256> \
+  --expected-completed-checkpoint-sha256 <approved-after-sha256> \
+  --expected-outcome <committed-or-not-committed> \
+  --output <rotated-authority-head.json>
+```
+
+Each head links the exact prior head digest, accepted receipt digest and
+sequence, current raw public key and generation, rotation count and latest
+rotation digest. Rotation derives the next authority only from the transition
+authorized by the old key and accepted by the new key; it does not perform TOFU
+for a caller-selected replacement key. A rolled-back or substituted predecessor,
+replayed rotation, skipped receipt, wrong role or wrong key fails before a new
+candidate is emitted. `advance-...` and `rotate-...` only construct verified
+candidates: they do not atomically accept or publish one. Two concurrent
+operations can derive distinct valid candidates with the same
+`previousHeadSha256`. The independent trust domain retaining the head must use
+an atomic compare-and-swap on the exact expected digest, or an append-only log
+with equivalent single-successor semantics, and reject the second commit. A
+local output file, successful command or candidate digest is not acceptance and
+does not prevent a cross-host fork. Heads and outputs are create-only and retain
+the same `filesRemoved`, `retryAuthorized` and `cleanupAuthorized` false
+capabilities.
+
 If the lock is removed, replaced, hardlinked or otherwise changed while an
 operation is running, cleanup preserves the observed files and fails closed.
 Treat the operation outcome as ambiguous: do not delete either lock path or

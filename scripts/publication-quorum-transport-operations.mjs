@@ -2400,6 +2400,212 @@ export function verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorit
   };
 }
 
+function validateCheckpointRecoveryReceiptAuthorityHead(value) {
+  value = JSON.parse(canonicalJson(value));
+  exactKeys(value, [
+    "schemaVersion", "kind", "previousHeadSha256", "receiptSha256",
+    "receiptSequence", "authorityRotationSequence",
+    "latestAuthorityRotationSha256", "authority", "filesRemoved",
+    "retryAuthorized", "cleanupAuthorized",
+  ], "checkpoint recovery receipt authority head");
+  if (value.schemaVersion !== 1 ||
+      value.kind !== "operations-checkpoint-recovery-receipt-authority-head")
+    fail("checkpoint recovery receipt authority head identity is invalid");
+  if (value.previousHeadSha256 !== "genesis")
+    requireHash(value.previousHeadSha256, "receipt authority previous head hash");
+  requireHash(value.receiptSha256, "receipt authority retained receipt hash");
+  positiveInteger(value.receiptSequence, "receipt authority retained receipt sequence");
+  if (!Number.isSafeInteger(value.authorityRotationSequence) ||
+      value.authorityRotationSequence < 0)
+    fail("receipt authority rotation sequence is invalid");
+  if (value.authorityRotationSequence === 0) {
+    if (value.latestAuthorityRotationSha256 !== "genesis")
+      fail("receipt authority genesis head has a rotation hash");
+  } else {
+    requireHash(value.latestAuthorityRotationSha256,
+      "receipt authority latest rotation hash");
+  }
+  exactKeys(value.authority, ["keyId", "keyGeneration", "publicKeyBase64Url"],
+    "checkpoint recovery receipt head authority");
+  const parsed = authorityFromRaw(
+    value.authority.publicKeyBase64Url, value.authority.keyGeneration,
+  );
+  if (value.authority.keyId !== parsed.keyId || value.filesRemoved !== false ||
+      value.retryAuthorized !== false || value.cleanupAuthorized !== false)
+    fail("checkpoint recovery receipt authority head is invalid");
+  return value;
+}
+
+function nextCheckpointRecoveryReceiptAuthorityHead({
+  previousHeadSha256,
+  receiptSha256,
+  receiptSequence,
+  authorityRotationSequence,
+  latestAuthorityRotationSha256,
+  authority,
+}) {
+  return validateCheckpointRecoveryReceiptAuthorityHead({
+    schemaVersion: 1,
+    kind: "operations-checkpoint-recovery-receipt-authority-head",
+    previousHeadSha256,
+    receiptSha256,
+    receiptSequence,
+    authorityRotationSequence,
+    latestAuthorityRotationSha256,
+    authority,
+    filesRemoved: false,
+    retryAuthorized: false,
+    cleanupAuthorized: false,
+  });
+}
+
+export function createOperationsCheckpointRecoveryReceiptAuthorityHead({
+  receipt,
+  publicKey,
+  keyGeneration,
+  expectedReceiptSha256,
+  expectedReceiptSequence,
+  expectedPreviousReceiptSha256,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+  expectedOutcome,
+}) {
+  requireHash(expectedReceiptSha256, "externally pinned receipt hash");
+  const verification = verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt,
+    publicKey,
+    keyGeneration,
+    expectedReceiptSequence,
+    expectedPreviousReceiptSha256,
+    expectedStartingCheckpointSha256,
+    expectedCompletedCheckpointSha256,
+    expectedOutcome,
+  });
+  if (verification.receiptSha256 !== expectedReceiptSha256)
+    fail("checkpoint recovery receipt does not match the externally pinned bootstrap hash");
+  return nextCheckpointRecoveryReceiptAuthorityHead({
+    previousHeadSha256: "genesis",
+    receiptSha256: verification.receiptSha256,
+    receiptSequence: verification.receiptSequence,
+    authorityRotationSequence: 0,
+    latestAuthorityRotationSha256: "genesis",
+    authority: receiptAuthorityDescriptor(publicKey, keyGeneration),
+  });
+}
+
+function pinnedCheckpointRecoveryReceiptAuthorityHead(headInput, expectedHeadSha256) {
+  requireHash(expectedHeadSha256, "externally pinned receipt authority head hash");
+  const head = validateCheckpointRecoveryReceiptAuthorityHead(headInput);
+  if (canonicalSha256(head) !== expectedHeadSha256)
+    fail("checkpoint recovery receipt authority head does not match the external pin");
+  if (head.receiptSequence === Number.MAX_SAFE_INTEGER)
+    fail("checkpoint recovery receipt sequence is exhausted");
+  return head;
+}
+
+/**
+ * Verifies one ordinary successor and returns a candidate authority head.
+ * This function does not accept or publish the candidate. The external trust
+ * domain retaining `expectedHeadSha256` must atomically compare-and-swap that
+ * exact pin (or append once to an equivalent log); concurrent callers can
+ * legitimately derive distinct candidates from the same predecessor.
+ */
+export function advanceOperationsCheckpointRecoveryReceiptAuthorityHead({
+  head: headInput,
+  expectedHeadSha256,
+  receipt,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+  expectedOutcome,
+}) {
+  const head = pinnedCheckpointRecoveryReceiptAuthorityHead(
+    headInput, expectedHeadSha256,
+  );
+  const authority = authorityFromRaw(
+    head.authority.publicKeyBase64Url, head.authority.keyGeneration,
+  );
+  const verification = verifyOperationsCheckpointRecoveryInspectionReceipt({
+    receipt,
+    publicKey: authority.publicKey,
+    keyGeneration: head.authority.keyGeneration,
+    expectedReceiptSequence: head.receiptSequence + 1,
+    expectedPreviousReceiptSha256: head.receiptSha256,
+    expectedStartingCheckpointSha256,
+    expectedCompletedCheckpointSha256,
+    expectedOutcome,
+  });
+  return nextCheckpointRecoveryReceiptAuthorityHead({
+    previousHeadSha256: expectedHeadSha256,
+    receiptSha256: verification.receiptSha256,
+    receiptSequence: verification.receiptSequence,
+    authorityRotationSequence: head.authorityRotationSequence,
+    latestAuthorityRotationSha256: head.latestAuthorityRotationSha256,
+    authority: head.authority,
+  });
+}
+
+/**
+ * Verifies one dual-signed rotation and returns a candidate authority head.
+ * This function has no cross-process or cross-host commit side effect. Treat
+ * `expectedHeadSha256` as a CAS precondition in the independent trust domain
+ * and accept exactly one candidate for it.
+ */
+export function rotateOperationsCheckpointRecoveryReceiptAuthorityHead({
+  head: headInput,
+  expectedHeadSha256,
+  receipt,
+  previousReceipt,
+  rotation: rotationInput,
+  previousAuthorization,
+  nextAcceptance,
+  expectedStartingCheckpointSha256,
+  expectedCompletedCheckpointSha256,
+  expectedOutcome,
+}) {
+  const head = pinnedCheckpointRecoveryReceiptAuthorityHead(
+    headInput, expectedHeadSha256,
+  );
+  if (head.authorityRotationSequence === Number.MAX_SAFE_INTEGER)
+    fail("checkpoint recovery receipt authority rotation sequence is exhausted");
+  const rotation = validateCheckpointRecoveryReceiptAuthorityRotation(rotationInput);
+  if (rotation.previousReceiptSha256 !== head.receiptSha256 ||
+      rotation.previousReceiptSequence !== head.receiptSequence ||
+      rotation.nextReceiptSequence !== head.receiptSequence + 1 ||
+      canonicalJson(rotation.previousAuthority) !== canonicalJson(head.authority))
+    fail("checkpoint recovery receipt rotation does not succeed the retained authority head");
+  const previousAuthority = authorityFromRaw(
+    head.authority.publicKeyBase64Url, head.authority.keyGeneration,
+  );
+  const nextAuthority = authorityFromRaw(
+    rotation.nextAuthority.publicKeyBase64Url,
+    rotation.nextAuthority.keyGeneration,
+  );
+  const verification =
+    verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
+      receipt,
+      previousReceipt,
+      rotation,
+      previousAuthorization,
+      nextAcceptance,
+      expectedPreviousReceiptSha256: head.receiptSha256,
+      expectedPreviousPublicKey: previousAuthority.publicKey,
+      expectedPreviousKeyGeneration: head.authority.keyGeneration,
+      expectedNextPublicKey: nextAuthority.publicKey,
+      expectedNextKeyGeneration: rotation.nextAuthority.keyGeneration,
+      expectedStartingCheckpointSha256,
+      expectedCompletedCheckpointSha256,
+      expectedOutcome,
+    });
+  return nextCheckpointRecoveryReceiptAuthorityHead({
+    previousHeadSha256: expectedHeadSha256,
+    receiptSha256: verification.receiptSha256,
+    receiptSequence: verification.receiptSequence,
+    authorityRotationSequence: head.authorityRotationSequence + 1,
+    latestAuthorityRotationSha256: canonicalSha256(rotation),
+    authority: rotation.nextAuthority,
+  });
+}
+
 async function prepareOperationsAnchorStatementAtRoot(
   root,
   directoryAlreadyPinned = false,
@@ -3970,6 +4176,108 @@ async function main() {
     console.log(canonicalJson(verification));
     return;
   }
+  if (command === "create-checkpoint-evidence-receipt-authority-head") {
+    const v = parse(args, [
+      "--store", "--receipt", "--public-key", "--key-generation",
+      "--expected-receipt-sha256", "--expected-receipt-sequence",
+      "--expected-previous-receipt-sha256",
+      "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--expected-outcome", "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let head;
+    try {
+      head = createOperationsCheckpointRecoveryReceiptAuthorityHead({
+        receipt: await securePublicJson(
+          v["--receipt"], "checkpoint recovery inspection receipt",
+        ),
+        publicKey: await readPublicKey(v["--public-key"]),
+        keyGeneration: Number(v["--key-generation"]),
+        expectedReceiptSha256: v["--expected-receipt-sha256"],
+        expectedReceiptSequence: Number(v["--expected-receipt-sequence"]),
+        expectedPreviousReceiptSha256: v["--expected-previous-receipt-sha256"],
+        expectedStartingCheckpointSha256: v["--expected-starting-checkpoint-sha256"],
+        expectedCompletedCheckpointSha256: v["--expected-completed-checkpoint-sha256"],
+        expectedOutcome: v["--expected-outcome"],
+      });
+      await writeReservedOperationsOutput(reservation, head);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson({ authorityHeadSha256: canonicalSha256(head) }));
+    return;
+  }
+  if (command === "advance-checkpoint-evidence-receipt-authority-head") {
+    const v = parse(args, [
+      "--store", "--head", "--expected-head-sha256", "--receipt",
+      "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--expected-outcome", "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let head;
+    try {
+      head = advanceOperationsCheckpointRecoveryReceiptAuthorityHead({
+        head: await securePublicJson(v["--head"], "receipt authority head"),
+        expectedHeadSha256: v["--expected-head-sha256"],
+        receipt: await securePublicJson(
+          v["--receipt"], "checkpoint recovery inspection receipt",
+        ),
+        expectedStartingCheckpointSha256: v["--expected-starting-checkpoint-sha256"],
+        expectedCompletedCheckpointSha256: v["--expected-completed-checkpoint-sha256"],
+        expectedOutcome: v["--expected-outcome"],
+      });
+      await writeReservedOperationsOutput(reservation, head);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson({ authorityHeadSha256: canonicalSha256(head) }));
+    return;
+  }
+  if (command === "rotate-checkpoint-evidence-receipt-authority-head") {
+    const v = parse(args, [
+      "--store", "--head", "--expected-head-sha256", "--receipt",
+      "--previous-receipt", "--rotation", "--previous-authorization",
+      "--next-acceptance", "--expected-starting-checkpoint-sha256",
+      "--expected-completed-checkpoint-sha256", "--expected-outcome", "--output",
+    ]);
+    const reservation = await reserveOutputOutsideOperationsStore(
+      v["--store"], v["--output"],
+    );
+    let head;
+    try {
+      head = rotateOperationsCheckpointRecoveryReceiptAuthorityHead({
+        head: await securePublicJson(v["--head"], "receipt authority head"),
+        expectedHeadSha256: v["--expected-head-sha256"],
+        receipt: await securePublicJson(
+          v["--receipt"], "rotated checkpoint recovery inspection receipt",
+        ),
+        previousReceipt: await securePublicJson(
+          v["--previous-receipt"], "previous checkpoint recovery receipt",
+        ),
+        rotation: await securePublicJson(
+          v["--rotation"], "checkpoint recovery receipt authority rotation",
+        ),
+        previousAuthorization: await securePublicJson(
+          v["--previous-authorization"], "previous receipt authority authorization",
+        ),
+        nextAcceptance: await securePublicJson(
+          v["--next-acceptance"], "next receipt authority acceptance",
+        ),
+        expectedStartingCheckpointSha256: v["--expected-starting-checkpoint-sha256"],
+        expectedCompletedCheckpointSha256: v["--expected-completed-checkpoint-sha256"],
+        expectedOutcome: v["--expected-outcome"],
+      });
+      await writeReservedOperationsOutput(reservation, head);
+    } finally {
+      await closeReservedOperationsOutput(reservation);
+    }
+    console.log(canonicalJson({ authorityHeadSha256: canonicalSha256(head) }));
+    return;
+  }
   if (command === "reconcile-lock") {
     const v = parse(args, [
       "--store", "--expected-lock-sha256",
@@ -4141,7 +4449,7 @@ async function main() {
     });
     console.log(canonicalJson(result)); return;
   }
-  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-checkpoint-evidence, sign-checkpoint-evidence-receipt, verify-checkpoint-evidence-receipt, prepare-checkpoint-evidence-receipt-authority-rotation, authorize-checkpoint-evidence-receipt-authority-rotation, verify-checkpoint-evidence-receipt-after-authority-rotation, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
+  fail("expected preflight, init, migrate-v3-to-v4, verify-v3-to-v4, activate, prepare-rotation, authorize-rotation, commit-rotation, inspect, inspect-checkpoint-evidence, sign-checkpoint-evidence-receipt, verify-checkpoint-evidence-receipt, prepare-checkpoint-evidence-receipt-authority-rotation, authorize-checkpoint-evidence-receipt-authority-rotation, verify-checkpoint-evidence-receipt-after-authority-rotation, create-checkpoint-evidence-receipt-authority-head, advance-checkpoint-evidence-receipt-authority-head, rotate-checkpoint-evidence-receipt-authority-head, reconcile-lock, inspect-lock-evidence, reconcile-lock-evidence, prepare-lock-evidence-cleanup, inspect-rotation, audit, prepare-anchor, sign-anchor, verify-anchor, or reconcile");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href)

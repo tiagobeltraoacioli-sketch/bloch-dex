@@ -24,7 +24,9 @@ import {
   buildClientPreflight,
   commitOperationsRotation,
   commitTransportRequest,
+  createOperationsCheckpointRecoveryReceiptAuthorityHead,
   createOperationsCheckpointRecoveryInspectionReceipt,
+  advanceOperationsCheckpointRecoveryReceiptAuthorityHead,
   initializeOperationsStore,
   inspectPendingRotation,
   inspectOperationsCheckpointRecoveryEvidence,
@@ -37,6 +39,7 @@ import {
   prepareRetainedOperationsLockCleanupPlan,
   reconcileOperationsLock,
   reconcileRetainedOperationsLockEvidence,
+  rotateOperationsCheckpointRecoveryReceiptAuthorityHead,
   signOperationsAnchorStatement,
   verifyOperationsAnchorEvidence,
   verifyOperationsCheckpointRecoveryInspectionReceipt,
@@ -1136,6 +1139,133 @@ test("checkpoint recovery evidence inspection is read-only and outcome-pinned", 
     describeKey(receiptAuthority.publicKey).keyId);
   assert.equal(rotatedVerification.signerKeyId,
     describeKey(nextReceiptAuthority.publicKey).keyId);
+
+  const authorityHead = createOperationsCheckpointRecoveryReceiptAuthorityHead({
+    receipt: receiptTwo,
+    publicKey: receiptAuthority.publicKey,
+    keyGeneration: 3,
+    expectedReceiptSha256: receiptTwoHash,
+    expectedReceiptSequence: 2,
+    expectedPreviousReceiptSha256: receiptOneHash,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  });
+  assert.equal(authorityHead.previousHeadSha256, "genesis");
+  assert.equal(authorityHead.authorityRotationSequence, 0);
+  const authorityHeadHash = canonicalSha256(authorityHead);
+  const ordinaryForkReceipt = await createOperationsCheckpointRecoveryInspectionReceipt({
+    root: store,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    receiptSequence: 3,
+    previousReceiptSha256: receiptTwoHash,
+    privateKey: receiptAuthority.privateKey,
+    keyGeneration: 3,
+  });
+  const ordinaryForkCandidate =
+    advanceOperationsCheckpointRecoveryReceiptAuthorityHead({
+      head: authorityHead,
+      expectedHeadSha256: authorityHeadHash,
+      receipt: ordinaryForkReceipt,
+      expectedStartingCheckpointSha256: startingHash,
+      expectedCompletedCheckpointSha256: completedHash,
+      expectedOutcome: "committed",
+    });
+  const rotatedAuthorityHead = rotateOperationsCheckpointRecoveryReceiptAuthorityHead({
+    head: authorityHead,
+    expectedHeadSha256: authorityHeadHash,
+    receipt: receiptThree,
+    previousReceipt: receiptTwo,
+    rotation: authorityRotation,
+    previousAuthorization,
+    nextAcceptance,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  });
+  assert.equal(rotatedAuthorityHead.previousHeadSha256, authorityHeadHash);
+  assert.equal(rotatedAuthorityHead.receiptSha256, canonicalSha256(receiptThree));
+  assert.equal(rotatedAuthorityHead.receiptSequence, 3);
+  assert.equal(rotatedAuthorityHead.authorityRotationSequence, 1);
+  assert.equal(rotatedAuthorityHead.latestAuthorityRotationSha256,
+    canonicalSha256(authorityRotation));
+  assert.equal(rotatedAuthorityHead.authority.keyId,
+    describeKey(nextReceiptAuthority.publicKey).keyId);
+  assert.equal(ordinaryForkCandidate.previousHeadSha256, authorityHeadHash);
+  assert.equal(rotatedAuthorityHead.previousHeadSha256, authorityHeadHash);
+  assert.notEqual(canonicalSha256(ordinaryForkCandidate),
+    canonicalSha256(rotatedAuthorityHead));
+  let externallyRetainedHeadSha256 = authorityHeadHash;
+  const commitExternalHead = (expectedSha256, candidate) => {
+    if (externallyRetainedHeadSha256 !== expectedSha256) return false;
+    externallyRetainedHeadSha256 = canonicalSha256(candidate);
+    return true;
+  };
+  assert.equal(commitExternalHead(authorityHeadHash, rotatedAuthorityHead), true);
+  assert.equal(commitExternalHead(authorityHeadHash, ordinaryForkCandidate), false,
+    'external atomic CAS must reject the second valid candidate');
+  assert.equal(externallyRetainedHeadSha256, canonicalSha256(rotatedAuthorityHead));
+
+  const receiptThreeHash = canonicalSha256(receiptThree);
+  const receiptFour = await createOperationsCheckpointRecoveryInspectionReceipt({
+    root: store,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    receiptSequence: 4,
+    previousReceiptSha256: receiptThreeHash,
+    privateKey: nextReceiptAuthority.privateKey,
+    keyGeneration: 4,
+  });
+  const rotatedAuthorityHeadHash = canonicalSha256(rotatedAuthorityHead);
+  const advancedAuthorityHead = advanceOperationsCheckpointRecoveryReceiptAuthorityHead({
+    head: rotatedAuthorityHead,
+    expectedHeadSha256: rotatedAuthorityHeadHash,
+    receipt: receiptFour,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  });
+  assert.equal(advancedAuthorityHead.previousHeadSha256, rotatedAuthorityHeadHash);
+  assert.equal(advancedAuthorityHead.receiptSequence, 4);
+  assert.equal(advancedAuthorityHead.authorityRotationSequence, 1);
+  assert.equal(advancedAuthorityHead.authority.keyId,
+    describeKey(nextReceiptAuthority.publicKey).keyId);
+  assert.throws(() => advanceOperationsCheckpointRecoveryReceiptAuthorityHead({
+    head: rotatedAuthorityHead,
+    expectedHeadSha256: authorityHeadHash,
+    receipt: receiptFour,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /does not match the external pin/);
+  const substitutedHead = structuredClone(rotatedAuthorityHead);
+  const substitutedIdentity = describeKey(generateKeyPairSync("ed25519").publicKey);
+  substitutedHead.authority = {
+    keyId: substitutedIdentity.keyId,
+    keyGeneration: substitutedHead.authority.keyGeneration,
+    publicKeyBase64Url: substitutedIdentity.publicKeyBase64Url,
+  };
+  assert.throws(() => advanceOperationsCheckpointRecoveryReceiptAuthorityHead({
+    head: substitutedHead,
+    expectedHeadSha256: rotatedAuthorityHeadHash,
+    receipt: receiptFour,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /does not match the external pin/);
+  assert.throws(() => rotateOperationsCheckpointRecoveryReceiptAuthorityHead({
+    head: rotatedAuthorityHead,
+    expectedHeadSha256: rotatedAuthorityHeadHash,
+    receipt: receiptThree,
+    previousReceipt: receiptTwo,
+    rotation: authorityRotation,
+    previousAuthorization,
+    nextAcceptance,
+    expectedStartingCheckpointSha256: startingHash,
+    expectedCompletedCheckpointSha256: completedHash,
+    expectedOutcome: "committed",
+  }), /does not succeed the retained authority head/);
   assert.throws(() =>
     verifyOperationsCheckpointRecoveryInspectionReceiptAfterAuthorityRotation({
       receipt: receiptThree,
@@ -1420,6 +1550,62 @@ test("checkpoint recovery evidence inspection is read-only and outcome-pinned", 
   assert.equal(cliRotatedVerificationResult.authorityRotated, true);
   assert.equal(cliRotatedVerificationResult.signerKeyId,
     describeKey(nextReceiptAuthority.publicKey).keyId);
+  const cliAuthorityHeadPath = join(value.root, "inspection-authority-head.json");
+  const cliRotatedAuthorityHeadPath =
+    join(value.root, "inspection-authority-head-rotated.json");
+  const cliAdvancedReceiptPath = join(value.root, "inspection-receipt-advanced.json");
+  const cliAdvancedAuthorityHeadPath =
+    join(value.root, "inspection-authority-head-advanced.json");
+  const cliAuthorityHead = await execute(process.execPath, [
+    cli, "create-checkpoint-evidence-receipt-authority-head",
+    "--store", store, "--receipt", receiptOutputPath,
+    "--public-key", receiptPublicKeyPath, "--key-generation", "3",
+    "--expected-receipt-sha256", signedCliResult.receiptSha256,
+    "--expected-receipt-sequence", "1",
+    "--expected-previous-receipt-sha256", "genesis",
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--expected-outcome", "committed", "--output", cliAuthorityHeadPath,
+  ]);
+  const cliAuthorityHeadResult = JSON.parse(cliAuthorityHead.stdout);
+  const cliRotatedAuthorityHead = await execute(process.execPath, [
+    cli, "rotate-checkpoint-evidence-receipt-authority-head",
+    "--store", store, "--head", cliAuthorityHeadPath,
+    "--expected-head-sha256", cliAuthorityHeadResult.authorityHeadSha256,
+    "--receipt", cliRotatedReceiptPath, "--previous-receipt", receiptOutputPath,
+    "--rotation", cliRotationPath,
+    "--previous-authorization", cliPreviousAuthorizationPath,
+    "--next-acceptance", cliNextAcceptancePath,
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--expected-outcome", "committed", "--output", cliRotatedAuthorityHeadPath,
+  ]);
+  const cliRotatedAuthorityHeadResult = JSON.parse(cliRotatedAuthorityHead.stdout);
+  const cliRotatedReceipt = JSON.parse(await readFile(cliRotatedReceiptPath, "utf8"));
+  const cliRotatedReceiptSha256 = canonicalSha256(cliRotatedReceipt);
+  await execute(process.execPath, [
+    cli, "sign-checkpoint-evidence-receipt", "--store", store,
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--receipt-sequence", "3", "--previous-receipt-sha256",
+    cliRotatedReceiptSha256, "--private-key", nextReceiptPrivateKeyPath,
+    "--key-generation", "4", "--output", cliAdvancedReceiptPath,
+  ]);
+  await execute(process.execPath, [
+    cli, "advance-checkpoint-evidence-receipt-authority-head",
+    "--store", store, "--head", cliRotatedAuthorityHeadPath,
+    "--expected-head-sha256", cliRotatedAuthorityHeadResult.authorityHeadSha256,
+    "--receipt", cliAdvancedReceiptPath,
+    "--expected-starting-checkpoint-sha256", startingHash,
+    "--expected-completed-checkpoint-sha256", completedHash,
+    "--expected-outcome", "committed", "--output", cliAdvancedAuthorityHeadPath,
+  ]);
+  const cliAdvancedAuthorityHead = JSON.parse(
+    await readFile(cliAdvancedAuthorityHeadPath, "utf8"),
+  );
+  assert.equal(cliAdvancedAuthorityHead.receiptSequence, 3);
+  assert.equal(cliAdvancedAuthorityHead.authorityRotationSequence, 1);
+  assert.equal(cliAdvancedAuthorityHead.filesRemoved, false);
   assert.deepEqual(await Promise.all(
     atimePaths.map(async path => (await lstat(path, { bigint: true })).atimeNs),
   ), atimesBeforeInspection);
