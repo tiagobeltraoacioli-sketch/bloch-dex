@@ -27,15 +27,15 @@ An empty pair has no usable swap quote.
 
 Configure these environment variables from an independently reviewed deployment:
 
-| Variable | Required value |
-| --- | --- |
-| `BLOCH_L2_RPC_URL` | RPC endpoint for the intended EVM environment |
-| `EXPECTED_CHAIN_ID` | Nonzero chain ID verified against the network configuration |
-| `PAIR_FACTORY` | Reviewed deployed Postern factory address |
-| `PAIR_FACTORY_CODEHASH` | Expected hash of its runtime code |
-| `PAIR_INIT_CODE_HASH` | Reviewed pair creation-code hash matching the factory |
-| `PAIR_TOKEN_A`, `PAIR_TOKEN_B` | Distinct deployed ERC-20 addresses |
-| `PAIR_TOKEN_A_CODEHASH`, `PAIR_TOKEN_B_CODEHASH` | Expected runtime code hashes of those tokens |
+| Variable                                         | Required value                                              |
+| ------------------------------------------------ | ----------------------------------------------------------- |
+| `BLOCH_L2_RPC_URL`                               | RPC endpoint for the intended EVM environment               |
+| `EXPECTED_CHAIN_ID`                              | Nonzero chain ID verified against the network configuration |
+| `PAIR_FACTORY`                                   | Reviewed deployed Postern factory address                   |
+| `PAIR_FACTORY_CODEHASH`                          | Expected hash of its runtime code                           |
+| `PAIR_INIT_CODE_HASH`                            | Reviewed pair creation-code hash matching the factory       |
+| `PAIR_TOKEN_A`, `PAIR_TOKEN_B`                   | Distinct deployed ERC-20 addresses                          |
+| `PAIR_TOKEN_A_CODEHASH`, `PAIR_TOKEN_B_CODEHASH` | Expected runtime code hashes of those tokens                |
 
 Run a simulation with no private key and no broadcast flag:
 
@@ -61,18 +61,18 @@ read-only rehearsal for the configuration that will receive the first deposit.
 It does not approve tokens, submit liquidity or broadcast a transaction. In
 addition to the pair variables above, supply independently reviewed values for:
 
-| Variable | Required value |
-| --- | --- |
-| `BDEX_ROUTER`, `BDEX_ROUTER_CODEHASH` | Router address and expected runtime-code hash |
-| `BDEX_LENS`, `BDEX_LENS_CODEHASH` | Lens address and expected runtime-code hash |
-| `WBLCH_ADDRESS`, `WBLCH_CODEHASH` | Wrapped-native address and expected runtime-code hash |
-| `FEE_TO_SETTER` | Expected current factory authority |
-| `PAIR_CODEHASH` | Expected pair runtime-code hash |
-| `PAIR_TOKEN_A`, `PAIR_TOKEN_A_CODEHASH` | Exact WBLCH address (equal to `WBLCH_ADDRESS`) and runtime-code hash |
-| `PAIR_TOKEN_B`, `PAIR_TOKEN_B_CODEHASH` | Exact bUSDC address and runtime-code hash |
-| `PLANNED_BASE_AMOUNT`, `PLANNED_QUOTE_AMOUNT` | Exact nonzero initial WBLCH and bUSDC base-unit amounts under review |
-| `APPROVED_MAX_BASE_AMOUNT`, `APPROVED_MAX_QUOTE_AMOUNT` | Exact approved caps, never above 10 BLCH and 10 bUSDC |
-| `CAP_APPROVAL_SHA256` | Nonzero SHA-256 of the separately checked canonical cap-approval envelope |
+| Variable                                                | Required value                                                            |
+| ------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `BDEX_ROUTER`, `BDEX_ROUTER_CODEHASH`                   | Router address and expected runtime-code hash                             |
+| `BDEX_LENS`, `BDEX_LENS_CODEHASH`                       | Lens address and expected runtime-code hash                               |
+| `WBLCH_ADDRESS`, `WBLCH_CODEHASH`                       | Wrapped-native address and expected runtime-code hash                     |
+| `FEE_TO_SETTER`                                         | Expected current factory authority                                        |
+| `PAIR_CODEHASH`                                         | Expected pair runtime-code hash                                           |
+| `PAIR_TOKEN_A`, `PAIR_TOKEN_A_CODEHASH`                 | Exact WBLCH address (equal to `WBLCH_ADDRESS`) and runtime-code hash      |
+| `PAIR_TOKEN_B`, `PAIR_TOKEN_B_CODEHASH`                 | Exact bUSDC address and runtime-code hash                                 |
+| `PLANNED_BASE_AMOUNT`, `PLANNED_QUOTE_AMOUNT`           | Exact nonzero initial WBLCH and bUSDC base-unit amounts under review      |
+| `APPROVED_MAX_BASE_AMOUNT`, `APPROVED_MAX_QUOTE_AMOUNT` | Exact approved caps, never above 10 BLCH and 10 bUSDC                     |
+| `CAP_APPROVAL_SHA256`                                   | Nonzero SHA-256 of the separately checked canonical cap-approval envelope |
 
 Run it without `--broadcast`:
 
@@ -97,6 +97,12 @@ Re-run the preflight immediately before transaction simulation, bind the review
 to exact integer amounts/minimums/deadline/recipient, then revalidate chain and
 account at confirmation. This repository does not yet provide that live client
 or any production configuration.
+
+`PILOT-POOL-READINESS.md` defines the later fail-closed composition boundary.
+It additionally requires an authenticated receipt proving that the bridge is
+already activated and operational, a single finalized empty pilot pair,
+separated authority approvals and a fully rolled-back isolated rehearsal. The
+composer remains read-only and cannot add liquidity or enable execution.
 
 Hash pins are configuration guards, not audits: copying hashes from an
 untrusted RPC simply pins its claims. A proxy's runtime hash does not pin its
