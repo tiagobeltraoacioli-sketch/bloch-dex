@@ -22,11 +22,18 @@ beforeAll(async () => {
 
 function configuration() {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
     liquidityEnabled: false,
+    activation: {
+      chainIdentityQualified: false,
+      finalityQualified: false,
+      deploymentQualified: false,
+      executionEnabled: false,
+      liquidityEnabled: false,
+    },
     chain: { id: 700771, genesisHash: hash('a'), rpcUrl: 'https://rpc.invalid/' },
     deployment: {
       blockNumber: 1,
@@ -117,6 +124,7 @@ async function artifact(overrides: Record<string, unknown> = {}) {
         environment: 'staging',
         host: 'bloch-dex',
         frontendMode: 'preview',
+        executionEnabled: false,
         liquidityEnabled: false,
       },
       configurationSha256: await fingerprint(deploymentConfiguration),
@@ -306,7 +314,7 @@ describe('deployment registry composition', () => {
       expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
       fetchFn,
     };
-    await expect(loadDeploymentRegistry(options)).resolves.toMatchObject({ schemaVersion: 4 });
+    await expect(loadDeploymentRegistry(options)).resolves.toMatchObject({ schemaVersion: 5 });
     await expect(
       loadDeploymentRegistry({
         ...options,
@@ -370,6 +378,7 @@ describe('deployment registry composition', () => {
         environment: 'staging',
         host: 'bloch-dex',
         frontendMode: 'preview',
+        executionEnabled: false,
         liquidityEnabled: true,
       },
     });
@@ -378,6 +387,22 @@ describe('deployment registry composition', () => {
         ...options,
         manifestSha256: await artifactPin(badTarget),
         fetchFn: vi.fn(async () => json(badTarget)),
+      }),
+    ).rejects.toThrow(/target does not match/);
+    const executionTarget = await artifact({
+      target: {
+        environment: 'staging',
+        host: 'bloch-dex',
+        frontendMode: 'preview',
+        executionEnabled: true,
+        liquidityEnabled: false,
+      },
+    });
+    await expect(
+      loadDeploymentRegistry({
+        ...options,
+        manifestSha256: await artifactPin(executionTarget),
+        fetchFn: vi.fn(async () => json(executionTarget)),
       }),
     ).rejects.toThrow(/target does not match/);
     await expect(

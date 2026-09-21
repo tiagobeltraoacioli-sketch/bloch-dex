@@ -26,11 +26,18 @@ const token = (suffix, symbol, wrappedNative = false, decimals = 18) => ({
   policy: { feeOnTransfer: false, rebasing: false },
 });
 const valid = () => ({
-  schemaVersion: 4,
+  schemaVersion: 5,
   environment: "staging",
   host: "bloch-dex",
   frontendMode: "preview",
   liquidityEnabled: false,
+  activation: {
+    chainIdentityQualified: false,
+    finalityQualified: false,
+    deploymentQualified: false,
+    executionEnabled: false,
+    liquidityEnabled: false,
+  },
   chain: { id: 700771, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
   deployment: {
     blockNumber: 12,
@@ -110,6 +117,30 @@ test("fails closed for every missing identity field", () => {
   }
 });
 
+test("keeps retired 84001 and candidate 700771 transaction-disabled", () => {
+  const retired = valid();
+  retired.chain.id = 84001;
+  assert.throws(
+    () => validateStagingConfig(retired),
+    /retired chain 84001 must never receive DEX execution or liquidity/,
+  );
+
+  for (const field of [
+    "chainIdentityQualified",
+    "finalityQualified",
+    "deploymentQualified",
+    "executionEnabled",
+    "liquidityEnabled",
+  ]) {
+    const candidate = valid();
+    candidate.activation[field] = true;
+    assert.throws(
+      () => validateStagingConfig(candidate),
+      /identity, finality, deployment, execution and liquidity must remain disabled/,
+    );
+  }
+});
+
 test("refuses liquidity, live mode, insecure RPC and unsafe token policy", () => {
   const cases = [
     (value) => (value.liquidityEnabled = true),
@@ -169,6 +200,7 @@ test("rejects unknown claims at every staging schema boundary", () => {
   const mutations = [
     (value) => (value.unreviewed = true),
     (value) => (value.chain.unreviewed = true),
+    (value) => (value.activation.unreviewed = true),
     (value) => (value.deployment.unreviewed = true),
     (value) => (value.deployment.factory.unreviewed = true),
     (value) => (value.tokens[0].unreviewed = true),

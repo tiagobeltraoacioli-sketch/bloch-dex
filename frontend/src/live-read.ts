@@ -18,11 +18,18 @@ export type RegistryToken = ContractIdentity & {
   policy: { feeOnTransfer: false; rebasing: false };
 };
 export type DeploymentRegistry = {
-  schemaVersion: 4;
+  schemaVersion: 5;
   environment: 'staging';
   host: 'bloch-dex';
   frontendMode: 'preview';
   liquidityEnabled: false;
+  activation: {
+    chainIdentityQualified: false;
+    finalityQualified: false;
+    deploymentQualified: false;
+    executionEnabled: false;
+    liquidityEnabled: false;
+  };
   chain: { id: number; genesisHash: Hex; rpcUrl: string };
   deployment: {
     blockNumber: number;
@@ -263,6 +270,7 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
       'host',
       'frontendMode',
       'liquidityEnabled',
+      'activation',
       'chain',
       'deployment',
       'tokens',
@@ -270,13 +278,37 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
     ],
     'registry',
   );
-  requireValue(input.schemaVersion === 4, 'registry schema is unsupported');
+  requireValue(input.schemaVersion === 5, 'registry schema is unsupported');
   requireValue(
     input.environment === 'staging' && input.host === 'bloch-dex',
     'target does not match staging',
   );
   requireValue(input.frontendMode === 'preview', 'frontend must remain in preview mode');
   requireValue(input.liquidityEnabled === false, 'liquidity must remain disabled');
+  const activation = input.activation as Record<string, unknown> | undefined;
+  requireValue(
+    activation && typeof activation === 'object' && !Array.isArray(activation),
+    'activation policy is missing',
+  );
+  exactFields(
+    activation,
+    [
+      'chainIdentityQualified',
+      'finalityQualified',
+      'deploymentQualified',
+      'executionEnabled',
+      'liquidityEnabled',
+    ],
+    'activation policy',
+  );
+  requireValue(
+    activation.chainIdentityQualified === false &&
+      activation.finalityQualified === false &&
+      activation.deploymentQualified === false &&
+      activation.executionEnabled === false &&
+      activation.liquidityEnabled === false,
+    'identity, finality, deployment, execution and liquidity must remain disabled',
+  );
 
   const chain = input.chain as Record<string, unknown> | undefined;
   requireValue(
@@ -284,6 +316,10 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
     'chain identity is missing',
   );
   exactFields(chain, ['id', 'genesisHash', 'rpcUrl'], 'chain');
+  requireValue(
+    Number(chain.id) !== 84001,
+    'retired chain 84001 cannot receive DEX execution or liquidity',
+  );
   requireValue(
     Number.isSafeInteger(chain.id) && Number(chain.id) === DEX_STAGING_CHAIN_ID,
     `chain ID must equal the supported staging network ${DEX_STAGING_CHAIN_ID}`,
@@ -461,11 +497,18 @@ export function parseDeploymentRegistry(value: unknown): DeploymentRegistry {
   );
 
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
     liquidityEnabled: false,
+    activation: {
+      chainIdentityQualified: false,
+      finalityQualified: false,
+      deploymentQualified: false,
+      executionEnabled: false,
+      liquidityEnabled: false,
+    },
     chain: {
       id: Number(chain.id),
       genesisHash: chain.genesisHash.toLowerCase() as Hex,

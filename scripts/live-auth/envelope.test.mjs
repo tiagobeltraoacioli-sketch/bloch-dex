@@ -22,11 +22,18 @@ function contract(suffix) {
 
 function configuration() {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     environment: "staging",
     host: "bloch-dex",
     frontendMode: "preview",
     liquidityEnabled: false,
+    activation: {
+      chainIdentityQualified: false,
+      finalityQualified: false,
+      deploymentQualified: false,
+      executionEnabled: false,
+      liquidityEnabled: false,
+    },
     chain: { id: 700771, genesisHash: H1, rpcUrl: "https://rpc.invalid/" },
     deployment: {
       blockNumber: 12,
@@ -94,6 +101,7 @@ function manifest(revision = "a".repeat(40)) {
       environment: "staging",
       host: "bloch-dex",
       frontendMode: "preview",
+      executionEnabled: false,
       liquidityEnabled: false,
     },
     sourceRevision: revision,

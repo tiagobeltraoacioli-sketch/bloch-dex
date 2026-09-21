@@ -19,6 +19,29 @@ const CONTRACT_NAMES = [
   "wrappedNative",
 ];
 const ROLE_NAMES = ["feeAuthority", "treasury"];
+const RETIRED_CHAIN_IDS = new Set([84001]);
+
+function validateActivation(value) {
+  exactKeys(
+    value,
+    [
+      "chainIdentityQualified",
+      "finalityQualified",
+      "deploymentQualified",
+      "executionEnabled",
+      "liquidityEnabled",
+    ],
+    "activation",
+  );
+  required(
+    value.chainIdentityQualified === false &&
+      value.finalityQualified === false &&
+      value.deploymentQualified === false &&
+      value.executionEnabled === false &&
+      value.liquidityEnabled === false,
+    "identity, finality, deployment, execution and liquidity must remain disabled",
+  );
+}
 
 function required(condition, message) {
   if (!condition) throw new Error(`staging preflight: ${message}`);
@@ -222,6 +245,7 @@ export function validateStagingConfig(config) {
       "host",
       "frontendMode",
       "liquidityEnabled",
+      "activation",
       "chain",
       "deployment",
       "tokens",
@@ -229,7 +253,7 @@ export function validateStagingConfig(config) {
     ],
     "configuration",
   );
-  required(config.schemaVersion === 4, "schemaVersion must equal 4");
+  required(config.schemaVersion === 5, "schemaVersion must equal 5");
   required(config.environment === "staging", "environment must equal staging");
   required(config.host === "bloch-dex", "host must equal bloch-dex");
   required(
@@ -237,9 +261,14 @@ export function validateStagingConfig(config) {
     "frontendMode must remain preview",
   );
   required(config.liquidityEnabled === false, "liquidity must remain disabled");
+  validateActivation(config.activation);
 
   const chain = config.chain;
   exactKeys(chain, ["id", "genesisHash", "rpcUrl"], "chain");
+  required(
+    !RETIRED_CHAIN_IDS.has(chain.id),
+    "retired chain 84001 must never receive DEX execution or liquidity",
+  );
   required(
     Number.isSafeInteger(chain.id) && chain.id === DEX_STAGING_CHAIN_ID,
     `chain.id must equal the supported staging network ${DEX_STAGING_CHAIN_ID}`,

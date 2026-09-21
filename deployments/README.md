@@ -26,10 +26,17 @@ The preflight requires the selected chain ID 700771, nonzero genesis/deployment/
 a public HTTPS RPC origin without credentials, query data or a secret
 path, and unique nonzero addresses plus runtime-code hashes for the factory, router, lens,
 collector and wrapped-native contract. The target must remain `bloch-dex` in
-`preview` mode with liquidity explicitly disabled. It performs no RPC, SSH,
+`preview` mode with execution and liquidity explicitly disabled. It performs no RPC, SSH,
 wallet or deployment action.
 
-Schema version 4 also requires the fee authority and treasury as distinct
+Schema version 5 adds an exact activation object whose chain-identity,
+finality, deployment, execution and liquidity fields must all remain false.
+Changing any one field is rejected; activation requires a reviewed schema and
+code change after the evidence gates are independently satisfied. Chain 84001
+is explicitly retired and cannot be selected even if every other identity is
+otherwise well-formed.
+
+Schema version 5 also requires the fee authority and treasury as distinct
 nonzero identities, including the expected runtime-code hash (the empty-code
 hash for a reviewed EOA). Neither role may alias deployment infrastructure or a
 listed token. This closes the gap between the documented custody requirements
@@ -45,7 +52,7 @@ registration, a frozen production genesis, authenticated RPC finality, fresh
 contract deployment evidence, and coordinated wallet migration are still
 required before this manifest can authorize a release.
 
-Schema version 4 also requires 2–64 reviewed token entries. Each pins a unique
+Schema version 5 also requires 2–64 reviewed token entries. Each pins a unique
 address, runtime-code hash, 2–12 character ASCII symbol, display name and 0–36
 decimals. Exactly one token must be the wrapped-native deployment identity.
 Fee-on-transfer and rebasing assets are rejected because the lens quote and
@@ -53,7 +60,7 @@ balance model does not support them. Token addresses cannot alias deployment
 infrastructure. These fields are policy assertions by the reviewer, not facts
 discovered from untrusted token metadata calls.
 
-Schema version 3 makes the initial asset decision explicit without activating
+The schema also makes the initial asset decision explicit without activating
 it. Bloch L1 remains a separate, non-EVM post-quantum authorization boundary;
 the EVM pair representing the `BLCH/bUSDC` intent is therefore
 `WBLCH/bUSDC`. The bridge asset pins Ethereum mainnet chain ID 1, canonical

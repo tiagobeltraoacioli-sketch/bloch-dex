@@ -85,11 +85,18 @@ const balanceSelector = encodeFunctionData({
 
 function registry() {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     environment: 'staging',
     host: 'bloch-dex',
     frontendMode: 'preview',
     liquidityEnabled: false,
+    activation: {
+      chainIdentityQualified: false,
+      finalityQualified: false,
+      deploymentQualified: false,
+      executionEnabled: false,
+      liquidityEnabled: false,
+    },
     chain: { id: 700771, genesisHash, rpcUrl: 'https://rpc.invalid/' },
     deployment: {
       blockNumber: 10,
@@ -372,7 +379,20 @@ describe('fail-closed live deployment reads', () => {
     expect(() => parseDeploymentRegistry({})).toThrow('fields');
     const wrongChain = registry();
     wrongChain.chain.id = 84001;
-    expect(() => parseDeploymentRegistry(wrongChain)).toThrow('supported staging network 700771');
+    expect(() => parseDeploymentRegistry(wrongChain)).toThrow('retired chain 84001');
+    for (const field of [
+      'chainIdentityQualified',
+      'finalityQualified',
+      'deploymentQualified',
+      'executionEnabled',
+      'liquidityEnabled',
+    ] as const) {
+      const activating = registry();
+      activating.activation[field] = true;
+      expect(() => parseDeploymentRegistry(activating)).toThrow(
+        'identity, finality, deployment, execution and liquidity must remain disabled',
+      );
+    }
     const enabled = registry();
     enabled.liquidityEnabled = true;
     const f = fixture();

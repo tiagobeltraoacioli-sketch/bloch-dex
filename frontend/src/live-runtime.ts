@@ -344,6 +344,7 @@ export async function loadDeploymentRegistry(
       target?.environment === 'staging' &&
         target.host === 'bloch-dex' &&
         target.frontendMode === 'preview' &&
+        target.executionEnabled === false &&
         target.liquidityEnabled === false,
       'artifact target does not match read-only staging',
     );

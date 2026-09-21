@@ -181,16 +181,17 @@ export function validateManifest(payload) {
     fail("manifest identity is invalid");
   exactKeys(
     payload.target,
-    ["environment", "host", "frontendMode", "liquidityEnabled"],
+    ["environment", "host", "frontendMode", "executionEnabled", "liquidityEnabled"],
     "target",
   );
   if (
     payload.target.environment !== "staging" ||
     payload.target.host !== "bloch-dex" ||
     payload.target.frontendMode !== "preview" ||
+    payload.target.executionEnabled !== false ||
     payload.target.liquidityEnabled !== false
   )
-    fail("manifest target is not disabled-liquidity staging");
+    fail("manifest target is not disabled-execution, disabled-liquidity staging");
   validateStagingConfig(payload.deploymentConfiguration);
   if (
     !HEX.test(payload.configurationSha256) ||

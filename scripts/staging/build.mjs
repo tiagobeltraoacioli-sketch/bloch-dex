@@ -65,6 +65,7 @@ try {
       environment: "staging",
       host: "bloch-dex",
       frontendMode: "preview",
+      executionEnabled: false,
       liquidityEnabled: false,
     },
     sourceRevision,

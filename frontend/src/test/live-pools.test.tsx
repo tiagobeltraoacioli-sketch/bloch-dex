@@ -19,11 +19,18 @@ const token1 = address('2');
 const pair = address('3');
 
 const registry = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   environment: 'staging',
   host: 'bloch-dex',
   frontendMode: 'preview',
   liquidityEnabled: false,
+  activation: {
+    chainIdentityQualified: false,
+    finalityQualified: false,
+    deploymentQualified: false,
+    executionEnabled: false,
+    liquidityEnabled: false,
+  },
   chain: { id: 700771, genesisHash: hash('a'), rpcUrl: 'https://rpc.invalid/' },
   deployment: {
     blockNumber: 1,

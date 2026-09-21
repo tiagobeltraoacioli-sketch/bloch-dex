@@ -48,11 +48,18 @@ function configuration() {
     policy: { feeOnTransfer: false, rebasing: false },
   };
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     environment: "staging",
     host: "bloch-dex",
     frontendMode: "preview",
     liquidityEnabled: false,
+    activation: {
+      chainIdentityQualified: false,
+      finalityQualified: false,
+      deploymentQualified: false,
+      executionEnabled: false,
+      liquidityEnabled: false,
+    },
     chain: {
       id: 700771,
       genesisHash: hash("genesis"),
