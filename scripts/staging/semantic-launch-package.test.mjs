@@ -151,6 +151,26 @@ async function buildComplete(root, mutate = () => {}) {
   return { pkg, values, hashes };
 }
 
+async function writeTrustRoots(root, complete, mutate = () => {}) {
+  const trustRoots = {
+    schemaVersion: 1,
+    domain: "postern.dex.semantic-launch-trust-roots.v1",
+    selectedChainId: 700771,
+    artifacts: Object.fromEntries(
+      ["l2", "bridge", "deployment", "pilot", "aggregator"].map((name) => [
+        name,
+        {
+          ...complete.values[name].provenance,
+          sha256: complete.hashes[name],
+        },
+      ]),
+    ),
+  };
+  mutate(trustRoots);
+  const sha256 = await canonicalWrite(root, "trust-roots.json", trustRoots);
+  return { trustRoots, sha256 };
+}
+
 test("checked-in package is canonical, pending and non-authorizing", async () => {
   const text = await readFile(templateUrl, "utf8");
   const value = JSON.parse(text);
@@ -161,8 +181,10 @@ test("checked-in package is canonical, pending and non-authorizing", async () =>
   );
   assert.equal(report.artifactContentsOpened, false);
   assert.equal(report.semanticStructureVerified, false);
+  assert.equal(report.artifactContentAuthenticated, false);
   assert.equal(report.provenanceAuthenticated, false);
   assert.equal(report.semanticEvidenceAuthenticated, false);
+  assert.equal(report.activationApprovalAuthenticated, false);
   for (const field of [
     "readyForReviewedActivation",
     "liquidityEnabled",
@@ -183,12 +205,89 @@ test("a self-created structurally valid package cannot authenticate or authorize
   assert.equal(report.declaredProvenanceConsistent, true);
   assert.equal(report.declaredCrossBindingsConsistent, true);
   assert.equal(report.semanticStructureVerified, true);
+  assert.equal(report.artifactContentAuthenticated, false);
   assert.equal(report.provenanceAuthenticated, false);
   assert.equal(report.semanticEvidenceAuthenticated, false);
   assert.equal(report.readyForReviewedActivation, false);
   assert.equal(report.liquidityEnabled, false);
   assert.equal(report.aggregatorExecutionEnabled, false);
   assert.equal(report.activationAuthorized, false);
+});
+
+test("external roots authenticate artifact content and provenance, never approval", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "postern-semantic-authenticated-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const complete = await buildComplete(root);
+  const roots = await writeTrustRoots(root, complete);
+  const report = await verifySemanticLaunchPackage(root, "package.json", {
+    trustRootsPath: "trust-roots.json",
+    expectedTrustRootsSha256: roots.sha256,
+  });
+  assert.equal(report.semanticStructureVerified, true);
+  assert.equal(report.artifactContentAuthenticated, true);
+  assert.equal(report.provenanceAuthenticated, true);
+  assert.equal(report.semanticEvidenceAuthenticated, true);
+  assert.equal(report.trustRootsSha256, roots.sha256);
+  assert.equal(report.activationApprovalAuthenticated, false);
+  assert.equal(report.readyForReviewedActivation, false);
+  for (const field of [
+    "liquidityEnabled",
+    "liquidityAdded",
+    "aggregatorExecutionEnabled",
+    "activationAuthorized",
+  ])
+    assert.equal(report[field], false);
+});
+
+test("trust roots cannot self-select, mismatch, substitute provenance or approve controls", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "postern-semantic-trust-attacks-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const complete = await buildComplete(root);
+  const roots = await writeTrustRoots(root, complete);
+  await assert.rejects(
+    verifySemanticLaunchPackage(root, "package.json", {
+      trustRootsPath: "trust-roots.json",
+    }),
+    /supplied together/,
+  );
+  await assert.rejects(
+    verifySemanticLaunchPackage(root, "package.json", {
+      trustRootsPath: "trust-roots.json",
+      expectedTrustRootsSha256: hash("9"),
+    }),
+    /externally expected SHA-256/,
+  );
+
+  const replacement = await writeTrustRoots(root, complete, (value) => {
+    value.artifacts.bridge.revision = revision("9");
+  });
+  await assert.rejects(
+    verifySemanticLaunchPackage(root, "package.json", {
+      trustRootsPath: "trust-roots.json",
+      expectedTrustRootsSha256: replacement.sha256,
+    }),
+    /bridge provenance does not match/,
+  );
+  const wrongContent = await writeTrustRoots(root, complete, (value) => {
+    value.artifacts.aggregator.sha256 = hash("9");
+  });
+  await assert.rejects(
+    verifySemanticLaunchPackage(root, "package.json", {
+      trustRootsPath: "trust-roots.json",
+      expectedTrustRootsSha256: wrongContent.sha256,
+    }),
+    /aggregator content does not match/,
+  );
+  const wrongRepository = await writeTrustRoots(root, complete, (value) => {
+    value.artifacts.l2.repository = "lookalike-l2";
+  });
+  await assert.rejects(
+    verifySemanticLaunchPackage(root, "package.json", {
+      trustRootsPath: "trust-roots.json",
+      expectedTrustRootsSha256: wrongRepository.sha256,
+    }),
+    /l2 trust root repository is not canonical/,
+  );
 });
 
 test("refuses semantic lies even when every descriptor hash is recomputed", async (context) => {

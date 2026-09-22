@@ -140,20 +140,44 @@ does not satisfy these checks.
 
 Structural semantic verification is deliberately neither provenance
 authentication nor activation authorization. The repository names, revisions
-and hashes in this package are declarations supplied by the package itself;
-they are not an external trust root. A complete internally consistent package
-therefore reports `semanticStructureVerified: true` and
-`declaredProvenanceConsistent: true`, but keeps `provenanceAuthenticated`,
-`semanticEvidenceAuthenticated`, `readyForReviewedActivation`, liquidity,
-aggregator execution and activation authorization false. A later, separately
-reviewed process must pin and authenticate the source repositories, revisions
-and verifier identities outside this package. This command never deploys,
-broadcasts or adds liquidity. Pending and structurally valid packages both exit
-`1`, while malformed input is refused and invalid CLI usage exits `2`.
+and hashes in the package are declarations supplied by the package itself. A
+complete internally consistent package therefore reports
+`semanticStructureVerified: true` and `declaredProvenanceConsistent: true`, but
+keeps the authentication fields false unless an operator explicitly supplies
+external trust roots.
+
+The optional trust-roots document is not named by the package and is never
+auto-selected from an environment variable. It canonically fixes repository,
+40-hex revision, artifact path and SHA-256 for each of the five artifacts. Its
+own exact SHA-256 must be retained through an independent authenticated channel
+and supplied explicitly. Never copy that expected value from the package, the
+trust-roots file or command output during the verification ceremony.
+
+```json
+{"artifacts":{"aggregator":{"artifactPath":"evidence/aggregator.json","repository":"postern-wallet","revision":"<40-hex>","sha256":"0x<64-hex>"},"bridge":{"artifactPath":"evidence/readiness.json","repository":"bloch-l2-bridge","revision":"<40-hex>","sha256":"0x<64-hex>"},"deployment":{"artifactPath":"evidence/deployment.json","repository":"postern-dex","revision":"<40-hex>","sha256":"0x<64-hex>"},"l2":{"artifactPath":"evidence/finality.json","repository":"bloch-l2-evm","revision":"<40-hex>","sha256":"0x<64-hex>"},"pilot":{"artifactPath":"evidence/pilot.json","repository":"postern-dex","revision":"<40-hex>","sha256":"0x<64-hex>"}},"domain":"postern.dex.semantic-launch-trust-roots.v1","schemaVersion":1,"selectedChainId":700771}
+```
+
+Matching roots set `artifactContentAuthenticated`,
+`provenanceAuthenticated` and `semanticEvidenceAuthenticated` true. This is
+content authentication, not operational approval:
+`activationApprovalAuthenticated`, `readyForReviewedActivation`, liquidity,
+aggregator execution and activation authorization remain false. The command
+never deploys, broadcasts or adds liquidity. Pending, structurally valid and
+authenticated packages all exit `1`; malformed input is refused and invalid
+CLI usage exits `2`.
 
 ```sh
 node scripts/staging/check-semantic-launch-package.mjs \
   --package deployments/semantic-launch-package.template.json
+```
+
+For an externally authenticated five-artifact package:
+
+```sh
+node scripts/staging/check-semantic-launch-package.mjs \
+  --package <repo-relative-package.json> \
+  --trust-roots <repo-relative-trust-roots.json> \
+  --expected-trust-roots-sha256 <externally-retained-0x-sha256>
 ```
 
 The gate file must be canonical JSON in a regular, single-link, non-writable

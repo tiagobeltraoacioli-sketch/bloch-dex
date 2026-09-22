@@ -69,6 +69,56 @@ function validateProvenance(value, name, descriptor) {
   );
 }
 
+function validateTrustRoots(value, expectedSha256, openedPackage, descriptors, opened) {
+  exact(
+    value,
+    ["schemaVersion", "domain", "selectedChainId", "artifacts"],
+    "trust roots",
+  );
+  refuse(
+    value.schemaVersion === 1 &&
+      value.domain === "postern.dex.semantic-launch-trust-roots.v1",
+    "trust roots schema is unsupported",
+  );
+  refuse(value.selectedChainId === 700771, "trust roots select another chain");
+  exact(value.artifacts, NAMES, "trust roots artifacts");
+  for (const name of NAMES) {
+    const root = value.artifacts[name];
+    exact(
+      root,
+      ["repository", "revision", "artifactPath", "sha256"],
+      `trust roots artifacts.${name}`,
+    );
+    refuse(
+      root.repository === REPOSITORIES[name],
+      `${name} trust root repository is not canonical`,
+    );
+    refuse(REVISION.test(root.revision), `${name} trust root revision is invalid`);
+    refuse(
+      typeof root.artifactPath === "string" && SAFE_PATH.test(root.artifactPath),
+      `${name} trust root artifact path is invalid`,
+    );
+    hash(root.sha256, `${name} trust root sha256`);
+    const declared = opened[name].value.provenance;
+    refuse(
+      root.repository === declared.repository &&
+        root.revision === declared.revision &&
+        root.revision === descriptors[name].sourceRevision &&
+        root.artifactPath === declared.artifactPath,
+      `${name} provenance does not match its external trust root`,
+    );
+    refuse(
+      root.sha256 === opened[name].sha256 &&
+        root.sha256 === descriptors[name].sha256,
+      `${name} content does not match its external trust root`,
+    );
+  }
+  return Object.freeze({
+    trustRootsSha256: expectedSha256,
+    packageSha256: openedPackage.sha256,
+  });
+}
+
 async function readCanonical(repository, relativePath, label) {
   refuse(
     typeof relativePath === "string" &&
@@ -359,7 +409,17 @@ function validateAggregator(
   falseOnly(value.broadcastPerformed, "aggregator.broadcastPerformed");
 }
 
-export async function verifySemanticLaunchPackage(repository, packagePath) {
+export async function verifySemanticLaunchPackage(
+  repository,
+  packagePath,
+  { trustRootsPath = null, expectedTrustRootsSha256 = null } = {},
+) {
+  refuse(
+    (trustRootsPath === null) === (expectedTrustRootsSha256 === null),
+    "trust roots path and externally expected SHA-256 must be supplied together",
+  );
+  if (expectedTrustRootsSha256 !== null)
+    hash(expectedTrustRootsSha256, "externally expected trust roots sha256");
   const openedPackage = await readCanonical(repository, packagePath, "package");
   const pkg = openedPackage.value;
   exact(
@@ -402,8 +462,11 @@ export async function verifySemanticLaunchPackage(repository, packagePath) {
     declaredProvenanceConsistent: false,
     declaredCrossBindingsConsistent: false,
     semanticStructureVerified: false,
+    artifactContentAuthenticated: false,
     provenanceAuthenticated: false,
     semanticEvidenceAuthenticated: false,
+    activationApprovalAuthenticated: false,
+    trustRootsSha256: null,
     readyForReviewedActivation: false,
     liquidityEnabled: false,
     liquidityAdded: false,
@@ -459,6 +522,21 @@ export async function verifySemanticLaunchPackage(repository, packagePath) {
     opened.deployment.sha256,
     opened.pilot.sha256,
   );
+  let authentication = null;
+  if (trustRootsPath !== null) {
+    const trustRoots = await readCanonical(repository, trustRootsPath, "trust roots");
+    refuse(
+      trustRoots.sha256 === expectedTrustRootsSha256,
+      "trust roots do not match the externally expected SHA-256",
+    );
+    authentication = validateTrustRoots(
+      trustRoots.value,
+      expectedTrustRootsSha256,
+      openedPackage,
+      descriptors,
+      opened,
+    );
+  }
   return Object.freeze({
     ...base,
     artifactContentsOpened: true,
@@ -466,5 +544,9 @@ export async function verifySemanticLaunchPackage(repository, packagePath) {
     declaredProvenanceConsistent: true,
     declaredCrossBindingsConsistent: true,
     semanticStructureVerified: true,
+    artifactContentAuthenticated: authentication !== null,
+    provenanceAuthenticated: authentication !== null,
+    semanticEvidenceAuthenticated: authentication !== null,
+    trustRootsSha256: authentication?.trustRootsSha256 ?? null,
   });
 }
