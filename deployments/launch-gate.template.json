@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.launch-gate.v1",
+  "selectedChainId": 700771,
+  "chainIdentity": { "genesisHash": null, "qualified": false },
+  "finality": {
+    "rpcObservationSha256": null,
+    "finalizedBlockNumber": null,
+    "advancedBeyondGenesis": false,
+    "qualified": false
+  },
+  "bridge": { "readinessVerificationSha256": null, "operational": false },
+  "deployment": {
+    "configurationSha256": null,
+    "rpcObservationSha256": null,
+    "qualified": false
+  },
+  "liquidity": {
+    "pilotReadinessVerificationSha256": null,
+    "ceremonyAuthorized": false,
+    "enabled": false,
+    "added": false
+  },
+  "aggregatorExecutionEnabled": false,
+  "activationAuthorized": false
+}

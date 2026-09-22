@@ -107,6 +107,21 @@ binds the complete configuration hash and observations but does not attest that
 the RPC is independently trustworthy. Obtain matching evidence from the
 qualified node/validator process before release approval.
 
+`launch-gate.template.json` is the checked-in aggregate preflight. It selects
+chain 700771 but deliberately carries no genesis, RPC, bridge, deployment or
+pilot-readiness evidence; every status remains false and every evidence field
+remains null. `check-launch-gate.mjs` can bind reviewed evidence references to
+the selected genesis, a finalized block strictly beyond genesis, operational
+bridge readiness, the deployment configuration and the disabled pilot
+liquidity ceremony. Even a complete preflight keeps liquidity, aggregator
+execution and activation authorization false. Its readiness result is not an
+activation approval and does not verify the referenced artifacts again.
+
+```sh
+node scripts/staging/check-launch-gate.mjs \
+  --gate deployments/launch-gate.template.json
+```
+
 The Foundry `InitialLiquidityPreflight` must receive the same WBLCH/bUSDC
 addresses, selected caps and canonical approval SHA-256, plus the exact planned
 initial amounts. It refuses zero amounts, amounts above either selected cap,
