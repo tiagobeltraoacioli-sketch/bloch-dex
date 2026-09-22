@@ -138,13 +138,18 @@ the L2 observation, the exact opened bridge/deployment/pilot artifact hashes,
 and the disabled execution controls. Recomputing hashes around a semantic lie
 does not satisfy these checks.
 
-Semantic verification is deliberately not activation authorization. Even a
-complete valid package reports `semanticEvidenceVerified: true` while
-`readyForReviewedActivation`, liquidity, aggregator execution and activation
-authorization remain false. A later, separately reviewed authorization process
-must consume the evidence; this command never deploys, broadcasts or adds
-liquidity. Pending and verified packages both exit `1`, while malformed input
-is refused and invalid CLI usage exits `2`.
+Structural semantic verification is deliberately neither provenance
+authentication nor activation authorization. The repository names, revisions
+and hashes in this package are declarations supplied by the package itself;
+they are not an external trust root. A complete internally consistent package
+therefore reports `semanticStructureVerified: true` and
+`declaredProvenanceConsistent: true`, but keeps `provenanceAuthenticated`,
+`semanticEvidenceAuthenticated`, `readyForReviewedActivation`, liquidity,
+aggregator execution and activation authorization false. A later, separately
+reviewed process must pin and authenticate the source repositories, revisions
+and verifier identities outside this package. This command never deploys,
+broadcasts or adds liquidity. Pending and structurally valid packages both exit
+`1`, while malformed input is refused and invalid CLI usage exits `2`.
 
 ```sh
 node scripts/staging/check-semantic-launch-package.mjs \

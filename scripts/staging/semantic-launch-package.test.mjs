@@ -160,7 +160,9 @@ test("checked-in package is canonical, pending and non-authorizing", async () =>
     "deployments/semantic-launch-package.template.json",
   );
   assert.equal(report.artifactContentsOpened, false);
-  assert.equal(report.semanticEvidenceVerified, false);
+  assert.equal(report.semanticStructureVerified, false);
+  assert.equal(report.provenanceAuthenticated, false);
+  assert.equal(report.semanticEvidenceAuthenticated, false);
   for (const field of [
     "readyForReviewedActivation",
     "liquidityEnabled",
@@ -171,16 +173,18 @@ test("checked-in package is canonical, pending and non-authorizing", async () =>
     assert.equal(report[field], false);
 });
 
-test("opens and semantically verifies a fully cross-bound package without authorizing it", async (context) => {
+test("a self-created structurally valid package cannot authenticate or authorize itself", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "postern-semantic-complete-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await buildComplete(root);
   const report = await verifySemanticLaunchPackage(root, "package.json");
   assert.equal(report.artifactContentsOpened, true);
-  assert.equal(report.hashesVerified, true);
-  assert.equal(report.provenanceVerified, true);
-  assert.equal(report.crossBindingsVerified, true);
-  assert.equal(report.semanticEvidenceVerified, true);
+  assert.equal(report.contentHashesMatched, true);
+  assert.equal(report.declaredProvenanceConsistent, true);
+  assert.equal(report.declaredCrossBindingsConsistent, true);
+  assert.equal(report.semanticStructureVerified, true);
+  assert.equal(report.provenanceAuthenticated, false);
+  assert.equal(report.semanticEvidenceAuthenticated, false);
   assert.equal(report.readyForReviewedActivation, false);
   assert.equal(report.liquidityEnabled, false);
   assert.equal(report.aggregatorExecutionEnabled, false);
@@ -355,7 +359,7 @@ test("CLI reports pending as exit one and invalid usage as exit two", () => {
     },
   );
   assert.equal(pending.status, 1);
-  assert.equal(JSON.parse(pending.stdout).semanticEvidenceVerified, false);
+  assert.equal(JSON.parse(pending.stdout).semanticEvidenceAuthenticated, false);
   assert.equal(pending.stderr, "");
   const usage = spawnSync(process.execPath, [cli], {
     cwd: repository,
