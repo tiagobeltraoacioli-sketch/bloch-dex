@@ -25,8 +25,8 @@ const cli = fileURLToPath(new URL("./check-launch-gate.mjs", import.meta.url));
 const NOW = 2_000_000_000;
 
 const complete = () => ({
-  schemaVersion: 2,
-  domain: "postern.dex.launch-gate.v2",
+  schemaVersion: 3,
+  domain: "postern.dex.launch-gate.v3",
   selectedChainId: 700771,
   chainIdentity: { genesisHash: hash("1") },
   finality: {
@@ -55,7 +55,11 @@ test("checked-in launch gate is canonical, empty and unauthorized", async () => 
   const template = JSON.parse(text);
   assert.equal(text, `${stableJson(template)}\n`);
   const report = evaluateLaunchGate(template, { nowUnixSeconds: NOW });
-  assert.equal(report.evidenceComplete, false);
+  assert.equal(report.referencesOpaque, true);
+  assert.equal(report.opaqueReferencesComplete, false);
+  assert.equal(report.declaredCrossBindingsConsistent, false);
+  assert.equal(report.artifactContentsOpened, false);
+  assert.equal(report.semanticEvidenceVerified, false);
   for (const field of [
     "readyForReviewedActivation",
     "liquidityEnabled",
@@ -68,9 +72,40 @@ test("checked-in launch gate is canonical, empty and unauthorized", async () => 
 
 test("complete self-declared references never produce authorization", () => {
   const report = evaluateLaunchGate(complete(), { nowUnixSeconds: NOW });
-  assert.equal(report.evidenceComplete, true);
+  assert.equal(report.referencesOpaque, true);
+  assert.equal(report.opaqueReferencesComplete, true);
+  assert.equal(report.declaredCrossBindingsConsistent, true);
+  assert.equal(report.artifactContentsOpened, false);
+  assert.equal(report.semanticEvidenceVerified, false);
   assert.equal(report.readyForReviewedActivation, false);
   assert.equal(report.liquidityEnabled, false);
+  assert.equal(report.aggregatorExecutionEnabled, false);
+  assert.equal(report.activationAuthorized, false);
+});
+
+test("canonical package fingerprint binds every opaque declaration", () => {
+  const baseline = evaluateLaunchGate(complete(), { nowUnixSeconds: NOW });
+  assert.match(baseline.gateSha256, /^0x[0-9a-f]{64}$/);
+  const changed = complete();
+  changed.bridge.readinessVerificationSha256 = hash("7");
+  const changedReport = evaluateLaunchGate(changed, { nowUnixSeconds: NOW });
+  assert.notEqual(changedReport.gateSha256, baseline.gateSha256);
+  assert.equal(changedReport.semanticEvidenceVerified, false);
+  assert.equal(changedReport.activationAuthorized, false);
+});
+
+test("plausible opaque hashes and self-consistent claims cannot imply semantics", () => {
+  const gate = complete();
+  gate.bridge.readinessVerificationSha256 = gate.liquidity.pilotReadinessVerificationSha256;
+  gate.deployment.configurationSha256 = gate.chainIdentity.genesisHash;
+  const report = evaluateLaunchGate(gate, { nowUnixSeconds: NOW });
+  assert.equal(report.opaqueReferencesComplete, true);
+  assert.equal(report.declaredCrossBindingsConsistent, true);
+  assert.equal(report.artifactContentsOpened, false);
+  assert.equal(report.semanticEvidenceVerified, false);
+  assert.equal(report.readyForReviewedActivation, false);
+  assert.equal(report.liquidityEnabled, false);
+  assert.equal(report.liquidityAdded, false);
   assert.equal(report.aggregatorExecutionEnabled, false);
   assert.equal(report.activationAuthorized, false);
 });

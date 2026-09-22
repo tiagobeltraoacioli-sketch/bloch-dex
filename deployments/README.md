@@ -107,17 +107,24 @@ binds the complete configuration hash and observations but does not attest that
 the RPC is independently trustworthy. Obtain matching evidence from the
 qualified node/validator process before release approval.
 
-`launch-gate.template.json` is the checked-in aggregate preflight. It selects
+`launch-gate.template.json` is the checked-in version-3 aggregate preflight. It
+selects
 chain 700771 but deliberately carries no genesis, RPC, bridge, deployment or
 pilot-readiness evidence; every evidence field remains null and every control
-remains false. The version-2 schema contains no operator-supplied readiness or
-authorization booleans. It can report only whether all structural evidence
-references are present, fresh and cross-bound to the same RPC observation.
+remains false. The version-3 schema contains no operator-supplied readiness or
+authorization booleans. It fingerprints the exact canonical package and reports
+only whether all opaque references are present, fresh and carry a declared
+cross-binding to the same RPC observation. The report names these properties
+`opaqueReferencesComplete` and `declaredCrossBindingsConsistent`; they do not
+mean that any referenced artifact was opened or authenticated.
 Because this preflight does not reopen and semantically authenticate those
-referenced artifacts, `readyForReviewedActivation` is unconditionally false.
+referenced artifacts, `referencesOpaque` is true, `artifactContentsOpened` and
+`semanticEvidenceVerified` are false, and `readyForReviewedActivation` is
+unconditionally false.
 Liquidity, aggregator execution and activation authorization also remain false
-even when `evidenceComplete` is true. A future reviewed schema and verifier are
-required to change that behavior.
+even when every opaque reference is present. A future reviewed semantic verifier
+that opens canonical artifacts and authenticates their provenance is required
+to change that behavior; copying plausible hashes into this package cannot do so.
 
 The gate file must be canonical JSON in a regular, single-link, non-writable
 repo-relative file of at most 16 KiB. Symlinks, path escape, partial evidence,

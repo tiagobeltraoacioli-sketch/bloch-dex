@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -68,7 +69,7 @@ export function evaluateLaunchGate(gate, options = {}) {
     "document",
   );
   refuse(
-    gate.schemaVersion === 2 && gate.domain === "postern.dex.launch-gate.v2",
+    gate.schemaVersion === 3 && gate.domain === "postern.dex.launch-gate.v3",
     "schema is unsupported",
   );
   refuse(gate.selectedChainId === 700771, "selected chain must be 700771");
@@ -170,11 +171,19 @@ export function evaluateLaunchGate(gate, options = {}) {
     );
   }
 
+  const gateSha256 = `0x${createHash("sha256")
+    .update(stableJson(gate))
+    .digest("hex")}`;
   return Object.freeze({
-    schemaVersion: 2,
-    domain: "postern.dex.launch-gate-preflight.v2",
+    schemaVersion: 3,
+    domain: "postern.dex.launch-gate-preflight.v3",
     selectedChainId: 700771,
-    evidenceComplete: evidencePresent,
+    gateSha256,
+    referencesOpaque: true,
+    opaqueReferencesComplete: evidencePresent,
+    declaredCrossBindingsConsistent: evidencePresent,
+    artifactContentsOpened: false,
+    semanticEvidenceVerified: false,
     readyForReviewedActivation: false,
     liquidityEnabled: false,
     liquidityAdded: false,
