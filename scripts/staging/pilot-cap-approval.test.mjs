@@ -60,10 +60,31 @@ async function fixture(root) {
   };
   const ceremonyId = hash("c");
   const policySha256 = sha256(policy);
-  const approval = {
+  const checkpoint = {
     schemaVersion: 1,
+    domain: "postern.dex.pilot-cap-checkpoint.v1",
+    retainedAtUnixSeconds: now - 10,
+    selectedChainId: 700771,
+    genesisHash: hash("a"),
+    deploymentConfigurationSha256: pilotCap.deploymentConfigurationSha256,
+    factoryAddress: pilotCap.factoryAddress,
+    pilotPoolAddress: pilotCap.pilotPoolAddress,
+    wrappedNativeAddress: pilotCap.wrappedNativeAddress,
+    bridgeAssetAddress: pilotCap.bridgeAssetAddress,
+    maxBaseBaseUnits: pilotCap.maxBaseBaseUnits,
+    maxQuoteBaseUnits: pilotCap.maxQuoteBaseUnits,
+    sourceRevisions,
+    lastSequence: "7",
+    lastApprovalSha256: hash("b"),
+  };
+  const checkpointBytes = Buffer.from(`${stableJson(checkpoint)}\n`);
+  await writeFile(join(root, "checkpoint.json"), checkpointBytes, { mode: 0o600 });
+  const approval = {
+    schemaVersion: 2,
     domain: NAMESPACE,
     ceremonyId,
+    sequence: "8",
+    predecessorApprovalSha256: checkpoint.lastApprovalSha256,
     issuedAtUnixSeconds: now - 5,
     expiresAtUnixSeconds: now + 300,
     authorityPolicySha256: policySha256,
@@ -91,10 +112,11 @@ async function fixture(root) {
   await rename(join(root, "approval.json.sig"), join(root, "risk.sig"));
   command(["-Y", "sign", "-f", securityKey, "-n", NAMESPACE, join(root, "approval.json")]);
   await rename(join(root, "approval.json.sig"), join(root, "security.sig"));
-  for (const file of ["approval.json", "policy", "risk.sig", "security.sig"])
+  for (const file of ["approval.json", "policy", "risk.sig", "security.sig", "checkpoint.json"])
     await chmod(join(root, file), 0o600);
   return {
     approval,
+    checkpoint,
     options: {
       approvalPath: "approval.json",
       authorityPolicyPath: "policy",
@@ -104,6 +126,8 @@ async function fixture(root) {
       securitySignaturePath: "security.sig",
       sshKeygenPath,
       expectedSshKeygenSha256: sha256(sshKeygenBytes),
+      checkpointPath: "checkpoint.json",
+      expectedCheckpointSha256: sha256(checkpointBytes),
     },
     context: {
       selectedChainId: 700771,
@@ -128,6 +152,13 @@ test("caller-supplied policy and signatures produce an observation, never authen
   assert.equal(report.authorityOrganizationsSeparated, false);
   assert.equal(report.replayProtectionAuthenticated, false);
   assert.equal(report.approvalAuthenticated, false);
+  assert.equal(report.sequence, "8");
+  assert.equal(report.predecessorApprovalSha256, hash("b"));
+  assert.equal(report.checkpointSnapshotMatched, true);
+  assert.equal(report.monotonicSuccessorObserved, true);
+  assert.equal(report.predecessorMatched, true);
+  assert.equal(report.checkpointMutationPerformed, false);
+  assert.equal(report.concurrentConsumptionPrevented, false);
   assert.equal("liquidityEnabled" in report, false);
 });
 
@@ -154,6 +185,14 @@ test("policy, role and replay substitution fail closed", async (context) => {
   await assert.rejects(
     inspectPilotCapApproval(
       root,
+      { ...value.options, expectedCheckpointSha256: hash("9") },
+      value.context,
+    ),
+    /checkpoint hash mismatch/,
+  );
+  await assert.rejects(
+    inspectPilotCapApproval(
+      root,
       {
         ...value.options,
         riskSignaturePath: value.options.securitySignaturePath,
@@ -170,6 +209,39 @@ test("policy, role and replay substitution fail closed", async (context) => {
     }),
     /bridge revision does not match/,
   );
+  const rolledBackCheckpoint = { ...value.checkpoint, lastSequence: "6" };
+  const rolledBackBytes = `${stableJson(rolledBackCheckpoint)}\n`;
+  await writeFile(join(root, "checkpoint.json"), rolledBackBytes, { mode: 0o600 });
+  await assert.rejects(
+    inspectPilotCapApproval(
+      root,
+      { ...value.options, expectedCheckpointSha256: sha256(rolledBackBytes) },
+      value.context,
+    ),
+    /replayed, rolled back or skips/,
+  );
+  const checkpointBytes = `${stableJson(value.checkpoint)}\n`;
+  await writeFile(join(root, "checkpoint.json"), checkpointBytes, { mode: 0o600 });
+  for (const [mutate, message] of [
+    [(candidate) => (candidate.sequence = "7"), /replayed, rolled back or skips/],
+    [(candidate) => (candidate.sequence = "9"), /replayed, rolled back or skips/],
+    [
+      (candidate) => (candidate.predecessorApprovalSha256 = hash("9")),
+      /predecessor does not match/,
+    ],
+  ]) {
+    const candidate = structuredClone(value.approval);
+    mutate(candidate);
+    const bytes = `${stableJson(candidate)}\n`;
+    await writeFile(join(root, "approval.json"), bytes, { mode: 0o600 });
+    await assert.rejects(
+      inspectPilotCapApproval(root, value.options, {
+        ...value.context,
+        pilotCap: { ...value.context.pilotCap, capApprovalSha256: sha256(bytes) },
+      }),
+      message,
+    );
+  }
 });
 
 test("self-selected, aliased, stale and mutable inputs fail closed", async (context) => {
@@ -215,6 +287,24 @@ test("self-selected, aliased, stale and mutable inputs fail closed", async (cont
   await assert.rejects(
     inspectPilotCapApproval(root, value.options, value.context),
     /approval is unsafe/,
+  );
+  await chmod(join(root, "approval.json"), 0o600);
+  await chmod(join(root, "checkpoint.json"), 0o622);
+  await assert.rejects(
+    inspectPilotCapApproval(root, value.options, value.context),
+    /checkpoint is unsafe/,
+  );
+  await chmod(join(root, "checkpoint.json"), 0o600);
+  const replacement = { ...value.checkpoint, lastSequence: "6" };
+  await writeFile(
+    join(root, "checkpoint-replacement.json"),
+    `${stableJson(replacement)}\n`,
+    { mode: 0o600 },
+  );
+  await rename(join(root, "checkpoint-replacement.json"), join(root, "checkpoint.json"));
+  await assert.rejects(
+    inspectPilotCapApproval(root, value.options, value.context),
+    /checkpoint hash mismatch/,
   );
 });
 

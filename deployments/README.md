@@ -155,6 +155,12 @@ allowed-signers policy. Both sign the canonical approval with namespace
 `postern.dex.pilot-cap-approval.v1`. The approval binds a caller-supplied
 ceremony identifier, the exact chain/genesis/deployment/token/pool/caps/source
 revisions, a maximum 15-minute validity window and disabled execution controls.
+Version 2 also binds a canonical positive `sequence` and the exact predecessor
+approval SHA-256. A separate canonical
+`postern.dex.pilot-cap-checkpoint.v1` snapshot repeats the full context and
+retains `lastSequence` plus `lastApprovalSha256`. The candidate must be the
+immediate successor and name that predecessor exactly, rejecting observed
+replay, rollback, gaps and cross-context checkpoint substitution.
 The policy SHA-256, ceremony identifier and `ssh-keygen` SHA-256 are explicit
 caller-supplied inputs. They do not prove an independent trust root, that the
 two keys belong to separate organizations, or that the ceremony was not replayed.
@@ -171,6 +177,10 @@ inputs. The report therefore keeps `pilotCapApprovalAuthenticated:false`,
 and `approvalAuthenticated:false`. A later reviewed code change must install
 non-caller-selected trust roots, organizational identities and a durable
 sequence/predecessor checkpoint before any authenticated claim can become true.
+This observation never updates or consumes the retained checkpoint, so two
+concurrent processes can still inspect the same successor. File-descriptor and
+inode checks prevent a single read from silently mixing replacement contents,
+but do not constitute a durable compare-and-swap.
 This inspection does not enable liquidity, aggregator execution, deployment or
 broadcast.
 
@@ -228,7 +238,9 @@ append:
   --cap-risk-signature <repo-relative-risk.sig> \
   --cap-security-signature <repo-relative-security.sig> \
   --ssh-keygen /usr/bin/ssh-keygen \
-  --expected-ssh-keygen-sha256 <caller-supplied-0x-sha256>
+  --expected-ssh-keygen-sha256 <caller-supplied-0x-sha256> \
+  --cap-checkpoint <repo-relative-checkpoint.json> \
+  --expected-cap-checkpoint-sha256 <caller-supplied-0x-sha256>
 ```
 
 The gate file must be canonical JSON in a regular, single-link, non-writable

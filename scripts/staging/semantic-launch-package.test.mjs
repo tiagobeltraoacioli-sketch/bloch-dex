@@ -204,10 +204,37 @@ async function writeCapAuthentication(root) {
   const policySha256 = `0x${createHash("sha256").update(policy).digest("hex")}`;
   const ceremonyId = hash("7");
   const now = Math.floor(Date.now() / 1000);
-  const approval = {
+  const sourceRevisions = {
+    l2: revision("1"),
+    bridge: revision("2"),
+    deployment: revision("3"),
+    pilot: revision("4"),
+    aggregator: revision("5"),
+  };
+  const checkpoint = {
     schemaVersion: 1,
+    domain: "postern.dex.pilot-cap-checkpoint.v1",
+    retainedAtUnixSeconds: now - 10,
+    selectedChainId: 700771,
+    genesisHash: hash("a"),
+    deploymentConfigurationSha256: hash("e"),
+    factoryAddress: `0x${"11".repeat(20)}`,
+    pilotPoolAddress: `0x${"22".repeat(20)}`,
+    wrappedNativeAddress: `0x${"33".repeat(20)}`,
+    bridgeAssetAddress: `0x${"44".repeat(20)}`,
+    maxBaseBaseUnits: "100000000000000000",
+    maxQuoteBaseUnits: "1000000",
+    sourceRevisions,
+    lastSequence: "3",
+    lastApprovalSha256: hash("8"),
+  };
+  const checkpointSha256 = await canonicalWrite(root, "cap-checkpoint.json", checkpoint);
+  const approval = {
+    schemaVersion: 2,
     domain: namespace,
     ceremonyId,
+    sequence: "4",
+    predecessorApprovalSha256: checkpoint.lastApprovalSha256,
     issuedAtUnixSeconds: now - 5,
     expiresAtUnixSeconds: now + 300,
     authorityPolicySha256: policySha256,
@@ -220,13 +247,7 @@ async function writeCapAuthentication(root) {
     bridgeAssetAddress: `0x${"44".repeat(20)}`,
     maxBaseBaseUnits: "100000000000000000",
     maxQuoteBaseUnits: "1000000",
-    sourceRevisions: {
-      l2: revision("1"),
-      bridge: revision("2"),
-      deployment: revision("3"),
-      pilot: revision("4"),
-      aggregator: revision("5"),
-    },
+    sourceRevisions,
     controls: {
       liquidityEnabled: false,
       liquidityAdded: false,
@@ -239,7 +260,7 @@ async function writeCapAuthentication(root) {
   await rename(join(root, "cap-approval.json.sig"), join(root, "risk.sig"));
   run(["-Y", "sign", "-f", securityKey, "-n", namespace, join(root, "cap-approval.json")]);
   await rename(join(root, "cap-approval.json.sig"), join(root, "security.sig"));
-  for (const file of ["cap-policy", "cap-approval.json", "risk.sig", "security.sig"])
+  for (const file of ["cap-policy", "cap-approval.json", "risk.sig", "security.sig", "cap-checkpoint.json"])
     await chmod(join(root, file), 0o600);
   const sshKeygenBytes = await readFile("/usr/bin/ssh-keygen");
   return {
@@ -253,6 +274,8 @@ async function writeCapAuthentication(root) {
       securitySignaturePath: "security.sig",
       sshKeygenPath: "/usr/bin/ssh-keygen",
       expectedSshKeygenSha256: `0x${createHash("sha256").update(sshKeygenBytes).digest("hex")}`,
+      checkpointPath: "cap-checkpoint.json",
+      expectedCheckpointSha256: checkpointSha256,
     },
   };
 }
@@ -368,6 +391,12 @@ test("two caller-supplied cap signatures remain observation-only and cannot auth
   assert.equal(report.pilotCapApprovalObservation.authorityOrganizationsSeparated, false);
   assert.equal(report.pilotCapApprovalObservation.replayProtectionAuthenticated, false);
   assert.equal(report.pilotCapApprovalObservation.approvalAuthenticated, false);
+  assert.equal(report.pilotCapApprovalObservation.sequence, "4");
+  assert.equal(report.pilotCapApprovalObservation.predecessorApprovalSha256, hash("8"));
+  assert.equal(report.pilotCapApprovalObservation.checkpointSnapshotMatched, true);
+  assert.equal(report.pilotCapApprovalObservation.monotonicSuccessorObserved, true);
+  assert.equal(report.pilotCapApprovalObservation.checkpointMutationPerformed, false);
+  assert.equal(report.pilotCapApprovalObservation.concurrentConsumptionPrevented, false);
   assert.equal(report.activationApprovalAuthenticated, false);
   assert.equal(report.readyForReviewedActivation, false);
   assert.equal(report.liquidityEnabled, false);

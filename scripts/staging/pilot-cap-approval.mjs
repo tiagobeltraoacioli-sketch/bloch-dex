@@ -21,6 +21,7 @@ const MAX_BYTES = 64 * 1024;
 const MAX_EXECUTABLE_BYTES = 64 * 1024 * 1024;
 const MAX_VALIDITY_SECONDS = 15 * 60;
 const NAMESPACE = "postern.dex.pilot-cap-approval.v1";
+const CHECKPOINT_DOMAIN = "postern.dex.pilot-cap-checkpoint.v1";
 const NAMES = ["l2", "bridge", "deployment", "pilot", "aggregator"];
 
 function fail(message) {
@@ -194,11 +195,73 @@ function validatePolicy(bytes, expectedSha256) {
   required(keys[0] !== keys[1], "risk and security authorities must use distinct keys");
 }
 
-function validateApproval(value, expectedPolicySha256, expectedCeremonyId, context, atUnixSeconds) {
+function contextFieldsMatch(value, context, label) {
+  required(
+    value.selectedChainId === context.selectedChainId &&
+      value.genesisHash === context.genesisHash,
+    `${label} binds another chain`,
+  );
+  for (const field of [
+    "deploymentConfigurationSha256", "factoryAddress", "pilotPoolAddress",
+    "wrappedNativeAddress", "bridgeAssetAddress", "maxBaseBaseUnits",
+    "maxQuoteBaseUnits",
+  ])
+    required(value[field] === context.pilotCap[field], `${label} ${field} does not match pilot evidence`);
+  exact(value.sourceRevisions, NAMES, `${label}.sourceRevisions`);
+  for (const name of NAMES)
+    required(
+      REVISION.test(value.sourceRevisions[name]) &&
+        value.sourceRevisions[name] === context.sourceRevisions[name],
+      `${label} ${name} revision does not match authenticated evidence`,
+    );
+}
+
+function canonicalSequence(value, { allowZero }, field) {
+  const pattern = allowZero ? /^(?:0|[1-9][0-9]{0,19})$/ : /^[1-9][0-9]{0,19}$/;
+  required(typeof value === "string" && pattern.test(value), `${field} is invalid`);
+  return BigInt(value);
+}
+
+function validateCheckpoint(value, context) {
   exact(
     value,
     [
-      "schemaVersion", "domain", "ceremonyId", "issuedAtUnixSeconds",
+      "schemaVersion", "domain", "retainedAtUnixSeconds", "selectedChainId",
+      "genesisHash", "deploymentConfigurationSha256", "factoryAddress",
+      "pilotPoolAddress", "wrappedNativeAddress", "bridgeAssetAddress",
+      "maxBaseBaseUnits", "maxQuoteBaseUnits", "sourceRevisions",
+      "lastSequence", "lastApprovalSha256",
+    ],
+    "checkpoint",
+  );
+  required(
+    value.schemaVersion === 1 && value.domain === CHECKPOINT_DOMAIN,
+    "checkpoint schema is unsupported",
+  );
+  required(
+    Number.isSafeInteger(value.retainedAtUnixSeconds) && value.retainedAtUnixSeconds > 0,
+    "checkpoint retention time is invalid",
+  );
+  contextFieldsMatch(value, context, "checkpoint");
+  const lastSequence = canonicalSequence(
+    value.lastSequence,
+    { allowZero: true },
+    "checkpoint.lastSequence",
+  );
+  hash(value.lastApprovalSha256, "checkpoint.lastApprovalSha256");
+  return {
+    retainedAtUnixSeconds: value.retainedAtUnixSeconds,
+    lastSequence,
+    lastApprovalSha256: value.lastApprovalSha256,
+  };
+}
+
+function validateApproval(value, expectedPolicySha256, expectedCeremonyId, context, checkpoint, atUnixSeconds) {
+  exact(
+    value,
+    [
+      "schemaVersion", "domain", "ceremonyId", "sequence",
+      "predecessorApprovalSha256", "issuedAtUnixSeconds",
       "expiresAtUnixSeconds", "authorityPolicySha256", "selectedChainId",
       "genesisHash", "deploymentConfigurationSha256", "factoryAddress",
       "pilotPoolAddress", "wrappedNativeAddress", "bridgeAssetAddress",
@@ -207,7 +270,7 @@ function validateApproval(value, expectedPolicySha256, expectedCeremonyId, conte
     "approval",
   );
   required(
-    value.schemaVersion === 1 && value.domain === NAMESPACE,
+    value.schemaVersion === 2 && value.domain === NAMESPACE,
     "approval schema is unsupported",
   );
   required(value.ceremonyId === expectedCeremonyId, "approval ceremony is not externally selected");
@@ -222,23 +285,17 @@ function validateApproval(value, expectedPolicySha256, expectedCeremonyId, conte
     "approval is stale, premature or overlong",
   );
   required(
-    value.selectedChainId === context.selectedChainId &&
-      value.genesisHash === context.genesisHash,
-    "approval binds another chain",
+    checkpoint.retainedAtUnixSeconds <= value.issuedAtUnixSeconds,
+    "approval predates its retained checkpoint",
   );
-  for (const field of [
-    "deploymentConfigurationSha256", "factoryAddress", "pilotPoolAddress",
-    "wrappedNativeAddress", "bridgeAssetAddress", "maxBaseBaseUnits",
-    "maxQuoteBaseUnits",
-  ])
-    required(value[field] === context.pilotCap[field], `approval ${field} does not match pilot evidence`);
-  exact(value.sourceRevisions, NAMES, "approval.sourceRevisions");
-  for (const name of NAMES)
-    required(
-      REVISION.test(value.sourceRevisions[name]) &&
-        value.sourceRevisions[name] === context.sourceRevisions[name],
-      `approval ${name} revision does not match authenticated evidence`,
-    );
+  contextFieldsMatch(value, context, "approval");
+  const sequence = canonicalSequence(value.sequence, { allowZero: false }, "approval.sequence");
+  hash(value.predecessorApprovalSha256, "approval.predecessorApprovalSha256");
+  required(sequence === checkpoint.lastSequence + 1n, "approval is replayed, rolled back or skips a sequence");
+  required(
+    value.predecessorApprovalSha256 === checkpoint.lastApprovalSha256,
+    "approval predecessor does not match the retained checkpoint",
+  );
   exact(
     value.controls,
     ["liquidityEnabled", "liquidityAdded", "aggregatorExecutionEnabled", "activationAuthorized"],
@@ -264,20 +321,38 @@ export async function inspectPilotCapApproval(repository, options, context) {
       "approvalPath", "authorityPolicyPath", "expectedAuthorityPolicySha256",
       "expectedCeremonyId", "riskSignaturePath", "securitySignaturePath",
       "sshKeygenPath", "expectedSshKeygenSha256",
+      "checkpointPath", "expectedCheckpointSha256",
     ],
     "authentication options",
   );
   hash(options.expectedAuthorityPolicySha256, "expected authority policy sha256");
   hash(options.expectedCeremonyId, "expected ceremony id");
   hash(options.expectedSshKeygenSha256, "expected ssh-keygen sha256");
-  const [approvalBytes, policyBytes, riskSignature, securitySignature, executable] = await Promise.all([
+  hash(options.expectedCheckpointSha256, "expected checkpoint sha256");
+  const [approvalBytes, policyBytes, riskSignature, securitySignature, checkpointBytes, executable] = await Promise.all([
     readSafeBytes(repository, options.approvalPath, "approval"),
     readSafeBytes(repository, options.authorityPolicyPath, "authority policy"),
     readSafeBytes(repository, options.riskSignaturePath, "risk signature"),
     readSafeBytes(repository, options.securitySignaturePath, "security signature"),
+    readSafeBytes(repository, options.checkpointPath, "checkpoint"),
     readPinnedExecutable(options.sshKeygenPath, options.expectedSshKeygenSha256),
   ]);
   validatePolicy(policyBytes, options.expectedAuthorityPolicySha256);
+  required(
+    sha256(checkpointBytes) === options.expectedCheckpointSha256,
+    "checkpoint hash mismatch",
+  );
+  let checkpointValue;
+  try {
+    checkpointValue = JSON.parse(checkpointBytes.toString("utf8"));
+  } catch {
+    fail("checkpoint is invalid JSON");
+  }
+  required(
+    checkpointBytes.toString("utf8") === `${stableJson(checkpointValue)}\n`,
+    "checkpoint is not canonical JSON",
+  );
+  const checkpoint = validateCheckpoint(checkpointValue, context);
   let approval;
   try {
     approval = JSON.parse(approvalBytes.toString("utf8"));
@@ -298,6 +373,7 @@ export async function inspectPilotCapApproval(repository, options, context) {
     options.expectedAuthorityPolicySha256,
     options.expectedCeremonyId,
     context,
+    checkpoint,
     atUnixSeconds,
   );
   const temporary = await mkdtemp(join(tmpdir(), "postern-cap-approval-"));
@@ -322,11 +398,19 @@ export async function inspectPilotCapApproval(repository, options, context) {
     callerSuppliedAuthorityPolicySha256: options.expectedAuthorityPolicySha256,
     callerSuppliedCeremonyId: options.expectedCeremonyId,
     callerSuppliedVerifierSha256: options.expectedSshKeygenSha256,
+    callerSuppliedCheckpointSha256: options.expectedCheckpointSha256,
+    sequence: approval.sequence,
+    predecessorApprovalSha256: approval.predecessorApprovalSha256,
     expiresAtUnixSeconds: approval.expiresAtUnixSeconds,
     callerSuppliedPolicyMatched: true,
     callerSuppliedCeremonyMatched: true,
     distinctPublicKeysObserved: true,
     signatureCheckProcessesExitedZero: true,
+    checkpointSnapshotMatched: true,
+    monotonicSuccessorObserved: true,
+    predecessorMatched: true,
+    checkpointMutationPerformed: false,
+    concurrentConsumptionPrevented: false,
     verifierIdentityAuthenticated: false,
     authorityOrganizationsSeparated: false,
     replayProtectionAuthenticated: false,
