@@ -109,13 +109,21 @@ qualified node/validator process before release approval.
 
 `launch-gate.template.json` is the checked-in aggregate preflight. It selects
 chain 700771 but deliberately carries no genesis, RPC, bridge, deployment or
-pilot-readiness evidence; every status remains false and every evidence field
-remains null. `check-launch-gate.mjs` can bind reviewed evidence references to
-the selected genesis, a finalized block strictly beyond genesis, operational
-bridge readiness, the deployment configuration and the disabled pilot
-liquidity ceremony. Even a complete preflight keeps liquidity, aggregator
-execution and activation authorization false. Its readiness result is not an
-activation approval and does not verify the referenced artifacts again.
+pilot-readiness evidence; every evidence field remains null and every control
+remains false. The version-2 schema contains no operator-supplied readiness or
+authorization booleans. It can report only whether all structural evidence
+references are present, fresh and cross-bound to the same RPC observation.
+Because this preflight does not reopen and semantically authenticate those
+referenced artifacts, `readyForReviewedActivation` is unconditionally false.
+Liquidity, aggregator execution and activation authorization also remain false
+even when `evidenceComplete` is true. A future reviewed schema and verifier are
+required to change that behavior.
+
+The gate file must be canonical JSON in a regular, single-link, non-writable
+repo-relative file of at most 16 KiB. Symlinks, path escape, partial evidence,
+stale evidence and finality at genesis are refused. The command exits `1` for
+both pending and refused gates, and `2` for invalid CLI usage; it never returns
+success in schema version 2.
 
 ```sh
 node scripts/staging/check-launch-gate.mjs \
