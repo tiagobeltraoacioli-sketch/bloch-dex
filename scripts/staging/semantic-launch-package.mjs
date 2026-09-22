@@ -3,8 +3,10 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { stableJson } from "./manifest.mjs";
+import { inspectPilotCapApproval } from "./pilot-cap-approval.mjs";
 
 const HASH = /^0x[0-9a-f]{64}$/;
+const ADDRESS = /^0x[0-9a-f]{40}$/;
 const REVISION = /^[0-9a-f]{40}$/;
 const SAFE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[a-zA-Z0-9._/-]+$/;
 const MAX_BYTES = 1024 * 1024;
@@ -42,6 +44,14 @@ function exact(value, keys, field) {
 
 function hash(value, field) {
   refuse(HASH.test(value) && !/^0x0{64}$/.test(value), `${field} is invalid`);
+  return value;
+}
+
+function address(value, field) {
+  refuse(
+    ADDRESS.test(value) && !/^0x0{40}$/.test(value),
+    `${field} is invalid`,
+  );
   return value;
 }
 
@@ -352,6 +362,11 @@ function validatePilot(value, descriptor, l2, bridgeSha256, deploymentSha256) {
       "genesisHash",
       "bridgeArtifactSha256",
       "deploymentArtifactSha256",
+      "deploymentConfigurationSha256",
+      "factoryAddress",
+      "pilotPoolAddress",
+      "wrappedNativeAddress",
+      "bridgeAssetAddress",
       "maxBaseBaseUnits",
       "maxQuoteBaseUnits",
       "capApprovalSha256",
@@ -362,7 +377,7 @@ function validatePilot(value, descriptor, l2, bridgeSha256, deploymentSha256) {
     "pilot",
   );
   refuse(
-    value.schema === "postern.dex.pilot-evidence.v2",
+    value.schema === "postern.dex.pilot-evidence.v3",
     "pilot schema is unsupported",
   );
   validateProvenance(value.provenance, "pilot", descriptor);
@@ -378,6 +393,31 @@ function validatePilot(value, descriptor, l2, bridgeSha256, deploymentSha256) {
     MAX_PILOT_BLCH_BASE_UNITS,
     "pilot.maxBaseBaseUnits",
   );
+  refuse(
+    value.deploymentConfigurationSha256 ===
+      descriptor.deploymentConfigurationSha256,
+    "pilot deployment configuration does not match its descriptor",
+  );
+  hash(
+    value.deploymentConfigurationSha256,
+    "pilot.deploymentConfigurationSha256",
+  );
+  for (const field of [
+    "factoryAddress",
+    "pilotPoolAddress",
+    "wrappedNativeAddress",
+    "bridgeAssetAddress",
+  ])
+    address(value[field], `pilot.${field}`);
+  refuse(
+    new Set([
+      value.factoryAddress,
+      value.pilotPoolAddress,
+      value.wrappedNativeAddress,
+      value.bridgeAssetAddress,
+    ]).size === 4,
+    "pilot identities must be distinct",
+  );
   boundedPositiveBaseUnits(
     value.maxQuoteBaseUnits,
     MAX_PILOT_BUSDC_BASE_UNITS,
@@ -391,6 +431,11 @@ function validatePilot(value, descriptor, l2, bridgeSha256, deploymentSha256) {
     maxBaseBaseUnits: value.maxBaseBaseUnits,
     maxQuoteBaseUnits: value.maxQuoteBaseUnits,
     capApprovalSha256: value.capApprovalSha256,
+    deploymentConfigurationSha256: value.deploymentConfigurationSha256,
+    factoryAddress: value.factoryAddress,
+    pilotPoolAddress: value.pilotPoolAddress,
+    wrappedNativeAddress: value.wrappedNativeAddress,
+    bridgeAssetAddress: value.bridgeAssetAddress,
   });
 }
 
@@ -436,7 +481,11 @@ function validateAggregator(
 export async function verifySemanticLaunchPackage(
   repository,
   packagePath,
-  { trustRootsPath = null, expectedTrustRootsSha256 = null } = {},
+  {
+    trustRootsPath = null,
+    expectedTrustRootsSha256 = null,
+    capApproval = null,
+  } = {},
 ) {
   refuse(
     (trustRootsPath === null) === (expectedTrustRootsSha256 === null),
@@ -491,6 +540,7 @@ export async function verifySemanticLaunchPackage(
     semanticEvidenceAuthenticated: false,
     declaredPilotCapBounded: false,
     pilotCapApprovalAuthenticated: false,
+    pilotCapApprovalObservation: null,
     pilotCap: null,
     activationApprovalAuthenticated: false,
     trustRootsSha256: null,
@@ -508,7 +558,9 @@ export async function verifySemanticLaunchPackage(
     const descriptor = pkg.artifacts[name];
     exact(
       descriptor,
-      ["path", "sha256", "sourceRevision"],
+      name === "pilot"
+        ? ["path", "sha256", "sourceRevision", "deploymentConfigurationSha256"]
+        : ["path", "sha256", "sourceRevision"],
       `package.artifacts.${name}`,
     );
     refuse(
@@ -520,6 +572,11 @@ export async function verifySemanticLaunchPackage(
       REVISION.test(descriptor.sourceRevision),
       `${name} descriptor revision is invalid`,
     );
+    if (name === "pilot")
+      hash(
+        descriptor.deploymentConfigurationSha256,
+        "pilot descriptor deployment configuration sha256",
+      );
     descriptors[name] = descriptor;
     opened[name] = await readCanonical(repository, descriptor.path, name);
     refuse(
@@ -564,6 +621,22 @@ export async function verifySemanticLaunchPackage(
       opened,
     );
   }
+  let capObservation = null;
+  if (capApproval !== null) {
+    refuse(authentication !== null, "cap approval requires authenticated artifact trust roots");
+    capObservation = await inspectPilotCapApproval(
+      repository,
+      capApproval,
+      {
+        selectedChainId: opened.l2.value.chainId,
+        genesisHash: opened.l2.value.genesisHash,
+        pilotCap,
+        sourceRevisions: Object.fromEntries(
+          NAMES.map((name) => [name, descriptors[name].sourceRevision]),
+        ),
+      },
+    );
+  }
   return Object.freeze({
     ...base,
     artifactContentsOpened: true,
@@ -576,6 +649,7 @@ export async function verifySemanticLaunchPackage(
     semanticEvidenceAuthenticated: authentication !== null,
     declaredPilotCapBounded: true,
     pilotCapApprovalAuthenticated: false,
+    pilotCapApprovalObservation: capObservation,
     pilotCap,
     trustRootsSha256: authentication?.trustRootsSha256 ?? null,
   });

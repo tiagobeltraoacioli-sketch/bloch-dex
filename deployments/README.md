@@ -138,14 +138,41 @@ the L2 observation, the exact opened bridge/deployment/pilot artifact hashes,
 and the disabled execution controls. Recomputing hashes around a semantic lie
 does not satisfy these checks.
 
-The pilot artifact uses `postern.dex.pilot-evidence.v2`. It binds distinct
+The pilot artifact uses `postern.dex.pilot-evidence.v3`. It binds distinct
 canonical positive limits for WBLCH and bUSDC, capped respectively at 10 BLCH
 base units (`10e18`) and 10 bUSDC base units (`10e6`), plus the nonzero SHA-256
-of the separately reviewed cap envelope. Passing these structural checks sets
+of the separately reviewed cap envelope. It also fixes the deployment
+configuration, factory, pilot pair, WBLCH, bUSDC and all five source revisions.
+Passing these structural checks sets
 `declaredPilotCapBounded:true`; it never sets
 `pilotCapApprovalAuthenticated:true`. The latter remains false because neither
 the package nor its artifact trust roots authenticate the approval authority or
 signature behind that envelope.
+
+Optional cap-signature inspection accepts two distinct Ed25519 public keys named
+`postern-dex-pilot-risk` and `postern-dex-pilot-security` in an exact OpenSSH
+allowed-signers policy. Both sign the canonical approval with namespace
+`postern.dex.pilot-cap-approval.v1`. The approval binds a caller-supplied
+ceremony identifier, the exact chain/genesis/deployment/token/pool/caps/source
+revisions, a maximum 15-minute validity window and disabled execution controls.
+The policy SHA-256, ceremony identifier and `ssh-keygen` SHA-256 are explicit
+caller-supplied inputs. They do not prove an independent trust root, that the
+two keys belong to separate organizations, or that the ceremony was not replayed.
+The checker only uses an absolute,
+root-administered, non-writable `ssh-keygen`, verifies its externally supplied
+hash through a stable file descriptor, executes a private copy of those exact
+bytes and checks the original inode again afterward. It never resolves the
+verifier through `PATH`.
+
+Even two zero-exit signature checks are only an observation over caller-supplied
+inputs. The report therefore keeps `pilotCapApprovalAuthenticated:false`,
+`verifierIdentityAuthenticated:false`,
+`authorityOrganizationsSeparated:false`, `replayProtectionAuthenticated:false`
+and `approvalAuthenticated:false`. A later reviewed code change must install
+non-caller-selected trust roots, organizational identities and a durable
+sequence/predecessor checkpoint before any authenticated claim can become true.
+This inspection does not enable liquidity, aggregator execution, deployment or
+broadcast.
 
 Structural semantic verification is deliberately neither provenance
 authentication nor activation authorization. The repository names, revisions
@@ -188,6 +215,20 @@ node scripts/staging/check-semantic-launch-package.mjs \
   --package <repo-relative-package.json> \
   --trust-roots <repo-relative-trust-roots.json> \
   --expected-trust-roots-sha256 <externally-retained-0x-sha256>
+```
+
+For an observation-only check of a caller-supplied two-signature cap envelope,
+append:
+
+```sh
+  --cap-approval <repo-relative-approval.json> \
+  --cap-authority-policy <repo-relative-allowed-signers> \
+  --expected-cap-authority-policy-sha256 <caller-supplied-0x-sha256> \
+  --expected-cap-ceremony-id <caller-supplied-0x-id> \
+  --cap-risk-signature <repo-relative-risk.sig> \
+  --cap-security-signature <repo-relative-security.sig> \
+  --ssh-keygen /usr/bin/ssh-keygen \
+  --expected-ssh-keygen-sha256 <caller-supplied-0x-sha256>
 ```
 
 The gate file must be canonical JSON in a regular, single-link, non-writable

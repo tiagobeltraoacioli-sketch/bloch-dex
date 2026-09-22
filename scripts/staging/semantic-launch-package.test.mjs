@@ -6,6 +6,7 @@ import {
   chmod,
   mkdtemp,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -91,12 +92,17 @@ async function buildComplete(root, mutate = () => {}) {
   );
 
   values.pilot = {
-    schema: "postern.dex.pilot-evidence.v2",
+    schema: "postern.dex.pilot-evidence.v3",
     provenance: provenance("postern-dex", "4", "evidence/pilot.json"),
     chainId: values.l2.chainId,
     genesisHash: values.l2.genesisHash,
     bridgeArtifactSha256: hashes.bridge,
     deploymentArtifactSha256: hashes.deployment,
+    deploymentConfigurationSha256: values.deployment.configurationSha256,
+    factoryAddress: `0x${"11".repeat(20)}`,
+    pilotPoolAddress: `0x${"22".repeat(20)}`,
+    wrappedNativeAddress: `0x${"33".repeat(20)}`,
+    bridgeAssetAddress: `0x${"44".repeat(20)}`,
     maxBaseBaseUnits: "100000000000000000",
     maxQuoteBaseUnits: "1000000",
     capApprovalSha256: hash("6"),
@@ -137,6 +143,12 @@ async function buildComplete(root, mutate = () => {}) {
             path: `${name}.json`,
             sha256: hashes[name],
             sourceRevision: revision(String(index + 1)),
+            ...(name === "pilot"
+              ? {
+                  deploymentConfigurationSha256:
+                    values.deployment.configurationSha256,
+                }
+              : {}),
           },
         ],
       ),
@@ -173,6 +185,78 @@ async function writeTrustRoots(root, complete, mutate = () => {}) {
   return { trustRoots, sha256 };
 }
 
+async function writeCapAuthentication(root) {
+  const namespace = "postern.dex.pilot-cap-approval.v1";
+  const run = (args) => {
+    const result = spawnSync("ssh-keygen", args, { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const riskKey = join(root, "risk-key");
+  const securityKey = join(root, "security-key");
+  run(["-q", "-t", "ed25519", "-N", "", "-f", riskKey]);
+  run(["-q", "-t", "ed25519", "-N", "", "-f", securityKey]);
+  const publicKey = async (path) =>
+    (await readFile(`${path}.pub`, "utf8")).trim().split(/\s+/).slice(0, 2).join(" ");
+  const policy =
+    `postern-dex-pilot-risk namespaces="${namespace}" ${await publicKey(riskKey)}\n` +
+    `postern-dex-pilot-security namespaces="${namespace}" ${await publicKey(securityKey)}\n`;
+  await writeFile(join(root, "cap-policy"), policy, { mode: 0o600 });
+  const policySha256 = `0x${createHash("sha256").update(policy).digest("hex")}`;
+  const ceremonyId = hash("7");
+  const now = Math.floor(Date.now() / 1000);
+  const approval = {
+    schemaVersion: 1,
+    domain: namespace,
+    ceremonyId,
+    issuedAtUnixSeconds: now - 5,
+    expiresAtUnixSeconds: now + 300,
+    authorityPolicySha256: policySha256,
+    selectedChainId: 700771,
+    genesisHash: hash("a"),
+    deploymentConfigurationSha256: hash("e"),
+    factoryAddress: `0x${"11".repeat(20)}`,
+    pilotPoolAddress: `0x${"22".repeat(20)}`,
+    wrappedNativeAddress: `0x${"33".repeat(20)}`,
+    bridgeAssetAddress: `0x${"44".repeat(20)}`,
+    maxBaseBaseUnits: "100000000000000000",
+    maxQuoteBaseUnits: "1000000",
+    sourceRevisions: {
+      l2: revision("1"),
+      bridge: revision("2"),
+      deployment: revision("3"),
+      pilot: revision("4"),
+      aggregator: revision("5"),
+    },
+    controls: {
+      liquidityEnabled: false,
+      liquidityAdded: false,
+      aggregatorExecutionEnabled: false,
+      activationAuthorized: false,
+    },
+  };
+  const approvalSha256 = await canonicalWrite(root, "cap-approval.json", approval);
+  run(["-Y", "sign", "-f", riskKey, "-n", namespace, join(root, "cap-approval.json")]);
+  await rename(join(root, "cap-approval.json.sig"), join(root, "risk.sig"));
+  run(["-Y", "sign", "-f", securityKey, "-n", namespace, join(root, "cap-approval.json")]);
+  await rename(join(root, "cap-approval.json.sig"), join(root, "security.sig"));
+  for (const file of ["cap-policy", "cap-approval.json", "risk.sig", "security.sig"])
+    await chmod(join(root, file), 0o600);
+  const sshKeygenBytes = await readFile("/usr/bin/ssh-keygen");
+  return {
+    approvalSha256,
+    options: {
+      approvalPath: "cap-approval.json",
+      authorityPolicyPath: "cap-policy",
+      expectedAuthorityPolicySha256: policySha256,
+      expectedCeremonyId: ceremonyId,
+      riskSignaturePath: "risk.sig",
+      securitySignaturePath: "security.sig",
+      sshKeygenPath: "/usr/bin/ssh-keygen",
+      expectedSshKeygenSha256: `0x${createHash("sha256").update(sshKeygenBytes).digest("hex")}`,
+    },
+  };
+}
+
 test("checked-in package is canonical, pending and non-authorizing", async () => {
   const text = await readFile(templateUrl, "utf8");
   const value = JSON.parse(text);
@@ -188,6 +272,7 @@ test("checked-in package is canonical, pending and non-authorizing", async () =>
   assert.equal(report.semanticEvidenceAuthenticated, false);
   assert.equal(report.declaredPilotCapBounded, false);
   assert.equal(report.pilotCapApprovalAuthenticated, false);
+  assert.equal(report.pilotCapApprovalObservation, null);
   assert.equal(report.pilotCap, null);
   assert.equal(report.activationApprovalAuthenticated, false);
   for (const field of [
@@ -219,11 +304,20 @@ test("a self-created structurally valid package cannot authenticate or authorize
     maxBaseBaseUnits: "100000000000000000",
     maxQuoteBaseUnits: "1000000",
     capApprovalSha256: hash("6"),
+    deploymentConfigurationSha256: hash("e"),
+    factoryAddress: `0x${"11".repeat(20)}`,
+    pilotPoolAddress: `0x${"22".repeat(20)}`,
+    wrappedNativeAddress: `0x${"33".repeat(20)}`,
+    bridgeAssetAddress: `0x${"44".repeat(20)}`,
   });
   assert.equal(report.readyForReviewedActivation, false);
   assert.equal(report.liquidityEnabled, false);
   assert.equal(report.aggregatorExecutionEnabled, false);
   assert.equal(report.activationAuthorized, false);
+  await assert.rejects(
+    verifySemanticLaunchPackage(root, "package.json", { capApproval: {} }),
+    /requires authenticated artifact trust roots/,
+  );
 });
 
 test("external roots authenticate artifact content and provenance, never approval", async (context) => {
@@ -251,6 +345,34 @@ test("external roots authenticate artifact content and provenance, never approva
     "activationAuthorized",
   ])
     assert.equal(report[field], false);
+});
+
+test("two caller-supplied cap signatures remain observation-only and cannot authorize execution", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "postern-semantic-cap-auth-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const cap = await writeCapAuthentication(root);
+  const complete = await buildComplete(root, (name, value) => {
+    if (name === "pilot") value.capApprovalSha256 = cap.approvalSha256;
+  });
+  const roots = await writeTrustRoots(root, complete);
+  const report = await verifySemanticLaunchPackage(root, "package.json", {
+    trustRootsPath: "trust-roots.json",
+    expectedTrustRootsSha256: roots.sha256,
+    capApproval: cap.options,
+  });
+  assert.equal(report.semanticEvidenceAuthenticated, true);
+  assert.equal(report.pilotCapApprovalAuthenticated, false);
+  assert.equal(report.pilotCapApprovalObservation.distinctPublicKeysObserved, true);
+  assert.equal(report.pilotCapApprovalObservation.signatureCheckProcessesExitedZero, true);
+  assert.equal(report.pilotCapApprovalObservation.verifierIdentityAuthenticated, false);
+  assert.equal(report.pilotCapApprovalObservation.authorityOrganizationsSeparated, false);
+  assert.equal(report.pilotCapApprovalObservation.replayProtectionAuthenticated, false);
+  assert.equal(report.pilotCapApprovalObservation.approvalAuthenticated, false);
+  assert.equal(report.activationApprovalAuthenticated, false);
+  assert.equal(report.readyForReviewedActivation, false);
+  assert.equal(report.liquidityEnabled, false);
+  assert.equal(report.aggregatorExecutionEnabled, false);
+  assert.equal(report.activationAuthorized, false);
 });
 
 test("trust roots cannot self-select, mismatch, substitute provenance or approve controls", async (context) => {
