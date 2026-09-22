@@ -126,6 +126,31 @@ even when every opaque reference is present. A future reviewed semantic verifier
 that opens canonical artifacts and authenticates their provenance is required
 to change that behavior; copying plausible hashes into this package cannot do so.
 
+`semantic-launch-package.template.json` is the separate version-1 input for
+that semantic verification step. The checked-in template is deliberately
+pending: all five descriptors are null and all controls are false. A complete
+operator-created package must point, by repository-relative path, SHA-256 and
+40-hex source revision, to canonical JSON evidence for the L2 finality, bridge,
+deployment, capped pilot pool and aggregator. The verifier opens every artifact
+with bounded, no-follow reads and checks its schema, canonical repository
+provenance and revision. It then cross-binds the selected chain and genesis,
+the L2 observation, the exact opened bridge/deployment/pilot artifact hashes,
+and the disabled execution controls. Recomputing hashes around a semantic lie
+does not satisfy these checks.
+
+Semantic verification is deliberately not activation authorization. Even a
+complete valid package reports `semanticEvidenceVerified: true` while
+`readyForReviewedActivation`, liquidity, aggregator execution and activation
+authorization remain false. A later, separately reviewed authorization process
+must consume the evidence; this command never deploys, broadcasts or adds
+liquidity. Pending and verified packages both exit `1`, while malformed input
+is refused and invalid CLI usage exits `2`.
+
+```sh
+node scripts/staging/check-semantic-launch-package.mjs \
+  --package deployments/semantic-launch-package.template.json
+```
+
 The gate file must be canonical JSON in a regular, single-link, non-writable
 repo-relative file of at most 16 KiB. Symlinks, path escape, partial evidence,
 stale evidence and finality at genesis are refused. The command exits `1` for
