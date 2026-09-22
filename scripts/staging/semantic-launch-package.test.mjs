@@ -91,13 +91,15 @@ async function buildComplete(root, mutate = () => {}) {
   );
 
   values.pilot = {
-    schema: "postern.dex.pilot-evidence.v1",
+    schema: "postern.dex.pilot-evidence.v2",
     provenance: provenance("postern-dex", "4", "evidence/pilot.json"),
     chainId: values.l2.chainId,
     genesisHash: values.l2.genesisHash,
     bridgeArtifactSha256: hashes.bridge,
     deploymentArtifactSha256: hashes.deployment,
-    capBaseUnits: "100000000000000000",
+    maxBaseBaseUnits: "100000000000000000",
+    maxQuoteBaseUnits: "1000000",
+    capApprovalSha256: hash("6"),
     pilotVerified: true,
     liquidityEnabled: false,
     liquidityAdded: false,
@@ -184,6 +186,9 @@ test("checked-in package is canonical, pending and non-authorizing", async () =>
   assert.equal(report.artifactContentAuthenticated, false);
   assert.equal(report.provenanceAuthenticated, false);
   assert.equal(report.semanticEvidenceAuthenticated, false);
+  assert.equal(report.declaredPilotCapBounded, false);
+  assert.equal(report.pilotCapApprovalAuthenticated, false);
+  assert.equal(report.pilotCap, null);
   assert.equal(report.activationApprovalAuthenticated, false);
   for (const field of [
     "readyForReviewedActivation",
@@ -208,6 +213,13 @@ test("a self-created structurally valid package cannot authenticate or authorize
   assert.equal(report.artifactContentAuthenticated, false);
   assert.equal(report.provenanceAuthenticated, false);
   assert.equal(report.semanticEvidenceAuthenticated, false);
+  assert.equal(report.declaredPilotCapBounded, true);
+  assert.equal(report.pilotCapApprovalAuthenticated, false);
+  assert.deepEqual(report.pilotCap, {
+    maxBaseBaseUnits: "100000000000000000",
+    maxQuoteBaseUnits: "1000000",
+    capApprovalSha256: hash("6"),
+  });
   assert.equal(report.readyForReviewedActivation, false);
   assert.equal(report.liquidityEnabled, false);
   assert.equal(report.aggregatorExecutionEnabled, false);
@@ -227,6 +239,8 @@ test("external roots authenticate artifact content and provenance, never approva
   assert.equal(report.artifactContentAuthenticated, true);
   assert.equal(report.provenanceAuthenticated, true);
   assert.equal(report.semanticEvidenceAuthenticated, true);
+  assert.equal(report.declaredPilotCapBounded, true);
+  assert.equal(report.pilotCapApprovalAuthenticated, false);
   assert.equal(report.trustRootsSha256, roots.sha256);
   assert.equal(report.activationApprovalAuthenticated, false);
   assert.equal(report.readyForReviewedActivation, false);
@@ -343,7 +357,19 @@ test("refuses semantic lies even when every descriptor hash is recomputed", asyn
     [
       "pilot",
       (v) => {
-        v.capBaseUnits = "1000000000000000000";
+        v.maxBaseBaseUnits = "10000000000000000001";
+      },
+    ],
+    [
+      "pilot",
+      (v) => {
+        v.maxQuoteBaseUnits = "10000001";
+      },
+    ],
+    [
+      "pilot",
+      (v) => {
+        v.capApprovalSha256 = hash("0");
       },
     ],
     [

@@ -138,6 +138,15 @@ the L2 observation, the exact opened bridge/deployment/pilot artifact hashes,
 and the disabled execution controls. Recomputing hashes around a semantic lie
 does not satisfy these checks.
 
+The pilot artifact uses `postern.dex.pilot-evidence.v2`. It binds distinct
+canonical positive limits for WBLCH and bUSDC, capped respectively at 10 BLCH
+base units (`10e18`) and 10 bUSDC base units (`10e6`), plus the nonzero SHA-256
+of the separately reviewed cap envelope. Passing these structural checks sets
+`declaredPilotCapBounded:true`; it never sets
+`pilotCapApprovalAuthenticated:true`. The latter remains false because neither
+the package nor its artifact trust roots authenticate the approval authority or
+signature behind that envelope.
+
 Structural semantic verification is deliberately neither provenance
 authentication nor activation authorization. The repository names, revisions
 and hashes in the package are declarations supplied by the package itself. A
@@ -160,7 +169,8 @@ trust-roots file or command output during the verification ceremony.
 Matching roots set `artifactContentAuthenticated`,
 `provenanceAuthenticated` and `semanticEvidenceAuthenticated` true. This is
 content authentication, not operational approval:
-`activationApprovalAuthenticated`, `readyForReviewedActivation`, liquidity,
+`pilotCapApprovalAuthenticated`, `activationApprovalAuthenticated`,
+`readyForReviewedActivation`, liquidity,
 aggregator execution and activation authorization remain false. The command
 never deploys, broadcasts or adds liquidity. Pending, structurally valid and
 authenticated packages all exit `1`; malformed input is refused and invalid

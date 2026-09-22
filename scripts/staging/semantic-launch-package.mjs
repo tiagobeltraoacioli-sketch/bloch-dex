@@ -8,6 +8,8 @@ const HASH = /^0x[0-9a-f]{64}$/;
 const REVISION = /^[0-9a-f]{40}$/;
 const SAFE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[a-zA-Z0-9._/-]+$/;
 const MAX_BYTES = 1024 * 1024;
+const MAX_PILOT_BLCH_BASE_UNITS = 10n * 10n ** 18n;
+const MAX_PILOT_BUSDC_BASE_UNITS = 10n * 10n ** 6n;
 const NAMES = ["l2", "bridge", "deployment", "pilot", "aggregator"];
 const REPOSITORIES = Object.freeze({
   l2: "bloch-l2-evm",
@@ -45,6 +47,15 @@ function hash(value, field) {
 
 function falseOnly(value, field) {
   refuse(value === false, `${field} must remain false`);
+}
+
+function boundedPositiveBaseUnits(value, ceiling, field) {
+  refuse(
+    typeof value === "string" && /^(?:[1-9][0-9]*)$/.test(value),
+    `${field} is not a canonical positive integer`,
+  );
+  refuse(BigInt(value) <= ceiling, `${field} exceeds the low-cap ceiling`);
+  return value;
 }
 
 function validateProvenance(value, name, descriptor) {
@@ -341,7 +352,9 @@ function validatePilot(value, descriptor, l2, bridgeSha256, deploymentSha256) {
       "genesisHash",
       "bridgeArtifactSha256",
       "deploymentArtifactSha256",
-      "capBaseUnits",
+      "maxBaseBaseUnits",
+      "maxQuoteBaseUnits",
+      "capApprovalSha256",
       "pilotVerified",
       "liquidityEnabled",
       "liquidityAdded",
@@ -349,7 +362,7 @@ function validatePilot(value, descriptor, l2, bridgeSha256, deploymentSha256) {
     "pilot",
   );
   refuse(
-    value.schema === "postern.dex.pilot-evidence.v1",
+    value.schema === "postern.dex.pilot-evidence.v2",
     "pilot schema is unsupported",
   );
   validateProvenance(value.provenance, "pilot", descriptor);
@@ -360,14 +373,25 @@ function validatePilot(value, descriptor, l2, bridgeSha256, deploymentSha256) {
       value.deploymentArtifactSha256 === deploymentSha256,
     "pilot cross-bindings are inconsistent",
   );
-  refuse(
-    typeof value.capBaseUnits === "string" &&
-      /^(?:[1-9][0-9]{0,17})$/.test(value.capBaseUnits),
-    "pilot cap is invalid or exceeds the low-cap ceiling",
+  boundedPositiveBaseUnits(
+    value.maxBaseBaseUnits,
+    MAX_PILOT_BLCH_BASE_UNITS,
+    "pilot.maxBaseBaseUnits",
   );
+  boundedPositiveBaseUnits(
+    value.maxQuoteBaseUnits,
+    MAX_PILOT_BUSDC_BASE_UNITS,
+    "pilot.maxQuoteBaseUnits",
+  );
+  hash(value.capApprovalSha256, "pilot.capApprovalSha256");
   refuse(value.pilotVerified === true, "pilot is not verified");
   falseOnly(value.liquidityEnabled, "pilot.liquidityEnabled");
   falseOnly(value.liquidityAdded, "pilot.liquidityAdded");
+  return Object.freeze({
+    maxBaseBaseUnits: value.maxBaseBaseUnits,
+    maxQuoteBaseUnits: value.maxQuoteBaseUnits,
+    capApprovalSha256: value.capApprovalSha256,
+  });
 }
 
 function validateAggregator(
@@ -465,6 +489,9 @@ export async function verifySemanticLaunchPackage(
     artifactContentAuthenticated: false,
     provenanceAuthenticated: false,
     semanticEvidenceAuthenticated: false,
+    declaredPilotCapBounded: false,
+    pilotCapApprovalAuthenticated: false,
+    pilotCap: null,
     activationApprovalAuthenticated: false,
     trustRootsSha256: null,
     readyForReviewedActivation: false,
@@ -508,7 +535,7 @@ export async function verifySemanticLaunchPackage(
     opened.l2.value,
     opened.bridge.sha256,
   );
-  validatePilot(
+  const pilotCap = validatePilot(
     opened.pilot.value,
     descriptors.pilot,
     opened.l2.value,
@@ -547,6 +574,9 @@ export async function verifySemanticLaunchPackage(
     artifactContentAuthenticated: authentication !== null,
     provenanceAuthenticated: authentication !== null,
     semanticEvidenceAuthenticated: authentication !== null,
+    declaredPilotCapBounded: true,
+    pilotCapApprovalAuthenticated: false,
+    pilotCap,
     trustRootsSha256: authentication?.trustRootsSha256 ?? null,
   });
 }
