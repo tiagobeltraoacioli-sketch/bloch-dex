@@ -145,7 +145,7 @@ function rpc(overrides = {}) {
         hash:
           finalizedReads === 2 && overrides.closingFinalized
             ? overrides.closingFinalized.hash
-            : hash("9"),
+            : (overrides.finalizedHash ?? hash("9")),
       };
     }
     snapshotReads += 1;
@@ -183,6 +183,11 @@ test("fails closed for chain, genesis, finality, bytecode and reorg mismatches",
   for (const [overrides, pattern] of [
     [{ chainId: "0x1" }, /chain ID/],
     [{ genesis: hash("a") }, /genesis hash/],
+    [{ finalized: "0x0" }, /finalized head has not advanced beyond genesis/],
+    [
+      { finalizedHash: hash("1") },
+      /finalized head has not advanced beyond genesis/,
+    ],
     [{ finalized: "0x1f" }, /not finalized/],
     [
       {
@@ -201,6 +206,10 @@ test("fails closed for chain, genesis, finality, bytecode and reorg mismatches",
     [
       { closingFinalized: { number: "0x27", hash: hash("9") } },
       /finalized head regressed/,
+    ],
+    [
+      { closingFinalized: { number: "0x0", hash: hash("1") } },
+      /closing finalized head has not advanced beyond genesis/,
     ],
     [
       { closingFinalized: { number: "0x28", hash: hash("a") } },

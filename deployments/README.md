@@ -96,8 +96,9 @@ node scripts/staging/verify-rpc.mjs \
 
 Install the locked frontend dependencies first because the verifier uses the
 same pinned `viem` Keccak implementation as the browser. The output path must
-not exist. The verifier checks the declared chain ID and genesis, requires the
-deployment block to be finalized, and reads every deployment contract, custody
+not exist. The verifier checks the declared chain ID and genesis, rejects a
+`finalized` head that has not advanced beyond genesis, requires the deployment
+block to be finalized, and reads every deployment contract, custody
 role and token at that exact block number. Contract and token bytecode must be
 nonempty; reviewed EOA roles may have empty bytecode but its Keccak hash must
 still match. It rereads both the deployment and finalized blocks after all code

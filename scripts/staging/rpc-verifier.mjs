@@ -55,6 +55,13 @@ function sameBlock(left, right) {
   return left.number === right.number && left.hash === right.hash;
 }
 
+function requireFinalityBeyondGenesis(finalized, genesis, field) {
+  required(
+    finalized.number > genesis.number && finalized.hash !== genesis.hash,
+    `${field} has not advanced beyond genesis`,
+  );
+}
+
 async function boundedBody(response, method) {
   required(
     response.body?.getReader,
@@ -162,6 +169,7 @@ export async function verifyStagingDeployment(config, request) {
     await request("eth_getBlockByNumber", ["finalized", false]),
     "initial finalized block",
   );
+  requireFinalityBeyondGenesis(finalizedBefore, genesis, "finalized head");
   const snapshotBefore = block(
     await request("eth_getBlockByNumber", [tag, false]),
     "deployment snapshot",
@@ -241,6 +249,11 @@ export async function verifyStagingDeployment(config, request) {
   const finalizedAfter = block(
     await request("eth_getBlockByNumber", ["finalized", false]),
     "closing finalized block",
+  );
+  requireFinalityBeyondGenesis(
+    finalizedAfter,
+    genesis,
+    "closing finalized head",
   );
   required(
     finalizedAfter.number >= snapshotBefore.number,
