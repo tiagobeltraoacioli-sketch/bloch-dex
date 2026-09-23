@@ -271,6 +271,44 @@ node scripts/staging/check-launch-gate.mjs \
   --gate deployments/launch-gate.template.json
 ```
 
+## Disposable end-to-end cycle request
+
+`disposable-cycle-request.template.json` is the fail-closed request for the
+first retained bridge/DEX round trip. It fixes Ethereum mainnet USDC,
+destination chain 700771, a maximum 1 USDC deposit, a maximum 0.01 WBLCH pilot
+leg and a maximum 1 bUSDC quote leg. All destination identities, revisions,
+cycle ID and five evidence stages are null, and every execution control remains
+false.
+
+A complete `postern.dex.disposable-cycle-package.v1` must compose, in order:
+
+1. a finalized Ethereum USDC deposit receipt;
+2. a destination L2 finalized checkpoint bound to that deposit;
+3. the exact USDC-to-bUSDC mapping and finalized mint receipt;
+4. a capped WBLCH/bUSDC pilot swap out and back, with before/after checkpoints,
+   two finalized receipts, no liquidity addition and the base leg reconciled;
+5. finalized burn, release and refund receipts whose release, refund and fees
+   sum exactly to the original deposit.
+
+Every stage repeats the cycle identifier, synthetic marker and canonical source
+revision, and binds the stable SHA-256 digest of its predecessor. The verifier
+also pins both genesis identities, contract/token/pool addresses, caps,
+transaction blocks, finalized blocks and the final reconciliation checkpoint.
+
+```sh
+node scripts/staging/check-disposable-cycle-package.mjs \
+  --package deployments/disposable-cycle-request.template.json
+```
+
+The checked-in request exits `1` because it is pending. Test-only complete
+fixtures are explicitly `synthetic-fixture`; they establish only structural
+composition, never provenance or operational truth. A self-declared
+`retained-real` package is equally non-authorizing without independent trust
+roots. Consequently `externalTrustRootsConfigured`,
+`disposableCycleAuthenticated`, `readyForRealExecution`, liquidity, aggregator
+execution, activation and broadcast all remain false. The verifier performs no
+RPC, SSH, signing, pool creation, liquidity action or transaction.
+
 The Foundry `InitialLiquidityPreflight` must receive the same WBLCH/bUSDC
 addresses, selected caps and canonical approval SHA-256, plus the exact planned
 initial amounts. It refuses zero amounts, amounts above either selected cap,
