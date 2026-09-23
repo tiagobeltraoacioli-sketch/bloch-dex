@@ -1,17 +1,20 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import {
   chmod,
   lstat,
+  mkdir,
   mkdtemp,
   open,
   realpath,
+  rename,
   rm,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { stableJson } from "./manifest.mjs";
 
 const HASH = /^0x[0-9a-f]{64}$/;
@@ -23,6 +26,7 @@ const MAX_VALIDITY_SECONDS = 15 * 60;
 const NAMESPACE = "postern.dex.pilot-cap-approval.v1";
 const CHECKPOINT_DOMAIN = "postern.dex.pilot-cap-checkpoint.v1";
 const NAMES = ["l2", "bridge", "deployment", "pilot", "aggregator"];
+const LOCK_STALE_SECONDS = 30;
 
 function fail(message) {
   throw new Error(`pilot cap approval: ${message}`);
@@ -56,6 +60,114 @@ function hash(value, field) {
 
 function sha256(bytes) {
   return `0x${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+const delay = (milliseconds) =>
+  new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+
+async function syncDirectory(path) {
+  const directory = await open(path, constants.O_RDONLY);
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
+}
+
+async function durableAtomicReplace(path, bytes) {
+  const directory = dirname(path);
+  const temporary = `${path}.tmp-${process.pid}-${randomBytes(12).toString("hex")}`;
+  let handle;
+  try {
+    handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(temporary, path);
+    await syncDirectory(directory);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
+}
+
+function processAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+async function acquireCheckpointLock(checkpointPath) {
+  const lockPath = `${checkpointPath}.lock`;
+  let recoveredStaleLock = false;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      await mkdir(lockPath, { mode: 0o700 });
+      const owner = `${stableJson({
+        schemaVersion: 1,
+        domain: "postern.dex.pilot-cap-checkpoint-lock.v1",
+        pid: process.pid,
+        createdAtUnixSeconds: Math.floor(Date.now() / 1000),
+        nonce: randomBytes(16).toString("hex"),
+      })}\n`;
+      await writeFile(join(lockPath, "owner.json"), owner, { mode: 0o600, flag: "wx" });
+      await syncDirectory(lockPath);
+      await syncDirectory(dirname(lockPath));
+      return { lockPath, recoveredStaleLock };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      let owner;
+      let ownerHandle;
+      try {
+        ownerHandle = await open(join(lockPath, "owner.json"), constants.O_RDONLY);
+        owner = JSON.parse(await ownerHandle.readFile("utf8"));
+      } catch {
+        try {
+          const lockStat = await lstat(lockPath);
+          if (Date.now() - lockStat.mtimeMs > LOCK_STALE_SECONDS * 1_000) {
+            const stalePath = `${lockPath}.stale-${randomBytes(12).toString("hex")}`;
+            await rename(lockPath, stalePath);
+            await syncDirectory(dirname(lockPath));
+            await rm(stalePath, { recursive: true, force: true });
+            recoveredStaleLock = true;
+            continue;
+          }
+        } catch (recoveryError) {
+          if (recoveryError?.code !== "ENOENT") throw recoveryError;
+        }
+        await delay(25);
+        continue;
+      } finally {
+        await ownerHandle?.close().catch(() => {});
+      }
+      const age = Math.floor(Date.now() / 1000) - owner.createdAtUnixSeconds;
+      if (age > LOCK_STALE_SECONDS && !processAlive(owner.pid)) {
+        const stalePath = `${lockPath}.stale-${randomBytes(12).toString("hex")}`;
+        try {
+          await rename(lockPath, stalePath);
+          await syncDirectory(dirname(lockPath));
+          await rm(stalePath, { recursive: true, force: true });
+          recoveredStaleLock = true;
+          continue;
+        } catch (renameError) {
+          if (renameError?.code !== "ENOENT") throw renameError;
+        }
+      }
+      await delay(25);
+    }
+  }
+  fail("checkpoint lock is busy");
+}
+
+async function releaseCheckpointLock(lockPath) {
+  await rm(lockPath, { recursive: true, force: true });
+  await syncDirectory(dirname(lockPath));
 }
 
 async function readSafeBytes(repository, relativePath, label) {
@@ -416,4 +528,207 @@ export async function inspectPilotCapApproval(repository, options, context) {
     replayProtectionAuthenticated: false,
     approvalAuthenticated: false,
   });
+}
+
+function parseCanonicalJson(bytes, label) {
+  let value;
+  try {
+    value = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    fail(`${label} is invalid JSON`);
+  }
+  required(
+    bytes.toString("utf8") === `${stableJson(value)}\n`,
+    `${label} is not canonical JSON`,
+  );
+  return value;
+}
+
+async function recoverCheckpointIntent(
+  repository,
+  checkpointRelativePath,
+  checkpointPath,
+  options,
+  context,
+  approvalBytes,
+) {
+  const intentRelativePath = `${checkpointRelativePath}.intent`;
+  const intentPath = `${checkpointPath}.intent`;
+  try {
+    await lstat(intentPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+  const intentBytes = await readSafeBytes(repository, intentRelativePath, "checkpoint intent");
+  const intent = parseCanonicalJson(intentBytes, "checkpoint intent");
+  exact(
+    intent,
+    [
+      "schemaVersion", "domain", "expectedCheckpointSha256",
+      "nextCheckpointSha256", "approvalSha256", "nextCheckpoint",
+    ],
+    "checkpoint intent",
+  );
+  required(
+    intent.schemaVersion === 1 &&
+      intent.domain === "postern.dex.pilot-cap-checkpoint-intent.v1",
+    "checkpoint intent schema is unsupported",
+  );
+  hash(intent.expectedCheckpointSha256, "checkpoint intent expected digest");
+  hash(intent.nextCheckpointSha256, "checkpoint intent next digest");
+  hash(intent.approvalSha256, "checkpoint intent approval digest");
+  required(
+    sha256(approvalBytes) === intent.approvalSha256,
+    "checkpoint intent binds another approval",
+  );
+  const approval = parseCanonicalJson(approvalBytes, "approval");
+  contextFieldsMatch(approval, context, "approval");
+  const approvalSequence = canonicalSequence(
+    approval.sequence,
+    { allowZero: false },
+    "approval.sequence",
+  );
+  validateCheckpoint(intent.nextCheckpoint, context);
+  required(
+    intent.nextCheckpoint.lastApprovalSha256 === intent.approvalSha256 &&
+      canonicalSequence(
+        intent.nextCheckpoint.lastSequence,
+        { allowZero: true },
+        "checkpoint intent next sequence",
+      ) === approvalSequence,
+    "checkpoint intent does not bind its approval",
+  );
+  const nextBytes = Buffer.from(`${stableJson(intent.nextCheckpoint)}\n`);
+  required(
+    sha256(nextBytes) === intent.nextCheckpointSha256,
+    "checkpoint intent next digest is invalid",
+  );
+  const currentBytes = await readSafeBytes(repository, checkpointRelativePath, "checkpoint");
+  const currentSha256 = sha256(currentBytes);
+  if (currentSha256 === intent.expectedCheckpointSha256) {
+    await inspectPilotCapApproval(repository, options, context);
+    await durableAtomicReplace(checkpointPath, nextBytes);
+  } else
+    required(
+      currentSha256 === intent.nextCheckpointSha256,
+      "checkpoint diverged from its durable intent",
+    );
+  await unlink(intentPath);
+  await syncDirectory(dirname(intentPath));
+  return true;
+}
+
+export async function consumePilotCapCheckpointObservation(repository, options, context) {
+  required(
+    typeof options?.checkpointPath === "string" &&
+      SAFE_PATH.test(options.checkpointPath) &&
+      !isAbsolute(options.checkpointPath),
+    "checkpoint path is invalid",
+  );
+  const root = resolve(repository);
+  const checkpointPath = resolve(root, options.checkpointPath);
+  const fromRoot = relative(root, checkpointPath);
+  required(
+    fromRoot !== "" && fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`),
+    "checkpoint path escapes the repository",
+  );
+  const lock = await acquireCheckpointLock(checkpointPath);
+  try {
+    const approvalBeforeRecovery = await readSafeBytes(
+      repository,
+      options.approvalPath,
+      "approval",
+    );
+    const crashRecoveryPerformed = await recoverCheckpointIntent(
+      repository,
+      options.checkpointPath,
+      checkpointPath,
+      options,
+      context,
+      approvalBeforeRecovery,
+    );
+    const [checkpointBytes, approvalBytes] = await Promise.all([
+      readSafeBytes(repository, options.checkpointPath, "checkpoint"),
+      readSafeBytes(repository, options.approvalPath, "approval"),
+    ]);
+    const checkpointValue = parseCanonicalJson(checkpointBytes, "checkpoint");
+    const checkpoint = validateCheckpoint(checkpointValue, context);
+    const approval = parseCanonicalJson(approvalBytes, "approval");
+    const approvalSha256 = sha256(approvalBytes);
+    required(
+      approvalSha256 === context.pilotCap.capApprovalSha256,
+      "approval does not match the pilot cap hash",
+    );
+    contextFieldsMatch(approval, context, "approval");
+    const sequence = canonicalSequence(
+      approval.sequence,
+      { allowZero: false },
+      "approval.sequence",
+    );
+    if (
+      checkpoint.lastSequence === sequence &&
+      checkpoint.lastApprovalSha256 === approvalSha256
+    )
+      return Object.freeze({
+        approvalSha256,
+        sequence: approval.sequence,
+        checkpointSha256: sha256(checkpointBytes),
+        checkpointConsumedObservation: true,
+        idempotentRetryObserved: true,
+        crashRecoveryPerformed,
+        staleLockRecovered: lock.recoveredStaleLock,
+        crossProcessLockObserved: true,
+        casAppliedObserved: false,
+        durableFileFsyncObserved: false,
+        durableRenameObserved: false,
+        durableDirectoryFsyncObserved: false,
+        replayProtectionAuthenticated: false,
+        approvalAuthenticated: false,
+      });
+    required(
+      sha256(checkpointBytes) === options.expectedCheckpointSha256,
+      "checkpoint compare-and-swap digest mismatch",
+    );
+    const observation = await inspectPilotCapApproval(repository, options, context);
+    const nextCheckpoint = {
+      ...checkpointValue,
+      retainedAtUnixSeconds: Math.floor(Date.now() / 1000),
+      lastSequence: approval.sequence,
+      lastApprovalSha256: approvalSha256,
+    };
+    validateCheckpoint(nextCheckpoint, context);
+    const nextBytes = Buffer.from(`${stableJson(nextCheckpoint)}\n`);
+    const nextCheckpointSha256 = sha256(nextBytes);
+    const intent = {
+      schemaVersion: 1,
+      domain: "postern.dex.pilot-cap-checkpoint-intent.v1",
+      expectedCheckpointSha256: options.expectedCheckpointSha256,
+      nextCheckpointSha256,
+      approvalSha256,
+      nextCheckpoint,
+    };
+    const intentPath = `${checkpointPath}.intent`;
+    await durableAtomicReplace(intentPath, Buffer.from(`${stableJson(intent)}\n`));
+    await durableAtomicReplace(checkpointPath, nextBytes);
+    await unlink(intentPath);
+    await syncDirectory(dirname(intentPath));
+    return Object.freeze({
+      ...observation,
+      checkpointSha256: nextCheckpointSha256,
+      checkpointConsumedObservation: true,
+      idempotentRetryObserved: false,
+      crashRecoveryPerformed,
+      staleLockRecovered: lock.recoveredStaleLock,
+      crossProcessLockObserved: true,
+      casAppliedObserved: true,
+      durableFileFsyncObserved: true,
+      durableRenameObserved: true,
+      durableDirectoryFsyncObserved: true,
+      replayProtectionAuthenticated: false,
+      approvalAuthenticated: false,
+    });
+  } finally {
+    await releaseCheckpointLock(lock.lockPath);
+  }
 }

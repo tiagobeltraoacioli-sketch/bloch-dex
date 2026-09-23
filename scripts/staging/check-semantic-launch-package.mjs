@@ -25,19 +25,35 @@ const capObserved =
   args[20] === "--expected-ssh-keygen-sha256" &&
   args[22] === "--cap-checkpoint" &&
   args[24] === "--expected-cap-checkpoint-sha256";
-if (!basic && !authenticated && !capObserved) {
+const capConsumed =
+  args.length === 27 &&
+  args[0] === "--package" &&
+  args[2] === "--trust-roots" &&
+  args[4] === "--expected-trust-roots-sha256" &&
+  args[6] === "--cap-approval" &&
+  args[8] === "--cap-authority-policy" &&
+  args[10] === "--expected-cap-authority-policy-sha256" &&
+  args[12] === "--expected-cap-ceremony-id" &&
+  args[14] === "--cap-risk-signature" &&
+  args[16] === "--cap-security-signature" &&
+  args[18] === "--ssh-keygen" &&
+  args[20] === "--expected-ssh-keygen-sha256" &&
+  args[22] === "--cap-checkpoint" &&
+  args[24] === "--expected-cap-checkpoint-sha256" &&
+  args[26] === "--consume-cap-checkpoint-observation";
+if (!basic && !authenticated && !capObserved && !capConsumed) {
   console.error(
-    "Usage: node scripts/staging/check-semantic-launch-package.mjs --package <repo-relative-package.json> [--trust-roots <repo-relative-trust-roots.json> --expected-trust-roots-sha256 <caller-supplied-0x-sha256> [--cap-approval <repo-relative-approval.json> --cap-authority-policy <repo-relative-allowed-signers> --expected-cap-authority-policy-sha256 <caller-supplied-0x-sha256> --expected-cap-ceremony-id <caller-supplied-0x-id> --cap-risk-signature <repo-relative.sig> --cap-security-signature <repo-relative.sig> --ssh-keygen <absolute-root-administered-path> --expected-ssh-keygen-sha256 <caller-supplied-0x-sha256> --cap-checkpoint <repo-relative-checkpoint.json> --expected-cap-checkpoint-sha256 <caller-supplied-0x-sha256>]]",
+    "Usage: node scripts/staging/check-semantic-launch-package.mjs --package <repo-relative-package.json> [--trust-roots <repo-relative-trust-roots.json> --expected-trust-roots-sha256 <caller-supplied-0x-sha256> [--cap-approval <repo-relative-approval.json> --cap-authority-policy <repo-relative-allowed-signers> --expected-cap-authority-policy-sha256 <caller-supplied-0x-sha256> --expected-cap-ceremony-id <caller-supplied-0x-id> --cap-risk-signature <repo-relative.sig> --cap-security-signature <repo-relative.sig> --ssh-keygen <absolute-root-administered-path> --expected-ssh-keygen-sha256 <caller-supplied-0x-sha256> --cap-checkpoint <repo-relative-checkpoint.json> --expected-cap-checkpoint-sha256 <caller-supplied-0x-sha256> [--consume-cap-checkpoint-observation]]]",
   );
   process.exit(2);
 }
 try {
   const repository = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-  const options = authenticated || capObserved
+  const options = authenticated || capObserved || capConsumed
     ? {
         trustRootsPath: args[3],
         expectedTrustRootsSha256: args[5],
-        ...(capObserved
+        ...(capObserved || capConsumed
           ? {
               capApproval: {
                 approvalPath: args[7],
@@ -51,6 +67,7 @@ try {
                 checkpointPath: args[23],
                 expectedCheckpointSha256: args[25],
               },
+              consumeCapCheckpoint: capConsumed,
             }
           : {}),
       }

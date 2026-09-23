@@ -402,6 +402,21 @@ test("two caller-supplied cap signatures remain observation-only and cannot auth
   assert.equal(report.liquidityEnabled, false);
   assert.equal(report.aggregatorExecutionEnabled, false);
   assert.equal(report.activationAuthorized, false);
+
+  const consumed = await verifySemanticLaunchPackage(root, "package.json", {
+    trustRootsPath: "trust-roots.json",
+    expectedTrustRootsSha256: roots.sha256,
+    capApproval: cap.options,
+    consumeCapCheckpoint: true,
+  });
+  assert.equal(consumed.pilotCapApprovalAuthenticated, false);
+  assert.equal(consumed.pilotCapApprovalObservation.checkpointConsumedObservation, true);
+  assert.equal(consumed.pilotCapApprovalObservation.casAppliedObserved, true);
+  assert.equal(consumed.pilotCapApprovalObservation.replayProtectionAuthenticated, false);
+  assert.equal(consumed.pilotCapApprovalObservation.approvalAuthenticated, false);
+  assert.equal(consumed.liquidityEnabled, false);
+  assert.equal(consumed.aggregatorExecutionEnabled, false);
+  assert.equal(consumed.activationAuthorized, false);
 });
 
 test("trust roots cannot self-select, mismatch, substitute provenance or approve controls", async (context) => {

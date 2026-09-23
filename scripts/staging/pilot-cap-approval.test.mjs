@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmod,
+  lstat,
+  mkdir,
   mkdtemp,
   readFile,
   rename,
@@ -13,17 +15,50 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stableJson } from "./manifest.mjs";
-import { inspectPilotCapApproval } from "./pilot-cap-approval.mjs";
+import {
+  consumePilotCapCheckpointObservation,
+  inspectPilotCapApproval,
+} from "./pilot-cap-approval.mjs";
 
 const hash = (byte) => `0x${byte.repeat(64)}`;
 const revision = (byte) => byte.repeat(40);
 const sha256 = (bytes) =>
   `0x${createHash("sha256").update(bytes).digest("hex")}`;
 const NAMESPACE = "postern.dex.pilot-cap-approval.v1";
+const moduleUrl = new URL("./pilot-cap-approval.mjs", import.meta.url).href;
 
 function command(args) {
   const result = spawnSync("ssh-keygen", args, { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+}
+
+function consumeInChild(payload) {
+  const source = `
+    import { consumePilotCapCheckpointObservation } from ${JSON.stringify(moduleUrl)};
+    const input = JSON.parse(process.env.POSTERN_CAP_TEST_PAYLOAD);
+    const result = await consumePilotCapCheckpointObservation(input.root, input.options, input.context);
+    process.stdout.write(JSON.stringify(result));
+  `;
+  return new Promise((resolveChild, rejectChild) => {
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", source], {
+      env: {
+        ...process.env,
+        POSTERN_CAP_TEST_PAYLOAD: JSON.stringify(payload),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.on("error", rejectChild);
+    child.on("close", (code) => {
+      if (code !== 0) rejectChild(new Error(stderr || `child exited ${code}`));
+      else resolveChild(JSON.parse(stdout));
+    });
+  });
 }
 
 async function fixture(root) {
@@ -356,4 +391,114 @@ test("PATH substitution is ignored and untrusted verifier observations never aut
   assert.equal(untrustedObservation.signatureCheckProcessesExitedZero, true);
   assert.equal(untrustedObservation.verifierIdentityAuthenticated, false);
   assert.equal(untrustedObservation.approvalAuthenticated, false);
+});
+
+test("atomic observation consumes once and retries idempotently without authentication", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "postern-cap-consume-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const value = await fixture(root);
+  const first = await consumePilotCapCheckpointObservation(root, value.options, value.context);
+  assert.equal(first.checkpointConsumedObservation, true);
+  assert.equal(first.idempotentRetryObserved, false);
+  assert.equal(first.crossProcessLockObserved, true);
+  assert.equal(first.casAppliedObserved, true);
+  assert.equal(first.durableFileFsyncObserved, true);
+  assert.equal(first.durableRenameObserved, true);
+  assert.equal(first.durableDirectoryFsyncObserved, true);
+  assert.equal(first.replayProtectionAuthenticated, false);
+  assert.equal(first.approvalAuthenticated, false);
+  const retained = JSON.parse(await readFile(join(root, "checkpoint.json"), "utf8"));
+  assert.equal(retained.lastSequence, value.approval.sequence);
+  assert.equal(retained.lastApprovalSha256, value.context.pilotCap.capApprovalSha256);
+  const retry = await consumePilotCapCheckpointObservation(root, value.options, value.context);
+  assert.equal(retry.idempotentRetryObserved, true);
+  assert.equal(retry.casAppliedObserved, false);
+  assert.equal(retry.replayProtectionAuthenticated, false);
+  await assert.rejects(lstat(join(root, "checkpoint.json.intent")), /ENOENT/);
+  await assert.rejects(lstat(join(root, "checkpoint.json.lock")), /ENOENT/);
+});
+
+test("concurrent consumers serialize to one CAS and one idempotent result", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "postern-cap-concurrent-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const value = await fixture(root);
+  const payload = { root, options: value.options, context: value.context };
+  const results = await Promise.all([consumeInChild(payload), consumeInChild(payload)]);
+  assert.equal(results.filter((result) => result.casAppliedObserved).length, 1);
+  assert.equal(results.filter((result) => result.idempotentRetryObserved).length, 1);
+  assert.ok(results.every((result) => result.approvalAuthenticated === false));
+});
+
+test("durable intent recovery completes a crash and corrupted intent fails closed", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "postern-cap-recovery-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const value = await fixture(root);
+  const nextCheckpoint = {
+    ...value.checkpoint,
+    retainedAtUnixSeconds: Math.floor(Date.now() / 1000),
+    lastSequence: value.approval.sequence,
+    lastApprovalSha256: value.context.pilotCap.capApprovalSha256,
+  };
+  const nextBytes = `${stableJson(nextCheckpoint)}\n`;
+  const intent = {
+    schemaVersion: 1,
+    domain: "postern.dex.pilot-cap-checkpoint-intent.v1",
+    expectedCheckpointSha256: value.options.expectedCheckpointSha256,
+    nextCheckpointSha256: sha256(nextBytes),
+    approvalSha256: value.context.pilotCap.capApprovalSha256,
+    nextCheckpoint,
+  };
+  await writeFile(
+    join(root, "checkpoint.json.intent"),
+    `${stableJson(intent)}\n`,
+    { mode: 0o600 },
+  );
+  const recovered = await consumePilotCapCheckpointObservation(root, value.options, value.context);
+  assert.equal(recovered.crashRecoveryPerformed, true);
+  assert.equal(recovered.idempotentRetryObserved, true);
+  assert.equal(recovered.approvalAuthenticated, false);
+
+  const corruptRoot = await mkdtemp(join(tmpdir(), "postern-cap-corrupt-"));
+  context.after(() => rm(corruptRoot, { recursive: true, force: true }));
+  const corrupt = await fixture(corruptRoot);
+  await writeFile(join(corruptRoot, "checkpoint.json.intent"), "{}\n", { mode: 0o600 });
+  await assert.rejects(
+    consumePilotCapCheckpointObservation(corruptRoot, corrupt.options, corrupt.context),
+    /checkpoint intent fields are invalid/,
+  );
+  await assert.rejects(lstat(join(corruptRoot, "checkpoint.json.lock")), /ENOENT/);
+});
+
+test("stale dead-process locks recover while CAS digest mismatch fails closed", async (context) => {
+  const root = await mkdtemp(join(tmpdir(), "postern-cap-stale-lock-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const value = await fixture(root);
+  const lock = join(root, "checkpoint.json.lock");
+  await mkdir(lock, { mode: 0o700 });
+  await writeFile(
+    join(lock, "owner.json"),
+    `${stableJson({
+      schemaVersion: 1,
+      domain: "postern.dex.pilot-cap-checkpoint-lock.v1",
+      pid: 99999999,
+      createdAtUnixSeconds: Math.floor(Date.now() / 1000) - 60,
+      nonce: "dead",
+    })}\n`,
+    { mode: 0o600 },
+  );
+  const recovered = await consumePilotCapCheckpointObservation(root, value.options, value.context);
+  assert.equal(recovered.staleLockRecovered, true);
+  assert.equal(recovered.approvalAuthenticated, false);
+
+  const mismatchRoot = await mkdtemp(join(tmpdir(), "postern-cap-cas-mismatch-"));
+  context.after(() => rm(mismatchRoot, { recursive: true, force: true }));
+  const mismatch = await fixture(mismatchRoot);
+  await assert.rejects(
+    consumePilotCapCheckpointObservation(
+      mismatchRoot,
+      { ...mismatch.options, expectedCheckpointSha256: hash("9") },
+      mismatch.context,
+    ),
+    /compare-and-swap digest mismatch/,
+  );
 });

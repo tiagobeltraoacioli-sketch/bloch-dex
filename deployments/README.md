@@ -177,10 +177,22 @@ inputs. The report therefore keeps `pilotCapApprovalAuthenticated:false`,
 and `approvalAuthenticated:false`. A later reviewed code change must install
 non-caller-selected trust roots, organizational identities and a durable
 sequence/predecessor checkpoint before any authenticated claim can become true.
-This observation never updates or consumes the retained checkpoint, so two
-concurrent processes can still inspect the same successor. File-descriptor and
-inode checks prevent a single read from silently mixing replacement contents,
-but do not constitute a durable compare-and-swap.
+The default observation never updates the retained checkpoint. An explicit
+`--consume-cap-checkpoint-observation` mode adds a filesystem compare-and-swap
+without promoting trust: an atomic lock directory serializes processes, the
+retained digest must match, and only the immediate successor can be stored.
+The replacement is written to a same-directory temporary file, `fsync`ed,
+renamed atomically and followed by a directory `fsync`. A durable intent record
+allows a later process to finish or reconcile a crash between intent and
+checkpoint replacement. Completed retries are idempotent when the retained
+sequence and approval hash already match. Dead-process locks older than 30
+seconds are quarantined before recovery; live locks remain exclusive.
+
+These are observed local durability properties, not authenticated replay
+protection. The caller still selects every trust input, and the checkpoint is
+not backed by an independent append-only authority. Reports therefore keep
+`replayProtectionAuthenticated:false` and `approvalAuthenticated:false` after
+both a fresh CAS and an idempotent retry.
 This inspection does not enable liquidity, aggregator execution, deployment or
 broadcast.
 
@@ -242,6 +254,11 @@ append:
   --cap-checkpoint <repo-relative-checkpoint.json> \
   --expected-cap-checkpoint-sha256 <caller-supplied-0x-sha256>
 ```
+
+Append `--consume-cap-checkpoint-observation` only when the local retained
+checkpoint should advance. This mutates only that evidence file and its
+short-lived lock/intent sidecars; it never deploys, broadcasts, creates a pool,
+adds liquidity or changes any execution flag.
 
 The gate file must be canonical JSON in a regular, single-link, non-writable
 repo-relative file of at most 16 KiB. Symlinks, path escape, partial evidence,

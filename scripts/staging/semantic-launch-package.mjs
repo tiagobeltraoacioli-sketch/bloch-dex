@@ -3,7 +3,10 @@ import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { stableJson } from "./manifest.mjs";
-import { inspectPilotCapApproval } from "./pilot-cap-approval.mjs";
+import {
+  consumePilotCapCheckpointObservation,
+  inspectPilotCapApproval,
+} from "./pilot-cap-approval.mjs";
 
 const HASH = /^0x[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -485,6 +488,7 @@ export async function verifySemanticLaunchPackage(
     trustRootsPath = null,
     expectedTrustRootsSha256 = null,
     capApproval = null,
+    consumeCapCheckpoint = false,
   } = {},
 ) {
   refuse(
@@ -624,7 +628,10 @@ export async function verifySemanticLaunchPackage(
   let capObservation = null;
   if (capApproval !== null) {
     refuse(authentication !== null, "cap approval requires authenticated artifact trust roots");
-    capObservation = await inspectPilotCapApproval(
+    const inspect = consumeCapCheckpoint
+      ? consumePilotCapCheckpointObservation
+      : inspectPilotCapApproval;
+    capObservation = await inspect(
       repository,
       capApproval,
       {
