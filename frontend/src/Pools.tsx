@@ -181,7 +181,7 @@ export default function Pools({
                       {usd(pool.fees)}
                     </td>
                     <td data-label="Pool fee" className="numeric">
-                      0.30%
+                      {((pool.swapFeeBps ?? 30) / 100).toFixed(2)}%
                     </td>
                     <td>
                       <button

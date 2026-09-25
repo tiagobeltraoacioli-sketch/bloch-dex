@@ -40,6 +40,42 @@ describe('exact token arithmetic', () => {
       );
     }
   });
+  it('uses bounded pool-specific effective fees for each route hop', () => {
+    expect(amountOut(1000n, 10000n, 20000n, 100)).toBe(1801n);
+    expect(amountOut(1000n, 10000n, 20000n, 0)).toBe(1818n);
+    for (const fee of [-1, 1001, 0.5, Number.NaN]) {
+      expect(amountOut(1000n, 10000n, 20000n, fee)).toBe(0n);
+    }
+    const pools: Pool[] = [
+      {
+        id: 'one',
+        token0: 'BLCH',
+        token1: 'USDC',
+        reserve0: 10000n,
+        reserve1: 20000n,
+        liquidity: 0,
+        volume: 0,
+        fees: 0,
+        swapFeeBps: 100,
+      },
+      {
+        id: 'two',
+        token0: 'USDC',
+        token1: 'WETH',
+        reserve0: 20000n,
+        reserve1: 30000n,
+        liquidity: 0,
+        volume: 0,
+        fees: 0,
+        swapFeeBps: 0,
+      },
+    ];
+    const q = quoteRoute(1000n, ['BLCH', 'USDC', 'WETH'], pools, 50)!;
+    expect(q.poolFeeBps).toEqual([100, 0]);
+    expect(q.amounts[1]).toBe(1801n);
+    expect(q.output).toBe(amountOut(1801n, 20000n, 30000n, 0));
+    expect(q.minimum).toBe((q.output * 9950n) / 10000n);
+  });
   it('rejects dust, missing routes, cycles, bad slippage and overflow', () => {
     expect(amountOut(MAX_UINT256, 10000n, 20000n)).toBe(0n);
     expect(amountOut(1n, 0n, 100n)).toBe(0n);
@@ -95,12 +131,7 @@ describe('exact token arithmetic', () => {
     ];
 
     const quotes = findQuotes(10_000n, 'BLCH', 'USDC', pools, 50);
-    expect(quotes.map((quote) => quote.path)).toContainEqual([
-      'BLCH',
-      'WETH',
-      'USTAV',
-      'USDC',
-    ]);
+    expect(quotes.map((quote) => quote.path)).toContainEqual(['BLCH', 'WETH', 'USTAV', 'USDC']);
     expect(quotes[0].path).toEqual(['BLCH', 'WETH', 'USTAV', 'USDC']);
     expect(quotes).toHaveLength(2);
 
@@ -108,11 +139,7 @@ describe('exact token arithmetic', () => {
     expect(reversed).toEqual(quotes);
   });
   it('allows repeated tokens through distinct pools but rejects a reused pool', () => {
-    const pool = (
-      id: string,
-      token0: Pool['token0'],
-      token1: Pool['token1'],
-    ): Pool => ({
+    const pool = (id: string, token0: Pool['token0'], token1: Pool['token1']): Pool => ({
       id,
       token0,
       token1,

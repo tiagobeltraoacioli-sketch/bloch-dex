@@ -19,6 +19,11 @@ contract UniswapV2Factory is IUniswapV2Factory {
 
     mapping(address => mapping(address => address)) public getPair;
     address[] public allPairs;
+    uint16 public constant MAX_SWAP_FEE_BPS = 1000;
+    mapping(address => bool) public isPair;
+    mapping(address => uint16) public poolFeeBps;
+    mapping(address => mapping(address => uint16)) public rebateBps;
+    mapping(address => bool) public feeRouters;
 
     constructor(address _feeToSetter) {
         require(_feeToSetter != address(0), "BDEX: ZERO_ADDRESS");
@@ -63,7 +68,49 @@ contract UniswapV2Factory is IUniswapV2Factory {
         getPair[token0][token1] = pair;
         getPair[token1][token0] = pair; // populate mapping in the reverse direction
         allPairs.push(pair);
+        isPair[pair] = true;
+        poolFeeBps[pair] = 30;
         emit PairCreated(token0, token1, pair, allPairs.length);
+    }
+
+    /// @notice Address rebates reduce the fee in the quote; no LP funds are paid out.
+    /// @dev Only the trader itself or a reviewed router may assert trader identity.
+    function swapFeeBps(address pair, address trader, address executor) external view returns (uint16) {
+        require(isPair[pair], "BDEX: UNKNOWN_PAIR");
+        uint16 fee = poolFeeBps[pair];
+        if (trader == address(0) || (executor != trader && !feeRouters[executor])) return fee;
+        return fee - uint16(uint256(fee) * rebateBps[pair][trader] / 10_000);
+    }
+
+    function setPoolFee(address pair, uint16 feeBps) external {
+        require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
+        require(isPair[pair], "BDEX: UNKNOWN_PAIR");
+        require(feeBps <= MAX_SWAP_FEE_BPS, "BDEX: FEE_LIMIT");
+        poolFeeBps[pair] = feeBps;
+        emit PoolFeeUpdated(pair, feeBps);
+    }
+
+    function setAddressRebate(address pair, address trader, uint16 rebateBps_) external {
+        require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
+        require(isPair[pair], "BDEX: UNKNOWN_PAIR");
+        require(trader != address(0), "BDEX: ZERO_ADDRESS");
+        require(rebateBps_ <= 10_000, "BDEX: REBATE_LIMIT");
+        rebateBps[pair][trader] = rebateBps_;
+        emit AddressRebateUpdated(pair, trader, rebateBps_);
+    }
+
+    /// @dev Approval is a governance trust decision: approved code must authenticate
+    ///      the trader as msg.sender. An arbitrary forwarding contract is insufficient.
+    function setFeeRouter(address router, bool approved) external {
+        require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
+        require(router != address(0), "BDEX: ZERO_ADDRESS");
+        if (approved) {
+            require(router.code.length > 0, "BDEX: NOT_A_CONTRACT");
+            (bool ok, bytes memory result) = router.staticcall(abi.encodeWithSignature("factory()"));
+            require(ok && result.length == 32 && abi.decode(result, (address)) == address(this), "BDEX: ROUTER_FACTORY");
+        }
+        feeRouters[router] = approved;
+        emit FeeRouterUpdated(router, approved);
     }
 
     /// @notice Point the protocol cut at a collector (or address(0) = off).

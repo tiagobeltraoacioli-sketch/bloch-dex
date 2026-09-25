@@ -16,6 +16,9 @@ interface IUniswapV2Factory {
     event FeeToUpdated(address indexed previousFeeTo, address indexed newFeeTo);
     event FeeToSetterTransferStarted(address indexed currentSetter, address indexed pendingSetter);
     event FeeToSetterTransferred(address indexed previousSetter, address indexed newSetter);
+    event PoolFeeUpdated(address indexed pair, uint16 feeBps);
+    event AddressRebateUpdated(address indexed pair, address indexed trader, uint16 rebateBps);
+    event FeeRouterUpdated(address indexed router, bool approved);
 
     function feeTo() external view returns (address);
     function feeToSetter() external view returns (address);
@@ -33,4 +36,11 @@ interface IUniswapV2Factory {
     function setFeeToSetter(address) external;
     function acceptFeeToSetter() external;
     function cancelFeeToSetterTransfer() external;
+    function poolFeeBps(address pair) external view returns (uint16);
+    function rebateBps(address pair, address trader) external view returns (uint16);
+    function feeRouters(address router) external view returns (bool);
+    function swapFeeBps(address pair, address trader, address executor) external view returns (uint16);
+    function setPoolFee(address pair, uint16 feeBps) external;
+    function setAddressRebate(address pair, address trader, uint16 rebateBps_) external;
+    function setFeeRouter(address router, bool approved) external;
 }

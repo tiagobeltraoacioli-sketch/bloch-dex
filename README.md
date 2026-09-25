@@ -174,3 +174,15 @@ router may remain unrecoverable.
 
 See [the focused review](docs/SECURITY-REVIEW-2026-09-08.md) for reproduced
 defects, validation evidence and work still required before production.
+
+## Three-holder component checkpoints
+
+See [the component checkpoint ceremony](checkpoints/README.md). The native hybrid
+PQ verifier, immutable input pins and offline holder signing flow are implemented;
+production holder keys and signatures remain pending.
+
+## Configurable pool fees and address rebates
+
+New deployments support governed per-pool rates and discounts for authenticated
+traders. See [policy semantics and the transaction preparation tool](docs/POOL-FEES-AND-REBATES.md).
+No production fee policy or migration is activated by this code change.

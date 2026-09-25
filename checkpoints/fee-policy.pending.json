@@ -1,0 +1,9 @@
+{
+  "schema": "bloch.dex.fee-policy.v1",
+  "chain_id": null,
+  "genesis_hash": null,
+  "factory": null,
+  "authority": null,
+  "routers": [],
+  "pools": []
+}

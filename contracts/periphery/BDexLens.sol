@@ -36,6 +36,11 @@ contract BDexLens {
         uint256 reserveShare1;
     }
 
+    struct FeeIdentity {
+        address trader;
+        address executor;
+    }
+
     struct RouteQuote {
         bool available;
         uint256 blockNumber;
@@ -111,7 +116,21 @@ contract BDexLens {
         view
         returns (RouteQuote memory)
     {
-        return _quote(amountIn, path, slippageBps);
+        return _quote(amountIn, path, slippageBps, FeeIdentity(address(0), address(0)));
+    }
+
+    /// @notice Wallet-specific quote for a reviewed router; uses the same fee policy as swapFor.
+    function quoteExactInputFor(
+        uint256 amountIn,
+        address[] calldata path,
+        uint256 slippageBps,
+        address trader,
+        address executor
+    ) external view returns (RouteQuote memory) {
+        // A direct/unapproved executor is itself the authenticated pair caller.
+        // Match BDexRouter's fallback identity, including a router-address rebate.
+        if (!factory.feeRouters(executor)) trader = executor;
+        return _quote(amountIn, path, slippageBps, FeeIdentity(trader, executor));
     }
 
     /// @notice Compare caller-supplied candidate routes with matching endpoints.
@@ -132,7 +151,7 @@ contract BDexLens {
         for (uint256 i; i < routes.length; ++i) {
             _validatePath(routes[i]);
             require(routes[i][0] == input && routes[i][routes[i].length - 1] == output, "LENS: ENDPOINTS");
-            quotes[i] = _quote(amountIn, routes[i], slippageBps);
+            quotes[i] = _quote(amountIn, routes[i], slippageBps, FeeIdentity(address(0), address(0)));
             if (quotes[i].available && quotes[i].amountOut > bestOut) {
                 bestOut = quotes[i].amountOut;
                 bestIndex = i;
@@ -166,7 +185,24 @@ contract BDexLens {
         }
     }
 
-    function _quote(uint256 amountIn, address[] calldata path, uint256 slippageBps)
+    function _hop(uint256 amount, address input, address output, FeeIdentity memory identity)
+        private
+        view
+        returns (uint256 out, uint256 loss)
+    {
+        address pair = factory.getPair(input, output);
+        if (pair == address(0)) return (0, 0);
+        (uint112 r0, uint112 r1,) = IUniswapV2Pair(pair).getReserves();
+        (uint256 rIn, uint256 rOut) = input < output ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
+        if (rIn == 0 || rOut == 0 || amount > type(uint112).max - rIn) return (0, 0);
+        uint16 fee = factory.swapFeeBps(pair, identity.trader, identity.executor);
+        out = BDexLibrary.getAmountOutWithFee(amount, rIn, rOut, fee);
+        if (out == 0) return (0, 0);
+        uint256 marginal = BDexLibrary.quote(amount, rIn, rOut);
+        loss = (marginal - out) * BPS / marginal;
+    }
+
+    function _quote(uint256 amountIn, address[] calldata path, uint256 slippageBps, FeeIdentity memory identity)
         private
         view
         returns (RouteQuote memory q)
@@ -180,17 +216,10 @@ contract BDexLens {
         q.executionLossBps = new uint256[](path.length - 1);
         q.amounts[0] = amountIn;
         for (uint256 i; i < path.length - 1; ++i) {
-            address pair = factory.getPair(path[i], path[i + 1]);
-            if (pair == address(0)) return q;
-            (uint112 r0, uint112 r1,) = IUniswapV2Pair(pair).getReserves();
-            (uint256 rIn, uint256 rOut) =
-                path[i] < path[i + 1] ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
-            if (rIn == 0 || rOut == 0 || q.amounts[i] > type(uint112).max - rIn) return q;
-            uint256 out = BDexLibrary.getAmountOut(q.amounts[i], rIn, rOut);
+            (uint256 out, uint256 loss) = _hop(q.amounts[i], path[i], path[i + 1], identity);
             if (out == 0) return q;
-            uint256 marginal = BDexLibrary.quote(q.amounts[i], rIn, rOut);
             q.amounts[i + 1] = out;
-            q.executionLossBps[i] = (marginal - out) * BPS / marginal;
+            q.executionLossBps[i] = loss;
         }
         q.amountOut = q.amounts[path.length - 1];
         q.minimumOut = q.amountOut * (BPS - slippageBps) / BPS;

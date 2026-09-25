@@ -45,14 +45,20 @@ export function formatAmount(amount: bigint, decimals: number, places = decimals
   return `${amount / scale}${fraction ? `.${fraction}` : ''}`;
 }
 
-export function amountOut(input: bigint, reserveIn: bigint, reserveOut: bigint): bigint {
+export function amountOut(
+  input: bigint,
+  reserveIn: bigint,
+  reserveOut: bigint,
+  feeBps = 30,
+): bigint {
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 1000) return 0n;
   if (input <= 0n || reserveIn <= 0n || reserveOut <= 0n || input > MAX_UINT256) return 0n;
   // Pair._update stores uint112 balances; mirror BDexLens's execution bound.
   if (reserveOut > MAX_RESERVE || reserveIn + input > MAX_RESERVE) return 0n;
   // Matches BDexLibrary.getAmountOut; intermediate overflow would revert on-chain.
-  const withFee = input * 997n;
+  const withFee = input * BigInt(10_000 - feeBps);
   const numerator = withFee * reserveOut;
-  const denominator = reserveIn * 1000n + withFee;
+  const denominator = reserveIn * 10_000n + withFee;
   if (numerator > MAX_UINT256 || denominator > MAX_UINT256) return 0n;
   return numerator / denominator;
 }
@@ -67,6 +73,7 @@ export function quoteRoute(
     return null;
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 500) return null;
   const amounts = [input];
+  const poolFeeBps: number[] = [];
   let marginal = input;
   for (let i = 1; i < path.length; i++) {
     const pool = pools.find(
@@ -77,16 +84,17 @@ export function quoteRoute(
     if (!pool) return null;
     const [reserveIn, reserveOut] =
       pool.token0 === path[i - 1] ? [pool.reserve0, pool.reserve1] : [pool.reserve1, pool.reserve0];
-    const next = amountOut(amounts[i - 1], reserveIn, reserveOut);
+    const next = amountOut(amounts[i - 1], reserveIn, reserveOut, pool.swapFeeBps ?? 30);
     if (!next) return null;
     amounts.push(next);
+    poolFeeBps.push(pool.swapFeeBps ?? 30);
     marginal = (marginal * reserveOut) / reserveIn;
   }
   const output = amounts.at(-1)!;
   const minimum = (output * BigInt(10_000 - slippageBps)) / 10_000n;
   if (!minimum) return null;
   const loss = marginal > output ? ((marginal - output) * 10_000n) / marginal : 0n;
-  return { path, amounts, output, minimum, executionLossBps: Number(loss) };
+  return { path, amounts, output, minimum, executionLossBps: Number(loss), poolFeeBps };
 }
 
 function discoverPaths(from: Symbol, to: Symbol, pools: Pool[]): Symbol[][] {

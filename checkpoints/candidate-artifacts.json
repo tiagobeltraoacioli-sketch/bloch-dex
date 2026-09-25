@@ -1,0 +1,154 @@
+{
+  "schema": "bloch.component-artifacts.v1",
+  "component": "dex",
+  "files": [
+    {
+      "path": ".github/workflows/contracts.yml",
+      "sha3": "d4431352382a0133a1596a6d0a9faaa69b13bb73d076cb0d408ab88a81a88f89"
+    },
+    {
+      "path": "README.md",
+      "sha3": "5397bda1666f6c92a732a4fa4dc2c8cedf8351ee84a7072246e43ae78c00c019"
+    },
+    {
+      "path": "checkpoints/README.md",
+      "sha3": "6d7cfd479d827e17d663b9b8abf411457e9cc3d28ab98e997af9cd8bfa4ab13f"
+    },
+    {
+      "path": "checkpoints/fee-policy.pending.json",
+      "sha3": "ed253f8d33584884d53c9185c7b685e30de2d0cc227b84f694e70b96f83c0896"
+    },
+    {
+      "path": "checkpoints/registry.pending.json",
+      "sha3": "0c30bc2bb83fdb4ea3971aa75f3aaf30eb87ab95c244e24018d698ec3714af8f"
+    },
+    {
+      "path": "contracts/TreasuryFeeCollector.sol",
+      "sha3": "3a6bd4c19edb72986c5c9e15782536b85fa3f1660d8dabee12a10b8a8e80b733"
+    },
+    {
+      "path": "contracts/UniswapV2ERC20.sol",
+      "sha3": "916eea73f118372cbda43b56849811beebdf21dd1867e3c7a97e039f791641e5"
+    },
+    {
+      "path": "contracts/UniswapV2Factory.sol",
+      "sha3": "b4fa62e44d793837110ed5295dcaec460118203e04fe5a3f89cafcce3f70654b"
+    },
+    {
+      "path": "contracts/UniswapV2Pair.sol",
+      "sha3": "a6d718cd05d237b5cb31814ffeef2007f6ce9e2aa93bbb36ff32c35ee581f5ac"
+    },
+    {
+      "path": "contracts/assets/BlochAsset.sol",
+      "sha3": "c0c0d73574b29e319fd92086f75df4827d6021f05e7e366ad41f4cbdfb2fec56"
+    },
+    {
+      "path": "contracts/assets/WBLCH.sol",
+      "sha3": "9f5dc21cfed0f3c3efd66f94e4b746689ca4ac59957894cec33fcc30d7b5b917"
+    },
+    {
+      "path": "contracts/interfaces/IERC20.sol",
+      "sha3": "1d5492f4a5d03cf1e9afdcd74634319f1211687b6e5e3f0eec1fbf3ab83a4251"
+    },
+    {
+      "path": "contracts/interfaces/IUniswapV2Callee.sol",
+      "sha3": "7fd9a245df22f52c4650a4605d14da3c40eecd728bd5aadbd54c24cbb809f88c"
+    },
+    {
+      "path": "contracts/interfaces/IUniswapV2ERC20.sol",
+      "sha3": "747a740d28675cb0c7405d96bb58b1e53ef2d424a66609a83a88418a580c1138"
+    },
+    {
+      "path": "contracts/interfaces/IUniswapV2Factory.sol",
+      "sha3": "8f88c2ce23a802bab82c6ae791a0680841af6259f189c563c0ec6c6c8b68bd40"
+    },
+    {
+      "path": "contracts/interfaces/IUniswapV2Pair.sol",
+      "sha3": "7f8a11a2e0c40933f72b42fd2aa15578edde81f7b74b234dddd9c11d7c622730"
+    },
+    {
+      "path": "contracts/libraries/Math.sol",
+      "sha3": "fa6c60fed98b9e954c638687661138e101db1bfb084ee924780d53f7dab123f7"
+    },
+    {
+      "path": "contracts/libraries/UQ112x112.sol",
+      "sha3": "46a907fa15e633c4953d3f5c47869c853484b28a3ec4ed8b9db8155489d0b53d"
+    },
+    {
+      "path": "contracts/periphery/BDexLens.sol",
+      "sha3": "1002be5da07aedca8c161af4393eea895a86b1840c8ded6dda69d082de7c6a9c"
+    },
+    {
+      "path": "contracts/periphery/BDexLibrary.sol",
+      "sha3": "d2ab6fb73a7fd765df3fa2ab4a9c67a1976056ef9935fe0e7ded5bc76a37f4ad"
+    },
+    {
+      "path": "contracts/periphery/BDexRouter.sol",
+      "sha3": "5fc1de147a9d5ea90fd338a33dd8c7df93b70902f6062f4f854a498890522638"
+    },
+    {
+      "path": "contracts/periphery/interfaces/IBDexRouter.sol",
+      "sha3": "7de22d5470700d486098346e6e6f92eda07126ecab2ab86655f46c716af28ce6"
+    },
+    {
+      "path": "contracts/periphery/interfaces/IWBLCH.sol",
+      "sha3": "ba315a899450975993f09c85d7367ecd4754c35bdce71b21dae9921314aa8680"
+    },
+    {
+      "path": "docs/POOL-FEES-AND-REBATES.md",
+      "sha3": "eacb56c5730d3c0f551255b51aad0b1f7cb931e036f612e5df4c079598d87d46"
+    },
+    {
+      "path": "foundry.toml",
+      "sha3": "fef6c1e7e3856839bb9e8e9a8f1ba7d9a43fa24c550dff59ce7f22d6d53d9f9f"
+    },
+    {
+      "path": "frontend/package-lock.json",
+      "sha3": "8b09ad51b7fbd9b1de41f2e91a7b028709b472f568e9f2293c38a30530cb2abf"
+    },
+    {
+      "path": "frontend/package.json",
+      "sha3": "78cb9dfbdd3e0a2607f0253dd2bc689d7d54fe2c688d955cf0989f0e4a56ccd9"
+    },
+    {
+      "path": "frontend/src/Pools.tsx",
+      "sha3": "1776379ec5b3faa830d9e2940d7be7c6964c02e96c21917bf6e18649ebd4c2ab"
+    },
+    {
+      "path": "frontend/src/Trade.tsx",
+      "sha3": "c92b247e47c386c57018b397e56e28a59121569bcbea972b27348bd2741b1ccc"
+    },
+    {
+      "path": "frontend/src/amm.ts",
+      "sha3": "4202f4800f6d4e5f31c343167b1b705c94b4a0b33e1a1c4cf8e78bfd89ab63a0"
+    },
+    {
+      "path": "frontend/src/data.ts",
+      "sha3": "31e49ad7f40e0652e4ca05fa4d196685f79b685ec317978717ad5a329c7ba5b6"
+    },
+    {
+      "path": "frontend/src/model.ts",
+      "sha3": "43180ad3aeaf4b23c7f358af82a916b64f2b53bf725a01078cf53c75ac5a9697"
+    },
+    {
+      "path": "frontend/src/test/amm.test.ts",
+      "sha3": "2e9d090ee99958f1341b43c778d5797bf01a4b2c8cb7a40e58598c32bc126aa7"
+    },
+    {
+      "path": "scripts/component-checkpoint.py",
+      "sha3": "d0c8a4f48e0fb0bcda28304a0a19c47447551ee18445f5bb71bb0ffb6e375fe3"
+    },
+    {
+      "path": "scripts/prepare-pool-fees.py",
+      "sha3": "ba2da5cc5c76782a82c2a0d3a20231bd3d96a89f4ed737695f36b30e4e583638"
+    },
+    {
+      "path": "scripts/tests/test_pool_fee_policy.py",
+      "sha3": "8b1fee6f3222603ca1b8a30e57e51959e76be49f4553d676824e295e790c3da3"
+    },
+    {
+      "path": "test/ConfigurableFees.t.sol",
+      "sha3": "b6d32c87b079ca52d510873748bd4f33fd567f10a8677eec59620613a87c61c9"
+    }
+  ]
+}

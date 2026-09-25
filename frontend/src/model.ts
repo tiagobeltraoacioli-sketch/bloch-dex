@@ -15,6 +15,8 @@ export type Pool = {
   liquidity: number;
   volume: number;
   fees: number;
+  /** Effective quote fee in basis points; omitted legacy preview pools use 30. */
+  swapFeeBps?: number;
 };
 export type Period = '1H' | '24H' | '1W' | '1M';
 export type Page = 'trade' | 'pools' | 'portfolio';
@@ -24,5 +26,6 @@ export type Quote = {
   output: bigint;
   minimum: bigint;
   executionLossBps: number;
+  poolFeeBps?: number[];
 };
 export type LiquidityAction = { mode: 'add' | 'remove'; pool: Pool };

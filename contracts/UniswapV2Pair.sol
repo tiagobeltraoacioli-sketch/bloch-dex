@@ -9,7 +9,7 @@ import {IUniswapV2Factory} from "./interfaces/IUniswapV2Factory.sol";
 import {IUniswapV2Callee} from "./interfaces/IUniswapV2Callee.sol";
 
 /// @title UniswapV2Pair
-/// @notice V2 constant-product AMM with a 0.30% swap fee and locked minimum LP.
+/// @notice V2 constant-product AMM with governed pool fees and locked minimum LP.
 /// @dev Optimistic transfers and flash callbacks are checked against actual
 ///      balances after the callback. A storage latch guards every pool mutation.
 ///      Cumulative prices and uint32 timestamps intentionally wrap; consumers
@@ -87,6 +87,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         address indexed to
     );
     event Sync(uint112 reserve0, uint112 reserve1);
+    event SwapFeeApplied(address indexed trader, address indexed executor, uint16 feeBps);
 
     constructor() {
         factory = msg.sender;
@@ -262,8 +263,8 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///         then the flash-swap callback runs, then the pair re-reads its
     ///         own balances and enforces the fee-adjusted invariant
     ///
-    ///             (b0*1000 - in0*3) * (b1*1000 - in1*3)
-    ///                 >= r0 * r1 * 1000^2                         (0.30%)
+    ///             (b0*10000 - in0*feeBps) * (b1*10000 - in1*feeBps)
+    ///                 >= r0 * r1 * 10000^2
     ///
     ///         WHY transfer-before-check is safe here: the check runs on the
     ///         REAL post-callback balances, so no interleaving of transfers
@@ -274,6 +275,22 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///         malicious token's transfer hook) trips `lock`. This ordering
     ///         is also what makes flash swaps free of extra code paths.
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external lock {
+        uint16 fee = IUniswapV2Factory(factory).swapFeeBps(address(this), msg.sender, msg.sender);
+        _swap(amount0Out, amount1Out, to, data, fee);
+        emit SwapFeeApplied(msg.sender, msg.sender, fee);
+    }
+
+    function swapFor(uint256 amount0Out, uint256 amount1Out, address to, address trader) external lock {
+        require(IUniswapV2Factory(factory).feeRouters(msg.sender), "BDEX: UNTRUSTED_ROUTER");
+        require(trader != address(0), "BDEX: ZERO_ADDRESS");
+        uint16 fee = IUniswapV2Factory(factory).swapFeeBps(address(this), trader, msg.sender);
+        _swap(amount0Out, amount1Out, to, "", fee);
+        emit SwapFeeApplied(trader, msg.sender, fee);
+    }
+
+    function _swap(uint256 amount0Out, uint256 amount1Out, address to, bytes memory data, uint16 fee) private {
+        // Snapshot before token callbacks; an in-flight governance change cannot
+        // alter the fee applied to an already executing swap.
         require(amount0Out > 0 || amount1Out > 0, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         (uint112 _reserve0, uint112 _reserve1,) = getReserves(); // gas savings
         require(amount0Out < _reserve0 && amount1Out < _reserve1, "BDEX: INSUFFICIENT_LIQUIDITY");
@@ -300,13 +317,13 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         {
             // scope for balance{0,1}Adjusted (canonical). Checked arithmetic
             // is CORRECT here (no unchecked): balances were not yet bounds-
-            // checked by _update, so balance*1000 on an absurd donated
+            // checked by _update, so balance*10000 on an absurd donated
             // balance may overflow-revert — same outcome as canonical
-            // SafeMath. The k comparison multiplies two <=2^122 values
-            // against r0*r1*1e6 < 2^244; no overflow in the honest range.
-            uint256 balance0Adjusted = balance0 * 1000 - amount0In * 3;
-            uint256 balance1Adjusted = balance1 * 1000 - amount1In * 3;
-            require(balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * _reserve1 * (1000 ** 2), "BDEX: K");
+            // SafeMath. The k comparison multiplies two <2^126 values
+            // against r0*r1*1e8 < 2^252; no overflow in the honest range.
+            uint256 balance0Adjusted = balance0 * 10_000 - amount0In * fee;
+            uint256 balance1Adjusted = balance1 * 10_000 - amount1In * fee;
+            require(balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * _reserve1 * (10_000 ** 2), "BDEX: K");
         }
 
         _update(balance0, balance1, _reserve0, _reserve1);

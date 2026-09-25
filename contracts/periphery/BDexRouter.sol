@@ -331,6 +331,21 @@ contract BDexRouter is IBDexRouter {
     // Swaps — standard variants (amounts computed up front, Pair-verified)
     // =========================================================================
 
+    /// @dev Without forwarding approval the pair authenticates this router itself.
+    ///      Quotes must use that same identity, including an explicitly configured
+    ///      rebate for the router address. Such a rebate benefits every caller.
+    function _feeTrader() private view returns (address) {
+        return IUniswapV2Factory(factory).feeRouters(address(this)) ? msg.sender : address(this);
+    }
+
+    function _executeSwap(address pair, uint256 amount0Out, uint256 amount1Out, address to) private {
+        if (IUniswapV2Factory(factory).feeRouters(address(this))) {
+            IUniswapV2Pair(pair).swapFor(amount0Out, amount1Out, to, msg.sender);
+        } else {
+            IUniswapV2Pair(pair).swap(amount0Out, amount1Out, to, "");
+        }
+    }
+
     /// @dev Canonical multi-hop executor: for each hop the output is sent
     ///      DIRECTLY to the next pair (no Router custody between hops); the
     ///      final hop pays `_to`. Requires amounts[] precomputed — the Pair's
@@ -345,7 +360,7 @@ contract BDexRouter is IBDexRouter {
             address to = i < path.length - 2 ? BDexLibrary.pairFor(factory, output, path[i + 2]) : _to;
             address pair = BDexLibrary.pairFor(factory, input, output);
             _ensurePairRecipient(to, pair);
-            IUniswapV2Pair(pair).swap(amount0Out, amount1Out, to, "");
+            _executeSwap(pair, amount0Out, amount1Out, to);
         }
     }
 
@@ -357,7 +372,7 @@ contract BDexRouter is IBDexRouter {
         uint256 deadline
     ) external ensure(deadline) returns (uint256[] memory amounts) {
         _ensureTokenRecipient(to);
-        amounts = BDexLibrary.getAmountsOut(factory, amountIn, path);
+        amounts = BDexLibrary.getAmountsOutFor(factory, amountIn, path, _feeTrader(), address(this));
         // Enforce the user's signed execution bound at inclusion time.
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
@@ -372,7 +387,7 @@ contract BDexRouter is IBDexRouter {
         uint256 deadline
     ) external ensure(deadline) returns (uint256[] memory amounts) {
         _ensureTokenRecipient(to);
-        amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
+        amounts = BDexLibrary.getAmountsInFor(factory, amountOut, path, _feeTrader(), address(this));
         require(amounts[0] <= amountInMax, "BDEX: EXCESSIVE_INPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
         _swap(amounts, path, to);
@@ -387,7 +402,7 @@ contract BDexRouter is IBDexRouter {
         _ensureTokenRecipient(to);
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
-        amounts = BDexLibrary.getAmountsOut(factory, msg.value, path);
+        amounts = BDexLibrary.getAmountsOutFor(factory, msg.value, path, _feeTrader(), address(this));
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         IWBLCH(WBLCH).deposit{value: amounts[0]}();
         require(
@@ -406,7 +421,7 @@ contract BDexRouter is IBDexRouter {
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
         _ensureNativeRecipient(to);
-        amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
+        amounts = BDexLibrary.getAmountsInFor(factory, amountOut, path, _feeTrader(), address(this));
         require(amounts[0] <= amountInMax, "BDEX: EXCESSIVE_INPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
         _swap(amounts, path, address(this));
@@ -424,7 +439,7 @@ contract BDexRouter is IBDexRouter {
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
         _ensureNativeRecipient(to);
-        amounts = BDexLibrary.getAmountsOut(factory, amountIn, path);
+        amounts = BDexLibrary.getAmountsOutFor(factory, amountIn, path, _feeTrader(), address(this));
         require(amounts[amounts.length - 1] >= amountOutMin, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         _safeTransferFrom(path[0], msg.sender, BDexLibrary.pairFor(factory, path[0], path[1]), amounts[0]);
         _swap(amounts, path, address(this));
@@ -443,7 +458,7 @@ contract BDexRouter is IBDexRouter {
         _ensureTokenRecipient(to);
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[0] == WBLCH, "BDEX: INVALID_PATH");
-        amounts = BDexLibrary.getAmountsIn(factory, amountOut, path);
+        amounts = BDexLibrary.getAmountsInFor(factory, amountOut, path, _feeTrader(), address(this));
         require(amounts[0] <= msg.value, "BDEX: EXCESSIVE_INPUT_AMOUNT");
         IWBLCH(WBLCH).deposit{value: amounts[0]}();
         require(
@@ -490,13 +505,18 @@ contract BDexRouter is IBDexRouter {
                 (uint256 reserveInput, uint256 reserveOutput) =
                     input == token0 ? (uint256(reserve0), uint256(reserve1)) : (uint256(reserve1), uint256(reserve0));
                 amountInput = _balanceOf(input, address(pair)) - reserveInput;
-                amountOutput = BDexLibrary.getAmountOut(amountInput, reserveInput, reserveOutput);
+                amountOutput = BDexLibrary.getAmountOutWithFee(
+                    amountInput,
+                    reserveInput,
+                    reserveOutput,
+                    IUniswapV2Factory(factory).swapFeeBps(address(pair), _feeTrader(), address(this))
+                );
             }
             (uint256 amount0Out, uint256 amount1Out) =
                 input == token0 ? (uint256(0), amountOutput) : (amountOutput, uint256(0));
             address to = i < path.length - 2 ? BDexLibrary.pairFor(factory, output, path[i + 2]) : _to;
             _ensurePairRecipient(to, address(pair));
-            pair.swap(amount0Out, amount1Out, to, "");
+            _executeSwap(address(pair), amount0Out, amount1Out, to);
         }
     }
 
@@ -580,11 +600,11 @@ contract BDexRouter is IBDexRouter {
     }
 
     function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory) {
-        return BDexLibrary.getAmountsOut(factory, amountIn, path);
+        return BDexLibrary.getAmountsOutFor(factory, amountIn, path, _feeTrader(), address(this));
     }
 
     function getAmountsIn(uint256 amountOut, address[] calldata path) external view returns (uint256[] memory) {
-        return BDexLibrary.getAmountsIn(factory, amountOut, path);
+        return BDexLibrary.getAmountsInFor(factory, amountOut, path, _feeTrader(), address(this));
     }
 
     // =========================================================================

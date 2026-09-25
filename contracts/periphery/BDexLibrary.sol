@@ -6,7 +6,7 @@ import {IUniswapV2Pair} from "../interfaces/IUniswapV2Pair.sol";
 
 /// @title BDexLibrary
 /// @notice V2 quoting formulas and factory-registry pair resolution.
-/// @dev The 997/1000 factors must match the pair invariant. Missing pools revert;
+/// @dev Fee basis points must match the pair invariant. Missing pools revert;
 ///      no canonical Uniswap creation-code hash is assumed. getAmountIn rounds
 ///      up according to the V2 formula. These spot quotes are not price oracles.
 
@@ -72,15 +72,23 @@ library BDexLibrary {
     }
 
     /// @notice Maximum output for an exact input, 0.30% fee included.
-    /// @dev The 997/1000 factors are THE fee — they must mirror the Pair's
-    ///      balanceAdjusted check exactly (UniswapV2Pair.sol swap()), which is
-    ///      why this function is ported verbatim and pinned by canonical unit
-    ///      vectors in the tests. Truncation rounds in the POOL's favour.
+    /// @dev Retains the legacy default of 30 bps. Dynamic route helpers query
+    ///      each pool's effective fee from the factory. Integer truncation
+    ///      rounds in the pool's favour, matching the pair invariant.
     function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut)
         internal
         pure
         returns (uint256 amountOut)
     {
+        return getAmountOutWithFee(amountIn, reserveIn, reserveOut, 30);
+    }
+
+    function getAmountOutWithFee(uint256 amountIn, uint256 reserveIn, uint256 reserveOut, uint16 feeBps)
+        internal
+        pure
+        returns (uint256 amountOut)
+    {
+        require(feeBps <= 1000, "BDEX: FEE_LIMIT");
         require(amountIn > 0, "BDEX: INSUFFICIENT_INPUT_AMOUNT");
         require(reserveIn > 0 && reserveOut > 0, "BDEX: INSUFFICIENT_LIQUIDITY");
         require(
@@ -88,9 +96,9 @@ library BDexLibrary {
                 && amountIn <= type(uint112).max - reserveIn,
             "BDEX: OVERFLOW"
         );
-        uint256 amountInWithFee = amountIn * 997;
+        uint256 amountInWithFee = amountIn * (10_000 - feeBps);
         uint256 numerator = amountInWithFee * reserveOut;
-        uint256 denominator = reserveIn * 1000 + amountInWithFee;
+        uint256 denominator = reserveIn * 10_000 + amountInWithFee;
         amountOut = numerator / denominator;
     }
 
@@ -105,12 +113,21 @@ library BDexLibrary {
         pure
         returns (uint256 amountIn)
     {
+        return getAmountInWithFee(amountOut, reserveIn, reserveOut, 30);
+    }
+
+    function getAmountInWithFee(uint256 amountOut, uint256 reserveIn, uint256 reserveOut, uint16 feeBps)
+        internal
+        pure
+        returns (uint256 amountIn)
+    {
+        require(feeBps <= 1000, "BDEX: FEE_LIMIT");
         require(amountOut > 0, "BDEX: INSUFFICIENT_OUTPUT_AMOUNT");
         require(reserveIn > 0 && reserveOut > 0, "BDEX: INSUFFICIENT_LIQUIDITY");
         require(reserveIn <= type(uint112).max && reserveOut <= type(uint112).max, "BDEX: OVERFLOW");
         require(amountOut < reserveOut, "BDEX: INSUFFICIENT_LIQUIDITY");
-        uint256 numerator = reserveIn * amountOut * 1000;
-        uint256 denominator = (reserveOut - amountOut) * 997;
+        uint256 numerator = reserveIn * amountOut * 10_000;
+        uint256 denominator = (reserveOut - amountOut) * (10_000 - feeBps);
         amountIn = numerator / denominator + 1;
         require(amountIn <= type(uint112).max - reserveIn, "BDEX: OVERFLOW");
     }
@@ -121,12 +138,27 @@ library BDexLibrary {
         view
         returns (uint256[] memory amounts)
     {
+        return getAmountsOutFor(factory, amountIn, path, address(0), address(0));
+    }
+
+    function getAmountsOutFor(
+        address factory,
+        uint256 amountIn,
+        address[] memory path,
+        address trader,
+        address executor
+    ) internal view returns (uint256[] memory amounts) {
         validatePath(path);
         amounts = new uint256[](path.length);
         amounts[0] = amountIn;
         for (uint256 i; i < path.length - 1; i++) {
             (uint256 reserveIn, uint256 reserveOut) = getReserves(factory, path[i], path[i + 1]);
-            amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);
+            amounts[i + 1] = getAmountOutWithFee(
+                amounts[i],
+                reserveIn,
+                reserveOut,
+                IUniswapV2Factory(factory).swapFeeBps(pairFor(factory, path[i], path[i + 1]), trader, executor)
+            );
         }
     }
 
@@ -136,12 +168,27 @@ library BDexLibrary {
         view
         returns (uint256[] memory amounts)
     {
+        return getAmountsInFor(factory, amountOut, path, address(0), address(0));
+    }
+
+    function getAmountsInFor(
+        address factory,
+        uint256 amountOut,
+        address[] memory path,
+        address trader,
+        address executor
+    ) internal view returns (uint256[] memory amounts) {
         validatePath(path);
         amounts = new uint256[](path.length);
         amounts[amounts.length - 1] = amountOut;
         for (uint256 i = path.length - 1; i > 0; i--) {
             (uint256 reserveIn, uint256 reserveOut) = getReserves(factory, path[i - 1], path[i]);
-            amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);
+            amounts[i - 1] = getAmountInWithFee(
+                amounts[i],
+                reserveIn,
+                reserveOut,
+                IUniswapV2Factory(factory).swapFeeBps(pairFor(factory, path[i - 1], path[i]), trader, executor)
+            );
         }
     }
 }

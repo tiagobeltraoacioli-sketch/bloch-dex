@@ -98,7 +98,10 @@ export default function Trade({
             <div className="market-stats">
               <Stat label="Volume · 24h" value={market ? usd(market.volume, 0) : '—'} />
               <Stat label="Liquidity" value={market ? usd(market.liquidity / 1e6) + 'M' : '—'} />
-              <Stat label="Pool fee" value={market ? '0.30%' : 'Per hop'} />
+              <Stat
+                label="Pool fee"
+                value={market ? `${((market.swapFeeBps ?? 30) / 100).toFixed(2)}%` : 'Per hop'}
+              />
             </div>
           </section>
           <section className="panel route-panel" aria-labelledby="route-title">
@@ -132,7 +135,9 @@ export default function Trade({
             ) : (
               <p className="muted route-empty">Enter an amount to compare available routes.</p>
             )}
-            <p className="microcopy">Sample reserves · Quotes include the 0.30% fee per pool.</p>
+            <p className="microcopy">
+              Sample reserves · Quotes include each pool’s configured fee.
+            </p>
           </section>
         </div>
         <section className="panel swap-panel" aria-labelledby="swap-title">
@@ -226,7 +231,9 @@ export default function Trade({
             <Detail label="Minimum received">
               {best ? `${formatAmount(best.minimum, TOKENS[to].decimals, 6)} ${to}` : '—'}
             </Detail>
-            <Detail label="Fee per pool">0.30%</Detail>
+            <Detail label="Fee per pool">
+              {best?.poolFeeBps?.map((fee) => `${(fee / 100).toFixed(2)}%`).join(' → ') || '—'}
+            </Detail>
             <Detail label="Fee + price impact">
               {best ? `${(best.executionLossBps / 100).toFixed(2)}%` : '—'}
             </Detail>
