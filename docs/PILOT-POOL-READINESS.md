@@ -48,6 +48,21 @@ to undo its permanently locked minimum liquidity.
 
 ## Authentication boundary
 
+The read-only `scripts/staging/inspect-pilot-pool.mjs` command can collect the
+pool observations needed for independent review at a hash-pinned finalized
+block. See [the collection procedure](../deployments/README.md#read-only-pilot-pool-collection).
+Its output includes exact call evidence and retains false authentication and
+authorization fields. It is not an authenticated pilot-readiness bundle and
+cannot be supplied directly as one. No live pool or finality is asserted by
+the collector's synthetic tests.
+
+For retained review, `capture-pilot-pool.mjs` includes an ordered transcript
+with the actual bytecode. `replay-pilot-pool.mjs` checks it offline against
+independently selected configuration/block/runtime pins and a separately
+retained file digest. It reproduces the inspection checks and keeps every
+authentication and execution field false. The earlier observation-only schema
+does not contain enough data for full replay.
+
 The complete canonical bundle is passed under
 `POSTERN_DEX_PILOT_READINESS_V1` to a regular, single-link,
 non-group/world-writable verifier. The checker copies the verified inode to a

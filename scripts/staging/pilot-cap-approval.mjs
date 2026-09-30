@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { constants } from "node:fs";
 import {
+  access,
   chmod,
   lstat,
   mkdir,
@@ -235,7 +236,19 @@ async function readSafeBytes(repository, relativePath, label) {
 }
 
 async function readPinnedExecutable(path, expectedSha256) {
-  required(isAbsolute(path), "ssh-keygen path must be absolute");
+  required(typeof path === "string" && isAbsolute(path) && resolve(path) === path, "ssh-keygen path must be canonical and absolute");
+  const parents = [];
+  for (let parent = dirname(path); ; parent = dirname(parent)) {
+    const snapshot = await lstat(parent, { bigint: true });
+    required(
+      snapshot.isDirectory() && !snapshot.isSymbolicLink() &&
+        snapshot.uid === 0n && Number(snapshot.mode & 0o022n) === 0,
+      "ssh-keygen path must have root-administered immutable ancestors",
+    );
+    await requireOperatorCannotWrite(parent);
+    parents.push({ path: parent, snapshot });
+    if (dirname(parent) === parent) break;
+  }
   let before;
   try {
     before = await lstat(path, { bigint: true });
@@ -256,6 +269,7 @@ async function readPinnedExecutable(path, expectedSha256) {
       Number(before.mode & 0o100n) !== 0,
     "ssh-keygen executable is not root-administered and immutable to operators",
   );
+  await requireOperatorCannotWrite(path);
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   const fields = ["dev", "ino", "mode", "uid", "gid", "nlink", "size", "mtimeNs", "ctimeNs"];
   try {
@@ -277,18 +291,44 @@ async function readPinnedExecutable(path, expectedSha256) {
       "ssh-keygen executable changed while reading",
     );
     required(sha256(bytes) === expectedSha256, "ssh-keygen executable hash mismatch");
-    return { bytes, path, fields, snapshot: after };
-  } finally {
+    return { path, fields, snapshot: after, parents, handle };
+  } catch (error) {
     await handle.close();
+    throw error;
+  }
+}
+
+async function requireOperatorCannotWrite(path) {
+  // Mode bits alone do not rule out a writable ACL. Root is the administrator
+  // in this model; an unprivileged verifier operator must not be able to write.
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    try {
+      await access(path, constants.W_OK);
+    } catch (error) {
+      required(error?.code === "EACCES" || error?.code === "EPERM" || error?.code === "EROFS", "cannot inspect ssh-keygen path write permissions");
+      return;
+    }
+    fail("ssh-keygen path is writable by the operator");
   }
 }
 
 async function requireExecutableUnchanged(executable) {
+  const opened = await executable.handle.stat({ bigint: true });
   const after = await lstat(executable.path, { bigint: true });
   required(
-    executable.fields.every((field) => after[field] === executable.snapshot[field]),
-    "ssh-keygen executable changed after verification",
+    executable.fields.every((field) => after[field] === executable.snapshot[field] && opened[field] === executable.snapshot[field]),
+    "ssh-keygen executable changed while in use",
   );
+  required((await realpath(executable.path)) === executable.path, "ssh-keygen path changed while in use");
+  await requireOperatorCannotWrite(executable.path);
+  for (const parent of executable.parents) {
+    const current = await lstat(parent.path, { bigint: true });
+    required(
+      ["dev", "ino", "mode", "uid", "gid", "ctimeNs"].every((field) => current[field] === parent.snapshot[field]) && current.isDirectory() && !current.isSymbolicLink(),
+      "ssh-keygen ancestor changed while in use",
+    );
+    await requireOperatorCannotWrite(parent.path);
+  }
 }
 
 function validatePolicy(bytes, expectedSha256) {
@@ -417,13 +457,39 @@ function validateApproval(value, expectedPolicySha256, expectedCeremonyId, conte
     required(control === false, `approval ${field} must remain false`);
 }
 
-function verifySignature(executablePath, policyPath, signaturePath, identity, approvalBytes) {
+async function runPinnedVerifier(executable, args, input) {
+  await requireExecutableUnchanged(executable);
   const result = spawnSync(
-    executablePath,
+    executable.path,
+    args,
+    {
+      input, encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024,
+      // Do not inherit PATH, loader hooks, SSH agents or other caller settings.
+      env: { LANG: "C", LC_ALL: "C" },
+    },
+  );
+  await requireExecutableUnchanged(executable);
+  required(!result.error && result.signal === null && Number.isInteger(result.status), "ssh-keygen verifier did not complete normally");
+  return result;
+}
+
+async function verifySignature(executable, policyPath, signaturePath, identity, approvalBytes) {
+  const result = await runPinnedVerifier(
+    executable,
     ["-Y", "verify", "-f", policyPath, "-I", identity, "-n", NAMESPACE, "-s", signaturePath],
-    { input: approvalBytes, encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 },
+    approvalBytes,
   );
   required(result.status === 0, `${identity} signature is not valid`);
+}
+
+async function requireInvalidSignatureRefused(executable, directory) {
+  const missing = join(directory, "missing-negative-probe");
+  const result = await runPinnedVerifier(
+    executable,
+    ["-Y", "verify", "-f", missing, "-I", "negative-probe", "-n", NAMESPACE, "-s", missing],
+    Buffer.from("invalid signature verifier probe"),
+  );
+  required(result.status !== 0, "ssh-keygen verifier accepts an invalid negative probe");
 }
 
 export async function inspectPilotCapApproval(repository, options, context) {
@@ -441,13 +507,12 @@ export async function inspectPilotCapApproval(repository, options, context) {
   hash(options.expectedCeremonyId, "expected ceremony id");
   hash(options.expectedSshKeygenSha256, "expected ssh-keygen sha256");
   hash(options.expectedCheckpointSha256, "expected checkpoint sha256");
-  const [approvalBytes, policyBytes, riskSignature, securitySignature, checkpointBytes, executable] = await Promise.all([
+  const [approvalBytes, policyBytes, riskSignature, securitySignature, checkpointBytes] = await Promise.all([
     readSafeBytes(repository, options.approvalPath, "approval"),
     readSafeBytes(repository, options.authorityPolicyPath, "authority policy"),
     readSafeBytes(repository, options.riskSignaturePath, "risk signature"),
     readSafeBytes(repository, options.securitySignaturePath, "security signature"),
     readSafeBytes(repository, options.checkpointPath, "checkpoint"),
-    readPinnedExecutable(options.sshKeygenPath, options.expectedSshKeygenSha256),
   ]);
   validatePolicy(policyBytes, options.expectedAuthorityPolicySha256);
   required(
@@ -488,28 +553,31 @@ export async function inspectPilotCapApproval(repository, options, context) {
     checkpoint,
     atUnixSeconds,
   );
-  const temporary = await mkdtemp(join(tmpdir(), "postern-cap-approval-"));
+  const executable = await readPinnedExecutable(options.sshKeygenPath, options.expectedSshKeygenSha256);
+  let temporary;
   try {
+    temporary = await mkdtemp(join(tmpdir(), "postern-cap-approval-"));
     await chmod(temporary, 0o700);
     const policyPath = join(temporary, "allowed_signers");
     const riskPath = join(temporary, "risk.sig");
     const securityPath = join(temporary, "security.sig");
-    const executablePath = join(temporary, "ssh-keygen");
     await writeFile(policyPath, policyBytes, { mode: 0o600, flag: "wx" });
     await writeFile(riskPath, riskSignature, { mode: 0o600, flag: "wx" });
     await writeFile(securityPath, securitySignature, { mode: 0o600, flag: "wx" });
-    await writeFile(executablePath, executable.bytes, { mode: 0o700, flag: "wx" });
-    verifySignature(executablePath, policyPath, riskPath, "postern-dex-pilot-risk", approvalBytes);
-    verifySignature(executablePath, policyPath, securityPath, "postern-dex-pilot-security", approvalBytes);
+    await requireInvalidSignatureRefused(executable, temporary);
+    await verifySignature(executable, policyPath, riskPath, "postern-dex-pilot-risk", approvalBytes);
+    await verifySignature(executable, policyPath, securityPath, "postern-dex-pilot-security", approvalBytes);
     await requireExecutableUnchanged(executable);
   } finally {
-    await rm(temporary, { recursive: true, force: true });
+    await executable.handle.close();
+    if (temporary) await rm(temporary, { recursive: true, force: true });
   }
   return Object.freeze({
     approvalSha256: sha256(approvalBytes),
     callerSuppliedAuthorityPolicySha256: options.expectedAuthorityPolicySha256,
     callerSuppliedCeremonyId: options.expectedCeremonyId,
     callerSuppliedVerifierSha256: options.expectedSshKeygenSha256,
+    verifierExecutionMode: "pinned-root-administered-path",
     callerSuppliedCheckpointSha256: options.expectedCheckpointSha256,
     sequence: approval.sequence,
     predecessorApprovalSha256: approval.predecessorApprovalSha256,
@@ -518,6 +586,7 @@ export async function inspectPilotCapApproval(repository, options, context) {
     callerSuppliedCeremonyMatched: true,
     distinctPublicKeysObserved: true,
     signatureCheckProcessesExitedZero: true,
+    invalidSignatureProbeRefused: true,
     checkpointSnapshotMatched: true,
     monotonicSuccessorObserved: true,
     predecessorMatched: true,

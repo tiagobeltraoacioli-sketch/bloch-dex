@@ -5,11 +5,15 @@ on:
     paths:
       - "deployments/**"
       - "scripts/staging/**"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
       - ".github/workflows/staging-gates.yml"
   pull_request:
     paths:
       - "deployments/**"
       - "scripts/staging/**"
+      - "frontend/package.json"
+      - "frontend/package-lock.json"
       - ".github/workflows/staging-gates.yml"
 
 permissions:
@@ -28,5 +32,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "24.19.0"
+      - name: Install locked RPC codec dependencies
+        working-directory: frontend
+        run: npm ci --ignore-scripts
       - name: Staging gate tests
         run: node --test scripts/staging/*.test.mjs

@@ -12,10 +12,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stableJson } from "./manifest.mjs";
 import { verifySemanticLaunchPackage } from "./semantic-launch-package.mjs";
+
+const testTemporaryDirectory = await realpath(tmpdir());
 
 const hash = (byte) => `0x${byte.repeat(64)}`;
 const revision = (byte) => byte.repeat(40);
@@ -309,7 +312,7 @@ test("checked-in package is canonical, pending and non-authorizing", async () =>
 });
 
 test("a self-created structurally valid package cannot authenticate or authorize itself", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-semantic-complete-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-semantic-complete-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await buildComplete(root);
   const report = await verifySemanticLaunchPackage(root, "package.json");
@@ -344,7 +347,7 @@ test("a self-created structurally valid package cannot authenticate or authorize
 });
 
 test("external roots authenticate artifact content and provenance, never approval", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-semantic-authenticated-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-semantic-authenticated-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const complete = await buildComplete(root);
   const roots = await writeTrustRoots(root, complete);
@@ -371,7 +374,7 @@ test("external roots authenticate artifact content and provenance, never approva
 });
 
 test("two caller-supplied cap signatures remain observation-only and cannot authorize execution", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-semantic-cap-auth-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-semantic-cap-auth-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const cap = await writeCapAuthentication(root);
   const complete = await buildComplete(root, (name, value) => {
@@ -420,7 +423,7 @@ test("two caller-supplied cap signatures remain observation-only and cannot auth
 });
 
 test("trust roots cannot self-select, mismatch, substitute provenance or approve controls", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-semantic-trust-attacks-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-semantic-trust-attacks-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const complete = await buildComplete(root);
   const roots = await writeTrustRoots(root, complete);
@@ -565,7 +568,7 @@ test("refuses semantic lies even when every descriptor hash is recomputed", asyn
   ];
   for (const [index, [stage, attack]] of attacks.entries()) {
     const root = await mkdtemp(
-      join(tmpdir(), `postern-semantic-attack-${index}-`),
+      join(testTemporaryDirectory, `postern-semantic-attack-${index}-`),
     );
     context.after(() => rm(root, { recursive: true, force: true }));
     await buildComplete(root, (name, value) => {
@@ -597,7 +600,7 @@ test("refuses descriptor substitution, partial packages and enabling controls", 
     },
   ]) {
     const root = await mkdtemp(
-      join(tmpdir(), "postern-semantic-package-attack-"),
+      join(testTemporaryDirectory, "postern-semantic-package-attack-"),
     );
     context.after(() => rm(root, { recursive: true, force: true }));
     await buildComplete(root, (name, value) => {
@@ -611,7 +614,7 @@ test("refuses descriptor substitution, partial packages and enabling controls", 
 });
 
 test("bounded reader refuses symlinks, noncanonical JSON and writable evidence", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-semantic-files-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-semantic-files-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await buildComplete(root);
   await symlink(join(root, "package.json"), join(root, "link.json"));

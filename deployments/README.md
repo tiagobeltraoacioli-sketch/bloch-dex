@@ -107,6 +107,125 @@ binds the complete configuration hash and observations but does not attest that
 the RPC is independently trustworthy. Obtain matching evidence from the
 qualified node/validator process before release approval.
 
+Zero block hashes and different snapshot/finalized hashes at the same height
+are also refused, both before and after the deployment code reads.
+
+## Read-only pilot pool collection
+
+After a separately authorized deployment and pool creation have produced real
+identities, collect the empty WBLCH/bUSDC pool at an explicitly selected block:
+
+```sh
+node scripts/staging/inspect-pilot-pool.mjs \
+  --config /path/to/reviewed-staging.json \
+  --block-number <reviewed-decimal-block> \
+  --block-hash <reviewed-0x-block-hash> \
+  --pair-runtime-code-hash <reviewed-0x-runtime-keccak256> \
+  --output /path/to/new-pilot-pool-observation.json
+```
+
+The configuration and cap-envelope checks are the same as staging preflight.
+The block must be at or after the deployment snapshot. The expected pair runtime
+hash must come from the reviewed compiled artifact; copying it from the RPC
+being inspected would not establish that binding. The output file must not
+exist. This command never creates a pair, submits a transaction or enables a
+fee, liquidity or execution flag.
+
+The collector checks the selected chain and genesis, the explicit block hash,
+and a non-genesis finalized checkpoint. Every state query uses EIP-1898
+`{blockHash, requireCanonical: true}`; providers without this feature are
+refused without falling back to a moving head or block number. At that block it:
+
+- checks factory, WBLCH, bUSDC and pair bytecode against reviewed hashes;
+- derives the pair with CREATE2 from the factory, sorted tokens and reviewed
+  creation-code hash, and checks that hash against the factory;
+- checks both factory registry directions, `allPairs(0)`, a single factory
+  pair and the pair's own factory/token bindings;
+- requires disabled protocol fees, no pending fee-authority transfer and the
+  configured fee authority;
+- requires zero reserves, both raw token balances and LP total supply, so
+  donated balances cannot pass as an empty pool.
+
+Before writing output it rereads the inspection block, the original finalized
+checkpoint by height, the latest finalized checkpoint, chain ID and genesis.
+Changed blocks, conflicting hashes at equal heights and finality regression are
+refused. These consistency checks do not authenticate the RPC or establish
+ancestry beyond what it reports.
+
+`postern.dex.pilot-pool-rpc-observation.v1` retains the configuration SHA-256,
+cap-approval SHA-256, checkpoints, pool values, runtime hashes and exact call
+inputs/results. Its `observationSha256` covers canonical `stableJson` of every
+other field, excluding that digest itself. The output deliberately has a
+different schema from the authenticated `pilotPool` evidence accepted by the
+pilot-readiness gate. It is material for independent review; it cannot be
+substituted directly for that gate's evidence. `sourceRpcAuthenticated`,
+`finalityAuthenticated`, `poolInspectionAuthenticated`,
+`capApprovalAuthenticated` and all execution controls remain false.
+
+No reviewed pool identities or operational finality evidence are added by this
+collector. The checked-in pending staging template continues to fail before
+any provider access.
+
+### Retained capture and offline replay
+
+For a replayable collection, use the same reviewed configuration, block and
+runtime pin with `capture-pilot-pool.mjs`:
+
+```sh
+node scripts/staging/capture-pilot-pool.mjs \
+  --config /path/to/reviewed-staging.json \
+  --block-number <reviewed-decimal-block> \
+  --block-hash <reviewed-0x-block-hash> \
+  --pair-runtime-code-hash <reviewed-0x-runtime-keccak256> \
+  --output /path/to/new-pool-capture.json
+```
+
+The new `postern.dex.pilot-pool-rpc-capture.v1` envelope retains the observation
+and the ordered RPC transcript, including actual factory/token/pair bytecode.
+Block results retain only the number and hash consumed by the inspector; other
+block metadata, RPC URLs and transport credentials are excluded. No response is
+reconstructed from a claimed code hash. The original observation-only command
+and schema remain supported, but an observation without this transcript cannot
+be replayed as a complete capture.
+
+Retain the printed file SHA-256 separately. It covers the canonical JSON file,
+including its final newline. The envelope's `captureSha256` is a different
+digest: it covers canonical JSON of all envelope fields except itself, without
+the file's newline. Neither digest establishes source authenticity by itself.
+
+Supply the reviewed configuration and expected block/runtime pins again when
+replaying; they are not selected from the untrusted capture:
+
+```sh
+node scripts/staging/replay-pilot-pool.mjs \
+  --config /path/to/reviewed-staging.json \
+  --block-number <independently-selected-decimal-block> \
+  --block-hash <independently-selected-0x-block-hash> \
+  --pair-runtime-code-hash <reviewed-0x-runtime-keccak256> \
+  --capture /path/to/retained-pool-capture.json \
+  --capture-sha256 <separately-retained-file-0x-sha256> \
+  --output /path/to/new-pool-replay.json
+```
+
+Replay performs no RPC access. It reruns the pool inspector with only the
+retained responses, requiring the exact requested methods, parameters and
+order, no missing or unused responses, and an exact match to the derived
+observation. Recomputed outer hashes cannot conceal changed bytecode, weakened
+block pinning, swapped responses, invented amounts or enabled control flags.
+Inputs are bounded to 4 MiB, 48 RPC calls and 1 MiB per string result. The file
+reader checks the externally supplied digest, canonical bytes, a stable regular
+single-link inode, no symlinks and no group/other write permission. Output is
+private and create-only, as with collection.
+
+Successful `postern.dex.pilot-pool-offline-replay.v1` output means the retained
+observations reproduce under the supplied configuration. It does not establish
+that the RPC told the truth, that a finalized checkpoint was independently
+authenticated or that the state is still current. All authentication and
+execution controls remain false. Neither the capture nor the replay substitutes
+for the pilot-readiness gate's independently authenticated evidence.
+
+## Launch evidence packages
+
 `launch-gate.template.json` is the checked-in version-3 aggregate preflight. It
 selects
 chain 700771 but deliberately carries no genesis, RPC, bridge, deployment or
@@ -164,11 +283,33 @@ replay, rollback, gaps and cross-context checkpoint substitution.
 The policy SHA-256, ceremony identifier and `ssh-keygen` SHA-256 are explicit
 caller-supplied inputs. They do not prove an independent trust root, that the
 two keys belong to separate organizations, or that the ceremony was not replayed.
-The checker only uses an absolute,
-root-administered, non-writable `ssh-keygen`, verifies its externally supplied
-hash through a stable file descriptor, executes a private copy of those exact
-bytes and checks the original inode again afterward. It never resolves the
-verifier through `PATH`.
+The checker requires a canonical absolute, root-owned, regular, single-link
+executable with no group/other write permission and an explicit SHA-256 pin.
+Every ancestor must be a root-owned directory without symlinks or group/other
+write permission. An additional `access(W_OK)` check refuses paths writable by
+the current non-root operator, including access granted to that operator by an
+ACL. This does not enumerate ACL rights granted to other users. OS administrators
+and users to whom they delegate write access remain outside this trust boundary.
+
+The opened descriptor remains in the parent while the original reviewed path
+is executed. This supports the platform-signed macOS binary without copying,
+re-signing or falling back to a different executable. The descriptor and named
+file must retain their inode, size, ownership, permissions and change times;
+ancestor identity, ownership, permissions and change time are checked before
+and after every child. The child receives only fixed locale settings, no
+inherited `PATH`, loader overrides or SSH-agent environment, and has a
+10-second timeout and bounded output. Any detected replacement or abnormal
+exit refuses the observation. These checks do not sandbox effects of a program
+replaced by an administrator during execution.
+
+A negative signature probe must exit normally with a nonzero status before
+either real signature check. This rejects an always-success substitute such as
+`true`; it does not certify the verifier or establish an external trust root.
+The report identifies `verifierExecutionMode` as
+`pinned-root-administered-path` and `invalidSignatureProbeRefused:true` while
+keeping every authentication field false. User-owned executables remain
+unsupported, as before; root-owned files under operator-writable ancestors are
+now also refused.
 
 Even two zero-exit signature checks are only an observation over caller-supplied
 inputs. The report therefore keeps `pilotCapApprovalAuthenticated:false`,

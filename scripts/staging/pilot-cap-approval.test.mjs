@@ -9,7 +9,9 @@ import {
   mkdtemp,
   readFile,
   rename,
+  realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -26,6 +28,7 @@ const sha256 = (bytes) =>
   `0x${createHash("sha256").update(bytes).digest("hex")}`;
 const NAMESPACE = "postern.dex.pilot-cap-approval.v1";
 const moduleUrl = new URL("./pilot-cap-approval.mjs", import.meta.url).href;
+const testTemporaryDirectory = await realpath(tmpdir());
 
 function command(args) {
   const result = spawnSync("ssh-keygen", args, { encoding: "utf8" });
@@ -174,7 +177,7 @@ async function fixture(root) {
 }
 
 test("caller-supplied policy and signatures produce an observation, never authentication", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-auth-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-auth-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   const report = await inspectPilotCapApproval(root, value.options, value.context);
@@ -183,6 +186,8 @@ test("caller-supplied policy and signatures produce an observation, never authen
   assert.equal(report.callerSuppliedCeremonyId, value.options.expectedCeremonyId);
   assert.equal(report.distinctPublicKeysObserved, true);
   assert.equal(report.signatureCheckProcessesExitedZero, true);
+  assert.equal(report.invalidSignatureProbeRefused, true);
+  assert.equal(report.verifierExecutionMode, "pinned-root-administered-path");
   assert.equal(report.verifierIdentityAuthenticated, false);
   assert.equal(report.authorityOrganizationsSeparated, false);
   assert.equal(report.replayProtectionAuthenticated, false);
@@ -198,7 +203,7 @@ test("caller-supplied policy and signatures produce an observation, never authen
 });
 
 test("policy, role and replay substitution fail closed", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-attacks-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-attacks-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   await assert.rejects(
@@ -280,7 +285,7 @@ test("policy, role and replay substitution fail closed", async (context) => {
 });
 
 test("self-selected, aliased, stale and mutable inputs fail closed", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-files-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-files-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   const policy = await readFile(join(root, "policy"), "utf8");
@@ -343,8 +348,8 @@ test("self-selected, aliased, stale and mutable inputs fail closed", async (cont
   );
 });
 
-test("PATH substitution is ignored and untrusted verifier observations never authenticate", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-executable-"));
+test("PATH substitution is ignored and always-success verifier substitution is refused", async (context) => {
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-executable-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   await writeFile(join(root, "ssh-keygen"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
@@ -379,22 +384,61 @@ test("PATH substitution is ignored and untrusted verifier observations never aut
   );
   const truePath = "/usr/bin/true";
   const trueBytes = await readFile(truePath);
-  const untrustedObservation = await inspectPilotCapApproval(
-    root,
-    {
-      ...value.options,
-      sshKeygenPath: truePath,
-      expectedSshKeygenSha256: sha256(trueBytes),
-    },
-    value.context,
+  await assert.rejects(
+    inspectPilotCapApproval(
+      root,
+      {
+        ...value.options,
+        sshKeygenPath: truePath,
+        expectedSshKeygenSha256: sha256(trueBytes),
+      },
+      value.context,
+    ),
+    /accepts an invalid negative probe/,
   );
-  assert.equal(untrustedObservation.signatureCheckProcessesExitedZero, true);
-  assert.equal(untrustedObservation.verifierIdentityAuthenticated, false);
-  assert.equal(untrustedObservation.approvalAuthenticated, false);
+});
+
+test("verifier selection refuses relative, noncanonical and operator-managed paths", async (context) => {
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-verifier-paths-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const value = await fixture(root);
+  for (const path of ["ssh-keygen", "/usr/bin/../bin/ssh-keygen", "/usr/bin/ssh-keygen/"]) {
+    await assert.rejects(
+      inspectPilotCapApproval(root, { ...value.options, sshKeygenPath: path }, value.context),
+      /canonical and absolute/,
+    );
+  }
+  const linked = join(root, "linked-ssh-keygen");
+  await symlink(value.options.sshKeygenPath, linked);
+  await assert.rejects(
+    inspectPilotCapApproval(root, { ...value.options, sshKeygenPath: linked }, value.context),
+    /root-administered immutable ancestors/,
+  );
+  await assert.rejects(
+    inspectPilotCapApproval(root, { ...value.options, sshKeygenPath: "/usr/bin" }, value.context),
+    /root-administered and immutable/,
+  );
+});
+
+test("valid verifier refuses changed signatures and cannot replace both reviewers with one", async (context) => {
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-invalid-signatures-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const value = await fixture(root);
+  const risk = await readFile(join(root, "risk.sig"));
+  await writeFile(join(root, "security.sig"), risk);
+  await assert.rejects(
+    inspectPilotCapApproval(root, value.options, value.context),
+    /postern-dex-pilot-security signature is not valid/,
+  );
+  await writeFile(join(root, "risk.sig"), "invalid signature\n");
+  await assert.rejects(
+    inspectPilotCapApproval(root, value.options, value.context),
+    /postern-dex-pilot-risk signature is not valid/,
+  );
 });
 
 test("atomic observation consumes once and retries idempotently without authentication", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-consume-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-consume-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   const first = await consumePilotCapCheckpointObservation(root, value.options, value.context);
@@ -419,7 +463,7 @@ test("atomic observation consumes once and retries idempotently without authenti
 });
 
 test("concurrent consumers serialize to one CAS and one idempotent result", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-concurrent-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-concurrent-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   const payload = { root, options: value.options, context: value.context };
@@ -430,7 +474,7 @@ test("concurrent consumers serialize to one CAS and one idempotent result", asyn
 });
 
 test("durable intent recovery completes a crash and corrupted intent fails closed", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-recovery-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-recovery-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   const nextCheckpoint = {
@@ -458,7 +502,7 @@ test("durable intent recovery completes a crash and corrupted intent fails close
   assert.equal(recovered.idempotentRetryObserved, true);
   assert.equal(recovered.approvalAuthenticated, false);
 
-  const corruptRoot = await mkdtemp(join(tmpdir(), "postern-cap-corrupt-"));
+  const corruptRoot = await mkdtemp(join(testTemporaryDirectory, "postern-cap-corrupt-"));
   context.after(() => rm(corruptRoot, { recursive: true, force: true }));
   const corrupt = await fixture(corruptRoot);
   await writeFile(join(corruptRoot, "checkpoint.json.intent"), "{}\n", { mode: 0o600 });
@@ -470,7 +514,7 @@ test("durable intent recovery completes a crash and corrupted intent fails close
 });
 
 test("stale dead-process locks recover while CAS digest mismatch fails closed", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-cap-stale-lock-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-cap-stale-lock-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const value = await fixture(root);
   const lock = join(root, "checkpoint.json.lock");
@@ -490,7 +534,7 @@ test("stale dead-process locks recover while CAS digest mismatch fails closed", 
   assert.equal(recovered.staleLockRecovered, true);
   assert.equal(recovered.approvalAuthenticated, false);
 
-  const mismatchRoot = await mkdtemp(join(tmpdir(), "postern-cap-cas-mismatch-"));
+  const mismatchRoot = await mkdtemp(join(testTemporaryDirectory, "postern-cap-cas-mismatch-"));
   context.after(() => rm(mismatchRoot, { recursive: true, force: true }));
   const mismatch = await fixture(mismatchRoot);
   await assert.rejects(

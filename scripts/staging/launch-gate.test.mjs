@@ -10,10 +10,13 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stableJson } from "./manifest.mjs";
 import { evaluateLaunchGate, readLaunchGate } from "./launch-gate.mjs";
+
+const testTemporaryDirectory = await realpath(tmpdir());
 
 const hash = (byte) => `0x${byte.repeat(64)}`;
 const templateUrl = new URL(
@@ -136,7 +139,7 @@ test("refuses partial, stale, cross-fork and enabled packages", () => {
 });
 
 test("bounded reader accepts only canonical regular repo-relative files", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-launch-gate-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-launch-gate-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   const canonical = `${stableJson(complete())}\n`;
   await writeFile(join(root, "gate.json"), canonical, { mode: 0o600 });

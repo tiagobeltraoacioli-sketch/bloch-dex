@@ -35,7 +35,10 @@ function block(value, field) {
     value && typeof value === "object" && !Array.isArray(value),
     `${field} is unavailable`,
   );
-  required(HASH.test(value.hash), `${field}.hash is invalid`);
+  required(
+    HASH.test(value.hash) && value.hash !== `0x${"0".repeat(64)}`,
+    `${field}.hash is invalid or zero`,
+  );
   const number = quantity(value.number, `${field}.number`);
   required(
     number <= BigInt(Number.MAX_SAFE_INTEGER),
@@ -183,6 +186,11 @@ export async function verifyStagingDeployment(config, request) {
     finalizedBefore.number >= snapshotBefore.number,
     "deployment snapshot is not finalized",
   );
+  required(
+    finalizedBefore.number !== snapshotBefore.number ||
+      finalizedBefore.hash === snapshotBefore.hash,
+    "finalized head conflicts with the deployment snapshot at the same height",
+  );
 
   const identities = new Map();
   const addIdentity = (label, identity, contractRequired) => {
@@ -258,6 +266,11 @@ export async function verifyStagingDeployment(config, request) {
   required(
     finalizedAfter.number >= snapshotBefore.number,
     "deployment snapshot lost finality during verification",
+  );
+  required(
+    finalizedAfter.number !== snapshotAfter.number ||
+      finalizedAfter.hash === snapshotAfter.hash,
+    "closing finalized head conflicts with the deployment snapshot at the same height",
   );
   required(
     finalizedAfter.number >= finalizedBefore.number,

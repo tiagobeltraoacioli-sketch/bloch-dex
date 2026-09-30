@@ -239,6 +239,41 @@ test("rejects malformed observations and invalid manifests before trust", async 
   assert.equal(called, false);
 });
 
+test("same-height finality must identify the deployment block before code reads", async () => {
+  const config = valid();
+  const matching = rpc({finalized:"0x20", finalizedHash:config.deployment.blockHash});
+  const result = await verifyStagingDeployment(config, matching.request);
+  assert.deepEqual(result.finalizedBefore, result.snapshot);
+  assert.deepEqual(result.finalizedAfter, result.snapshot);
+
+  const conflicting = rpc({finalized:"0x20", finalizedHash:hash("a")});
+  await assert.rejects(
+    verifyStagingDeployment(config, conflicting.request),
+    /finalized head conflicts with the deployment snapshot/,
+  );
+  assert.equal(conflicting.calls.some(([method]) => method === "eth_getCode"), false);
+});
+
+test("closing same-height finality conflicts and zero finalized hashes are refused", async () => {
+  const config = valid();
+  const changed = rpc({
+    finalized:"0x20",
+    finalizedHash:config.deployment.blockHash,
+    closingFinalized:{number:"0x20", hash:hash("a")},
+  });
+  await assert.rejects(
+    verifyStagingDeployment(config, changed.request),
+    /closing finalized head conflicts with the deployment snapshot/,
+  );
+  for (const overrides of [
+    {finalizedHash:hash("0")},
+    {closingFinalized:{number:"0x28", hash:hash("0")}},
+  ]) {
+    const {request} = rpc(overrides);
+    await assert.rejects(verifyStagingDeployment(config, request), /hash is invalid or zero/);
+  }
+});
+
 test("JSON-RPC transport binds concurrent response IDs and bounds bodies", async () => {
   const fetchImpl = async (_url, options) => {
     const payload = JSON.parse(options.body);

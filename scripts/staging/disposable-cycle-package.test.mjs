@@ -4,10 +4,13 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stableJson } from "./manifest.mjs";
 import { verifyDisposableCyclePackage } from "./disposable-cycle-package.mjs";
+
+const testTemporaryDirectory = await realpath(tmpdir());
 
 const hash = (byte) => `0x${byte.repeat(64)}`;
 const revision = (byte) => byte.repeat(40);
@@ -179,7 +182,7 @@ test("checked-in request is canonical, pending and non-authorizing", async () =>
 });
 
 test("complete synthetic deposit-to-refund cycle composes without authenticating", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-disposable-cycle-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-disposable-cycle-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(root);
   const report = await verifyDisposableCyclePackage(root, "cycle.json");
@@ -198,7 +201,7 @@ test("complete synthetic deposit-to-refund cycle composes without authenticating
 });
 
 test("structurally complete retained-real declarations still cannot authenticate themselves", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-disposable-real-declared-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-disposable-real-declared-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(root, () => {}, "retained-real");
   const report = await verifyDisposableCyclePackage(root, "cycle.json");
@@ -224,7 +227,7 @@ test("cross-stage, cap, finality and reconciliation lies fail closed", async (co
     ["package", (value) => (value.controls.activationAuthorized = true)],
   ];
   for (const [index, [stage, mutate]] of attacks.entries()) {
-    const root = await mkdtemp(join(tmpdir(), `postern-disposable-attack-${index}-`));
+    const root = await mkdtemp(join(testTemporaryDirectory, `postern-disposable-attack-${index}-`));
     context.after(() => rm(root, { recursive: true, force: true }));
     await complete(root, (name, value) => {
       if (name === stage) mutate(value);
@@ -241,7 +244,7 @@ test("partial, mixed synthetic and substituted revisions fail closed", async (co
     (value) => (value.stages.pilotRoundTrip.mintDigest = hash("f")),
     (value) => (value.stages.burnReleaseRefund.pilotDigest = hash("f")),
   ]) {
-    const root = await mkdtemp(join(tmpdir(), "postern-disposable-substitution-"));
+    const root = await mkdtemp(join(testTemporaryDirectory, "postern-disposable-substitution-"));
     context.after(() => rm(root, { recursive: true, force: true }));
     const value = await complete(root);
     mutate(value);
@@ -251,7 +254,7 @@ test("partial, mixed synthetic and substituted revisions fail closed", async (co
 });
 
 test("bounded reader and CLI fail closed", async (context) => {
-  const root = await mkdtemp(join(tmpdir(), "postern-disposable-files-"));
+  const root = await mkdtemp(join(testTemporaryDirectory, "postern-disposable-files-"));
   context.after(() => rm(root, { recursive: true, force: true }));
   await complete(root);
   await symlink(join(root, "cycle.json"), join(root, "link.json"));
