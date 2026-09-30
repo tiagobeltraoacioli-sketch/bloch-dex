@@ -99,7 +99,8 @@ same pinned `viem` Keccak implementation as the browser. The output path must
 not exist. The verifier checks the declared chain ID and genesis, rejects a
 `finalized` head that has not advanced beyond genesis, requires the deployment
 block to be finalized, and reads every deployment contract, custody
-role and token at that exact block number. Contract and token bytecode must be
+role and token using that exact block hash with `requireCanonical: true`.
+Contract and token bytecode must be
 nonempty; reviewed EOA roles may have empty bytecode but its Keccak hash must
 still match. It rereads both the deployment and finalized blocks after all code
 queries and refuses a changed snapshot or lost finality. The canonical output
@@ -479,3 +480,39 @@ Validate this automation with Node 24:
 ```sh
 node --test scripts/staging/manifest.test.mjs scripts/staging/rpc-verifier.test.mjs
 ```
+
+## Hash-pinned deployment capture and offline replay
+
+The deployment runtime inspector now uses EIP-1898
+`{blockHash: <reviewed snapshot>, requireCanonical: true}` for every code read.
+It refuses unsupported selectors instead of falling back to a height or latest.
+This prevents mixing runtime state if the numbered snapshot temporarily changes
+between the opening and closing block checks. See [EIP-1898](https://eips.ethereum.org/EIPS/eip-1898).
+
+Retain and replay all actual runtime bytes, rather than only claimed code hashes:
+
+```sh
+node scripts/staging/deployment-evidence.mjs capture \
+  --config /private/reviewed-staging.json --output /private/new-deployment-capture.json
+node scripts/staging/deployment-evidence.mjs replay \
+  --config /private/reviewed-staging.json \
+  --capture /private/new-deployment-capture.json \
+  --capture-sha256 <independently-retained-0x-file-sha256> \
+  --output /private/new-deployment-replay.json
+```
+
+The capture contains the ordered read-only RPC transcript and the existing
+staging observation. Replay repeats every chain/genesis/finality-tag/snapshot
+and runtime check, requires the same caller-selected configuration, and rejects
+missing, extra, reordered or altered responses even when the envelope digest is
+recomputed. Source URLs and transport credentials are omitted. Limits are 80
+calls, 1 MiB per string response and 4 MiB for the complete capture. Reads use
+the existing canonical, regular-file, no-symlink, externally digest-pinned
+capture transport. Outputs use mode 0600 and are create-only.
+
+The outer `captureSha256` binds canonical envelope fields except itself; the
+printed **file SHA-256** also covers the final newline. Use the latter for the
+replay command. Neither authenticates its own source. A successful replay is
+internal consistency evidence, not a proof of finality, a deployment approval
+or permission to enable liquidity. The checked-in pending deployment template
+still fails before RPC access. No contract deployment or wallet action is added.

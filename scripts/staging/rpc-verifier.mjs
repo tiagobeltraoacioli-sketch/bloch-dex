@@ -150,6 +150,7 @@ export function createJsonRpcRequest(rpcUrl, options = {}) {
 
 export async function verifyStagingDeployment(config, request) {
   validateStagingConfig(config);
+  config = structuredClone(config);
   required(typeof request === "function", "RPC request function is required");
   const tag = blockTag(config.deployment.blockNumber);
 
@@ -222,7 +223,7 @@ export async function verifyStagingDeployment(config, request) {
 
   const observations = [];
   for (const identity of identities.values()) {
-    const code = await request("eth_getCode", [identity.address, tag]);
+    const code = await request("eth_getCode", [identity.address, { blockHash: snapshotBefore.hash, requireCanonical: true }]);
     required(
       CODE.test(code),
       `${identity.labels.join("/")} returned invalid runtime code`,
