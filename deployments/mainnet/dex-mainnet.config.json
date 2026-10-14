@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.mainnet-deploy.v1",
+  "network": {
+    "name": "bloch-l2-mainnet",
+    "chainId": null,
+    "genesisHash": null,
+    "rehearsal": false
+  },
+  "source": {
+    "revision": null,
+    "compiler": {
+      "solc": "0.8.24",
+      "evmVersion": "paris",
+      "optimizer": true,
+      "optimizerRuns": 200,
+      "bytecodeHash": "none"
+    }
+  },
+  "deployer": {
+    "address": null,
+    "startNonce": 0
+  },
+  "wrappedNative": {
+    "deploy": true
+  },
+  "fees": {
+    "feeTo": null,
+    "feeToSetter": null,
+    "treasury": null
+  },
+  "reserveCaps": [
+    {
+      "token": "WBLCH",
+      "cap": null
+    }
+  ],
+  "initialPairs": [],
+  "gate": {
+    "maxWrappedReserveCap": "10000000000000000000"
+  }
+}
