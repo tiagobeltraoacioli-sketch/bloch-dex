@@ -119,3 +119,202 @@ test("validates the configuration before any RPC request", async () => {
   }
   assert.equal(calls.length, 0);
 });
+
+// ------------------------------------------------------------------------ //
+// Schema 2 (mainnet): code hashes, fee state, bindings and every cap.        //
+// ------------------------------------------------------------------------ //
+
+import { createRequire } from "node:module";
+
+const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
+const { keccak256, toFunctionSelector } = requireFromFrontend("viem");
+
+const V2 = {
+  deployer: addr("d"),
+  wrapped: addr("1"),
+  asset: addr("2"),
+  factory: addr("f"),
+  router: addr("3"),
+  lens: addr("4"),
+  collector: addr("5"),
+  pair: addr("e"),
+  feeToSetter: addr("6"),
+  treasury: addr("7"),
+};
+const CODE = {
+  [V2.wrapped]: "0x01",
+  [V2.asset]: "0x02",
+  [V2.factory]: "0x0f",
+  [V2.router]: "0x03",
+  [V2.lens]: "0x04",
+  [V2.collector]: "0x05",
+  [V2.pair]: "0x0e",
+};
+const INIT_HASH = hash("1");
+const sel = (signature) => toFunctionSelector(signature);
+const pad = (a) => a.slice(2).padStart(64, "0");
+
+function configV2(change = () => {}) {
+  const contract = (address) => ({ address, codeHash: keccak256(CODE[address]) });
+  const c = {
+    schemaVersion: 2,
+    domain: GATE_DOMAIN,
+    chain: { id: 7007700, genesisHash: hash("9") },
+    deployment: {
+      deployer: V2.deployer,
+      contracts: {
+        wrappedNative: contract(V2.wrapped),
+        factory: contract(V2.factory),
+        router: contract(V2.router),
+        lens: contract(V2.lens),
+        collector: contract(V2.collector),
+      },
+      pairInitCodeHash: INIT_HASH,
+      roles: { feeToSetter: V2.feeToSetter, treasury: V2.treasury },
+      reserveCaps: [
+        { token: V2.wrapped, cap: CAP.toString() },
+        { token: V2.asset, cap: "10000000" },
+      ],
+      tokens: [{ token: V2.asset, symbol: "bUSDC", codeHash: keccak256(CODE[V2.asset]) }],
+      pairs: [{ address: V2.pair, token0: V2.wrapped, token1: V2.asset, codeHash: keccak256(CODE[V2.pair]) }],
+      transactions: [TX],
+    },
+    limits: { maxWrappedReserveCap: "10000000000000000000" },
+  };
+  change(c);
+  return c;
+}
+
+function rpcV2(change = {}) {
+  const state = {
+    chainId: hex(7007700),
+    genesis: { number: "0x0", hash: hash("9") },
+    finalized: { number: hex(300), hash: hash("b") },
+    receipt: { transactionHash: TX, status: "0x1", from: V2.deployer, blockNumber: hex(300), blockHash: hash("b") },
+    code: { ...CODE },
+    initHash: INIT_HASH,
+    feeTo: addr("0"),
+    feeToSetter: V2.feeToSetter,
+    pending: addr("0"),
+    caps: { [V2.wrapped]: CAP, [V2.asset]: 10_000_000n },
+    routerFactory: V2.factory,
+    routerWrapped: V2.wrapped,
+    lensFactory: V2.factory,
+    collectorFactory: V2.factory,
+    treasury: V2.treasury,
+    collectorWrapped: V2.wrapped,
+    pairFactory: V2.factory,
+    token0: V2.wrapped,
+    token1: V2.asset,
+    registered: V2.pair,
+    pairCaps: [CAP, 10_000_000n],
+    ...change,
+  };
+  return async (method, params) => {
+    switch (method) {
+      case "eth_chainId":
+        return state.chainId;
+      case "eth_getBlockByNumber":
+        if (params[0] === "0x0") return state.genesis;
+        if (params[0] === "finalized") return state.finalized;
+        return Number(BigInt(params[0])) === 300 ? { number: params[0], hash: hash("b") } : null;
+      case "bloch_finality":
+        return { finalized: state.finalized };
+      case "eth_getTransactionReceipt":
+        return params[0] === TX ? state.receipt : null;
+      case "eth_getCode":
+        assert.deepEqual(params[1], { blockHash: state.finalized.hash, requireCanonical: true });
+        return state.code[params[0]] ?? "0x";
+      case "eth_call": {
+        assert.deepEqual(params[1], { blockHash: state.finalized.hash, requireCanonical: true });
+        const { to, data } = params[0];
+        const reply = {
+          [`${V2.factory}${sel("INIT_CODE_PAIR_HASH()")}`]: `0x${state.initHash.slice(2)}`,
+          [`${V2.factory}${sel("feeTo()")}`]: `0x${pad(state.feeTo)}`,
+          [`${V2.factory}${sel("feeToSetter()")}`]: `0x${pad(state.feeToSetter)}`,
+          [`${V2.factory}${sel("pendingFeeToSetter()")}`]: `0x${pad(state.pending)}`,
+          [`${V2.factory}0xbb75fd60${pad(V2.wrapped)}`]: `0x${word(state.caps[V2.wrapped])}`,
+          [`${V2.factory}0xbb75fd60${pad(V2.asset)}`]: `0x${word(state.caps[V2.asset])}`,
+          [`${V2.factory}0xe6a43905${pad(V2.wrapped)}${pad(V2.asset)}`]: `0x${pad(state.registered)}`,
+          [`${V2.router}${sel("factory()")}`]: `0x${pad(state.routerFactory)}`,
+          [`${V2.router}${sel("WBLCH()")}`]: `0x${pad(state.routerWrapped)}`,
+          [`${V2.lens}${sel("factory()")}`]: `0x${pad(state.lensFactory)}`,
+          [`${V2.collector}${sel("factory()")}`]: `0x${pad(state.collectorFactory)}`,
+          [`${V2.collector}${sel("treasury()")}`]: `0x${pad(state.treasury)}`,
+          [`${V2.collector}${sel("wblch()")}`]: `0x${pad(state.collectorWrapped)}`,
+          [`${V2.pair}${sel("factory()")}`]: `0x${pad(state.pairFactory)}`,
+          [`${V2.pair}0x0dfe1681`]: `0x${pad(state.token0)}`,
+          [`${V2.pair}0xd21220a7`]: `0x${pad(state.token1)}`,
+          [`${V2.pair}0xd3dc9b31`]: `0x${word(state.pairCaps[0])}${word(state.pairCaps[1])}`,
+        }[`${to}${data}`];
+        if (reply === undefined) throw new Error(`unexpected call ${to} ${data}`);
+        return reply;
+      }
+      default:
+        throw new Error(`unexpected method ${method}`);
+    }
+  };
+}
+
+test("schema 2 enables liquidity only for the exact planned deployment", async () => {
+  const report = await evaluateFinalityGate(configV2(), rpcV2());
+  assert.equal(report.decision, "liquidity-enabled");
+  assert.equal(report.schemaVersion, 2);
+  assert.equal(report.pairs[0].address, V2.pair);
+  assert.equal(report.wrappedReserveCap, CAP.toString());
+});
+
+test("schema 2 refuses drift in code, fee state, bindings, caps, pairs or sender", async () => {
+  for (const [change, pattern] of [
+    [{ chainId: hex(700771) }, /chain ID/],
+    [{ receipt: { transactionHash: TX, status: "0x1", from: addr("8"), blockNumber: hex(300), blockHash: hash("b") } }, /not sent by the deployer/],
+    [{ receipt: { transactionHash: TX, status: "0x1", blockNumber: hex(300), blockHash: hash("b") } }, /not sent by the deployer/],
+    [{ receipt: { transactionHash: TX, status: "0x1", from: V2.deployer, blockNumber: hex(301), blockHash: hash("c") } }, /not finalized/],
+    [{ code: { ...CODE, [V2.router]: "0x33" } }, /router runtime code/],
+    [{ code: { ...CODE, [V2.asset]: "0x22" } }, /token bUSDC runtime code/],
+    [{ code: { ...CODE, [V2.pair]: "0x" } }, /runtime code/],
+    [{ initHash: hash("2") }, /init-code hash/],
+    [{ feeTo: addr("7") }, /protocol fee is enabled/],
+    [{ feeToSetter: addr("8") }, /fee authority differs/],
+    [{ pending: addr("8") }, /transfer is pending/],
+    [{ caps: { [V2.wrapped]: CAP, [V2.asset]: 1n } }, /cap for/],
+    [{ caps: { [V2.wrapped]: CAP + 1n, [V2.asset]: 10_000_000n } }, /cap for/],
+    [{ routerFactory: addr("8") }, /router serves another factory/],
+    [{ routerWrapped: addr("8") }, /router wraps another token/],
+    [{ lensFactory: addr("8") }, /lens reads another factory/],
+    [{ collectorFactory: addr("8") }, /collector serves another factory/],
+    [{ treasury: addr("8") }, /another treasury/],
+    [{ collectorWrapped: addr("8") }, /converts to another token/],
+    [{ pairFactory: addr("8") }, /another factory/],
+    [{ token1: addr("8") }, /token1 differs/],
+    [{ registered: addr("8") }, /does not register/],
+    [{ pairCaps: [CAP, 0n] }, /caps differ/],
+  ]) {
+    await assert.rejects(evaluateFinalityGate(configV2(), rpcV2(change)), pattern, Object.keys(change).join(","));
+  }
+});
+
+test("schema 2 configuration is validated before any RPC request", async () => {
+  let calls = 0;
+  const request = async () => {
+    calls += 1;
+    throw new Error("no RPC expected");
+  };
+  for (const change of [
+    (c) => { c.deployment.contracts.lens.codeHash = keccak256("0x"); },
+    (c) => { delete c.deployment.contracts.collector; },
+    (c) => { c.deployment.reserveCaps = [{ token: V2.asset, cap: "1" }]; c.deployment.tokens = []; },
+    (c) => { c.deployment.reserveCaps[0].cap = (CAP * 11n).toString(); },
+    (c) => { c.deployment.tokens = []; },
+    (c) => { c.deployment.pairs = []; },
+    (c) => { c.deployment.pairs[0].token0 = V2.asset; c.deployment.pairs[0].token1 = V2.wrapped; },
+    (c) => { c.deployment.pairs = [{ address: V2.pair, token0: V2.asset, token1: addr("9"), codeHash: hash("3") }]; },
+    (c) => { c.deployment.deployer = V2.deployer.toUpperCase(); },
+    (c) => { c.deployment.transactions = [TX, TX]; },
+    (c) => { c.deployment.signatures = []; },
+    (c) => { c.schemaVersion = 3; },
+  ]) {
+    await assert.rejects(evaluateFinalityGate(configV2(change), request), /finality gate/);
+  }
+  assert.equal(calls, 0);
+});
