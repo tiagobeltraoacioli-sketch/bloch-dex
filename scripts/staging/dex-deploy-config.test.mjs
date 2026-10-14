@@ -86,7 +86,7 @@ test("the committed mainnet configuration records the decisions and refuses what
   assert.equal(committed.fees.feeTo, "blochInc");
   assert.deepEqual(committed.initialPairs, [{ tokenA: "WBLCH", tokenB: "wGnB" }, { tokenA: "WBLCH", tokenB: "bUSDC" }]);
   // Guarded-launch caps: WBLCH at the 10 BLCH ceiling, bridged tokens at 1/10 of the bucket.
-  assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "100000000000", "1000000000"]);
+  assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "100000000", "1000000000"]);
   // Every pending field is refused, one at a time, until filled.
   const decided = structuredClone(committed);
   const steps = [
@@ -106,9 +106,9 @@ test("the committed mainnet configuration records the decisions and refuses what
   }
   validateDeployConfig(decided);
   // A smaller wGnB bridge bucket than planned forces a smaller DEX cap.
-  decided.reserveCaps[1].bridgeBucketCapacity = "999999999999";
+  decided.reserveCaps[1].bridgeBucketCapacity = "999999999";
   assert.throws(() => validateDeployConfig(decided), /exceeds 1\/10 of the bridge bucket/);
-  decided.reserveCaps[1].bridgeBucketCapacity = "1000000000000";
+  decided.reserveCaps[1].bridgeBucketCapacity = "1000000000";
   const plan = planDeployment(decided, artifacts());
   assert.equal(plan.pairs.length, 2);
   assert.equal(plan.feeTo, BLOCH_INC);

@@ -94,13 +94,13 @@ outflows are never blocked. Values (committed in
 | Token | Cap | Base units | Rule |
 |---|---|---|---|
 | WBLCH | 10 BLCH | `10000000000000000000` (18 dp) | The existing code ceiling (`MAX_WRAPPED_CAP`, gate `maxWrappedReserveCap`) |
-| wGnB | 1,000 wGnB | `100000000000` (8 dp) | ≤ 1/10 of the wGnB bridge bucket (bucket = 1% of circulating GnB, refill 24 h; ~1,000,000 GNB circulating at the 2026-10-14 relaunch → ~10,000 wGnB bucket) |
+| wGnB | 1 wGnB | `100000000` (8 dp) | ≤ 1/10 of the wGnB bridge bucket. The bridge deploy config (bloch-l2-bridge `feat/pontes-mainnet-deploy`, docs/BRIDGES-MAINNET.md) sizes the pilot at supply 30 GNB, bucket 10 GNB/24 h → cap 1 wGnB; raise both together by redeploy |
 | bUSDC | 1,000 bUSDC | `1000000000` (6 dp) | 1/10 of the 10,000 bUSDC bucket (refill 24 h, supply cap 100,000) |
 
 Rationale:
 
 - **Loss ceiling while unaudited.** Everything a pair can ever hold is at most
-  its two caps. Worst case for both pilot pairs together: 20 BLCH + 1,000 wGnB
+  its two caps. Worst case for both pilot pairs together: 20 BLCH + 1 wGnB
   + 1,000 bUSDC. WBLCH is capped per pair, so each extra WBLCH pair anyone
   creates is also limited to 10 WBLCH (F4).
 - **Relation to the bridges' token buckets.** A DEX cap on a bridged token is
