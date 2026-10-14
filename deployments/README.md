@@ -1,5 +1,10 @@
 # Deployment records
 
+The Bloch L2 mainnet deployment procedure (one reviewed config, deterministic
+plan, dry run, broadcast, on-chain record, schema-2 finality gate) is in
+[docs/MAINNET-READINESS.md](../docs/MAINNET-READINESS.md); its input is
+`mainnet/dex-mainnet.config.json`.
+
 No verified deployment manifest is present. The frontend must remain in preview mode.
 
 A release manifest must include chain ID, genesis block hash, RPC URL, deployment

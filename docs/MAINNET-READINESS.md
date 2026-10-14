@@ -73,3 +73,97 @@ another workstream; **M9** = depends on the L2 mainnet going live.
   rehearsal flag, deployer nonce, every address and code hash, fee state, caps
   and bindings by itself.
 - `scripts/staging/rehearse-deploy-anvil.sh`: full local rehearsal on anvil.
+
+## 5. Runbook: deploy on the L2 mainnet once it is live
+
+### Preconditions (all M9 unless noted)
+
+1. The L2 mainnet is activated and accepts user transactions; its chain ID and
+   genesis hash are published, and the operator's **own** L2 node, replaying
+   from that genesis, reports the same genesis hash.
+2. That node's RPC returns Ethereum-shaped blocks (no compatibility shim),
+   receipts with `from`, the `finalized` block tag and `bloch_finality`.
+3. The timestamp decision (F3) is made and, if it is not wall-clock seconds,
+   the reviewed follow-up change is merged.
+4. The admin decision (A1/A2) is made; if the fee switch is removed, that
+   change is merged and reviewed first (it changes the factory code).
+5. For a pilot pair: the counter-asset exists on the L2 (bridge live, other
+   workstream) and its address and runtime code hash are reviewed.
+
+### Steps
+
+1. **Record decisions.** Fill `deployments/mainnet/dex-mainnet.config.json`:
+   `network.chainId`, `network.genesisHash`, `source.revision` (the commit
+   that will be built), `deployer.address` (fresh key, `startNonce` = its
+   current nonce, normally 0), `fees.feeToSetter` and `fees.treasury`
+   (address and runtime code hash; the empty-code hash
+   `0xc5d2…a470` for an EOA), WBLCH mode, `reserveCaps` values and
+   `initialPairs`. `fees.feeTo` stays `null`. Review it as a pull request.
+2. **Build reproducibly.** Check out `source.revision`, Foundry 1.7.1,
+   `forge build`, `forge test`, then `node --test scripts/staging/*.test.mjs`
+   (after `npm ci --ignore-scripts` in `frontend/`).
+3. **Plan.**
+   `node scripts/staging/deploy-dex.mjs plan --config deployments/mainnet/dex-mainnet.config.json --write deployments/mainnet/dex-mainnet.plan.json`.
+   A second reviewer regenerates it on another machine; the files must be
+   byte-identical. Commit the plan. It lists every address, nonce, init code
+   hash, runtime code hash and the pair init code hash.
+4. **Rehearse locally.** `scripts/staging/rehearse-deploy-anvil.sh <revision>`
+   must end with `REHEARSAL OK` (it runs plan, dry run, broadcast, record and
+   the gate against a throwaway anvil chain and checks an over-cap deposit
+   reverts).
+5. **Fund the deployer** with gas only, and send nothing else from it: the
+   plan is bound to its nonce.
+6. **Dry run** against the own node:
+   `node scripts/staging/deploy-dex.mjs run --config <config> --plan <plan> --rpc <own-node-url>`.
+   It refuses unless the chain ID and genesis hash match, the deployer's
+   latest and pending nonces equal `startNonce`, every planned address is
+   empty, and the wrapper (if existing), capped tokens and role accounts have
+   the reviewed code hashes; then forge simulates the whole deployment.
+7. **Broadcast:** the same command with
+   `--broadcast --confirm <configSha256> -- <forge signer args, e.g. --ledger>`.
+   Transactions go one by one (`--slow`).
+8. **Record:**
+   `node scripts/staging/deploy-dex.mjs record --config <config> --plan <plan> --rpc <own-node-url> --broadcast-file broadcast/DeployMainnet.s.sol/<chainId>/run-latest.json --write deployments/mainnet/finality-gate.mainnet.json`.
+   Each transaction is re-read from the chain: sender = deployer, nonce in
+   the plan, contract creations carry exactly the planned init code and
+   created the planned address, `createPair` called the factory, status 1.
+9. **Wait for finality, then run the gate:**
+   `node scripts/staging/check-finality-gate.mjs --config deployments/mainnet/finality-gate.mainnet.json --rpc <own-node-url>`.
+   Only `"decision": "liquidity-enabled"` allows the separate initial
+   liquidity ceremony (within the caps) and a separate, reviewed frontend
+   change. Commit the plan, gate config and gate report.
+
+If anything refuses, stop. If a broadcast lands only partly, do not finish it
+by hand: the stray contracts hold nothing; write a new config with the
+deployer's current nonce, re-plan and re-review.
+
+### What to verify on chain (the schema-2 gate checks all of it)
+
+At the `finalized` block of the own node:
+
+- chain ID and genesis hash equal the pinned values; `bloch_finality` is not
+  behind the `finalized` tag;
+- every deployment transaction: status 1, sent by the deployer, in a finalized
+  block that is still canonical;
+- runtime code hash of WBLCH, factory, router, lens, collector, every planned
+  pair and every capped external token equals the plan;
+- `factory.INIT_CODE_PAIR_HASH()` equals the plan (it is
+  `0x2249ef38…b820` at this revision; any pair or compiler change moves it);
+- `factory.feeTo() == 0`, `feeToSetter()` is the reviewed authority,
+  `pendingFeeToSetter() == 0`;
+- `factory.reserveCap(token)` equals the plan for every capped token, and the
+  WBLCH cap is nonzero and within `maxWrappedReserveCap` (≤ 10 BLCH);
+- `router.factory()`, `router.WBLCH()`, `lens.factory()`,
+  `collector.factory()`, `collector.treasury()`, `collector.wblch()` point at
+  the planned contracts and treasury;
+- each planned pair belongs to the factory, has the planned sorted tokens, is
+  registered by `getPair`, and its `reserveCaps()` equal the factory's caps.
+
+The deploy script additionally asserts, before the gate, that every pair is
+empty (`totalSupply == 0`) and `allPairsLength` equals the planned count.
+
+### What the finality gate does not prove
+
+It trusts the RPC it is given: run it against a node you operate, never a
+public endpoint. It does not verify the L2 proof system, the bridge, token
+economics or the frontend; those are separate gates.
