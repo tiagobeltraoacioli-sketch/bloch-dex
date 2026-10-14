@@ -84,11 +84,11 @@ checks and the distinction between native L1 assets and wrapped EVM tokens.
 
 | Contract | Purpose |
 |---|---|
-| `UniswapV2Factory` | Canonical pair registry, CREATE2 deployment and two-step fee-authority transfer |
+| `UniswapV2Factory` | Canonical pair registry and CREATE2 deployment; protocol fee recipient and reserve caps fixed in the constructor, no admin |
 | `UniswapV2Pair` | 0.30% swaps, LP mint/burn, flash swaps and cumulative prices |
 | `UniswapV2ERC20` | LP shares with a dynamic-chain-ID EIP-2612 domain |
 | `BDexRouter` | Atomic swaps, liquidity operations and wrapped-native paths |
-| `TreasuryFeeCollector` | Direct LP redemption to a fixed treasury; optional TWAP-guarded conversion |
+| `TreasuryFeeCollector` | Direct LP redemption to a fixed treasury; optional TWAP-guarded conversion. Not part of the mainnet deployment (the fee goes straight to the Bloch Inc multisig) |
 | `BDexLens` | Paginated pool snapshots, LP position estimates and bounded route comparison |
 
 Router quotes and swaps reject paths that reuse the same canonical pool. A
@@ -147,9 +147,11 @@ router may remain unrecoverable.
 
 ## Compatibility changes in this revision
 
-- `setFeeToSetter(next)` **proposes** a transfer. `next` must call
-  `acceptFeeToSetter`; the current authority may cancel before acceptance.
-  Update administrative integrations that assumed immediate transfer.
+- The factory has no fee authority: `feeTo` is an immutable constructor
+  argument (`address(0)` = protocol fee permanently off) and `setFeeTo`,
+  `feeToSetter`, `setFeeToSetter`, `acceptFeeToSetter`, `pendingFeeToSetter`
+  and `cancelFeeToSetterTransfer` no longer exist. Pairs still read
+  `factory.feeTo()`, so the pair code and init code hash are unchanged.
 - Factories reject non-contract token addresses, and pair initialization is
   explicitly one-time. Create the token contracts before creating their pair.
 - Liquidity additions enforce both user minimums, including the first deposit.

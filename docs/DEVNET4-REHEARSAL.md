@@ -6,7 +6,8 @@ in L2-block units.
 
 ## What ran
 
-`script/Devnet4Rehearsal.s.sol` (commit `a17dea5`, reserve caps), broadcast with Foundry 1.7.1 through
+`script/Devnet4Rehearsal.s.sol` (commit `a17dea5`, reserve caps; removed from the tree on 2026-10-14,
+still in git history, because the factory no longer has a fee authority), broadcast with Foundry 1.7.1 through
 `scripts/devnet4/rpc_compat_proxy.py`. The settled RPC omits `sha3Uncles`/`nonce` from block objects
 and forge refuses blocks without them; the shim fills only those two constant fields.
 
