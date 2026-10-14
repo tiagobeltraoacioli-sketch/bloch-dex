@@ -8,7 +8,8 @@ import {Math} from "../libraries/Math.sol";
 
 /// @title BDexLens
 /// @notice Bounded, read-only pool discovery, LP positions and route comparison.
-/// @dev Quotes use spot reserves in raw token units. They are not an oracle,
+/// @dev Quotes use spot reserves in raw token units and report a hop that
+///      would exceed the pair's reserve cap as unavailable. They are not an oracle,
 ///      a promise of execution, or quotes for taxed/rebasing tokens. The lens
 ///      never requests approval, holds funds, or executes a trade.
 contract BDexLens {
@@ -183,9 +184,14 @@ contract BDexLens {
             address pair = factory.getPair(path[i], path[i + 1]);
             if (pair == address(0)) return q;
             (uint112 r0, uint112 r1,) = IUniswapV2Pair(pair).getReserves();
-            (uint256 rIn, uint256 rOut) =
-                path[i] < path[i + 1] ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
+            bool inputIs0 = path[i] < path[i + 1];
+            (uint256 rIn, uint256 rOut) = inputIs0 ? (uint256(r0), uint256(r1)) : (uint256(r1), uint256(r0));
             if (rIn == 0 || rOut == 0 || q.amounts[i] > type(uint112).max - rIn) return q;
+            // The pair refuses a swap whose input would lift that reserve
+            // above its constructor-fixed cap; never report it as available.
+            (uint112 cap0, uint112 cap1) = IUniswapV2Pair(pair).reserveCaps();
+            uint256 capIn = inputIs0 ? cap0 : cap1;
+            if (capIn != 0 && rIn + q.amounts[i] > capIn) return q;
             uint256 out = BDexLibrary.getAmountOut(q.amounts[i], rIn, rOut);
             if (out == 0) return q;
             uint256 marginal = BDexLibrary.quote(q.amounts[i], rIn, rOut);

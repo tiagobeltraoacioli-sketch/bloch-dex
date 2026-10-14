@@ -5,6 +5,7 @@ import {TestBase, TestToken, TestWrappedNative} from "./TestBase.sol";
 import {UniswapV2Factory} from "../contracts/UniswapV2Factory.sol";
 import {UniswapV2Pair} from "../contracts/UniswapV2Pair.sol";
 import {BDexRouter} from "../contracts/periphery/BDexRouter.sol";
+import {BDexLens} from "../contracts/periphery/BDexLens.sol";
 
 /// Reserve caps are fixed in the factory constructor and copied into each pair:
 /// no setter, no signed approval, no renewal.
@@ -151,5 +152,30 @@ contract ReserveCapTest is TestBase {
         assertEq(factory.reserveCap(address(wrapped)), NATIVE_CAP);
         (uint112 cap0, uint112 cap1) = pair.reserveCaps();
         assertEq(nativeFirst(pair) ? cap0 : cap1, NATIVE_CAP);
+    }
+
+    /// Regression: the lens must not report (or rank first) a route the pair
+    /// will refuse with RESERVE_CAP. Exactly reaching the cap stays available.
+    function testLensQuoteRespectsReserveCaps() public {
+        BDexLens lens = new BDexLens(address(factory));
+        seed(1 ether, 1_000 ether);
+        address[] memory path = new address[](2);
+        (path[0], path[1]) = (address(token), address(wrapped));
+        uint256 room = TOKEN_CAP - 1_000 ether;
+
+        BDexLens.RouteQuote memory over = lens.quoteExactInput(room + 1, path, 50);
+        assertTrue(!over.available);
+        address[][] memory routes = new address[][](1);
+        routes[0] = path;
+        (uint256 best,) = lens.bestExactInput(room + 1, routes, 50);
+        assertEq(best, type(uint256).max);
+        vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+        router.swapExactTokensForTokens(room + 1, 0, path, address(this), block.timestamp);
+
+        BDexLens.RouteQuote memory exact = lens.quoteExactInput(room, path, 50);
+        assertTrue(exact.available);
+        uint256 before = wrapped.balanceOf(address(this));
+        router.swapExactTokensForTokens(room, exact.minimumOut, path, address(this), block.timestamp);
+        assertEq(wrapped.balanceOf(address(this)) - before, exact.amountOut);
     }
 }
