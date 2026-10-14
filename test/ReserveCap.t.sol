@@ -31,7 +31,7 @@ contract ReserveCapTest is TestBase {
         uint256[] memory caps = new uint256[](2);
         (capTokens[0], caps[0]) = (address(wrapped), NATIVE_CAP);
         (capTokens[1], caps[1]) = (address(token), TOKEN_CAP);
-        factory = new UniswapV2Factory(address(this), capTokens, caps);
+        factory = new UniswapV2Factory(address(0), capTokens, caps);
         router = new BDexRouter(address(factory), address(wrapped));
         token.mint(address(this), 1_000_000 ether);
         other.mint(address(this), 1_000_000 ether);
@@ -122,33 +122,34 @@ contract ReserveCapTest is TestBase {
         uint256[] memory none = new uint256[](0);
         one[0] = address(token);
         vm.expectRevert(bytes("BDEX: CAP_LENGTH"));
-        new UniswapV2Factory(address(this), one, none);
+        new UniswapV2Factory(address(0), one, none);
 
         uint256[] memory amount = new uint256[](1);
         vm.expectRevert(bytes("BDEX: CAP_RANGE"));
-        new UniswapV2Factory(address(this), one, amount);
+        new UniswapV2Factory(address(0), one, amount);
         amount[0] = uint256(type(uint112).max) + 1;
         vm.expectRevert(bytes("BDEX: CAP_RANGE"));
-        new UniswapV2Factory(address(this), one, amount);
+        new UniswapV2Factory(address(0), one, amount);
 
         one[0] = address(0);
         amount[0] = 1;
         vm.expectRevert(bytes("BDEX: ZERO_ADDRESS"));
-        new UniswapV2Factory(address(this), one, amount);
+        new UniswapV2Factory(address(0), one, amount);
 
         address[] memory twice = new address[](2);
         uint256[] memory amounts = new uint256[](2);
         (twice[0], twice[1], amounts[0], amounts[1]) = (address(token), address(token), 1, 2);
         vm.expectRevert(bytes("BDEX: CAP_DUPLICATE"));
-        new UniswapV2Factory(address(this), twice, amounts);
+        new UniswapV2Factory(address(0), twice, amounts);
     }
 
-    function testFeeAuthorityCannotChangeCaps() public {
+    function testCapsHaveNoSetter() public {
         UniswapV2Pair pair = seed(1 ether, 1_000 ether);
-        factory.setFeeTo(address(0xFEE));
-        factory.setFeeToSetter(address(0xB0B));
-        vm.prank(address(0xB0B));
-        factory.acceptFeeToSetter();
+        (bool ok,) = address(factory).call(abi.encodeWithSignature("setFeeTo(address)", address(0xFEE)));
+        assertTrue(!ok);
+        (ok,) = address(factory).call(abi.encodeWithSignature("setFeeToSetter(address)", address(0xB0B)));
+        assertTrue(!ok);
+        assertEq(factory.feeTo(), address(0));
         assertEq(factory.reserveCap(address(wrapped)), NATIVE_CAP);
         (uint112 cap0, uint112 cap1) = pair.reserveCaps();
         assertEq(nativeFirst(pair) ? cap0 : cap1, NATIVE_CAP);

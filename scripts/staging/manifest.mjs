@@ -1,12 +1,15 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, readFileSync } from "node:fs";
 import { open, readFile, readdir, lstat } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 const HASH = /^0x[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const ETHEREUM_USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
-const DEX_STAGING_CHAIN_ID = 700771;
+// The read-only staging (devnet4) network, from the single chain-ID source.
+const DEX_STAGING_CHAIN_ID = JSON.parse(
+  readFileSync(new URL("../../deployments/networks.json", import.meta.url), "utf8"),
+).development.find((network) => network.name === "bloch-l2-devnet4").chainId;
 const MAX_PILOT_BLCH_BASE_UNITS = 10n * 10n ** 18n;
 const MAX_PILOT_BUSDC_BASE_UNITS = 10n * 10n ** 6n;
 const CAP_APPROVAL_PATH = /^approvals\/[a-z0-9][a-z0-9._-]{0,95}\.json$/;

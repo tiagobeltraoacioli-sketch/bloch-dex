@@ -18,7 +18,7 @@ contract LensTest is TestBase {
 
     function setUp() public {
         vm.warp(1_000);
-        factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
         lens = new BDexLens(address(factory));
         router = new BDexRouter(address(factory), address(new TestWrappedNative()));
         a = new TestToken();
@@ -160,7 +160,8 @@ contract LensTest is TestBase {
     }
 
     function testPositionIncludesPendingProtocolFeeDilution() public {
-        factory.setFeeTo(address(0xFEE));
+        factory = new UniswapV2Factory(address(0xFEE), new address[](0), new uint256[](0));
+        lens = new BDexLens(address(factory));
         TestToken x = new TestToken();
         TestToken y = new TestToken();
         seed(x, y, 1_000 ether, 1_000 ether);

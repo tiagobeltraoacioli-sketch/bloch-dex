@@ -4,7 +4,11 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import {
   DEPLOY_DOMAIN,
+  DEVELOPMENT_CHAIN_IDS,
   EMPTY_CODE_HASH,
+  MAINNET_CHAIN_ID,
+  NETWORKS,
+  RETIRED_CHAIN_IDS,
   configSha256,
   forgeEnvironment,
   gateConfigFromPlan,
@@ -22,28 +26,29 @@ const addr = (c) => `0x${c.repeat(40)}`;
 const DEPLOYER = addr("d");
 const ASSET = addr("a");
 const ASSET_CODE = hash("c");
+const GNB = addr("b");
+const GNB_CODE = hash("e");
+const BLOCH_INC = addr("5");
+const BLOCH_INC_CODE = hash("7");
 
 function config(change = (c) => c) {
   const base = {
     schemaVersion: 1,
     domain: DEPLOY_DOMAIN,
-    network: { name: "bloch-l2-mainnet", chainId: 7007700, genesisHash: hash("9"), rehearsal: false },
+    network: { name: "bloch-l2-mainnet", chainId: 700770, genesisHash: hash("9"), rehearsal: false },
     source: {
       revision: "a".repeat(40),
       compiler: { solc: "0.8.24", evmVersion: "paris", optimizer: true, optimizerRuns: 200, bytecodeHash: "none" },
     },
     deployer: { address: DEPLOYER, startNonce: 0 },
+    blochInc: { address: BLOCH_INC, codeHash: BLOCH_INC_CODE },
     wrappedNative: { deploy: true },
-    fees: {
-      feeTo: null,
-      feeToSetter: { address: addr("5"), codeHash: hash("7") },
-      treasury: { address: addr("6"), codeHash: EMPTY_CODE_HASH },
-    },
+    fees: { feeTo: "blochInc" },
     reserveCaps: [
       { token: "WBLCH", cap: "1000000000000000000" },
-      { token: ASSET, symbol: "bUSDC", codeHash: ASSET_CODE, cap: "10000000" },
+      { symbol: "bUSDC", token: ASSET, codeHash: ASSET_CODE, bridgeBucketCapacity: "100000000", cap: "10000000" },
     ],
-    initialPairs: [{ tokenA: "WBLCH", tokenB: ASSET }],
+    initialPairs: [{ tokenA: "WBLCH", tokenB: "bUSDC" }],
     gate: { maxWrappedReserveCap: "10000000000000000000" },
   };
   const copy = structuredClone(base);
@@ -61,10 +66,9 @@ function artifacts() {
   });
   return {
     wrappedNative: runtime("01", []),
-    factory: runtime("02", []),
+    factory: runtime("02", [3]),
     router: runtime("03", [11, 7]),
     lens: runtime("04", [5]),
-    collector: runtime("05", [30, 10, 20]),
     pair: runtime("06", []),
   };
 }
@@ -76,20 +80,49 @@ test("accepts a complete mainnet configuration and hashes it canonically", () =>
   assert.equal(configSha256(reordered), configSha256(c));
 });
 
-test("the committed mainnet configuration is refused until its decisions are made", async () => {
+test("the committed mainnet configuration records the decisions and refuses what is pending", async () => {
   const committed = JSON.parse(await readFile(new URL("../../deployments/mainnet/dex-mainnet.config.json", import.meta.url), "utf8"));
-  assert.throws(() => validateDeployConfig(committed), /network.chainId is undecided/);
-  // Filling every pending field with the reviewed shape is all that is missing.
+  assert.equal(committed.network.chainId, MAINNET_CHAIN_ID);
+  assert.equal(committed.fees.feeTo, "blochInc");
+  assert.deepEqual(committed.initialPairs, [{ tokenA: "WBLCH", tokenB: "wGnB" }, { tokenA: "WBLCH", tokenB: "bUSDC" }]);
+  // Guarded-launch caps: WBLCH at the 10 BLCH ceiling, bridged tokens at 1/10 of the bucket.
+  assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "100000000000", "1000000000"]);
+  // Every pending field is refused, one at a time, until filled.
   const decided = structuredClone(committed);
-  decided.network.chainId = 7007700;
-  decided.network.genesisHash = hash("9");
-  decided.source.revision = "b".repeat(40);
-  decided.deployer.address = DEPLOYER;
-  decided.fees.feeToSetter = { address: addr("5"), codeHash: hash("7") };
-  decided.fees.treasury = { address: addr("6"), codeHash: EMPTY_CODE_HASH };
-  assert.throws(() => validateDeployConfig(decided), /reserveCaps\[0\].cap/);
-  decided.reserveCaps[0].cap = "1000000000000000000";
+  const steps = [
+    [/network.genesisHash is undecided/, (c) => { c.network.genesisHash = hash("9"); }],
+    [/source.revision/, (c) => { c.source.revision = "b".repeat(40); }],
+    [/deployer.address is undecided/, (c) => { c.deployer.address = DEPLOYER; }],
+    [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE }; }],
+    [/wGnB\).token is undecided/, (c) => { c.reserveCaps[1].token = GNB; }],
+    [/wGnB\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = GNB_CODE; }],
+    [/wGnB\).bridgeBucketCapacity is undecided/, (c) => { c.reserveCaps[1].bridgeBucketCapacity = "1000000000000"; }],
+    [/bUSDC\).token is undecided/, (c) => { c.reserveCaps[2].token = ASSET; }],
+    [/bUSDC\).codeHash is undecided/, (c) => { c.reserveCaps[2].codeHash = ASSET_CODE; }],
+  ];
+  for (const [pattern, fill] of steps) {
+    assert.throws(() => validateDeployConfig(decided), pattern);
+    fill(decided);
+  }
   validateDeployConfig(decided);
+  // A smaller wGnB bridge bucket than planned forces a smaller DEX cap.
+  decided.reserveCaps[1].bridgeBucketCapacity = "999999999999";
+  assert.throws(() => validateDeployConfig(decided), /exceeds 1\/10 of the bridge bucket/);
+  decided.reserveCaps[1].bridgeBucketCapacity = "1000000000000";
+  const plan = planDeployment(decided, artifacts());
+  assert.equal(plan.pairs.length, 2);
+  assert.equal(plan.feeTo, BLOCH_INC);
+});
+
+test("chain IDs come from deployments/networks.json, mirrored by DeployMainnet.s.sol", async () => {
+  assert.equal(MAINNET_CHAIN_ID, 700770);
+  assert.deepEqual(DEVELOPMENT_CHAIN_IDS, [700771, 31337]);
+  assert.deepEqual(RETIRED_CHAIN_IDS, [8400, 84001]);
+  const source = await readFile(new URL("../../script/DeployMainnet.s.sol", import.meta.url), "utf8");
+  const constant = (name) => Number(source.match(new RegExp(`${name} = ([0-9_]+);`))[1].replaceAll("_", ""));
+  assert.equal(constant("MAINNET_CHAIN_ID"), NETWORKS.mainnet.chainId);
+  assert.deepEqual([constant("DEVNET4_CHAIN_ID"), constant("LOCAL_CHAIN_ID")], DEVELOPMENT_CHAIN_IDS);
+  assert.deepEqual([constant("RETIRED_CHAIN_ID_A"), constant("RETIRED_CHAIN_ID_B")], RETIRED_CHAIN_IDS);
 });
 
 test("development chains need the configuration flag and the operator flag together", () => {
@@ -111,6 +144,14 @@ test("development chains need the configuration flag and the operator flag toget
     c.network = { name: "bloch-l2-mainnet", chainId: 700771, genesisHash: hash("9"), rehearsal: true };
   });
   assert.throws(() => validateDeployConfig(mislabelled, { rehearsal: true }), /must say so/);
+  const unknown = config((c) => {
+    c.network.chainId = 7007700;
+  });
+  assert.throws(() => validateDeployConfig(unknown), /neither the Bloch L2 mainnet/);
+  const rehearsedUnknown = config((c) => {
+    c.network = { name: "local-rehearsal", chainId: 7007700, genesisHash: hash("9"), rehearsal: true };
+  });
+  assert.throws(() => validateDeployConfig(rehearsedUnknown, { rehearsal: true }), /neither the Bloch L2 mainnet/);
 });
 
 test("refuses every unsafe or incomplete configuration", () => {
@@ -119,7 +160,7 @@ test("refuses every unsafe or incomplete configuration", () => {
     [(c) => { c.extra = 1; }, /exactly the fields/],
     [(c) => { c.network.chainId = 8400; }, /retired/],
     [(c) => { c.network.chainId = 84001; }, /retired/],
-    [(c) => { c.network.chainId = "7007700"; }, /chainId/],
+    [(c) => { c.network.chainId = "700770"; }, /chainId/],
     [(c) => { c.network.genesisHash = hash("0"); }, /genesisHash/],
     [(c) => { c.network.genesisHash = hash("A"); }, /genesisHash/],
     [(c) => { c.source.revision = "main"; }, /revision/],
@@ -129,24 +170,35 @@ test("refuses every unsafe or incomplete configuration", () => {
     [(c) => { c.deployer.startNonce = -1; }, /startNonce/],
     [(c) => { c.wrappedNative = { deploy: false }; }, /wrappedNative/],
     [(c) => { c.wrappedNative = { deploy: true, address: addr("1") }; }, /wrappedNative/],
-    [(c) => { c.fees.feeTo = addr("6"); }, /protocol fee is never enabled/],
-    [(c) => { c.fees.treasury.address = c.fees.feeToSetter.address; }, /distinct/],
-    [(c) => { c.fees.feeToSetter.address = DEPLOYER; }, /distinct/],
-    [(c) => { c.fees.treasury.codeHash = null; }, /codeHash/],
+    [(c) => { c.fees.feeTo = null; }, /fees.feeTo must be "blochInc"/],
+    [(c) => { c.fees.feeTo = BLOCH_INC; }, /fees.feeTo must be "blochInc"/],
+    [(c) => { c.fees = { feeTo: "blochInc", feeToSetter: addr("6") }; }, /exactly the fields feeTo/],
+    [(c) => { c.blochInc = null; }, /blochInc is undecided/],
+    [(c) => { c.blochInc.address = DEPLOYER; }, /distinct/],
+    [(c) => { c.blochInc.codeHash = EMPTY_CODE_HASH; }, /multisig contract, not an externally owned account/],
+    [(c) => { c.blochInc.codeHash = null; }, /blochInc.codeHash/],
+    [(c) => { c.blochInc.treasury = addr("6"); }, /exactly the fields/],
     [(c) => { c.reserveCaps = []; }, /reserveCaps/],
     [(c) => { c.reserveCaps.shift(); c.initialPairs = []; }, /must cap "WBLCH"/],
+    [(c) => { c.reserveCaps[0].cap = null; }, /cap is undecided/],
+    [(c) => { c.reserveCaps[1].cap = "10000001"; }, /exceeds 1\/10 of the bridge bucket/],
+    [(c) => { c.reserveCaps[1].bridgeBucketCapacity = "0"; }, /bridgeBucketCapacity/],
+    [(c) => { c.reserveCaps[1].symbol = "WBLCH"; }, /symbol is invalid/],
+    [(c) => { c.reserveCaps.push({ ...c.reserveCaps[1], token: GNB }); }, /symbol is listed twice/],
+    [(c) => { c.reserveCaps.push({ ...c.reserveCaps[1], symbol: "bUSDC2" }); }, /token is listed twice/],
     [(c) => { c.reserveCaps[0].cap = "0"; }, /positive decimal/],
     [(c) => { c.reserveCaps[0].cap = "1e18"; }, /positive decimal/],
     [(c) => { c.reserveCaps[0].cap = "10000000000000000001"; c.gate.maxWrappedReserveCap = "10000000000000000000"; }, /exceeds gate/],
     [(c) => { c.gate.maxWrappedReserveCap = "10000000000000000001"; }, /maxWrappedReserveCap exceeds/],
     [(c) => { c.reserveCaps[1].cap = (1n << 112n).toString(); }, /exceeds/],
-    [(c) => { c.reserveCaps.push({ ...c.reserveCaps[1] }); }, /listed twice/],
     [(c) => { c.reserveCaps[1].codeHash = EMPTY_CODE_HASH; }, /empty-code/],
     [(c) => { c.reserveCaps[1].token = DEPLOYER; }, /aliases a role/],
+    [(c) => { c.reserveCaps[1].token = BLOCH_INC; }, /aliases a role/],
     [(c) => { delete c.reserveCaps[1].codeHash; }, /exactly the fields/],
     [(c) => { c.initialPairs = [{ tokenA: "WBLCH", tokenB: addr("e") }]; }, /capped token/],
+    [(c) => { c.initialPairs = [{ tokenA: "WBLCH", tokenB: ASSET }]; }, /reserveCaps symbol/],
     [(c) => { c.initialPairs = [{ tokenA: "WBLCH", tokenB: "WBLCH" }]; }, /itself/],
-    [(c) => { c.initialPairs.push({ tokenA: ASSET, tokenB: "WBLCH" }); }, /repeats a pair/],
+    [(c) => { c.initialPairs.push({ tokenA: "bUSDC", tokenB: "WBLCH" }); }, /repeats a pair/],
   ]) {
     assert.throws(() => validateDeployConfig(config(change)), pattern, String(change));
   }
@@ -159,7 +211,7 @@ test("an existing wrapper is pinned by address and code hash, never capped by ad
   validateDeployConfig(existing);
   const byAddress = config((c) => {
     c.wrappedNative = { deploy: false, address: addr("1"), codeHash: hash("2") };
-    c.reserveCaps.push({ token: addr("1"), symbol: "WBLCH", codeHash: hash("2"), cap: "1" });
+    c.reserveCaps.push({ symbol: "xWBLCH", token: addr("1"), codeHash: hash("2"), bridgeBucketCapacity: "10", cap: "1" });
   });
   assert.throws(() => validateDeployConfig(byAddress), /use "WBLCH"/);
   const plan = planDeployment(existing, artifacts());
@@ -175,17 +227,30 @@ test("the plan is deterministic and matches CREATE/CREATE2 derivation", () => {
   const at = (nonce) => getContractAddress({ from: DEPLOYER, nonce: BigInt(nonce) }).toLowerCase();
   assert.deepEqual(
     a.steps.map((s) => [s.nonce, s.action]),
-    [[0, "deploy wrappedNative"], [1, "deploy factory"], [2, "deploy router"], [3, "deploy lens"], [4, "deploy collector"], [5, "createPair"]],
+    [[0, "deploy wrappedNative"], [1, "deploy factory"], [2, "deploy router"], [3, "deploy lens"], [4, "createPair"]],
   );
   assert.equal(a.contracts.wrappedNative.address, at(0));
   assert.equal(a.contracts.factory.address, at(1));
-  assert.equal(a.contracts.collector.address, at(4));
-  assert.equal(a.finalNonce, 6);
+  assert.equal(a.contracts.lens.address, at(3));
+  assert.deepEqual(Object.keys(a.contracts), ["wrappedNative", "factory", "router", "lens"]);
+  assert.equal(a.feeTo, BLOCH_INC);
+  assert.deepEqual(a.roles, { blochInc: { address: BLOCH_INC, codeHash: BLOCH_INC_CODE } });
+  assert.equal(a.finalNonce, 5);
   assert.equal(a.pairInitCodeHash, keccak256(artifacts().pair.bytecode));
   assert.equal(a.reserveCaps[0].token, a.contracts.wrappedNative.address);
   const [token0, token1] = [a.contracts.wrappedNative.address, ASSET].sort();
   assert.deepEqual([a.pairs[0].token0, a.pairs[0].token1], [token0, token1]);
   assert.equal(a.externalTokens[0].codeHash, ASSET_CODE);
+  assert.equal(a.externalTokens[0].bridgeBucketCapacity, "100000000");
+  // The fee recipient is a factory constructor argument and an immutable.
+  const factoryArtifact = artifacts().factory;
+  const runtime = factoryArtifact.deployedBytecode.slice(2).split("");
+  runtime.splice(4, 64, ...BLOCH_INC.slice(2).padStart(64, "0"));
+  assert.equal(a.contracts.factory.codeHash, keccak256(`0x${runtime.join("")}`));
+  const otherRecipient = planDeployment(config((c) => { c.blochInc.address = addr("6"); }), artifacts());
+  assert.notEqual(otherRecipient.steps[1].initCodeHash, a.steps[1].initCodeHash);
+  assert.notEqual(otherRecipient.contracts.factory.codeHash, a.contracts.factory.codeHash);
+  assert.equal(otherRecipient.pairInitCodeHash, a.pairInitCodeHash);
 
   const shifted = planDeployment(config((c) => { c.deployer.startNonce = 3; }), artifacts());
   assert.equal(shifted.contracts.factory.address, at(4));
@@ -203,13 +268,16 @@ test("immutables are linked in declaration (AST id) order", () => {
   fill(7, plan.contracts.factory.address);
   fill(11, plan.contracts.wrappedNative.address);
   assert.equal(plan.contracts.router.codeHash, keccak256(`0x${router.join("")}`));
-  assert.throws(() => planDeployment(config(), { ...artifacts(), lens: artifacts().factory }), /immutables/);
+  assert.throws(() => planDeployment(config(), { ...artifacts(), lens: artifacts().router }), /immutables/);
 });
 
 test("forge environment and gate configuration derive only from the plan", () => {
   const plan = planDeployment(config(), artifacts());
   const env = forgeEnvironment(plan);
-  assert.equal(env.DEX_CHAIN_ID, "7007700");
+  assert.equal(env.DEX_CHAIN_ID, "700770");
+  assert.equal(env.DEX_BLOCH_INC, BLOCH_INC);
+  assert.equal(env.DEX_BLOCH_INC_CODEHASH, BLOCH_INC_CODE);
+  assert.ok(!Object.keys(env).some((k) => /COLLECTOR|FEE_TO_SETTER|TREASURY/.test(k)));
   assert.equal(env.DEX_REHEARSAL, "false");
   assert.equal(env.DEX_CAP_TOKENS, `${plan.contracts.wrappedNative.address},${ASSET}`);
   assert.equal(env.DEX_CAP_AMOUNTS, "1000000000000000000,10000000");
@@ -221,6 +289,7 @@ test("forge environment and gate configuration derive only from the plan", () =>
   const gate = gateConfigFromPlan(plan, txs, GATE_DOMAIN);
   validateGateConfig(gate);
   assert.equal(gate.schemaVersion, 2);
+  assert.equal(gate.deployment.feeTo, BLOCH_INC);
   assert.throws(() => gateConfigFromPlan(plan, txs.slice(1), GATE_DOMAIN), /one transaction per plan step/);
   const pairless = planDeployment(config((c) => { c.initialPairs = []; }), artifacts());
   assert.throws(() => gateConfigFromPlan(pairless, txs.slice(1), GATE_DOMAIN), /creates no pair/);
@@ -237,35 +306,38 @@ test("the driver refuses broadcast flags it does not own", () => {
   assert.deepEqual(parsed.forgeArgs, ["--private-key", "0x01"]);
 });
 
+const BUCKET_SELECTOR = "0x" + keccak256(new TextEncoder().encode("bucketCapacity()")).slice(2, 10);
+
 function chain(plan, change = {}) {
   const state = {
     chainId: `0x${plan.chain.id.toString(16)}`,
     genesis: plan.chain.genesisHash,
     nonce: "0x0",
     pending: "0x0",
+    bucket: 100_000_000n,
     code: {
       [ASSET]: "0xaa",
-      [plan.roles.feeToSetter]: "0xbb",
-      [plan.roles.treasury]: "0x",
+      [BLOCH_INC]: "0xbb",
     },
     ...change,
   };
-  const codeHashes = { [ASSET]: keccak256("0xaa"), [plan.roles.feeToSetter]: keccak256("0xbb") };
   return {
-    codeHashes,
     request: async (method, params) => {
       if (method === "eth_chainId") return state.chainId;
       if (method === "eth_getBlockByNumber") return { number: "0x0", hash: state.genesis };
       if (method === "eth_getTransactionCount") return params[1] === "pending" ? state.pending : state.nonce;
       if (method === "eth_getCode") return state.code[params[0]] ?? "0x";
+      if (method === "eth_call" && params[0].to === ASSET && params[0].data === BUCKET_SELECTOR) {
+        return `0x${state.bucket.toString(16).padStart(64, "0")}`;
+      }
       throw new Error(`unexpected ${method}`);
     },
   };
 }
 
-test("preflight pins chain, genesis, nonce, empty targets and reviewed code", async () => {
+test("preflight pins chain, genesis, nonce, empty targets, reviewed code and bridge buckets", async () => {
   const base = config((c) => {
-    c.fees.feeToSetter.codeHash = keccak256("0xbb");
+    c.blochInc.codeHash = keccak256("0xbb");
     c.reserveCaps[1].codeHash = keccak256("0xaa");
   });
   const plan = planDeployment(base, artifacts());
@@ -275,9 +347,11 @@ test("preflight pins chain, genesis, nonce, empty targets and reviewed code", as
     [{ genesis: hash("8") }, /genesis/],
     [{ nonce: "0x1", pending: "0x1" }, /nonce/],
     [{ pending: "0x1" }, /nonce/],
-    [{ code: { [ASSET]: "0xaa", [plan.roles.feeToSetter]: "0xbb", [plan.contracts.router.address]: "0x00" } }, /occupied/],
-    [{ code: { [ASSET]: "0xab", [plan.roles.feeToSetter]: "0xbb" } }, /bUSDC code hash/],
-    [{ code: { [ASSET]: "0xaa", [plan.roles.feeToSetter]: "0xbb", [plan.roles.treasury]: "0x00" } }, /treasury code hash/],
+    [{ code: { [ASSET]: "0xaa", [BLOCH_INC]: "0xbb", [plan.contracts.router.address]: "0x00" } }, /occupied/],
+    [{ code: { [ASSET]: "0xab", [BLOCH_INC]: "0xbb" } }, /bUSDC code hash/],
+    [{ code: { [ASSET]: "0xaa", [BLOCH_INC]: "0xbc" } }, /blochInc code hash differs/],
+    [{ code: { [ASSET]: "0xaa" } }, /blochInc code hash differs/],
+    [{ bucket: 99_999_999n }, /bucket capacity differs/],
   ]) {
     await assert.rejects(preflight(plan, chain(plan, change).request), pattern);
   }

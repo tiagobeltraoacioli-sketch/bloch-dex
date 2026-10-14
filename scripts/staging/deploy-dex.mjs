@@ -16,15 +16,16 @@
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { stableJson } from "./manifest.mjs";
-import { createJsonRpcRequest, GATE_DOMAIN } from "./finality-gate.mjs";
+import { BUCKET_CAPACITY_SELECTOR, createJsonRpcRequest, GATE_DOMAIN } from "./finality-gate.mjs";
 import {
+  BRIDGE_BUCKET_DIVISOR,
   EMPTY_CODE_HASH,
   configSha256,
   forgeEnvironment,
   gateConfigFromPlan,
   loadArtifacts,
   planDeployment,
+  stableJson,
   validateDeployConfig,
 } from "./dex-deploy-config.mjs";
 
@@ -107,11 +108,17 @@ export async function preflight(plan, request) {
     const { address, codeHash } = plan.contracts.wrappedNative;
     refuse(codeHashOf(await request("eth_getCode", [address, "latest"])) === codeHash, "wrapped native code hash differs");
   }
-  for (const { token, symbol, codeHash } of plan.externalTokens) {
+  const caps = new Map(plan.reserveCaps.map(({ token, cap }) => [token, BigInt(cap)]));
+  for (const { token, symbol, codeHash, bridgeBucketCapacity } of plan.externalTokens) {
     refuse(codeHashOf(await request("eth_getCode", [token, "latest"])) === codeHash, `${symbol} code hash differs`);
+    const result = await request("eth_call", [{ to: token, data: BUCKET_CAPACITY_SELECTOR }, "latest"]);
+    refuse(typeof result === "string" && /^0x[0-9a-f]{64}$/.test(result), `${symbol} bucketCapacity() is unavailable`);
+    refuse(BigInt(result) === BigInt(bridgeBucketCapacity), `${symbol} bridge bucket capacity differs from the config`);
+    refuse(caps.get(token) * BRIDGE_BUCKET_DIVISOR <= BigInt(result), `${symbol} cap exceeds 1/${BRIDGE_BUCKET_DIVISOR} of its bridge bucket`);
   }
-  for (const [name, address] of Object.entries(plan.roles)) {
-    refuse(codeHashOf(await request("eth_getCode", [address, "latest"])) === plan.roleCodeHashes[name], `${name} code hash differs`);
+  for (const [name, { address, codeHash }] of Object.entries(plan.roles)) {
+    const observed = codeHashOf(await request("eth_getCode", [address, "latest"]));
+    refuse(observed !== EMPTY_CODE_HASH && observed === codeHash, `${name} code hash differs (it must be the reviewed multisig)`);
   }
   return { nonce: latest.toString() };
 }

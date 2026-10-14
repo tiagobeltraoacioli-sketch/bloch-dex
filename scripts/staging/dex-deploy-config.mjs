@@ -5,10 +5,11 @@
 // configuration and recomputed before any dry run or broadcast; a mismatch is
 // a refusal. Nothing here talks to an RPC, signs or broadcasts.
 
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { sha256, stableJson } from "./manifest.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, getContractAddress, encodeAbiParameters, encodePacked } = requireFromFrontend("viem");
@@ -16,12 +17,24 @@ const { keccak256, getContractAddress, encodeAbiParameters, encodePacked } = req
 export const DEPLOY_DOMAIN = "postern.dex.mainnet-deploy.v1";
 export const PLAN_DOMAIN = "postern.dex.mainnet-plan.v1";
 export const WRAPPED_REF = "WBLCH";
-export const DEVNET4_CHAIN_ID = 700771;
-export const LOCAL_CHAIN_ID = 31337;
-export const DEVELOPMENT_CHAIN_IDS = Object.freeze([DEVNET4_CHAIN_ID, LOCAL_CHAIN_ID]);
-export const RETIRED_CHAIN_IDS = Object.freeze([8400, 84001]);
-/// Same technical ceiling as script/Deploy.s.sol and script/DeployMainnet.s.sol.
+/// The single source of chain IDs (also read by the frontend; a test keeps
+/// script/DeployMainnet.s.sol's constants equal to it).
+export const NETWORKS = Object.freeze(
+  JSON.parse(readFileSync(new URL("../../deployments/networks.json", import.meta.url), "utf8")),
+);
+export const MAINNET_CHAIN_ID = NETWORKS.mainnet.chainId;
+export const DEVELOPMENT_CHAIN_IDS = Object.freeze(NETWORKS.development.map((n) => n.chainId));
+export const RETIRED_CHAIN_IDS = Object.freeze([...NETWORKS.retired]);
+/// Same technical ceiling as script/DeployMainnet.s.sol and the finality gate.
 export const MAX_WRAPPED_CAP = 10n * 10n ** 18n;
+/// A DEX reserve cap on a bridged token is at most this fraction (1/10) of
+/// the bridge's token-bucket capacity: the bridge's large-transfer delay
+/// threshold. A whole pool side can then be withdrawn and bridged out in one
+/// undelayed transfer, and the pool never holds more than a tenth of what the
+/// bridge can mint in a full bucket.
+export const BRIDGE_BUCKET_DIVISOR = 10n;
+/// Bloch Inc (fee recipient and treasury) is a multisig contract.
+export const BLOCH_INC_REF = "blochInc";
 export const UINT112_MAX = (1n << 112n) - 1n;
 export const EMPTY_CODE_HASH = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
 export const MAX_CAP_TOKENS = 8;
@@ -41,6 +54,23 @@ const REVISION = /^[0-9a-f]{40}$/;
 const DECIMAL = /^[1-9][0-9]*$/;
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
+const SYMBOL = /^[A-Za-z0-9.-]{2,12}$/;
+
+/// Canonical JSON: object keys sorted at every level, no whitespace.
+export function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function sha256(data) {
+  return createHash("sha256").update(data).digest("hex");
+}
 
 function refuse(condition, message) {
   if (!condition) throw new Error(`deploy config: ${message}`);
@@ -83,12 +113,13 @@ function role(value, field) {
 
 /// Validate a deployment configuration. `rehearsal` is the operator's
 /// explicit command-line flag; it must agree with the configuration's own
-/// `network.rehearsal`, and a development chain requires both.
+/// `network.rehearsal`. A rehearsal targets a development chain; anything
+/// else targets the Bloch L2 mainnet chain ID from deployments/networks.json.
 export function validateDeployConfig(config, { rehearsal = false } = {}) {
   refuse(typeof rehearsal === "boolean", "rehearsal flag must be a boolean");
   exactKeys(
     config,
-    ["schemaVersion", "domain", "network", "source", "deployer", "wrappedNative", "fees", "reserveCaps", "initialPairs", "gate"],
+    ["schemaVersion", "domain", "network", "source", "deployer", "blochInc", "wrappedNative", "fees", "reserveCaps", "initialPairs", "gate"],
     "configuration",
   );
   refuse(config.schemaVersion === 1 && config.domain === DEPLOY_DOMAIN, "configuration schema is not supported");
@@ -97,15 +128,20 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   const { network } = config;
   refuse(typeof network.name === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(network.name), "network.name is invalid");
   refuse(Number.isSafeInteger(network.chainId) && network.chainId > 0, "network.chainId is undecided or invalid");
+  refuse(!RETIRED_CHAIN_IDS.includes(network.chainId), `chain ${network.chainId} is retired and never a target`);
+  refuse(network.genesisHash !== null, "network.genesisHash is undecided (L2 mainnet genesis, M9)");
   hash(network.genesisHash, "network.genesisHash");
   refuse(typeof network.rehearsal === "boolean", "network.rehearsal must be a boolean");
-  refuse(!RETIRED_CHAIN_IDS.includes(network.chainId), `chain ${network.chainId} is retired and never a target`);
   const development = DEVELOPMENT_CHAIN_IDS.includes(network.chainId);
   refuse(
     !development || (network.rehearsal && rehearsal),
     `chain ${network.chainId} is a development network: set network.rehearsal and pass --rehearsal`,
   );
   refuse(network.rehearsal === rehearsal, "network.rehearsal and the --rehearsal flag disagree");
+  refuse(
+    development || network.chainId === MAINNET_CHAIN_ID,
+    `chain ${network.chainId} is neither the Bloch L2 mainnet (${MAINNET_CHAIN_ID}) nor a development network`,
+  );
   refuse(!network.rehearsal || /rehearsal|devnet|local/.test(network.name), "a rehearsal network.name must say so");
 
   exactKeys(config.source, ["revision", "compiler"], "source");
@@ -116,8 +152,17 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   }
 
   exactKeys(config.deployer, ["address", "startNonce"], "deployer");
+  refuse(config.deployer.address !== null, "deployer.address is undecided (fresh Bloch Inc deployer key)");
   address(config.deployer.address, "deployer.address");
   refuse(Number.isSafeInteger(config.deployer.startNonce) && config.deployer.startNonce >= 0, "deployer.startNonce is invalid");
+
+  refuse(config.blochInc !== null, "blochInc is undecided (Bloch Inc multisig address and runtime code hash)");
+  exactKeys(config.blochInc, ["address", "codeHash"], "blochInc");
+  address(config.blochInc.address, "blochInc.address");
+  hash(config.blochInc.codeHash, "blochInc.codeHash");
+  refuse(config.blochInc.codeHash !== EMPTY_CODE_HASH, "blochInc must be a multisig contract, not an externally owned account");
+  refuse(config.blochInc.address !== config.deployer.address, "the deployer and Bloch Inc must be distinct accounts");
+  const roles = [config.deployer.address, config.blochInc.address];
 
   const wrapped = config.wrappedNative;
   refuse(wrapped && typeof wrapped === "object" && typeof wrapped.deploy === "boolean", "wrappedNative.deploy must be a boolean");
@@ -127,14 +172,14 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
     exactKeys(wrapped, ["deploy", "address", "codeHash"], "wrappedNative");
     address(wrapped.address, "wrappedNative.address");
     hash(wrapped.codeHash, "wrappedNative.codeHash");
+    refuse(!roles.includes(wrapped.address), "wrappedNative.address aliases a role account");
   }
 
-  exactKeys(config.fees, ["feeTo", "feeToSetter", "treasury"], "fees");
-  refuse(config.fees.feeTo === null, "fees.feeTo must be null: the protocol fee is never enabled at deployment");
-  role(config.fees.feeToSetter, "fees.feeToSetter");
-  role(config.fees.treasury, "fees.treasury");
-  const roles = [config.deployer.address, config.fees.feeToSetter.address, config.fees.treasury.address];
-  refuse(new Set(roles).size === roles.length, "deployer, fee authority and treasury must be three distinct accounts");
+  exactKeys(config.fees, ["feeTo"], "fees");
+  refuse(
+    config.fees.feeTo === BLOCH_INC_REF,
+    `fees.feeTo must be "${BLOCH_INC_REF}": the protocol fee is on, fixed to Bloch Inc in the factory constructor`,
+  );
 
   refuse(
     Array.isArray(config.reserveCaps) && config.reserveCaps.length > 0 && config.reserveCaps.length <= MAX_CAP_TOKENS,
@@ -142,25 +187,41 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   );
   exactKeys(config.gate, ["maxWrappedReserveCap"], "gate");
   const gateMax = amount(config.gate.maxWrappedReserveCap, "gate.maxWrappedReserveCap", MAX_WRAPPED_CAP);
-  const capped = new Set();
+  const symbols = new Set();
+  const addresses = new Set();
   let wrappedCap = 0n;
   config.reserveCaps.forEach((entry, index) => {
     const field = `reserveCaps[${index}]`;
     if (entry?.token === WRAPPED_REF) {
       exactKeys(entry, ["token", "cap"], field);
+      refuse(entry.cap !== null, `${field}.cap is undecided`);
       wrappedCap = amount(entry.cap, `${field}.cap`, UINT112_MAX);
-    } else {
-      exactKeys(entry, ["token", "symbol", "codeHash", "cap"], field);
-      address(entry.token, `${field}.token`);
-      refuse(typeof entry.symbol === "string" && /^[A-Za-z0-9.-]{2,12}$/.test(entry.symbol), `${field}.symbol is invalid`);
-      hash(entry.codeHash, `${field}.codeHash`);
-      refuse(entry.codeHash !== EMPTY_CODE_HASH, `${field}.codeHash is the empty-code hash`);
-      amount(entry.cap, `${field}.cap`, UINT112_MAX);
-      refuse(!roles.includes(entry.token), `${field}.token aliases a role account`);
-      refuse(wrapped.deploy || entry.token !== wrapped.address, `${field} caps the wrapper by address; use "${WRAPPED_REF}"`);
+      refuse(!symbols.has(WRAPPED_REF), `${field} caps "${WRAPPED_REF}" twice`);
+      symbols.add(WRAPPED_REF);
+      return;
     }
-    refuse(!capped.has(entry.token), `${field}.token is listed twice`);
-    capped.add(entry.token);
+    exactKeys(entry, ["symbol", "token", "codeHash", "bridgeBucketCapacity", "cap"], field);
+    refuse(typeof entry.symbol === "string" && SYMBOL.test(entry.symbol) && entry.symbol !== WRAPPED_REF, `${field}.symbol is invalid`);
+    const name = `${field} (${entry.symbol})`;
+    refuse(!symbols.has(entry.symbol), `${name} symbol is listed twice`);
+    symbols.add(entry.symbol);
+    refuse(entry.token !== null, `${name}.token is undecided (bridge deployment address)`);
+    address(entry.token, `${name}.token`);
+    refuse(entry.codeHash !== null, `${name}.codeHash is undecided (bridge deployment runtime code hash)`);
+    hash(entry.codeHash, `${name}.codeHash`);
+    refuse(entry.codeHash !== EMPTY_CODE_HASH, `${name}.codeHash is the empty-code hash`);
+    refuse(entry.bridgeBucketCapacity !== null, `${name}.bridgeBucketCapacity is undecided (the bridge token's bucketCapacity())`);
+    const bucket = amount(entry.bridgeBucketCapacity, `${name}.bridgeBucketCapacity`, (1n << 256n) - 1n);
+    refuse(entry.cap !== null, `${name}.cap is undecided`);
+    const cap = amount(entry.cap, `${name}.cap`, UINT112_MAX);
+    refuse(
+      cap * BRIDGE_BUCKET_DIVISOR <= bucket,
+      `${name}.cap exceeds 1/${BRIDGE_BUCKET_DIVISOR} of the bridge bucket capacity`,
+    );
+    refuse(!roles.includes(entry.token), `${name}.token aliases a role account`);
+    refuse(wrapped.deploy || entry.token !== wrapped.address, `${name} caps the wrapper by address; use "${WRAPPED_REF}"`);
+    refuse(!addresses.has(entry.token), `${name}.token is listed twice`);
+    addresses.add(entry.token);
   });
   refuse(wrappedCap > 0n, `reserveCaps must cap "${WRAPPED_REF}"`);
   refuse(wrappedCap <= gateMax, "the WBLCH reserve cap exceeds gate.maxWrappedReserveCap");
@@ -171,7 +232,7 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
     const field = `initialPairs[${index}]`;
     exactKeys(entry, ["tokenA", "tokenB"], field);
     for (const side of ["tokenA", "tokenB"]) {
-      refuse(capped.has(entry[side]), `${field}.${side} must be a capped token ("${WRAPPED_REF}" or a reserveCaps address)`);
+      refuse(symbols.has(entry[side]), `${field}.${side} must name a capped token ("${WRAPPED_REF}" or a reserveCaps symbol)`);
     }
     refuse(entry.tokenA !== entry.tokenB, `${field} pairs a token with itself`);
     const key = [entry.tokenA, entry.tokenB].sort().join("/");
@@ -194,7 +255,6 @@ const ARTIFACTS = Object.freeze({
   factory: ["UniswapV2Factory.sol", "UniswapV2Factory"],
   router: ["BDexRouter.sol", "BDexRouter"],
   lens: ["BDexLens.sol", "BDexLens"],
-  collector: ["TreasuryFeeCollector.sol", "TreasuryFeeCollector"],
   pair: ["UniswapV2Pair.sol", "UniswapV2Pair"],
 });
 
@@ -251,10 +311,11 @@ export function planDeployment(config, artifacts, { rehearsal = false } = {}) {
 
   const deployWrapped = config.wrappedNative.deploy;
   const wrapped = deployWrapped ? create(deployer, nonce) : config.wrappedNative.address;
-  const resolve = (token) => (token === WRAPPED_REF ? wrapped : token);
-  const capTokens = config.reserveCaps.map((entry) => resolve(entry.token));
+  const bySymbol = new Map(config.reserveCaps.map((entry) => [entry.token === WRAPPED_REF ? WRAPPED_REF : entry.symbol, entry]));
+  const resolve = (symbol) => (symbol === WRAPPED_REF ? wrapped : bySymbol.get(symbol).token);
+  const capTokens = config.reserveCaps.map((entry) => (entry.token === WRAPPED_REF ? wrapped : entry.token));
   const caps = config.reserveCaps.map((entry) => BigInt(entry.cap));
-  const { feeToSetter, treasury } = config.fees;
+  const blochInc = config.blochInc;
 
   const deploy = (key, args) => {
     const artifact = artifacts[key];
@@ -273,21 +334,13 @@ export function planDeployment(config, artifacts, { rehearsal = false } = {}) {
   }
   const factory = deploy(
     "factory",
-    encodeAbiParameters([{ type: "address" }, { type: "address[]" }, { type: "uint256[]" }], [feeToSetter.address, capTokens, caps]),
+    encodeAbiParameters([{ type: "address" }, { type: "address[]" }, { type: "uint256[]" }], [blochInc.address, capTokens, caps]),
   );
-  contracts.factory = { address: factory, codeHash: keccak256(linkImmutables(artifacts.factory, [], "factory")) };
+  contracts.factory = { address: factory, codeHash: keccak256(linkImmutables(artifacts.factory, [blochInc.address], "factory")) };
   const router = deploy("router", encodeAbiParameters([{ type: "address" }, { type: "address" }], [factory, wrapped]));
   contracts.router = { address: router, codeHash: keccak256(linkImmutables(artifacts.router, [factory, wrapped], "router")) };
   const lens = deploy("lens", encodeAbiParameters([{ type: "address" }], [factory]));
   contracts.lens = { address: lens, codeHash: keccak256(linkImmutables(artifacts.lens, [factory], "lens")) };
-  const collector = deploy(
-    "collector",
-    encodeAbiParameters([{ type: "address" }, { type: "address" }, { type: "address" }], [factory, treasury.address, wrapped]),
-  );
-  contracts.collector = {
-    address: collector,
-    codeHash: keccak256(linkImmutables(artifacts.collector, [factory, treasury.address, wrapped], "collector")),
-  };
 
   const pairInitCodeHash = keccak256(code(artifacts.pair.bytecode, "pair.bytecode"));
   const pairCodeHash = keccak256(linkImmutables(artifacts.pair, [], "pair"));
@@ -309,8 +362,7 @@ export function planDeployment(config, artifacts, { rehearsal = false } = {}) {
   const addresses = [
     ...Object.values(contracts).map((c) => c.address),
     ...pairs.map((p) => p.address),
-    feeToSetter.address,
-    treasury.address,
+    blochInc.address,
     deployer,
   ];
   refuse(new Set(addresses).size === addresses.length, "planned addresses collide with a role or each other");
@@ -329,12 +381,12 @@ export function planDeployment(config, artifacts, { rehearsal = false } = {}) {
     startNonce: config.deployer.startNonce,
     finalNonce: nonce,
     deployWrapped,
-    roles: { feeToSetter: feeToSetter.address, treasury: treasury.address },
-    roleCodeHashes: { feeToSetter: feeToSetter.codeHash, treasury: treasury.codeHash },
+    feeTo: blochInc.address,
+    roles: { blochInc: { address: blochInc.address, codeHash: blochInc.codeHash } },
     reserveCaps: capTokens.map((token, index) => ({ token, cap: caps[index].toString() })),
     externalTokens: config.reserveCaps
       .filter((entry) => entry.token !== WRAPPED_REF)
-      .map(({ token, symbol, codeHash }) => ({ token, symbol, codeHash })),
+      .map(({ token, symbol, codeHash, bridgeBucketCapacity }) => ({ token, symbol, codeHash, bridgeBucketCapacity })),
     contracts,
     pairInitCodeHash,
     pairCodeHash,
@@ -354,10 +406,8 @@ export function forgeEnvironment(plan) {
     DEX_DEPLOYER: plan.deployer,
     DEX_START_NONCE: String(plan.startNonce),
     DEX_DEPLOY_WRAPPED: String(plan.deployWrapped),
-    DEX_FEE_TO_SETTER: plan.roles.feeToSetter,
-    DEX_FEE_TO_SETTER_CODEHASH: plan.roleCodeHashes.feeToSetter,
-    DEX_TREASURY: plan.roles.treasury,
-    DEX_TREASURY_CODEHASH: plan.roleCodeHashes.treasury,
+    DEX_BLOCH_INC: plan.roles.blochInc.address,
+    DEX_BLOCH_INC_CODEHASH: plan.roles.blochInc.codeHash,
     DEX_CAP_TOKENS: plan.reserveCaps.map((c) => c.token).join(","),
     DEX_CAP_AMOUNTS: plan.reserveCaps.map((c) => c.cap).join(","),
     DEX_PAIR_TOKENS_A: plan.steps.filter((s) => s.action === "createPair").map((s) => s.tokenA).join(","),
@@ -371,8 +421,6 @@ export function forgeEnvironment(plan) {
     DEX_ROUTER_CODEHASH: contracts.router.codeHash,
     DEX_LENS: contracts.lens.address,
     DEX_LENS_CODEHASH: contracts.lens.codeHash,
-    DEX_COLLECTOR: contracts.collector.address,
-    DEX_COLLECTOR_CODEHASH: contracts.collector.codeHash,
     DEX_PAIR_INIT_CODE_HASH: plan.pairInitCodeHash,
     DEX_PAIR_CODEHASH: plan.pairCodeHash,
   };
@@ -392,6 +440,7 @@ export function gateConfigFromPlan(plan, transactions, gateDomain) {
       deployer: plan.deployer,
       contracts: plan.contracts,
       pairInitCodeHash: plan.pairInitCodeHash,
+      feeTo: plan.feeTo,
       roles: plan.roles,
       reserveCaps: plan.reserveCaps,
       tokens: plan.externalTokens,

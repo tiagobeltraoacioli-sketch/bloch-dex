@@ -39,7 +39,7 @@ contract CoreTest is TestBase {
 
     function setUp() public {
         vm.warp(1_000);
-        factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
         a = new TestToken();
         b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
@@ -61,35 +61,37 @@ contract CoreTest is TestBase {
         assertEq(factory.feeTo(), address(0));
     }
 
-    function testFactoryAuthorityRequiresAcceptance() public {
-        address next = address(0xCAFE);
-        factory.setFeeToSetter(next);
-        assertEq(factory.feeToSetter(), address(this));
-        assertEq(factory.pendingFeeToSetter(), next);
-        vm.prank(next);
-        vm.expectRevert(bytes("BDEX: FORBIDDEN"));
-        factory.setFeeTo(next);
-        vm.expectRevert(bytes("BDEX: FORBIDDEN"));
-        factory.acceptFeeToSetter();
-        vm.prank(next);
-        factory.acceptFeeToSetter();
-        assertEq(factory.feeToSetter(), next);
-        assertEq(factory.pendingFeeToSetter(), address(0));
-        vm.expectRevert(bytes("BDEX: FORBIDDEN"));
-        factory.setFeeTo(address(this));
-        vm.prank(next);
-        factory.setFeeTo(next);
-        assertEq(factory.feeTo(), next);
+    /// Pair code (and so every CREATE2 pair address) must not depend on the
+    /// factory's fee recipient: the fixed-recipient factory reads it through
+    /// the same `feeTo()` selector as the canonical storage getter.
+    function testPairInitCodeHashIsPinnedAndIndependentOfFeeRecipient() public {
+        bytes32 pinned = 0x2249ef38f618407ce9328e89491648a4e8ad4b234e70a538ef9d2096b1ceb820;
+        assertEq(factory.INIT_CODE_PAIR_HASH(), pinned);
+        UniswapV2Factory feeOn = new UniswapV2Factory(address(0xFEE), new address[](0), new uint256[](0));
+        assertEq(feeOn.INIT_CODE_PAIR_HASH(), pinned);
+        assertEq(feeOn.feeTo(), address(0xFEE));
     }
 
-    function testAuthorityProposalCanBeCancelledAndZeroIsRefused() public {
-        factory.setFeeToSetter(address(0xCAFE));
-        factory.cancelFeeToSetterTransfer();
-        vm.prank(address(0xCAFE));
-        vm.expectRevert(bytes("BDEX: FORBIDDEN"));
-        factory.acceptFeeToSetter();
-        vm.expectRevert(bytes("BDEX: ZERO_ADDRESS"));
-        factory.setFeeToSetter(address(0));
+    /// The fee recipient is fixed once: no setter or authority surface exists,
+    /// for anyone, including the deployer and the recipient itself.
+    function testFeeRecipientHasNoAdminSurface() public {
+        UniswapV2Factory feeOn = new UniswapV2Factory(address(0xFEE), new address[](0), new uint256[](0));
+        bytes[] memory calls = new bytes[](6);
+        calls[0] = abi.encodeWithSignature("setFeeTo(address)", address(this));
+        calls[1] = abi.encodeWithSignature("setFeeToSetter(address)", address(this));
+        calls[2] = abi.encodeWithSignature("acceptFeeToSetter()");
+        calls[3] = abi.encodeWithSignature("cancelFeeToSetterTransfer()");
+        calls[4] = abi.encodeWithSignature("feeToSetter()");
+        calls[5] = abi.encodeWithSignature("pendingFeeToSetter()");
+        address[2] memory callers = [address(this), address(0xFEE)];
+        for (uint256 i; i < calls.length; ++i) {
+            for (uint256 j; j < callers.length; ++j) {
+                vm.prank(callers[j]);
+                (bool ok,) = address(feeOn).call(calls[i]);
+                assertTrue(!ok);
+            }
+        }
+        assertEq(feeOn.feeTo(), address(0xFEE));
     }
 
     function testFactoryRejectsNonContractAndDuplicateTokens() public {

@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.networks.v1",
+  "mainnet": { "name": "bloch-l2-mainnet", "chainId": 700770 },
+  "development": [
+    { "name": "bloch-l2-devnet4", "chainId": 700771 },
+    { "name": "local-anvil", "chainId": 31337 }
+  ],
+  "retired": [8400, 84001]
+}

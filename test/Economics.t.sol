@@ -15,7 +15,7 @@ contract EconomicsTest is TestBase {
     TestToken internal token1;
 
     function setUp() public {
-        factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
         TestToken a = new TestToken();
         TestToken b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
@@ -78,7 +78,7 @@ contract EconomicsTest is TestBase {
 
     function testFuzzProtocolFeeMatchesCanonicalDilution(uint96 inputSeed) public {
         address feeRecipient = address(0xFEE);
-        factory.setFeeTo(feeRecipient);
+        _useFactory(feeRecipient);
         _seed(1_000 ether, 1_000 ether);
         uint256 baseline = pair.kLast();
         uint256 input = uint256(inputSeed) % 900 ether + 1 ether;
@@ -104,40 +104,37 @@ contract EconomicsTest is TestBase {
         assertEq(pair.kLast(), uint256(reserve0) * reserve1);
     }
 
-    function testFeeOffLiquidityEventResetsBaselineBeforeReenable() public {
-        address feeRecipient = address(0xFEE);
-        factory.setFeeTo(feeRecipient);
+    /// A fee-off factory never tracks kLast and never mints protocol shares.
+    function testFeeOffFactoryNeverMintsProtocolShares() public {
         _seed(1_000 ether, 1_000 ether);
-        assertTrue(pair.kLast() > 0);
-
-        factory.setFeeTo(address(0));
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
+        token0.mint(address(pair), 500 ether);
+        pair.swap(0, BDexLibrary.getAmountOut(500 ether, reserve0, reserve1), address(this), "");
+        uint256 supplyBefore = pair.totalSupply();
+        (reserve0, reserve1,) = pair.getReserves();
         token0.mint(address(pair), 1 ether);
-        token1.mint(address(pair), 1 ether);
-        pair.mint(address(this));
+        token1.mint(address(pair), uint256(reserve1) * 1 ether / reserve0);
+        uint256 liquidity = pair.mint(address(this));
         assertEq(pair.kLast(), 0);
-
-        factory.setFeeTo(feeRecipient);
-        token0.mint(address(pair), 1 ether);
-        token1.mint(address(pair), 1 ether);
-        pair.mint(address(this));
-        assertEq(pair.balanceOf(feeRecipient), 0);
-        assertTrue(pair.kLast() > 0);
+        assertEq(pair.totalSupply(), supplyBefore + liquidity);
     }
 
-    function testFeeToggleWithoutLiquidityEventPreservesBaseline() public {
+    /// With the recipient fixed at construction, the fee accrues across any
+    /// number of swaps and is settled (once) at the next liquidity event.
+    function testFixedRecipientAccruesAcrossSwapsUntilLiquidityEvent() public {
         address feeRecipient = address(0xFEE);
-        factory.setFeeTo(feeRecipient);
+        _useFactory(feeRecipient);
         _seed(1_000 ether, 1_000 ether);
         uint256 baseline = pair.kLast();
-        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
-        uint256 input = 500 ether;
-        token0.mint(address(pair), input);
-        pair.swap(0, BDexLibrary.getAmountOut(input, reserve0, reserve1), address(this), "");
-        factory.setFeeTo(address(0));
+        for (uint256 i; i < 3; ++i) {
+            (uint112 r0, uint112 r1,) = pair.getReserves();
+            token0.mint(address(pair), 100 ether);
+            pair.swap(0, BDexLibrary.getAmountOut(100 ether, r0, r1), address(this), "");
+        }
         assertEq(pair.kLast(), baseline);
-        factory.setFeeTo(feeRecipient);
+        assertEq(pair.balanceOf(feeRecipient), 0);
 
-        (reserve0, reserve1,) = pair.getReserves();
+        (uint112 reserve0, uint112 reserve1,) = pair.getReserves();
         uint256 rootK = Math.sqrt(uint256(reserve0) * reserve1);
         uint256 rootKLast = Math.sqrt(baseline);
         uint256 expectedFee = pair.totalSupply() * (rootK - rootKLast) / (rootK * 5 + rootKLast);
@@ -197,6 +194,15 @@ contract EconomicsTest is TestBase {
 
         assertEq(lp.nonces(owner), 0);
         assertEq(lp.allowance(owner, address(this)), 0);
+    }
+
+    function _useFactory(address feeTo) private {
+        factory = new UniswapV2Factory(feeTo, new address[](0), new uint256[](0));
+        TestToken a = new TestToken();
+        TestToken b = new TestToken();
+        pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
+        token0 = TestToken(pair.token0());
+        token1 = TestToken(pair.token1());
     }
 
     function _seed(uint256 amount0, uint256 amount1) private returns (uint256 liquidity) {

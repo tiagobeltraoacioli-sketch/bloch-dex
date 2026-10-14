@@ -22,17 +22,19 @@ const SELECTORS = Object.freeze({
   token1: "0xd21220a7",
   getPair: "0xe6a43905",
   feeTo: toFunctionSelector("feeTo()"),
-  feeToSetter: toFunctionSelector("feeToSetter()"),
-  pendingFeeToSetter: toFunctionSelector("pendingFeeToSetter()"),
+  bucketCapacity: toFunctionSelector("bucketCapacity()"),
   initCodePairHash: toFunctionSelector("INIT_CODE_PAIR_HASH()"),
   factory: toFunctionSelector("factory()"),
   routerWrapped: toFunctionSelector("WBLCH()"),
-  treasury: toFunctionSelector("treasury()"),
-  collectorWrapped: toFunctionSelector("wblch()"),
 });
+/// Bridged tokens (SignerMintedToken) expose their immutable token-bucket
+/// capacity; a DEX cap is at most 1/BRIDGE_BUCKET_DIVISOR of it.
+export const BUCKET_CAPACITY_SELECTOR = SELECTORS.bucketCapacity;
+const BRIDGE_BUCKET_DIVISOR = 10n;
 const EMPTY_CODE_HASH = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
 const UINT112_MAX = (1n << 112n) - 1n;
-const CONTRACT_KEYS = Object.freeze(["wrappedNative", "factory", "router", "lens", "collector"]);
+const CONTRACT_KEYS = Object.freeze(["wrappedNative", "factory", "router", "lens"]);
+const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 
 function refuse(condition, message) {
   if (!condition) throw new Error(`finality gate: ${message}`);
@@ -188,10 +190,12 @@ export async function evaluateFinalityGate(config, request) {
 // reviewed deployment plan. Everything schema 1 checks, plus: every         //
 // deployment transaction was sent by the pinned deployer; the runtime code  //
 // of every contract, pair and capped token matches the plan at the          //
-// finalized block; the factory's pair init-code hash, fee state (fee off,   //
-// pinned authority, no pending transfer) and every cap equal the plan; the  //
-// router, lens and collector are bound to this factory, wrapper and         //
-// treasury; and every planned pair is registered with the factory's caps.   //
+// finalized block, including the Bloch Inc multisig; the factory's pair     //
+// init-code hash, fixed fee recipient (Bloch Inc) and every cap equal the    //
+// plan; every bridged token's bucket capacity is the reviewed one and at    //
+// least ten times its DEX cap; the router and lens are bound to this        //
+// factory and wrapper; and every planned pair is registered with the        //
+// factory's caps.                                                           //
 // ------------------------------------------------------------------------ //
 
 function codeHashOf(code, field) {
@@ -214,7 +218,7 @@ function validateGateConfigV2(config) {
   const { deployment } = config;
   exactKeys(
     deployment,
-    ["deployer", "contracts", "pairInitCodeHash", "roles", "reserveCaps", "tokens", "pairs", "transactions"],
+    ["deployer", "contracts", "pairInitCodeHash", "feeTo", "roles", "reserveCaps", "tokens", "pairs", "transactions"],
     "deployment",
   );
   lowerAddress(deployment.deployer, "deployment.deployer");
@@ -226,9 +230,13 @@ function validateGateConfigV2(config) {
     refuse(deployment.contracts[key].codeHash !== EMPTY_CODE_HASH, `deployment.contracts.${key} has no code`);
   }
   nonzeroHash(deployment.pairInitCodeHash, "deployment.pairInitCodeHash");
-  exactKeys(deployment.roles, ["feeToSetter", "treasury"], "deployment.roles");
-  lowerAddress(deployment.roles.feeToSetter, "deployment.roles.feeToSetter");
-  lowerAddress(deployment.roles.treasury, "deployment.roles.treasury");
+  exactKeys(deployment.roles, ["blochInc"], "deployment.roles");
+  exactKeys(deployment.roles.blochInc, ["address", "codeHash"], "deployment.roles.blochInc");
+  lowerAddress(deployment.roles.blochInc.address, "deployment.roles.blochInc.address");
+  nonzeroHash(deployment.roles.blochInc.codeHash, "deployment.roles.blochInc.codeHash");
+  refuse(deployment.roles.blochInc.codeHash !== EMPTY_CODE_HASH, "deployment.roles.blochInc must be a multisig contract");
+  lowerAddress(deployment.feeTo, "deployment.feeTo");
+  refuse(deployment.feeTo === deployment.roles.blochInc.address, "deployment.feeTo must be Bloch Inc");
   const wrapped = deployment.contracts.wrappedNative.address;
   refuse(Array.isArray(deployment.reserveCaps) && deployment.reserveCaps.length > 0 && deployment.reserveCaps.length <= 8, "deployment.reserveCaps must list 1 to 8 caps");
   const capped = new Set();
@@ -242,10 +250,16 @@ function validateGateConfigV2(config) {
   refuse(capped.has(wrapped), "deployment.reserveCaps must cap the wrapped native token");
   refuse(Array.isArray(deployment.tokens) && deployment.tokens.length < deployment.reserveCaps.length, "deployment.tokens is invalid");
   deployment.tokens.forEach((entry, index) => {
-    exactKeys(entry, ["token", "symbol", "codeHash"], `deployment.tokens[${index}]`);
+    exactKeys(entry, ["token", "symbol", "codeHash", "bridgeBucketCapacity"], `deployment.tokens[${index}]`);
     refuse(capped.has(entry.token) && entry.token !== wrapped, `deployment.tokens[${index}] is not a capped token`);
     refuse(typeof entry.symbol === "string" && entry.symbol.length > 0, `deployment.tokens[${index}].symbol is invalid`);
     nonzeroHash(entry.codeHash, `deployment.tokens[${index}].codeHash`);
+    refuse(
+      typeof entry.bridgeBucketCapacity === "string" && /^[1-9][0-9]*$/.test(entry.bridgeBucketCapacity),
+      `deployment.tokens[${index}].bridgeBucketCapacity is invalid`,
+    );
+    const cap = BigInt(deployment.reserveCaps.find((c) => c.token === entry.token).cap);
+    refuse(cap * BRIDGE_BUCKET_DIVISOR <= BigInt(entry.bridgeBucketCapacity), `deployment.tokens[${index}] cap exceeds 1/10 of its bridge bucket`);
   });
   refuse(new Set(deployment.tokens.map((t) => t.token)).size === deployment.tokens.length, "deployment.tokens repeats a token");
   refuse(deployment.tokens.length === deployment.reserveCaps.length - 1, "every capped token other than the wrapper must pin its code hash");
@@ -254,6 +268,7 @@ function validateGateConfigV2(config) {
     exactKeys(entry, ["address", "token0", "token1", "codeHash"], `deployment.pairs[${index}]`);
     for (const key of ["address", "token0", "token1"]) lowerAddress(entry[key], `deployment.pairs[${index}].${key}`);
     refuse(entry.token0 < entry.token1, `deployment.pairs[${index}] tokens are not sorted`);
+    refuse(capped.has(entry.token0) && capped.has(entry.token1), `deployment.pairs[${index}] pairs an uncapped token`);
     nonzeroHash(entry.codeHash, `deployment.pairs[${index}].codeHash`);
   });
   refuse(deployment.pairs.some((p) => p.token0 === wrapped || p.token1 === wrapped), "no planned pair holds the wrapped native token");
@@ -317,7 +332,12 @@ async function evaluateFinalityGateV2(config, request) {
   };
   const { contracts, roles } = deployment;
   for (const key of CONTRACT_KEYS) await codeAt(contracts[key].address, contracts[key].codeHash, key);
-  for (const { token, symbol, codeHash } of deployment.tokens) await codeAt(token, codeHash, `token ${symbol}`);
+  await codeAt(roles.blochInc.address, roles.blochInc.codeHash, "Bloch Inc multisig");
+  for (const { token, symbol, codeHash, bridgeBucketCapacity } of deployment.tokens) {
+    await codeAt(token, codeHash, `token ${symbol}`);
+    const bucket = word(await call(token, SELECTORS.bucketCapacity, `${symbol}.bucketCapacity`), 0, `${symbol}.bucketCapacity`);
+    refuse(bucket === BigInt(bridgeBucketCapacity), `${symbol} bridge bucket capacity differs from the plan`);
+  }
 
   const factory = contracts.factory.address;
   const wrapped = contracts.wrappedNative.address;
@@ -326,12 +346,9 @@ async function evaluateFinalityGateV2(config, request) {
       deployment.pairInitCodeHash,
     "the factory's pair init-code hash differs from the plan",
   );
-  refuse((await addressAt(factory, SELECTORS.feeTo, "feeTo")) === `0x${"0".repeat(40)}`, "the protocol fee is enabled");
-  refuse((await addressAt(factory, SELECTORS.feeToSetter, "feeToSetter")) === roles.feeToSetter, "the fee authority differs from the plan");
-  refuse(
-    (await addressAt(factory, SELECTORS.pendingFeeToSetter, "pendingFeeToSetter")) === `0x${"0".repeat(40)}`,
-    "a fee authority transfer is pending",
-  );
+  const feeTo = await addressAt(factory, SELECTORS.feeTo, "feeTo");
+  refuse(feeTo !== ZERO_ADDRESS, "the protocol fee is off");
+  refuse(feeTo === deployment.feeTo, "the protocol fee recipient is not Bloch Inc");
   const capOf = new Map();
   for (const { token, cap } of deployment.reserveCaps) {
     const observed = word(await call(factory, SELECTORS.reserveCap + encodeAddress(token), "reserveCap"), 0, "reserveCap");
@@ -345,10 +362,6 @@ async function evaluateFinalityGateV2(config, request) {
   refuse((await addressAt(router, SELECTORS.factory, "router.factory")) === factory, "the router serves another factory");
   refuse((await addressAt(router, SELECTORS.routerWrapped, "router.WBLCH")) === wrapped, "the router wraps another token");
   refuse((await addressAt(contracts.lens.address, SELECTORS.factory, "lens.factory")) === factory, "the lens reads another factory");
-  const collector = contracts.collector.address;
-  refuse((await addressAt(collector, SELECTORS.factory, "collector.factory")) === factory, "the collector serves another factory");
-  refuse((await addressAt(collector, SELECTORS.treasury, "collector.treasury")) === roles.treasury, "the collector pays another treasury");
-  refuse((await addressAt(collector, SELECTORS.collectorWrapped, "collector.wblch")) === wrapped, "the collector converts to another token");
 
   const pairs = [];
   for (const { address: pair, token0, token1, codeHash } of deployment.pairs) {
@@ -377,6 +390,7 @@ async function evaluateFinalityGateV2(config, request) {
     finalized: Object.freeze({ number: finalized.number.toString(), hash: finalized.hash }),
     trust: typeof finality.trust === "string" ? finality.trust : null,
     wrappedReserveCap: wrappedCap.toString(),
+    feeTo,
     pairs: Object.freeze(pairs),
     transactions: Object.freeze(included),
   });

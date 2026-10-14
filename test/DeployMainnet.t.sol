@@ -6,7 +6,6 @@ import {DeployMainnet} from "../script/DeployMainnet.s.sol";
 import {UniswapV2Factory} from "../contracts/UniswapV2Factory.sol";
 import {BDexRouter} from "../contracts/periphery/BDexRouter.sol";
 import {BDexLens} from "../contracts/periphery/BDexLens.sol";
-import {TreasuryFeeCollector} from "../contracts/TreasuryFeeCollector.sol";
 import {WBLCH} from "../contracts/assets/WBLCH.sol";
 import {BlochAsset} from "../contracts/assets/BlochAsset.sol";
 
@@ -30,10 +29,11 @@ interface DeployTestVm {
 /// the self-checks that make a hand-assembled environment fail closed.
 contract DeployMainnetTest is TestBase {
     DeployTestVm internal constant hevm = DeployTestVm(address(uint160(uint256(keccak256("hevm cheat code")))));
-    uint256 internal constant MAINNET_LIKE_CHAIN = 7_007_700;
+    uint256 internal constant MAINNET_LIKE_CHAIN = 700_770;
     address internal constant DEPLOYER = address(0xD0D0);
-    address internal constant FEE_TO_SETTER = address(0xFEE5);
-    address internal constant TREASURY = address(0x7EA5);
+    /// Stand-in for the Bloch Inc multisig: any contract code, pinned by hash.
+    address internal constant BLOCH_INC = address(0xB10C);
+    bytes internal constant BLOCH_INC_CODE = hex"60006000fd";
     address internal constant ISSUER = address(0x1551);
     bytes32 internal constant EMPTY = keccak256("");
 
@@ -45,19 +45,18 @@ contract DeployMainnetTest is TestBase {
         address factory;
         address router;
         address lens;
-        address collector;
         address pair;
         bytes32 wrappedHash;
         bytes32 factoryHash;
         bytes32 routerHash;
         bytes32 lensHash;
-        bytes32 collectorHash;
         bytes32 pairInitHash;
         bytes32 pairHash;
     }
 
     function setUp() public {
         script = new DeployMainnet();
+        hevm.etch(BLOCH_INC, BLOCH_INC_CODE);
         hevm.prank(ISSUER);
         asset = address(new BlochAsset("Pilot Asset", "PILOT", 6, 1e12, ISSUER));
     }
@@ -76,6 +75,10 @@ contract DeployMainnetTest is TestBase {
         script.checkChain(700771, MAINNET_LIKE_CHAIN, false);
         hevm.expectRevert(bytes("MAINNET: CHAIN_ID"));
         script.checkChain(1, 0, false);
+        hevm.expectRevert(bytes("MAINNET: UNKNOWN_CHAIN"));
+        script.checkChain(7_007_700, 7_007_700, false);
+        hevm.expectRevert(bytes("MAINNET: UNKNOWN_CHAIN"));
+        script.checkChain(1, 1, false);
         hevm.expectRevert(bytes("MAINNET: RETIRED_CHAIN"));
         script.checkChain(8400, 8400, false);
         hevm.expectRevert(bytes("MAINNET: RETIRED_CHAIN"));
@@ -90,23 +93,20 @@ contract DeployMainnetTest is TestBase {
         e.factory = hevm.computeCreateAddress(DEPLOYER, nonce + 1);
         e.router = hevm.computeCreateAddress(DEPLOYER, nonce + 2);
         e.lens = hevm.computeCreateAddress(DEPLOYER, nonce + 3);
-        e.collector = hevm.computeCreateAddress(DEPLOYER, nonce + 4);
         uint256 snapshot = hevm.snapshotState();
         (address[] memory capTokens, uint256[] memory caps) = _caps(e.wrapped);
         hevm.prank(DEPLOYER);
         WBLCH w = new WBLCH();
         hevm.prank(DEPLOYER);
-        UniswapV2Factory f = new UniswapV2Factory(FEE_TO_SETTER, capTokens, caps);
+        UniswapV2Factory f = new UniswapV2Factory(BLOCH_INC, capTokens, caps);
         hevm.prank(DEPLOYER);
         BDexRouter r = new BDexRouter(address(f), address(w));
         hevm.prank(DEPLOYER);
         BDexLens l = new BDexLens(address(f));
-        hevm.prank(DEPLOYER);
-        TreasuryFeeCollector c = new TreasuryFeeCollector(address(f), TREASURY, address(w));
         address p = f.createPair(address(w), asset);
-        require(address(f) == e.factory && address(c) == e.collector, "fixture nonce drift");
+        require(address(f) == e.factory && address(l) == e.lens, "fixture nonce drift");
         (e.wrappedHash, e.factoryHash, e.routerHash) = (address(w).codehash, address(f).codehash, address(r).codehash);
-        (e.lensHash, e.collectorHash, e.pairHash) = (address(l).codehash, address(c).codehash, p.codehash);
+        (e.lensHash, e.pairHash) = (address(l).codehash, p.codehash);
         e.pairInitHash = f.INIT_CODE_PAIR_HASH();
         e.pair = p;
         hevm.revertToState(snapshot);
@@ -128,8 +128,7 @@ contract DeployMainnetTest is TestBase {
         s.deployer = DEPLOYER;
         s.startNonce = hevm.getNonce(DEPLOYER);
         s.deployWrapped = true;
-        (s.feeToSetter, s.feeToSetterCodeHash) = (FEE_TO_SETTER, EMPTY);
-        (s.treasury, s.treasuryCodeHash) = (TREASURY, EMPTY);
+        (s.blochInc, s.blochIncCodeHash) = (BLOCH_INC, keccak256(BLOCH_INC_CODE));
         (s.capTokens, s.caps) = _caps(e.wrapped);
         s.pairTokensA = new address[](1);
         s.pairTokensB = new address[](1);
@@ -139,19 +138,16 @@ contract DeployMainnetTest is TestBase {
         (p.factory, p.factoryCodeHash) = (e.factory, e.factoryHash);
         (p.router, p.routerCodeHash) = (e.router, e.routerHash);
         (p.lens, p.lensCodeHash) = (e.lens, e.lensHash);
-        (p.collector, p.collectorCodeHash) = (e.collector, e.collectorHash);
         (p.pairInitCodeHash, p.pairCodeHash) = (e.pairInitHash, e.pairHash);
     }
 
     function _assertDeployed(Expected memory e) internal view {
         UniswapV2Factory factory = UniswapV2Factory(e.factory);
-        assertEq(factory.feeTo(), address(0));
-        assertEq(factory.feeToSetter(), FEE_TO_SETTER);
+        assertEq(factory.feeTo(), BLOCH_INC);
         assertEq(factory.reserveCap(e.wrapped), 1 ether);
         assertEq(factory.reserveCap(asset), 10e6);
         assertEq(factory.getPair(asset, e.wrapped), e.pair);
         assertEq(BDexRouter(payable(e.router)).WBLCH(), e.wrapped);
-        assertEq(TreasuryFeeCollector(e.collector).treasury(), TREASURY);
     }
 
     function testDeploysExactlyThePlannedAddresses() public {
@@ -173,10 +169,8 @@ contract DeployMainnetTest is TestBase {
         hevm.setEnv("DEX_DEPLOYER", hevm.toString(DEPLOYER));
         hevm.setEnv("DEX_START_NONCE", hevm.toString(uint256(hevm.getNonce(DEPLOYER))));
         hevm.setEnv("DEX_DEPLOY_WRAPPED", "true");
-        hevm.setEnv("DEX_FEE_TO_SETTER", hevm.toString(FEE_TO_SETTER));
-        hevm.setEnv("DEX_FEE_TO_SETTER_CODEHASH", hevm.toString(EMPTY));
-        hevm.setEnv("DEX_TREASURY", hevm.toString(TREASURY));
-        hevm.setEnv("DEX_TREASURY_CODEHASH", hevm.toString(EMPTY));
+        hevm.setEnv("DEX_BLOCH_INC", hevm.toString(BLOCH_INC));
+        hevm.setEnv("DEX_BLOCH_INC_CODEHASH", hevm.toString(keccak256(BLOCH_INC_CODE)));
         hevm.setEnv("DEX_CAP_TOKENS", string.concat(hevm.toString(e.wrapped), ",", hevm.toString(asset)));
         hevm.setEnv("DEX_CAP_AMOUNTS", "1000000000000000000,10000000");
         hevm.setEnv("DEX_PAIR_TOKENS_A", hevm.toString(e.wrapped));
@@ -190,8 +184,6 @@ contract DeployMainnetTest is TestBase {
         hevm.setEnv("DEX_ROUTER_CODEHASH", hevm.toString(e.routerHash));
         hevm.setEnv("DEX_LENS", hevm.toString(e.lens));
         hevm.setEnv("DEX_LENS_CODEHASH", hevm.toString(e.lensHash));
-        hevm.setEnv("DEX_COLLECTOR", hevm.toString(e.collector));
-        hevm.setEnv("DEX_COLLECTOR_CODEHASH", hevm.toString(e.collectorHash));
         hevm.setEnv("DEX_PAIR_INIT_CODE_HASH", hevm.toString(e.pairInitHash));
         hevm.setEnv("DEX_PAIR_CODEHASH", hevm.toString(e.pairHash));
         script.run();
@@ -260,18 +252,37 @@ contract DeployMainnetTest is TestBase {
         script.execute(MAINNET_LIKE_CHAIN, false, s, p);
     }
 
-    function testRefusesAliasedOrMiscodedRoles() public {
+    /// Bloch Inc is the permanent fee recipient: it must be the reviewed
+    /// multisig contract, never an EOA, never the deployer.
+    function testRefusesBlochIncThatIsNotTheReviewedContract() public {
         hevm.chainId(MAINNET_LIKE_CHAIN);
         (DeployMainnet.Settings memory s, DeployMainnet.Planned memory p) = _inputs(_expected());
-        s.treasury = FEE_TO_SETTER;
+        s.blochInc = DEPLOYER;
         hevm.expectRevert(bytes("MAINNET: ROLES"));
         script.execute(MAINNET_LIKE_CHAIN, false, s, p);
-        s.treasury = DEPLOYER;
+        s.blochInc = address(0);
         hevm.expectRevert(bytes("MAINNET: ROLES"));
         script.execute(MAINNET_LIKE_CHAIN, false, s, p);
-        s.treasury = TREASURY;
-        hevm.etch(FEE_TO_SETTER, hex"00");
-        hevm.expectRevert(bytes("MAINNET: FEE_TO_SETTER_CODE"));
+        s.blochInc = address(0xE0A);
+        s.blochIncCodeHash = EMPTY;
+        hevm.expectRevert(bytes("MAINNET: BLOCH_INC_CODE"));
         script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+        s.blochInc = BLOCH_INC;
+        s.blochIncCodeHash = keccak256("another multisig");
+        hevm.expectRevert(bytes("MAINNET: BLOCH_INC_CODE"));
+        script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+    }
+
+    function testFeeRecipientIsBlochIncForever() public {
+        hevm.chainId(MAINNET_LIKE_CHAIN);
+        Expected memory e = _expected();
+        (DeployMainnet.Settings memory s, DeployMainnet.Planned memory p) = _inputs(e);
+        script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+        (bool ok,) = e.factory.call(abi.encodeWithSignature("setFeeTo(address)", DEPLOYER));
+        assertTrue(!ok);
+        hevm.prank(BLOCH_INC);
+        (ok,) = e.factory.call(abi.encodeWithSignature("setFeeTo(address)", address(0)));
+        assertTrue(!ok);
+        assertEq(UniswapV2Factory(e.factory).feeTo(), BLOCH_INC);
     }
 }

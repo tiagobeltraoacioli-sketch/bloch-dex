@@ -5,20 +5,23 @@ import {IUniswapV2Factory} from "./interfaces/IUniswapV2Factory.sol";
 import {UniswapV2Pair} from "./UniswapV2Pair.sol";
 
 /// @title UniswapV2Factory
-/// @notice Permissionless V2 pair deployment with explicit fee governance.
-/// @dev Protocol fees start disabled. When enabled, the canonical lazy fee
-///      mints 1/6 of sqrt(k) growth as LP shares; it does not debit LP deposits.
-///      feeTo is operator-controlled and should point to an operations treasury.
-///      Authority transfer is proposed with setFeeToSetter and completed by
-///      acceptFeeToSetter. Read README.md for compatibility and deployment status.
-///      Per-token reserve caps are fixed once in the constructor and have no
-///      setter: a pilot limit is part of the deployed code, not a signed,
+/// @notice Permissionless V2 pair deployment. Nothing is adjustable after
+///         construction: there is no owner, fee authority or setter.
+/// @dev The protocol fee recipient (`feeTo`) is fixed once in the constructor.
+///      address(0) leaves the protocol fee permanently off; any other address
+///      receives the canonical lazy fee forever: 1/6 of sqrt(k) growth minted
+///      as LP shares on the next liquidity event (it never debits LP
+///      deposits). Pairs read it through `feeTo()`, the same selector as the
+///      canonical storage getter, so the pair code and its init code hash do
+///      not depend on this choice. Changing the recipient requires a new
+///      factory (and therefore new pair addresses).
+///      Per-token reserve caps are fixed once in the constructor the same
+///      way: a pilot limit is part of the deployed code, not a signed,
 ///      renewable approval.
 
 contract UniswapV2Factory is IUniswapV2Factory {
-    address public feeTo;
-    address public feeToSetter;
-    address public pendingFeeToSetter;
+    /// @notice Protocol fee recipient, or address(0) when the fee is off.
+    address public immutable feeTo;
 
     mapping(address => mapping(address => address)) public getPair;
     address[] public allPairs;
@@ -27,10 +30,10 @@ contract UniswapV2Factory is IUniswapV2Factory {
     /// @dev Written only by the constructor; pairs copy it at creation.
     mapping(address => uint256) public reserveCap;
 
-    constructor(address _feeToSetter, address[] memory capTokens, uint256[] memory caps) {
-        require(_feeToSetter != address(0), "BDEX: ZERO_ADDRESS");
+    constructor(address _feeTo, address[] memory capTokens, uint256[] memory caps) {
         require(capTokens.length == caps.length, "BDEX: CAP_LENGTH");
-        feeToSetter = _feeToSetter;
+        feeTo = _feeTo;
+        emit FeeToFixed(_feeTo);
         for (uint256 i; i < capTokens.length; ++i) {
             address token = capTokens[i];
             uint256 cap = caps[i];
@@ -81,35 +84,5 @@ contract UniswapV2Factory is IUniswapV2Factory {
         getPair[token1][token0] = pair; // populate mapping in the reverse direction
         allPairs.push(pair);
         emit PairCreated(token0, token1, pair, allPairs.length);
-    }
-
-    /// @notice Point the protocol cut at a collector (or address(0) = off).
-    /// @dev Operator-keyed today; see the header's honest-label requirement.
-    function setFeeTo(address _feeTo) external {
-        require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
-        emit FeeToUpdated(feeTo, _feeTo);
-        feeTo = _feeTo;
-    }
-
-    /// @notice Propose a new fee authority. The current authority retains
-    ///         control until the nominated address explicitly accepts.
-    function setFeeToSetter(address _feeToSetter) external {
-        require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
-        require(_feeToSetter != address(0), "BDEX: ZERO_ADDRESS");
-        pendingFeeToSetter = _feeToSetter;
-        emit FeeToSetterTransferStarted(feeToSetter, _feeToSetter);
-    }
-
-    function acceptFeeToSetter() external {
-        require(msg.sender == pendingFeeToSetter, "BDEX: FORBIDDEN");
-        emit FeeToSetterTransferred(feeToSetter, msg.sender);
-        feeToSetter = msg.sender;
-        pendingFeeToSetter = address(0);
-    }
-
-    function cancelFeeToSetterTransfer() external {
-        require(msg.sender == feeToSetter, "BDEX: FORBIDDEN");
-        emit FeeToSetterTransferStarted(feeToSetter, address(0));
-        pendingFeeToSetter = address(0);
     }
 }

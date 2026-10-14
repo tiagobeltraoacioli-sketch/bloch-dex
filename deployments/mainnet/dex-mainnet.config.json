@@ -3,7 +3,7 @@
   "domain": "postern.dex.mainnet-deploy.v1",
   "network": {
     "name": "bloch-l2-mainnet",
-    "chainId": null,
+    "chainId": 700770,
     "genesisHash": null,
     "rehearsal": false
   },
@@ -21,21 +21,43 @@
     "address": null,
     "startNonce": 0
   },
+  "blochInc": null,
   "wrappedNative": {
     "deploy": true
   },
   "fees": {
-    "feeTo": null,
-    "feeToSetter": null,
-    "treasury": null
+    "feeTo": "blochInc"
   },
   "reserveCaps": [
     {
       "token": "WBLCH",
-      "cap": null
+      "cap": "10000000000000000000"
+    },
+    {
+      "symbol": "wGnB",
+      "token": null,
+      "codeHash": null,
+      "bridgeBucketCapacity": null,
+      "cap": "100000000000"
+    },
+    {
+      "symbol": "bUSDC",
+      "token": null,
+      "codeHash": null,
+      "bridgeBucketCapacity": "10000000000",
+      "cap": "1000000000"
     }
   ],
-  "initialPairs": [],
+  "initialPairs": [
+    {
+      "tokenA": "WBLCH",
+      "tokenB": "wGnB"
+    },
+    {
+      "tokenA": "WBLCH",
+      "tokenB": "bUSDC"
+    }
+  ],
   "gate": {
     "maxWrappedReserveCap": "10000000000000000000"
   }

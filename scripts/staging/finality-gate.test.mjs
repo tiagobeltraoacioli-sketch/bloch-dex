@@ -133,33 +133,39 @@ const V2 = {
   deployer: addr("d"),
   wrapped: addr("1"),
   asset: addr("2"),
+  gnb: addr("6"),
   factory: addr("f"),
   router: addr("3"),
   lens: addr("4"),
-  collector: addr("5"),
   pair: addr("e"),
-  feeToSetter: addr("6"),
-  treasury: addr("7"),
+  gnbPair: addr("c"),
+  blochInc: addr("7"),
 };
 const CODE = {
   [V2.wrapped]: "0x01",
   [V2.asset]: "0x02",
+  [V2.gnb]: "0x06",
   [V2.factory]: "0x0f",
   [V2.router]: "0x03",
   [V2.lens]: "0x04",
-  [V2.collector]: "0x05",
   [V2.pair]: "0x0e",
+  [V2.gnbPair]: "0x0e",
+  [V2.blochInc]: "0x0b",
 };
 const INIT_HASH = hash("1");
 const sel = (signature) => toFunctionSelector(signature);
 const pad = (a) => a.slice(2).padStart(64, "0");
+const BUSDC_CAP = 1_000_000_000n; // 1,000 bUSDC (6 decimals)
+const BUSDC_BUCKET = 10_000_000_000n; // 10,000 bUSDC
+const GNB_CAP = 100_000_000_000n; // 1,000 wGnB (8 decimals)
+const GNB_BUCKET = 1_000_000_000_000n; // 10,000 wGnB
 
 function configV2(change = () => {}) {
   const contract = (address) => ({ address, codeHash: keccak256(CODE[address]) });
   const c = {
     schemaVersion: 2,
     domain: GATE_DOMAIN,
-    chain: { id: 7007700, genesisHash: hash("9") },
+    chain: { id: 700770, genesisHash: hash("9") },
     deployment: {
       deployer: V2.deployer,
       contracts: {
@@ -167,16 +173,23 @@ function configV2(change = () => {}) {
         factory: contract(V2.factory),
         router: contract(V2.router),
         lens: contract(V2.lens),
-        collector: contract(V2.collector),
       },
       pairInitCodeHash: INIT_HASH,
-      roles: { feeToSetter: V2.feeToSetter, treasury: V2.treasury },
+      feeTo: V2.blochInc,
+      roles: { blochInc: contract(V2.blochInc) },
       reserveCaps: [
         { token: V2.wrapped, cap: CAP.toString() },
-        { token: V2.asset, cap: "10000000" },
+        { token: V2.gnb, cap: GNB_CAP.toString() },
+        { token: V2.asset, cap: BUSDC_CAP.toString() },
       ],
-      tokens: [{ token: V2.asset, symbol: "bUSDC", codeHash: keccak256(CODE[V2.asset]) }],
-      pairs: [{ address: V2.pair, token0: V2.wrapped, token1: V2.asset, codeHash: keccak256(CODE[V2.pair]) }],
+      tokens: [
+        { token: V2.gnb, symbol: "wGnB", codeHash: keccak256(CODE[V2.gnb]), bridgeBucketCapacity: GNB_BUCKET.toString() },
+        { token: V2.asset, symbol: "bUSDC", codeHash: keccak256(CODE[V2.asset]), bridgeBucketCapacity: BUSDC_BUCKET.toString() },
+      ],
+      pairs: [
+        { address: V2.gnbPair, token0: V2.wrapped, token1: V2.gnb, codeHash: keccak256(CODE[V2.gnbPair]) },
+        { address: V2.pair, token0: V2.wrapped, token1: V2.asset, codeHash: keccak256(CODE[V2.pair]) },
+      ],
       transactions: [TX],
     },
     limits: { maxWrappedReserveCap: "10000000000000000000" },
@@ -187,27 +200,23 @@ function configV2(change = () => {}) {
 
 function rpcV2(change = {}) {
   const state = {
-    chainId: hex(7007700),
+    chainId: hex(700770),
     genesis: { number: "0x0", hash: hash("9") },
     finalized: { number: hex(300), hash: hash("b") },
     receipt: { transactionHash: TX, status: "0x1", from: V2.deployer, blockNumber: hex(300), blockHash: hash("b") },
     code: { ...CODE },
     initHash: INIT_HASH,
-    feeTo: addr("0"),
-    feeToSetter: V2.feeToSetter,
-    pending: addr("0"),
-    caps: { [V2.wrapped]: CAP, [V2.asset]: 10_000_000n },
+    feeTo: V2.blochInc,
+    caps: { [V2.wrapped]: CAP, [V2.asset]: BUSDC_CAP, [V2.gnb]: GNB_CAP },
+    buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gnb]: GNB_BUCKET },
     routerFactory: V2.factory,
     routerWrapped: V2.wrapped,
     lensFactory: V2.factory,
-    collectorFactory: V2.factory,
-    treasury: V2.treasury,
-    collectorWrapped: V2.wrapped,
     pairFactory: V2.factory,
     token0: V2.wrapped,
     token1: V2.asset,
     registered: V2.pair,
-    pairCaps: [CAP, 10_000_000n],
+    pairCaps: [CAP, BUSDC_CAP],
     ...change,
   };
   return async (method, params) => {
@@ -231,21 +240,24 @@ function rpcV2(change = {}) {
         const reply = {
           [`${V2.factory}${sel("INIT_CODE_PAIR_HASH()")}`]: `0x${state.initHash.slice(2)}`,
           [`${V2.factory}${sel("feeTo()")}`]: `0x${pad(state.feeTo)}`,
-          [`${V2.factory}${sel("feeToSetter()")}`]: `0x${pad(state.feeToSetter)}`,
-          [`${V2.factory}${sel("pendingFeeToSetter()")}`]: `0x${pad(state.pending)}`,
           [`${V2.factory}0xbb75fd60${pad(V2.wrapped)}`]: `0x${word(state.caps[V2.wrapped])}`,
           [`${V2.factory}0xbb75fd60${pad(V2.asset)}`]: `0x${word(state.caps[V2.asset])}`,
+          [`${V2.factory}0xbb75fd60${pad(V2.gnb)}`]: `0x${word(state.caps[V2.gnb])}`,
           [`${V2.factory}0xe6a43905${pad(V2.wrapped)}${pad(V2.asset)}`]: `0x${pad(state.registered)}`,
+          [`${V2.factory}0xe6a43905${pad(V2.wrapped)}${pad(V2.gnb)}`]: `0x${pad(V2.gnbPair)}`,
+          [`${V2.asset}${sel("bucketCapacity()")}`]: `0x${word(state.buckets[V2.asset])}`,
+          [`${V2.gnb}${sel("bucketCapacity()")}`]: `0x${word(state.buckets[V2.gnb])}`,
           [`${V2.router}${sel("factory()")}`]: `0x${pad(state.routerFactory)}`,
           [`${V2.router}${sel("WBLCH()")}`]: `0x${pad(state.routerWrapped)}`,
           [`${V2.lens}${sel("factory()")}`]: `0x${pad(state.lensFactory)}`,
-          [`${V2.collector}${sel("factory()")}`]: `0x${pad(state.collectorFactory)}`,
-          [`${V2.collector}${sel("treasury()")}`]: `0x${pad(state.treasury)}`,
-          [`${V2.collector}${sel("wblch()")}`]: `0x${pad(state.collectorWrapped)}`,
           [`${V2.pair}${sel("factory()")}`]: `0x${pad(state.pairFactory)}`,
           [`${V2.pair}0x0dfe1681`]: `0x${pad(state.token0)}`,
           [`${V2.pair}0xd21220a7`]: `0x${pad(state.token1)}`,
           [`${V2.pair}0xd3dc9b31`]: `0x${word(state.pairCaps[0])}${word(state.pairCaps[1])}`,
+          [`${V2.gnbPair}${sel("factory()")}`]: `0x${pad(V2.factory)}`,
+          [`${V2.gnbPair}0x0dfe1681`]: `0x${pad(V2.wrapped)}`,
+          [`${V2.gnbPair}0xd21220a7`]: `0x${pad(V2.gnb)}`,
+          [`${V2.gnbPair}0xd3dc9b31`]: `0x${word(CAP)}${word(GNB_CAP)}`,
         }[`${to}${data}`];
         if (reply === undefined) throw new Error(`unexpected call ${to} ${data}`);
         return reply;
@@ -260,11 +272,12 @@ test("schema 2 enables liquidity only for the exact planned deployment", async (
   const report = await evaluateFinalityGate(configV2(), rpcV2());
   assert.equal(report.decision, "liquidity-enabled");
   assert.equal(report.schemaVersion, 2);
-  assert.equal(report.pairs[0].address, V2.pair);
+  assert.deepEqual(report.pairs.map((p) => p.address), [V2.gnbPair, V2.pair]);
   assert.equal(report.wrappedReserveCap, CAP.toString());
+  assert.equal(report.feeTo, V2.blochInc);
 });
 
-test("schema 2 refuses drift in code, fee state, bindings, caps, pairs or sender", async () => {
+test("schema 2 refuses drift in code, fee recipient, bridges, bindings, caps, pairs or sender", async () => {
   for (const [change, pattern] of [
     [{ chainId: hex(700771) }, /chain ID/],
     [{ receipt: { transactionHash: TX, status: "0x1", from: addr("8"), blockNumber: hex(300), blockHash: hash("b") } }, /not sent by the deployer/],
@@ -272,19 +285,20 @@ test("schema 2 refuses drift in code, fee state, bindings, caps, pairs or sender
     [{ receipt: { transactionHash: TX, status: "0x1", from: V2.deployer, blockNumber: hex(301), blockHash: hash("c") } }, /not finalized/],
     [{ code: { ...CODE, [V2.router]: "0x33" } }, /router runtime code/],
     [{ code: { ...CODE, [V2.asset]: "0x22" } }, /token bUSDC runtime code/],
+    [{ code: { ...CODE, [V2.gnb]: "0x" } }, /token wGnB runtime code/],
     [{ code: { ...CODE, [V2.pair]: "0x" } }, /runtime code/],
+    [{ code: { ...CODE, [V2.blochInc]: "0x" } }, /Bloch Inc multisig runtime code/],
+    [{ code: { ...CODE, [V2.blochInc]: "0x0c" } }, /Bloch Inc multisig runtime code/],
     [{ initHash: hash("2") }, /init-code hash/],
-    [{ feeTo: addr("7") }, /protocol fee is enabled/],
-    [{ feeToSetter: addr("8") }, /fee authority differs/],
-    [{ pending: addr("8") }, /transfer is pending/],
-    [{ caps: { [V2.wrapped]: CAP, [V2.asset]: 1n } }, /cap for/],
-    [{ caps: { [V2.wrapped]: CAP + 1n, [V2.asset]: 10_000_000n } }, /cap for/],
+    [{ feeTo: addr("0") }, /protocol fee is off/],
+    [{ feeTo: addr("8") }, /not Bloch Inc/],
+    [{ buckets: { [V2.asset]: BUSDC_BUCKET - 1n, [V2.gnb]: GNB_BUCKET } }, /bUSDC bridge bucket capacity differs/],
+    [{ buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gnb]: GNB_BUCKET * 2n } }, /wGnB bridge bucket capacity differs/],
+    [{ caps: { [V2.wrapped]: CAP, [V2.asset]: 1n, [V2.gnb]: GNB_CAP } }, /cap for/],
+    [{ caps: { [V2.wrapped]: CAP + 1n, [V2.asset]: BUSDC_CAP, [V2.gnb]: GNB_CAP } }, /cap for/],
     [{ routerFactory: addr("8") }, /router serves another factory/],
     [{ routerWrapped: addr("8") }, /router wraps another token/],
     [{ lensFactory: addr("8") }, /lens reads another factory/],
-    [{ collectorFactory: addr("8") }, /collector serves another factory/],
-    [{ treasury: addr("8") }, /another treasury/],
-    [{ collectorWrapped: addr("8") }, /converts to another token/],
     [{ pairFactory: addr("8") }, /another factory/],
     [{ token1: addr("8") }, /token1 differs/],
     [{ registered: addr("8") }, /does not register/],
@@ -302,19 +316,25 @@ test("schema 2 configuration is validated before any RPC request", async () => {
   };
   for (const change of [
     (c) => { c.deployment.contracts.lens.codeHash = keccak256("0x"); },
-    (c) => { delete c.deployment.contracts.collector; },
+    (c) => { c.deployment.contracts.collector = c.deployment.contracts.lens; },
+    (c) => { delete c.deployment.contracts.router; },
+    (c) => { c.deployment.feeTo = addr("8"); },
+    (c) => { c.deployment.roles.blochInc.codeHash = keccak256("0x"); },
+    (c) => { c.deployment.roles = { feeToSetter: addr("8"), treasury: V2.blochInc }; },
+    (c) => { c.deployment.tokens[1].bridgeBucketCapacity = (BUSDC_CAP * 10n - 1n).toString(); },
+    (c) => { delete c.deployment.tokens[0].bridgeBucketCapacity; },
     (c) => { c.deployment.reserveCaps = [{ token: V2.asset, cap: "1" }]; c.deployment.tokens = []; },
     (c) => { c.deployment.reserveCaps[0].cap = (CAP * 11n).toString(); },
     (c) => { c.deployment.tokens = []; },
     (c) => { c.deployment.pairs = []; },
-    (c) => { c.deployment.pairs[0].token0 = V2.asset; c.deployment.pairs[0].token1 = V2.wrapped; },
-    (c) => { c.deployment.pairs = [{ address: V2.pair, token0: V2.asset, token1: addr("9"), codeHash: hash("3") }]; },
+    (c) => { c.deployment.pairs[1].token0 = V2.asset; c.deployment.pairs[1].token1 = V2.wrapped; },
+    (c) => { c.deployment.pairs = [{ address: V2.pair, token0: V2.wrapped, token1: addr("9"), codeHash: hash("3") }]; },
     (c) => { c.deployment.deployer = V2.deployer.toUpperCase(); },
     (c) => { c.deployment.transactions = [TX, TX]; },
     (c) => { c.deployment.signatures = []; },
     (c) => { c.schemaVersion = 3; },
   ]) {
-    await assert.rejects(evaluateFinalityGate(configV2(change), request), /finality gate/);
+    await assert.rejects(evaluateFinalityGate(configV2(change), request), /finality gate/, String(change));
   }
   assert.equal(calls, 0);
 });
