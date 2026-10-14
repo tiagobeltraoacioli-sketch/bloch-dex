@@ -39,7 +39,7 @@ contract CoreTest is TestBase {
 
     function setUp() public {
         vm.warp(1_000);
-        factory = new UniswapV2Factory(address(this));
+        factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
         a = new TestToken();
         b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));

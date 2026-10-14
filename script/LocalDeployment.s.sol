@@ -34,7 +34,8 @@ contract LocalDeployment {
         require(recipient != address(0), "LOCAL: RECIPIENT");
         vm.startBroadcast();
         WBLCH wrapped = new WBLCH();
-        UniswapV2Factory factory = new UniswapV2Factory(recipient);
+        // Local example: uncapped factory (production caps are set by Deploy.s.sol).
+        UniswapV2Factory factory = new UniswapV2Factory(recipient, new address[](0), new uint256[](0));
         BDexRouter router = new BDexRouter(address(factory), address(wrapped));
         BDexLens lens = new BDexLens(address(factory));
         BlochAsset usd = new BlochAsset("Local USD Example", "USD-DEMO", 6, 1_000_000 * 1e6, recipient);

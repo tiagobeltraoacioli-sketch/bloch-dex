@@ -28,6 +28,7 @@ contract DeploymentTest is TestBase {
         DeploymentEnvironmentVm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address private constant AUTHORITY = address(0xA11CE);
     address private constant TREASURY = address(0xBEEF);
+    address private constant USD = address(0x05D);
 
     Deploy private deployment;
     WBLCH private wrapped;
@@ -41,6 +42,8 @@ contract DeploymentTest is TestBase {
         env.setEnv("WBLCH_CODEHASH", env.toString(address(wrapped).codehash));
         env.setEnv("FEE_TO_SETTER", env.toString(AUTHORITY));
         env.setEnv("TREASURY_ADDRESS", env.toString(TREASURY));
+        env.setEnv("RESERVE_CAP_TOKENS", string.concat(env.toString(address(wrapped)), ",", env.toString(USD)));
+        env.setEnv("RESERVE_CAP_AMOUNTS", "10000000000000000000,10000000");
     }
 
     // Environment variables are process-wide in Foundry, so positive and
@@ -79,6 +82,8 @@ contract DeploymentTest is TestBase {
         assertEq(collector.treasury(), TREASURY);
         assertEq(collector.wblch(), address(wrapped));
         assertEq(pairHash, factory.INIT_CODE_PAIR_HASH());
+        assertEq(factory.reserveCap(address(wrapped)), 10 ether);
+        assertEq(factory.reserveCap(USD), 10e6);
         vm.expectRevert(bytes("BDEX: FORBIDDEN"));
         factory.setFeeTo(TREASURY);
 
@@ -98,6 +103,20 @@ contract DeploymentTest is TestBase {
         env.setEnv("FEE_TO_SETTER", env.toString(AUTHORITY));
         env.setEnv("TREASURY_ADDRESS", env.toString(address(0)));
         vm.expectRevert(bytes("DEPLOY: CUSTODY"));
+        deployment.run();
+        env.setEnv("TREASURY_ADDRESS", env.toString(TREASURY));
+
+        // Caps are mandatory, must bind the wrapper and stay within the pilot ceiling.
+        env.setEnv("RESERVE_CAP_AMOUNTS", "10000000000000000000");
+        vm.expectRevert(bytes("DEPLOY: CAPS"));
+        deployment.run();
+        env.setEnv("RESERVE_CAP_TOKENS", env.toString(USD));
+        env.setEnv("RESERVE_CAP_AMOUNTS", "10000000");
+        vm.expectRevert(bytes("DEPLOY: WRAPPED_CAP"));
+        deployment.run();
+        env.setEnv("RESERVE_CAP_TOKENS", env.toString(address(wrapped)));
+        env.setEnv("RESERVE_CAP_AMOUNTS", "10000000000000000001");
+        vm.expectRevert(bytes("DEPLOY: WRAPPED_CAP"));
         deployment.run();
     }
 }

@@ -69,6 +69,12 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     // The constructor runs during factory deployment and initializes this latch.
     uint256 private unlocked = 1;
 
+    // --- reserve caps, copied from the factory at initialize -------------
+    // 0 = uncapped. A cap binds only reserve increases, so burn, a downward
+    // sync and skim always work and a donation cannot lock LPs in.
+    uint112 private reserveCap0;
+    uint112 private reserveCap1;
+
     modifier lock() {
         require(unlocked == 1, "BDEX: LOCKED");
         unlocked = 0;
@@ -103,6 +109,16 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         require(_token0 != address(0) && _token0 < _token1, "BDEX: INVALID_TOKENS");
         token0 = _token0;
         token1 = _token1;
+        // Factory caps are bounded to uint112 by its constructor.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        reserveCap0 = uint112(IUniswapV2Factory(factory).reserveCap(_token0));
+        // forge-lint: disable-next-line(unsafe-typecast)
+        reserveCap1 = uint112(IUniswapV2Factory(factory).reserveCap(_token1));
+    }
+
+    /// @notice Reserve ceilings fixed when the pair was created (0 = uncapped).
+    function reserveCaps() external view returns (uint112, uint112) {
+        return (reserveCap0, reserveCap1);
     }
 
     function getReserves() public view returns (uint112 _reserve0, uint112 _reserve1, uint32 _blockTimestampLast) {
@@ -139,6 +155,12 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///      Timestamp rollover is exercised in test/Treasury.t.sol.
     function _update(uint256 balance0, uint256 balance1, uint112 _reserve0, uint112 _reserve1) private {
         require(balance0 <= type(uint112).max && balance1 <= type(uint112).max, "BDEX: OVERFLOW");
+        (uint112 cap0, uint112 cap1) = (reserveCap0, reserveCap1);
+        require(
+            (cap0 == 0 || balance0 <= cap0 || balance0 <= _reserve0)
+                && (cap1 == 0 || balance1 <= cap1 || balance1 <= _reserve1),
+            "BDEX: RESERVE_CAP"
+        );
         unchecked {
             uint32 blockTimestamp = uint32(block.timestamp % 2 ** 32);
             uint32 timeElapsed = blockTimestamp - blockTimestampLast; // wraps by design (2)

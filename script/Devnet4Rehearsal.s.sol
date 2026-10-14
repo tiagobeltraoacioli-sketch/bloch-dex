@@ -18,7 +18,8 @@ interface RehearsalVm {
 
 /// @notice Bloch L2 devnet4 (chain 700771) end-to-end DEX rehearsal: deploy the
 ///         wrapper, a test asset and the V2 core/periphery, seed one WBLCH/asset
-///         pool and swap both ways. Zero-value development network only.
+///         pool under a constructor-fixed WBLCH reserve cap and swap both ways.
+///         Zero-value development network only.
 /// @dev The L2 block timestamp advances by one per block (about one block per
 ///      proof), so deadlines are expressed in L2 timestamp units.
 contract Devnet4Rehearsal {
@@ -47,6 +48,7 @@ contract Devnet4Rehearsal {
         uint256 seedAsset;
         uint256 swapBlch;
         uint256 deadline;
+        uint256 wrappedCap;
     }
 
     function run() external returns (Result memory r) {
@@ -56,7 +58,8 @@ contract Devnet4Rehearsal {
             vm.envUint("SEED_BLCH_WEI"),
             vm.envUint("SEED_ASSET_UNITS"),
             vm.envUint("SWAP_BLCH_WEI"),
-            block.timestamp + vm.envUint("DEADLINE_L2_BLOCKS")
+            block.timestamp + vm.envUint("DEADLINE_L2_BLOCKS"),
+            vm.envUint("WBLCH_RESERVE_CAP_WEI")
         );
         vm.startBroadcast();
         _deploy(c, r);
@@ -68,6 +71,7 @@ contract Devnet4Rehearsal {
         r.pair = factory.getPair(r.wrapped, r.asset);
         r.pairInitCodeHash = factory.INIT_CODE_PAIR_HASH();
         require(r.pair != address(0) && factory.feeTo() == address(0), "REHEARSAL: FACTORY");
+        require(factory.reserveCap(r.wrapped) == c.wrappedCap, "REHEARSAL: CAP");
         (uint112 reserve0, uint112 reserve1,) = IUniswapV2Pair(r.pair).getReserves();
         require(reserve0 > 0 && reserve1 > 0, "REHEARSAL: RESERVES");
         emit Rehearsal(r);
@@ -76,7 +80,10 @@ contract Devnet4Rehearsal {
     function _deploy(Config memory c, Result memory r) private {
         r.wrapped = address(new WBLCH());
         r.asset = address(new BlochAsset("Devnet4 Test Asset", "D4TEST", 18, c.seedAsset * 10, c.operator));
-        r.factory = address(new UniswapV2Factory(c.operator));
+        address[] memory capTokens = new address[](1);
+        uint256[] memory caps = new uint256[](1);
+        (capTokens[0], caps[0]) = (r.wrapped, c.wrappedCap);
+        r.factory = address(new UniswapV2Factory(c.operator, capTokens, caps));
         r.router = address(new BDexRouter(r.factory, r.wrapped));
         r.lens = address(new BDexLens(r.factory));
         r.collector = address(new TreasuryFeeCollector(r.factory, c.operator, r.wrapped));

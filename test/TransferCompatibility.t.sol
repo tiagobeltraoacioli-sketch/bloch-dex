@@ -71,7 +71,7 @@ contract TransferCompatibilityTest is TestBase {
     TestToken internal ordinary;
 
     function setUp() public {
-        factory = new UniswapV2Factory(address(this));
+        factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
         router = new BDexRouter(address(factory), address(new TestWrappedNative()));
         odd = new AnomalousReturnToken();
         ordinary = new TestToken();

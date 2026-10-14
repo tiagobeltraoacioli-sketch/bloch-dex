@@ -139,7 +139,7 @@ contract WrappedNativeTest is TestBase {
     }
 
     function testNativeRouterLiquiditySwapAndRemoval() public {
-        UniswapV2Factory factory = new UniswapV2Factory(address(this));
+        UniswapV2Factory factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
         BDexRouter router = new BDexRouter(address(factory), address(wrapped));
         BDexLens lens = new BDexLens(address(factory));
         BlochAsset token = new BlochAsset("Asset", "A", 6, 1_000_000 * 1e6, address(this));
@@ -170,7 +170,7 @@ contract WrappedNativeTest is TestBase {
     }
 
     function testNativeRouterRejectsWrappedRecipientWithoutResidue() public {
-        UniswapV2Factory factory = new UniswapV2Factory(address(this));
+        UniswapV2Factory factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
         BDexRouter router = new BDexRouter(address(factory), address(wrapped));
         BlochAsset token = new BlochAsset("Asset", "A", 6, 1_000_000 * 1e6, address(this));
         token.approve(address(router), type(uint256).max);

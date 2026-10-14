@@ -20,7 +20,7 @@ contract InitialLiquidityPreflightTest is TestBase {
     InitialLiquidityPreflight.Config config;
 
     function setUp() public {
-        factory = new UniswapV2Factory(address(this));
+        factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
         wrapped = new TestWrappedNative();
         router = new BDexRouter(address(factory), address(wrapped));
         lens = new BDexLens(address(factory));
@@ -58,7 +58,7 @@ contract InitialLiquidityPreflightTest is TestBase {
     }
 
     function testRejectsRouterAndLensFromAnotherDeployment() public {
-        UniswapV2Factory other = new UniswapV2Factory(address(this));
+        UniswapV2Factory other = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
         BDexRouter otherRouter = new BDexRouter(address(other), address(wrapped));
         config.router = address(otherRouter);
         config.routerCodeHash = address(otherRouter).codehash;

@@ -16,6 +16,7 @@ interface IUniswapV2Factory {
     event FeeToUpdated(address indexed previousFeeTo, address indexed newFeeTo);
     event FeeToSetterTransferStarted(address indexed currentSetter, address indexed pendingSetter);
     event FeeToSetterTransferred(address indexed previousSetter, address indexed newSetter);
+    event ReserveCapSet(address indexed token, uint256 cap);
 
     function feeTo() external view returns (address);
     function feeToSetter() external view returns (address);
@@ -24,6 +25,7 @@ interface IUniswapV2Factory {
     function getPair(address tokenA, address tokenB) external view returns (address pair);
     function allPairs(uint256) external view returns (address pair);
     function allPairsLength() external view returns (uint256);
+    function reserveCap(address token) external view returns (uint256);
 
     function INIT_CODE_PAIR_HASH() external pure returns (bytes32);
 

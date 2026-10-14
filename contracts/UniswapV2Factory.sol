@@ -11,6 +11,9 @@ import {UniswapV2Pair} from "./UniswapV2Pair.sol";
 ///      feeTo is operator-controlled and should point to an operations treasury.
 ///      Authority transfer is proposed with setFeeToSetter and completed by
 ///      acceptFeeToSetter. Read README.md for compatibility and deployment status.
+///      Per-token reserve caps are fixed once in the constructor and have no
+///      setter: a pilot limit is part of the deployed code, not a signed,
+///      renewable approval.
 
 contract UniswapV2Factory is IUniswapV2Factory {
     address public feeTo;
@@ -20,9 +23,23 @@ contract UniswapV2Factory is IUniswapV2Factory {
     mapping(address => mapping(address => address)) public getPair;
     address[] public allPairs;
 
-    constructor(address _feeToSetter) {
+    /// @notice Highest reserve a pair may grow to in `token` (0 = uncapped).
+    /// @dev Written only by the constructor; pairs copy it at creation.
+    mapping(address => uint256) public reserveCap;
+
+    constructor(address _feeToSetter, address[] memory capTokens, uint256[] memory caps) {
         require(_feeToSetter != address(0), "BDEX: ZERO_ADDRESS");
+        require(capTokens.length == caps.length, "BDEX: CAP_LENGTH");
         feeToSetter = _feeToSetter;
+        for (uint256 i; i < capTokens.length; ++i) {
+            address token = capTokens[i];
+            uint256 cap = caps[i];
+            require(token != address(0), "BDEX: ZERO_ADDRESS");
+            require(cap != 0 && cap <= type(uint112).max, "BDEX: CAP_RANGE");
+            require(reserveCap[token] == 0, "BDEX: CAP_DUPLICATE");
+            reserveCap[token] = cap;
+            emit ReserveCapSet(token, cap);
+        }
     }
 
     function allPairsLength() external view returns (uint256) {

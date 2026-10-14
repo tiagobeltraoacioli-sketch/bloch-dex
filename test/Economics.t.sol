@@ -15,7 +15,7 @@ contract EconomicsTest is TestBase {
     TestToken internal token1;
 
     function setUp() public {
-        factory = new UniswapV2Factory(address(this));
+        factory = new UniswapV2Factory(address(this), new address[](0), new uint256[](0));
         TestToken a = new TestToken();
         TestToken b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
