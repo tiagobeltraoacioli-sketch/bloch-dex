@@ -36,6 +36,19 @@ contract BDexRouter is IBDexRouter {
         _;
     }
 
+    /// @dev Context binding ("Proof of Context and Time"): the `...Anchored`
+    ///      swaps also name a recent block the user saw (number and hash), and
+    ///      execute only on a chain that contains it, within the 256-block
+    ///      blockhash window — so an order cannot be replayed onto a fork the
+    ///      user never saw. `deadline` already bounds it in time.
+    modifier anchored(uint256 anchorNumber, bytes32 anchorHash) {
+        require(
+            anchorNumber < block.number && anchorHash != bytes32(0) && blockhash(anchorNumber) == anchorHash,
+            "BDEX: ANCHOR"
+        );
+        _;
+    }
+
     constructor(address _factory, address _WBLCH) {
         require(_factory.code.length > 0 && _WBLCH.code.length > 0, "BDEX: NOT_A_CONTRACT");
         factory = _factory;
@@ -355,7 +368,7 @@ contract BDexRouter is IBDexRouter {
         address[] calldata path,
         address to,
         uint256 deadline
-    ) external ensure(deadline) returns (uint256[] memory amounts) {
+    ) public ensure(deadline) returns (uint256[] memory amounts) {
         _ensureTokenRecipient(to);
         amounts = BDexLibrary.getAmountsOut(factory, amountIn, path);
         // Enforce the user's signed execution bound at inclusion time.
@@ -379,7 +392,7 @@ contract BDexRouter is IBDexRouter {
     }
 
     function swapExactBLCHForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline)
-        external
+        public
         payable
         ensure(deadline)
         returns (uint256[] memory amounts)
@@ -420,7 +433,7 @@ contract BDexRouter is IBDexRouter {
         address[] calldata path,
         address to,
         uint256 deadline
-    ) external ensure(deadline) returns (uint256[] memory amounts) {
+    ) public ensure(deadline) returns (uint256[] memory amounts) {
         require(path.length >= 2, "BDEX: INVALID_PATH");
         require(path[path.length - 1] == WBLCH, "BDEX: INVALID_PATH");
         _ensureNativeRecipient(to);
@@ -430,6 +443,41 @@ contract BDexRouter is IBDexRouter {
         _swap(amounts, path, address(this));
         IWBLCH(WBLCH).withdraw(amounts[amounts.length - 1]);
         _safeTransferNative(to, amounts[amounts.length - 1]);
+    }
+
+    function swapExactTokensForTokensAnchored(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline,
+        uint256 anchorNumber,
+        bytes32 anchorHash
+    ) external anchored(anchorNumber, anchorHash) returns (uint256[] memory) {
+        return swapExactTokensForTokens(amountIn, amountOutMin, path, to, deadline);
+    }
+
+    function swapExactBLCHForTokensAnchored(
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline,
+        uint256 anchorNumber,
+        bytes32 anchorHash
+    ) external payable anchored(anchorNumber, anchorHash) returns (uint256[] memory) {
+        return swapExactBLCHForTokens(amountOutMin, path, to, deadline);
+    }
+
+    function swapExactTokensForBLCHAnchored(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to,
+        uint256 deadline,
+        uint256 anchorNumber,
+        bytes32 anchorHash
+    ) external anchored(anchorNumber, anchorHash) returns (uint256[] memory) {
+        return swapExactTokensForBLCH(amountIn, amountOutMin, path, to, deadline);
     }
 
     /// @notice Exact-OUT native-in swap: wraps only what the math requires and
