@@ -1,5 +1,17 @@
 # BLCH/bUSDC pilot-pool readiness
 
+> **Superseded for caps and finality (2026-10-14).** Pilot limits are now
+> reserve caps fixed once in the `UniswapV2Factory` constructor (no setter;
+> `Deploy.s.sol` requires a capped wrapper at no more than 10 BLCH), and the
+> launch decision comes from `scripts/staging/check-finality-gate.mjs`, which
+> pins only the chain ID and genesis hash and reads everything else at the
+> RPC's `finalized` block (Bloch L2: native FFG replay from the pinned
+> genesis). Nothing is signed or renewed. The signed cap approval
+> (`pilot-cap-approval.mjs`), its monotonic checkpoint journal and the
+> 32-block authority approvals below are retained as legacy evidence tooling
+> and are not part of the Ethereum-model path. See
+> [the devnet4 rehearsal](DEVNET4-REHEARSAL.md).
+
 `scripts/staging/check-pilot-readiness.mjs` is the final read-only composition
 gate before a separately operated initial-liquidity ceremony. It never connects
 to RPC, signs, broadcasts, creates a pool, enables the frontend, adds liquidity
