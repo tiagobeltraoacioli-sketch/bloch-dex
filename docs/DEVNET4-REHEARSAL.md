@@ -33,24 +33,24 @@ and forge refuses blocks without them; the shim fills only those two constant fi
 | Pair D4TEST/WBLCH | `0xaDcb2498945F59559F640D6bbB992485A7C19e63` |
 | Pair init code hash | `0x2249ef38f618407ce9328e89491648a4e8ad4b234e70a538ef9d2096b1ceb820` |
 
-## Transactions (as signed; receipts recorded by forge at broadcast)
+## Transactions (hash ↔ nonce from the RPC's submit log and the stored bytes)
 
 | Nonce | Action | Tx hash | Block | Status | Gas |
 |---|---|---|---|---|---|
-| 0 | deploy WBLCH | `0xdbe6340507aa4a064d962d83c5d4b45e66229a70fd4bc6c126cf05db879d81f6` | 214 | 1 | 612,333 |
-| 1 | deploy D4TEST | `0x0b3807467f5e775f1df3e7831647595bd505a4f7cc8a944f31bfc442088b1a4b` | 214 | 1 | 555,980 |
-| 2 | deploy factory (cap) | `0xed940559fd254cc9611ad00eb8b1d5d93ab1e3e1390ad1a3c1865d0e50b72712` | 214 | 1 | 2,623,076 |
-| 3 | deploy router | `0x0e1d49a43bdefabfc8538ba987c94a7a6b63e40c90ca1b101b69921a3a6c962a` | 214 | 1 | 3,923,130 |
-| 4 | deploy lens | `0x1b10258092b02e039d918bdedd4c04b4639937c78ebed9e2f6d7de2253710199` | 214 | 1 | 1,880,324 |
-| 5 | deploy collector | `0x9bf742d578b779063efcbd13cc987d797ac5746a7843519e8249ef179ef1445e` | 214 | 1 | 1,515,425 |
-| 6 | approve router | `0x7bb8604a2242e6716a5cb8329b10d3b4eb4a71793e99740e45e0fde86f7977d6` | 214 | 1 | 46,487 |
-| 7 | addLiquidityBLCH (creates pair) | `0x3728140555124f018ecb07b80e0dd84c6d62136dde849fccbc76df51ab647b5c` | 215 | 1 | 2,368,649 |
-| 8 | swap 0.1 BLCH → D4TEST | `0x5b035964890cd85cb86cbe8b8076d1ce1de0c4701e5680f8fa95d1fbb44a79e0` | 215 | 1 | 111,277 |
-| 9 | swap 45,330.5 D4TEST → BLCH | `0xa70abcde7d7c5897af399b5f37b0804ed61973f38a8fe946eec42fb75ddda9d1` | 215 | 1 | 134,299 |
+| 0 | deploy WBLCH | `0x0b3807467f5e775f1df3e7831647595bd505a4f7cc8a944f31bfc442088b1a4b` | 214 | 1 | 612,333 |
+| 1 | deploy D4TEST | `0x0e1d49a43bdefabfc8538ba987c94a7a6b63e40c90ca1b101b69921a3a6c962a` | 214 | 1 | 555,980 |
+| 2 | deploy factory (cap) | `0xa70abcde7d7c5897af399b5f37b0804ed61973f38a8fe946eec42fb75ddda9d1` | 214 | 1 | 2,623,076 |
+| 3 | deploy router | `0x5b035964890cd85cb86cbe8b8076d1ce1de0c4701e5680f8fa95d1fbb44a79e0` | 214 | 1 | 3,923,130 |
+| 4 | deploy lens | `0x7bb8604a2242e6716a5cb8329b10d3b4eb4a71793e99740e45e0fde86f7977d6` | 214 | 1 | 1,880,324 |
+| 5 | deploy collector | `0xed940559fd254cc9611ad00eb8b1d5d93ab1e3e1390ad1a3c1865d0e50b72712` | 214 | 1 | 1,515,425 |
+| 6 | approve router | `0x3728140555124f018ecb07b80e0dd84c6d62136dde849fccbc76df51ab647b5c` | 214 | 1 | 46,487 |
+| 7 | addLiquidityBLCH (creates pair) | `0x1b10258092b02e039d918bdedd4c04b4639937c78ebed9e2f6d7de2253710199` | 215 | 1 | 2,368,649 |
+| 8 | swap 0.1 BLCH → D4TEST | `0xdbe6340507aa4a064d962d83c5d4b45e66229a70fd4bc6c126cf05db879d81f6` | 215 | 1 | 111,277 |
+| 9 | swap 45,330.5 D4TEST → BLCH | `0x9bf742d578b779063efcbd13cc987d797ac5746a7843519e8249ef179ef1445e` | 215 | 1 | 134,299 |
 | 10 | swap 0.1 BLCH (reserve 1.048 → 1.148, under cap) | `0x584f21136018e9aaa0b1a56db59ec6c2645bedf627164d663ab96d716e95b8c9` | 216 | **1** | 156,321 |
 | 11 | swap 0.1 BLCH (would reach 1.248 > 1.2 cap) | `0xf8348cdabdfc726ca56cbd22dac8999def5f411d60beb7de899db0244787f5c8` | 216 | **0 (BDEX: RESERVE_CAP)** | 126,028 |
 
-Events, in forge's receipts:
+Events, from the receipts:
 - nonce 7: PairCreated, Deposit, Sync, Mint;
 - nonce 8: Deposit, Sync, Swap;
 - nonce 9: Sync, Swap, Withdrawal (WBLCH unwrapped to the operator).
@@ -78,17 +78,16 @@ pins only chain 700771 and genesis `0xaec9844384415c8ba7157298fa13f7e6c951a6ba93
 | UTC | finalized | Result |
 |---|---|---|
 | 02:57 | 213 | refused: deployment not finalized |
-| 03:02 | 214 | refused (see the RPC defect below) |
+| 03:02 | 214 | refused: nonce 8 (`0xdbe63…`, block 215) not finalized yet |
 | 03:11 | 215 | `liquidity-enabled`, cap 1.2 BLCH read at finalized hash `0xe963cbec…` |
 | 03:22 | 216 | `liquidity-enabled` at `0xefd4fbfb…` |
 
-## Known defect found: settled RPC permutes transaction hashes within a multi-tx batch
+## Pitfall: forge's batch broadcast file mislabels hashes
 
-After the broadcast, the settled RPC labels transactions with the wrong hashes: execution and per-position
-content are correct, but the hash shown for each position is permuted. For example,
-`eth_getTransactionByHash(nonce-0 hash)` returns the nonce-8 transaction, and blocks 214/215 list hashes of
-nonces {1,3,9,8,6,2,7} / {4,0,5} instead of {0..6} / {7,8,9}. Block 216 (two txs) is correct. Forge's
-receipts at broadcast time matched the execution, so this table uses them. The gate's per-transaction
-finality check trusts that index; its cap, registration and code reads are state reads at the finalized
-block hash and are unaffected. The fix belongs to the L2 settled RPC/producer (root cause under
-investigation); until then, do not rely on hash lookups for multi-tx blocks on devnet4.
+`broadcast/.../run-latest.json` pairs `transactions[].hash` with the wrong transactions when a script
+sends many transactions at once (here nonce 0 was labelled `0xdbe63…`, which is really nonce 8). Its
+`receipts[]` and the chain are correct: the stored block bodies are in nonce order, and every hash the
+RPC serves is keccak of the stored bytes and matches the RPC's own submit log. Do not take hashes from
+`transactions[]`. Rebuild the hash ↔ nonce map from `receipts[]` or `eth_getTransactionByHash`, or
+broadcast with `--slow`. The gate config lists the deployment hashes as a set, so its verdicts above
+are correct.
