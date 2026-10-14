@@ -54,55 +54,18 @@ pairs must match the factory-derived CREATE2 address, have code, appear in
 both registry directions and report the expected factory and sorted tokens.
 Rehearsing an existing funded pair leaves its reserves and LP supply intact.
 
-## Validate an initial-liquidity configuration
+## Initial liquidity
 
-`script/InitialLiquidityPreflight.s.sol:InitialLiquidityPreflight` is a
-read-only rehearsal for the configuration that will receive the first deposit.
-It does not approve tokens, submit liquidity or broadcast a transaction. In
-addition to the pair variables above, supply independently reviewed values for:
-
-| Variable                                                | Required value                                                            |
-| ------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `BDEX_ROUTER`, `BDEX_ROUTER_CODEHASH`                   | Router address and expected runtime-code hash                             |
-| `BDEX_LENS`, `BDEX_LENS_CODEHASH`                       | Lens address and expected runtime-code hash                               |
-| `WBLCH_ADDRESS`, `WBLCH_CODEHASH`                       | Wrapped-native address and expected runtime-code hash                     |
-| `FEE_TO_SETTER`                                         | Expected current factory authority                                        |
-| `PAIR_CODEHASH`                                         | Expected pair runtime-code hash                                           |
-| `PAIR_TOKEN_A`, `PAIR_TOKEN_A_CODEHASH`                 | Exact WBLCH address (equal to `WBLCH_ADDRESS`) and runtime-code hash      |
-| `PAIR_TOKEN_B`, `PAIR_TOKEN_B_CODEHASH`                 | Exact bUSDC address and runtime-code hash                                 |
-| `PLANNED_BASE_AMOUNT`, `PLANNED_QUOTE_AMOUNT`           | Exact nonzero initial WBLCH and bUSDC base-unit amounts under review      |
-| `APPROVED_MAX_BASE_AMOUNT`, `APPROVED_MAX_QUOTE_AMOUNT` | Exact approved caps, never above 10 BLCH and 10 bUSDC                     |
-| `CAP_APPROVAL_SHA256`                                   | Nonzero SHA-256 of the separately checked canonical cap-approval envelope |
-
-Run it without `--broadcast`:
-
-```sh
-forge script script/InitialLiquidityPreflight.s.sol:InitialLiquidityPreflight --rpc-url bloch_l2
-```
-
-The preflight pins every runtime hash, proves the router and lens use the same
-factory, proves the router uses the reviewed wrapper, requires protocol fees
-to be disabled with no pending authority transfer, and checks the canonical
-pair identity in both registry directions. It is specifically for an initial
-deposit: the LP supply, reserves and raw token balances at the pair must all be
-zero. This catches donations that have not yet been included in reserves. It
-also requires the base token to be the reviewed wrapper, binds the exact planned
-base/quote amounts to the approved maxima and refuses maxima above the hard
-10 BLCH / 10 bUSDC pilot limits. The emitted rehearsal record includes those
-four amounts and the cap-approval hash.
-
-The result is not an atomic reservation. Pair state, authority and code can
-change after an RPC read; proxies and mutable token policy need separate review.
-Re-run the preflight immediately before transaction simulation, bind the review
-to exact integer amounts/minimums/deadline/recipient, then revalidate chain and
-account at confirmation. This repository does not yet provide that live client
-or any production configuration.
-
-`PILOT-POOL-READINESS.md` defines the later fail-closed composition boundary.
-It additionally requires an authenticated receipt proving that the bridge is
-already activated and operational, a single finalized empty pilot pair,
-separated authority approvals and a fully rolled-back isolated rehearsal. The
-composer remains read-only and cannot add liquidity or enable execution.
+The former `InitialLiquidityPreflight` script (signed cap-approval amounts,
+`feeToSetter` checks) was removed with the legacy staging tooling on
+2026-10-14; it is in git history. On the mainnet path the limits it checked
+are part of the deployed code: every pilot token has a reserve cap fixed in the
+factory constructor (a deposit above it reverts on chain), and the schema-2
+finality gate (`scripts/staging/check-finality-gate.mjs`) proves at the
+finalized block that the factory, router, lens, fixed fee recipient, caps and
+every planned pair are exactly the reviewed ones. The deploy script also
+asserts every planned pair is empty. The initial-liquidity amounts and their
+ratio are reviewed separately; see `docs/MAINNET-READINESS.md`.
 
 Hash pins are configuration guards, not audits: copying hashes from an
 untrusted RPC simply pins its claims. A proxy's runtime hash does not pin its
@@ -129,7 +92,3 @@ execution, chain and code hash rejection, CREATE2 identity, asymmetric registry
 rejection and inconsistent pair factory/token reporting. Mocked responses in
 the adversarial tests exercise fail-closed configuration checks; they do not
 claim protection against an operator deliberately approving malicious code.
-`test/InitialLiquidityPreflight.t.sol` additionally rejects cross-deployment
-router/lens bindings, pending or enabled protocol fees, wrong hashes, wrong
-pilot assets, missing cap bindings, zero/over-cap plans and pairs that are
-donated to, synced or already funded.
