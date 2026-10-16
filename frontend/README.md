@@ -339,15 +339,16 @@ npm run dev                                             # or: npm run build && n
 
 Configuration:
 
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `DEVNET4_RPC_TARGET` | Proxy target | `http://127.0.0.1:18945` |
-| `VITE_DEVNET4_RPC_URL` | URL the app reads; skips the proxy | `/devnet4-rpc` |
+| Variable                      | Purpose                                                    | Default                              |
+| ----------------------------- | ---------------------------------------------------------- | ------------------------------------ |
+| `DEVNET4_RPC_TARGET`          | Proxy target                                               | `http://127.0.0.1:18945`             |
+| `VITE_DEVNET4_RPC_URL`        | URL the app reads; skips the proxy                         | `/devnet4-rpc`                       |
 | `VITE_DEVNET4_WALLET_RPC_URL` | RPC URL offered to the wallet in `wallet_addEthereumChain` | `http://127.0.0.1:18945`, the tunnel |
 
 Wallets make their own RPC requests, so the tunnel must stay open while signing.
 
 **Tests.**
+
 - `src/test/devnet4.test.tsx` runs the flow in jsdom against a mocked RPC and a
   mocked EIP-1193 provider.
 - `src/test/devnet4.live.test.ts` is an opt-in, read-only check against the real

@@ -20,7 +20,13 @@ export default defineConfig({
   server: {
     host: '127.0.0.1',
     // The project root plus the one shared chain-ID file (network-identity.ts).
-    fs: { allow: ['.', '../deployments/networks.json', '../deployments/devnet4/mainnet-procedure-2pairs-20261016'] },
+    fs: {
+      allow: [
+        '.',
+        '../deployments/networks.json',
+        '../deployments/devnet4/mainnet-procedure-2pairs-20261016',
+      ],
+    },
     proxy: devnet4Proxy,
   },
   preview: { host: '127.0.0.1', proxy: devnet4Proxy },

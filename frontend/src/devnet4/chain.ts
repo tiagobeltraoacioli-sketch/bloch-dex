@@ -55,7 +55,14 @@ export function httpRpc(url: string, fetchImpl: typeof fetch = (...args) => fetc
 
 type BlockTag = 'latest' | { blockHash: Hex };
 
-export async function readCall<T>(rpc: Rpc, abi: Abi, to: Address, functionName: string, args: unknown[], at: BlockTag): Promise<T> {
+export async function readCall<T>(
+  rpc: Rpc,
+  abi: Abi,
+  to: Address,
+  functionName: string,
+  args: unknown[],
+  at: BlockTag,
+): Promise<T> {
   const data = encodeFunctionData({ abi, functionName, args } as never);
   const result = await rpc('eth_call', [{ to, data }, at]);
   refuse(typeof result === 'string' && result.startsWith('0x'), `${functionName} call failed`);
@@ -84,34 +91,79 @@ export type Snapshot = {
  * than the gate's, or any runtime code that differs from the record.
  */
 export async function readSnapshot(rpc: Rpc, d: DevnetDeployment): Promise<Snapshot> {
-  refuse(BigInt(String(await rpc('eth_chainId', []))) === BigInt(d.chainId), 'the RPC serves another chain');
+  refuse(
+    BigInt(String(await rpc('eth_chainId', []))) === BigInt(d.chainId),
+    'the RPC serves another chain',
+  );
   const genesis = (await rpc('eth_getBlockByNumber', ['0x0', false])) as { hash?: string } | null;
   refuse(genesis?.hash === d.genesisHash, 'the RPC genesis differs from the record');
-  const block = (await rpc('eth_getBlockByNumber', ['finalized', false])) as
-    | { number?: string; hash?: string; timestamp?: string }
-    | null;
+  const block = (await rpc('eth_getBlockByNumber', ['finalized', false])) as {
+    number?: string;
+    hash?: string;
+    timestamp?: string;
+  } | null;
   refuse(block?.hash && block.number && block.timestamp, 'the RPC has no finalized block');
-  const finalized = { number: BigInt(block.number), hash: block.hash as Hex, timestamp: BigInt(block.timestamp) };
-  refuse(finalized.number >= d.gate.finalizedNumber, 'the finalized block is older than the gate decision');
+  const finalized = {
+    number: BigInt(block.number),
+    hash: block.hash as Hex,
+    timestamp: BigInt(block.timestamp),
+  };
+  refuse(
+    finalized.number >= d.gate.finalizedNumber,
+    'the finalized block is older than the gate decision',
+  );
   const at: BlockTag = { blockHash: finalized.hash };
   for (const [contract, expected] of Object.entries(d.codeHashes)) {
     const code = await rpc('eth_getCode', [contract, at]);
-    refuse(typeof code === 'string' && code !== '0x' && keccak256(code as Hex) === expected, `runtime code of ${contract} differs from the record`);
+    refuse(
+      typeof code === 'string' && code !== '0x' && keccak256(code as Hex) === expected,
+      `runtime code of ${contract} differs from the record`,
+    );
   }
   const tokens: LiveToken[] = [];
   for (const token of d.tokens) {
-    const decimals = Number(await readCall<number>(rpc, ERC20_ABI, token.address, 'decimals', [], at));
+    const decimals = Number(
+      await readCall<number>(rpc, ERC20_ABI, token.address, 'decimals', [], at),
+    );
     const symbol = await readCall<string>(rpc, ERC20_ABI, token.address, 'symbol', [], at);
-    refuse(symbol === token.symbol, `token ${token.address} symbol ${symbol} differs from the record`);
-    refuse(Number.isInteger(decimals) && decimals >= 0 && decimals <= 36, 'token decimals out of range');
+    refuse(
+      symbol === token.symbol,
+      `token ${token.address} symbol ${symbol} differs from the record`,
+    );
+    refuse(
+      Number.isInteger(decimals) && decimals >= 0 && decimals <= 36,
+      'token decimals out of range',
+    );
     tokens.push({ ...token, decimals });
   }
   const byAddress = new Map(tokens.map((t) => [t.address, t]));
   const pools: LivePool[] = [];
   for (const pair of d.pairs) {
-    const [reserve0, reserve1] = await readCall<readonly [bigint, bigint, number]>(rpc, PAIR_ABI, pair.address, 'getReserves', [], at);
-    const [cap0, cap1] = await readCall<readonly [bigint, bigint]>(rpc, PAIR_ABI, pair.address, 'reserveCaps', [], at);
-    pools.push({ address: pair.address, token0: byAddress.get(pair.token0)!, token1: byAddress.get(pair.token1)!, reserve0, reserve1, cap0, cap1 });
+    const [reserve0, reserve1] = await readCall<readonly [bigint, bigint, number]>(
+      rpc,
+      PAIR_ABI,
+      pair.address,
+      'getReserves',
+      [],
+      at,
+    );
+    const [cap0, cap1] = await readCall<readonly [bigint, bigint]>(
+      rpc,
+      PAIR_ABI,
+      pair.address,
+      'reserveCaps',
+      [],
+      at,
+    );
+    pools.push({
+      address: pair.address,
+      token0: byAddress.get(pair.token0)!,
+      token1: byAddress.get(pair.token1)!,
+      reserve0,
+      reserve1,
+      cap0,
+      cap1,
+    });
   }
   return { finalized, tokens, pools };
 }
@@ -119,7 +171,9 @@ export async function readSnapshot(rpc: Rpc, d: DevnetDeployment): Promise<Snaps
 /** Candidate routes between two record tokens: direct when a pair exists, else through WBLCH. */
 export function routesFor(d: DevnetDeployment, tokenIn: Address, tokenOut: Address): Address[][] {
   const direct = d.pairs.some(
-    (p) => (p.token0 === tokenIn && p.token1 === tokenOut) || (p.token1 === tokenIn && p.token0 === tokenOut),
+    (p) =>
+      (p.token0 === tokenIn && p.token1 === tokenOut) ||
+      (p.token1 === tokenIn && p.token0 === tokenOut),
   );
   const routes: Address[][] = [];
   if (direct) routes.push([tokenIn, tokenOut]);
@@ -148,10 +202,20 @@ export async function quoteExactInput(
 ): Promise<LensQuote | null> {
   refuse(tokenIn !== tokenOut, 'choose two different tokens');
   refuse(amountIn > 0n, 'the amount must be positive');
-  refuse(Number.isInteger(slippageBps) && slippageBps >= 1 && slippageBps <= 500, 'slippage must be 0.01% to 5%');
+  refuse(
+    Number.isInteger(slippageBps) && slippageBps >= 1 && slippageBps <= 500,
+    'slippage must be 0.01% to 5%',
+  );
   const routes = routesFor(d, tokenIn, tokenOut);
   refuse(routes.length > 0, 'no route between these tokens');
-  type Quote = { available: boolean; blockNumber: bigint; amountOut: bigint; minimumOut: bigint; amounts: readonly bigint[]; executionLossBps: readonly bigint[] };
+  type Quote = {
+    available: boolean;
+    blockNumber: bigint;
+    amountOut: bigint;
+    minimumOut: bigint;
+    amounts: readonly bigint[];
+    executionLossBps: readonly bigint[];
+  };
   const [bestIndex, quotes] = await readCall<readonly [bigint, readonly Quote[]]>(
     rpc,
     LENS_ABI,

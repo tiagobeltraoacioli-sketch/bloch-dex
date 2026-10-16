@@ -63,7 +63,11 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
     sent: [],
     ...change,
   };
-  const tokens: Record<string, [number, string]> = { [WBLCH]: [18, 'WBLCH'], [BUSDC]: [6, 'bUSDC'], [WGSMH]: [8, 'wGSMH'] };
+  const tokens: Record<string, [number, string]> = {
+    [WBLCH]: [18, 'WBLCH'],
+    [BUSDC]: [6, 'bUSDC'],
+    [WGSMH]: [8, 'wGSMH'],
+  };
   const reserves: Record<string, [bigint, bigint, number]> = {
     [GSMH_PAIR]: [130_852_828_000_503_020n, 38_295_768n, 1],
     [USD_PAIR]: [5_571_215n, 272_177_475_029_800_010n, 1],
@@ -180,10 +184,16 @@ describe('devnet4 deployment record', () => {
       edit(copy);
       return verifyDeploymentRecord(copy);
     };
-    await expect(tamper((r) => (r.gateReport.decision = 'refused'))).rejects.toThrow(/did not enable liquidity/);
+    await expect(tamper((r) => (r.gateReport.decision = 'refused'))).rejects.toThrow(
+      /did not enable liquidity/,
+    );
     await expect(tamper((r) => (r.gateReport.feeTo = ACCOUNT))).rejects.toThrow(/fee recipient/);
-    await expect(tamper((r) => (r.config.reserveCaps[0].cap = '1'))).rejects.toThrow(/not derived from this configuration/);
-    await expect(tamper((r) => (r.plan.chain.id = 700770))).rejects.toThrow(/not a devnet4 rehearsal/);
+    await expect(tamper((r) => (r.config.reserveCaps[0].cap = '1'))).rejects.toThrow(
+      /not derived from this configuration/,
+    );
+    await expect(tamper((r) => (r.plan.chain.id = 700770))).rejects.toThrow(
+      /not a devnet4 rehearsal/,
+    );
     await expect(tamper((r) => r.gateReport.pairs.pop())).rejects.toThrow(/pairs differ/);
   });
 });
@@ -195,15 +205,25 @@ describe('devnet4 finalized reads', () => {
     expect(snapshot.finalized.number).toBe(440n);
     expect(snapshot.pools[1]).toMatchObject({ reserve0: 5_571_215n, cap0: 1_000_000_000n });
     const at = { blockHash: FINALIZED.hash };
-    expect(state.sent.filter((s) => s.method === 'eth_call').every((s) => JSON.stringify(s.params[1]) === JSON.stringify(at))).toBe(true);
+    expect(
+      state.sent
+        .filter((s) => s.method === 'eth_call')
+        .every((s) => JSON.stringify(s.params[1]) === JSON.stringify(at)),
+    ).toBe(true);
   });
 
   it('refuses another genesis, drifted code or a finalized block older than the gate', async () => {
-    await expect(readSnapshot(fakeChain({ genesis: `0x${'1'.repeat(64)}` }).rpc, deployment)).rejects.toThrow(/genesis/);
+    await expect(
+      readSnapshot(fakeChain({ genesis: `0x${'1'.repeat(64)}` }).rpc, deployment),
+    ).rejects.toThrow(/genesis/);
     const drifted = new Map(fakeCode);
     drifted.set(ROUTER, '0x6099');
-    await expect(readSnapshot(fakeChain({ code: drifted }).rpc, deployment)).rejects.toThrow(/runtime code/);
-    await expect(readSnapshot(fakeChain({ finalized: { ...FINALIZED, number: '0x1a0' } }).rpc, deployment)).rejects.toThrow(/older than the gate/);
+    await expect(readSnapshot(fakeChain({ code: drifted }).rpc, deployment)).rejects.toThrow(
+      /runtime code/,
+    );
+    await expect(
+      readSnapshot(fakeChain({ finalized: { ...FINALIZED, number: '0x1a0' } }).rpc, deployment),
+    ).rejects.toThrow(/older than the gate/);
   });
 });
 
@@ -212,7 +232,15 @@ describe('devnet4 swap flow', () => {
     const user = userEvent.setup();
     const { rpc, state } = fakeChain();
     const { wallet, requests } = fakeWallet(state);
-    render(<Devnet4Live load={async () => deployment} rpc={rpc} walletRpcUrl="http://127.0.0.1:18945" wallet={wallet} now={() => NOW_MS} />);
+    render(
+      <Devnet4Live
+        load={async () => deployment}
+        rpc={rpc}
+        walletRpcUrl="http://127.0.0.1:18945"
+        wallet={wallet}
+        now={() => NOW_MS}
+      />,
+    );
     const table = await screen.findByRole('table');
     expect(within(table).getByText('bUSDC/WBLCH')).toBeTruthy();
     expect(table.textContent).toContain('5.571215 bUSDC');
@@ -240,25 +268,56 @@ describe('devnet4 swap flow', () => {
     ]);
     const added = requests[2].params![0] as { chainId: string; rpcUrls: string[] };
     expect(added).toMatchObject({ chainId: '0xab163', rpcUrls: ['http://127.0.0.1:18945'] });
-    const approve = requests[4].params![0] as { to: Address; data: Hex; gas: string; value: string };
+    const approve = requests[4].params![0] as {
+      to: Address;
+      data: Hex;
+      gas: string;
+      value: string;
+    };
     expect(approve).toMatchObject({ to: BUSDC, gas: '0x186a0', value: '0x0' });
-    expect(norm(decodeFunctionData({ abi: ERC20_ABI, data: approve.data }).args)).toEqual([ROUTER, 1_000_000n]);
+    expect(norm(decodeFunctionData({ abi: ERC20_ABI, data: approve.data }).args)).toEqual([
+      ROUTER,
+      1_000_000n,
+    ]);
 
     await user.click(screen.getByRole('button', { name: 'Swap' }));
-    await waitFor(() => expect(requests.filter((r) => r.method === 'eth_sendTransaction')).toHaveLength(2));
-    const swap = requests.filter((r) => r.method === 'eth_sendTransaction')[1].params![0] as { to: Address; data: Hex; gas: string; value: string };
+    await waitFor(() =>
+      expect(requests.filter((r) => r.method === 'eth_sendTransaction')).toHaveLength(2),
+    );
+    const swap = requests.filter((r) => r.method === 'eth_sendTransaction')[1].params![0] as {
+      to: Address;
+      data: Hex;
+      gas: string;
+      value: string;
+    };
     expect(swap).toMatchObject({ to: ROUTER, value: '0x0', gas: '0x7a120' });
     const decoded = decodeFunctionData({ abi: ROUTER_ABI, data: swap.data });
     expect(decoded.functionName).toBe('swapExactTokensForTokens');
-    expect(norm(decoded.args)).toEqual([1_000_000n, 30_845_000n, [BUSDC, WBLCH, WGSMH], ACCOUNT, BigInt(NOW_MS / 1000 + 30 * 60)]);
+    expect(norm(decoded.args)).toEqual([
+      1_000_000n,
+      30_845_000n,
+      [BUSDC, WBLCH, WGSMH],
+      ACCOUNT,
+      BigInt(NOW_MS / 1000 + 30 * 60),
+    ]);
     await waitFor(() => expect(screen.getAllByText(/Mined in block 442/).length).toBe(2));
   });
 
   it('sends native BLCH as value through swapExactBLCHForTokens without an approval', async () => {
     const user = userEvent.setup();
-    const { rpc, state } = fakeChain({ quote: { available: true, amountOut: 1_600_000n, minimumOut: 1_592_000n } });
+    const { rpc, state } = fakeChain({
+      quote: { available: true, amountOut: 1_600_000n, minimumOut: 1_592_000n },
+    });
     const { wallet, requests } = fakeWallet(state);
-    render(<Devnet4Live load={async () => deployment} rpc={rpc} walletRpcUrl="http://127.0.0.1:18945" wallet={wallet} now={() => NOW_MS} />);
+    render(
+      <Devnet4Live
+        load={async () => deployment}
+        rpc={rpc}
+        walletRpcUrl="http://127.0.0.1:18945"
+        wallet={wallet}
+        now={() => NOW_MS}
+      />,
+    );
     await screen.findByRole('table');
     await user.selectOptions(screen.getByLabelText('You pay'), 'BLCH');
     await user.selectOptions(screen.getByLabelText('You receive'), 'bUSDC');
@@ -267,20 +326,41 @@ describe('devnet4 swap flow', () => {
     await screen.findByLabelText('Quote');
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Swap' }));
-    await waitFor(() => expect(requests.some((r) => r.method === 'eth_sendTransaction')).toBe(true));
-    const swap = requests.find((r) => r.method === 'eth_sendTransaction')!.params![0] as { data: Hex; value: string; gas: string };
+    await waitFor(() =>
+      expect(requests.some((r) => r.method === 'eth_sendTransaction')).toBe(true),
+    );
+    const swap = requests.find((r) => r.method === 'eth_sendTransaction')!.params![0] as {
+      data: Hex;
+      value: string;
+      gas: string;
+    };
     expect(swap.value).toBe(`0x${(10n ** 17n).toString(16)}`);
     expect(swap.gas).toBe('0x3d090');
     const decoded = decodeFunctionData({ abi: ROUTER_ABI, data: swap.data });
     expect(decoded.functionName).toBe('swapExactBLCHForTokens');
-    expect(norm(decoded.args)).toEqual([1_592_000n, [WBLCH, BUSDC], ACCOUNT, BigInt(NOW_MS / 1000 + 30 * 60)]);
+    expect(norm(decoded.args)).toEqual([
+      1_592_000n,
+      [WBLCH, BUSDC],
+      ACCOUNT,
+      BigInt(NOW_MS / 1000 + 30 * 60),
+    ]);
   });
 
   it('never offers a swap the lens reports as unavailable (no liquidity or a reserve cap)', async () => {
     const user = userEvent.setup();
-    const { rpc, state } = fakeChain({ quote: { available: false, amountOut: 0n, minimumOut: 0n } });
+    const { rpc, state } = fakeChain({
+      quote: { available: false, amountOut: 0n, minimumOut: 0n },
+    });
     const { wallet, requests } = fakeWallet(state);
-    render(<Devnet4Live load={async () => deployment} rpc={rpc} walletRpcUrl="http://127.0.0.1:18945" wallet={wallet} now={() => NOW_MS} />);
+    render(
+      <Devnet4Live
+        load={async () => deployment}
+        rpc={rpc}
+        walletRpcUrl="http://127.0.0.1:18945"
+        wallet={wallet}
+        now={() => NOW_MS}
+      />,
+    );
     await screen.findByRole('table');
     await user.selectOptions(screen.getByLabelText('You pay'), 'wGSMH');
     await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
@@ -294,8 +374,13 @@ describe('devnet4 swap flow', () => {
   it('shows a refusal instead of pools when the RPC is another chain', async () => {
     const { rpc } = fakeChain({ genesis: `0x${'2'.repeat(64)}` });
     const { wallet } = fakeWallet(fakeChain().state);
-    render(<Devnet4Live load={async () => deployment} rpc={rpc} walletRpcUrl="x" wallet={wallet} />);
-    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringMatching(/genesis differs/));
+    render(
+      <Devnet4Live load={async () => deployment} rpc={rpc} walletRpcUrl="x" wallet={wallet} />,
+    );
+    expect(await screen.findByRole('alert')).toHaveProperty(
+      'textContent',
+      expect.stringMatching(/genesis differs/),
+    );
     expect(screen.queryByRole('table')).toBeNull();
   });
 });

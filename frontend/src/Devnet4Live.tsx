@@ -2,8 +2,24 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
-import { allowanceOf, approveTransaction, deadlineFrom, DEFAULT_DEADLINE_MINUTES, ensureDevnet4, sendTransaction, swapTransaction, waitForReceipt } from './devnet4/swap';
-import { quoteExactInput, readSnapshot, type LensQuote, type LiveToken, type Rpc, type Snapshot } from './devnet4/chain';
+import {
+  allowanceOf,
+  approveTransaction,
+  deadlineFrom,
+  DEFAULT_DEADLINE_MINUTES,
+  ensureDevnet4,
+  sendTransaction,
+  swapTransaction,
+  waitForReceipt,
+} from './devnet4/swap';
+import {
+  quoteExactInput,
+  readSnapshot,
+  type LensQuote,
+  type LiveToken,
+  type Rpc,
+  type Snapshot,
+} from './devnet4/chain';
 import type { DevnetDeployment } from './devnet4/record';
 import type { Provider, WalletAccount, WalletOption } from './wallet';
 
@@ -17,10 +33,16 @@ export type Devnet4Wallet = {
 };
 
 type Option = { key: string; label: string; token: LiveToken; native: boolean };
-type Step = { label: string; hash?: Hex; state: 'waiting' | 'pending' | 'mined' | 'failed'; detail?: string };
+type Step = {
+  label: string;
+  hash?: Hex;
+  state: 'waiting' | 'pending' | 'mined' | 'failed';
+  detail?: string;
+};
 
 const short = (value: string) => `${value.slice(0, 8)}…${value.slice(-6)}`;
-const percent = (part: bigint, whole: bigint) => (whole === 0n ? '0.00' : (Number((part * 10_000n) / whole) / 100).toFixed(2));
+const percent = (part: bigint, whole: bigint) =>
+  whole === 0n ? '0.00' : (Number((part * 10_000n) / whole) / 100).toFixed(2);
 
 export default function Devnet4Live({
   load,
@@ -69,8 +91,8 @@ export default function Devnet4Live({
           <h1 id="devnet4-title">Devnet4 live pools</h1>
           <p className="muted">
             Bloch L2 devnet4 (chain 700771). Tokens here have no value. Pool data is read at the
-            finalized L2 block from a reviewed deployment record; swaps are sent only from your wallet,
-            one explicit step at a time.
+            finalized L2 block from a reviewed deployment record; swaps are sent only from your
+            wallet, one explicit step at a time.
           </p>
         </div>
         <button className="button secondary" onClick={() => setGeneration((g) => g + 1)}>
@@ -83,7 +105,8 @@ export default function Devnet4Live({
         </p>
       ) : !deployment || !snapshot ? (
         <p className="muted" role="status">
-          <LoaderCircle size={16} className="spin" /> Verifying the deployment record at the finalized block…
+          <LoaderCircle size={16} className="spin" /> Verifying the deployment record at the
+          finalized block…
         </p>
       ) : (
         <>
@@ -104,7 +127,13 @@ export default function Devnet4Live({
   );
 }
 
-function DeploymentPanel({ deployment: d, snapshot: s }: { deployment: DevnetDeployment; snapshot: Snapshot }) {
+function DeploymentPanel({
+  deployment: d,
+  snapshot: s,
+}: {
+  deployment: DevnetDeployment;
+  snapshot: Snapshot;
+}) {
   return (
     <div className="card devnet4-record" aria-label="Deployment record">
       <h2>
@@ -121,7 +150,8 @@ function DeploymentPanel({ deployment: d, snapshot: s }: { deployment: DevnetDep
         </dd>
         <dt>Finalized now</dt>
         <dd>
-          Block {s.finalized.number.toString()}; chain, genesis and every runtime code hash match the record
+          Block {s.finalized.number.toString()}; chain, genesis and every runtime code hash match
+          the record
         </dd>
         <dt>Router</dt>
         <dd>
@@ -166,9 +196,11 @@ function PoolsTable({ snapshot }: { snapshot: Snapshot }) {
                 {formatAmount(p.reserve1, p.token1.decimals)} {p.token1.symbol}
               </td>
               <td>
-                {formatAmount(p.cap0, p.token0.decimals)} {p.token0.symbol} ({percent(p.reserve0, p.cap0)}%)
+                {formatAmount(p.cap0, p.token0.decimals)} {p.token0.symbol} (
+                {percent(p.reserve0, p.cap0)}%)
                 <br />
-                {formatAmount(p.cap1, p.token1.decimals)} {p.token1.symbol} ({percent(p.reserve1, p.cap1)}%)
+                {formatAmount(p.cap1, p.token1.decimals)} {p.token1.symbol} (
+                {percent(p.reserve1, p.cap1)}%)
               </td>
             </tr>
           ))}
@@ -224,21 +256,34 @@ function SwapPanel({
   async function getQuote() {
     setQuote(null);
     setQuoteNote('');
-    if (!input || !output || input.key === output.key) return setQuoteNote('Choose two different tokens.');
+    if (!input || !output || input.key === output.key)
+      return setQuoteNote('Choose two different tokens.');
     if (!amountIn || amountIn <= 0n) return setQuoteNote('Enter an amount.');
     if (!slippageValid) return setQuoteNote('Use a slippage tolerance of 0.01% to 5.00%.');
     try {
-      const q = await quoteExactInput(rpc, d, input.token.address, output.token.address, amountIn, Number(slippageBps));
-      if (!q) return setQuoteNote('No route can fill this amount (no liquidity, or a reserve cap would be exceeded).');
+      const q = await quoteExactInput(
+        rpc,
+        d,
+        input.token.address,
+        output.token.address,
+        amountIn,
+        Number(slippageBps),
+      );
+      if (!q)
+        return setQuoteNote(
+          'No route can fill this amount (no liquidity, or a reserve cap would be exceeded).',
+        );
       setQuote(q);
-      if (account && !input.native) setAllowance(await allowanceOf(rpc, d, input.token.address, account));
+      if (account && !input.native)
+        setAllowance(await allowanceOf(rpc, d, input.token.address, account));
     } catch (error) {
       setQuoteNote(error instanceof Error ? error.message : 'Quote unavailable.');
     }
   }
 
   const refreshAllowance = useCallback(async () => {
-    if (account && input && !input.native) setAllowance(await allowanceOf(rpc, d, input.token.address, account));
+    if (account && input && !input.native)
+      setAllowance(await allowanceOf(rpc, d, input.token.address, account));
     else setAllowance(null);
   }, [account, input, rpc, d]);
   useEffect(() => {
@@ -255,7 +300,12 @@ function SwapPanel({
     try {
       await ensureDevnet4(provider, d, walletRpcUrl);
       const hash = await sendTransaction(provider, build());
-      update({ label, hash, state: 'pending', detail: 'Waiting for the next L2 block (10–20 minutes).' });
+      update({
+        label,
+        hash,
+        state: 'pending',
+        detail: 'Waiting for the next L2 block (10–20 minutes).',
+      });
       const receipt = await waitForReceipt(rpc, hash);
       update({
         label,
@@ -266,7 +316,11 @@ function SwapPanel({
       if (receipt.status === 'success') onMined();
       await refreshAllowance();
     } catch (error) {
-      update({ label, state: 'failed', detail: error instanceof Error ? error.message : 'Rejected.' });
+      update({
+        label,
+        state: 'failed',
+        detail: error instanceof Error ? error.message : 'Rejected.',
+      });
     } finally {
       setBusy(false);
     }
@@ -289,7 +343,12 @@ function SwapPanel({
         </label>
         <label className="field-label">
           Amount
-          <input className="text-input" inputMode="decimal" value={amount} onChange={(e) => (setAmount(e.target.value), setQuote(null))} />
+          <input
+            className="text-input"
+            inputMode="decimal"
+            value={amount}
+            onChange={(e) => (setAmount(e.target.value), setQuote(null))}
+          />
         </label>
         <label className="field-label">
           You receive
@@ -303,7 +362,12 @@ function SwapPanel({
         </label>
         <label className="field-label">
           Slippage tolerance (%)
-          <input className="text-input" inputMode="decimal" value={slippage} onChange={(e) => (setSlippage(e.target.value), setQuote(null))} />
+          <input
+            className="text-input"
+            inputMode="decimal"
+            value={slippage}
+            onChange={(e) => (setSlippage(e.target.value), setQuote(null))}
+          />
         </label>
         <button className="button secondary" onClick={() => void getQuote()}>
           Get quote
@@ -318,7 +382,9 @@ function SwapPanel({
         <dl className="detail-list" aria-label="Quote">
           <dt>Route</dt>
           <dd>
-            {quote.path.map((a) => snapshot.tokens.find((t) => t.address === a)?.symbol ?? short(a)).join(' → ')}
+            {quote.path
+              .map((a) => snapshot.tokens.find((t) => t.address === a)?.symbol ?? short(a))
+              .join(' → ')}
           </dd>
           <dt>Expected output</dt>
           <dd>
@@ -329,7 +395,10 @@ function SwapPanel({
             {formatAmount(quote.minimumOut, output.token.decimals)} {output.label}
           </dd>
           <dt>Quoted at</dt>
-          <dd>Latest block {quote.blockNumber.toString()} (by the deployed lens, within the reserve caps)</dd>
+          <dd>
+            Latest block {quote.blockNumber.toString()} (by the deployed lens, within the reserve
+            caps)
+          </dd>
           <dt>Deadline</dt>
           <dd>{DEFAULT_DEADLINE_MINUTES} minutes after you confirm (wall-clock seconds)</dd>
         </dl>
@@ -338,7 +407,12 @@ function SwapPanel({
         <div className="wallet-options">
           {wallet.wallets.length === 0 && <p className="muted">No browser wallet found.</p>}
           {wallet.wallets.map((w) => (
-            <button key={w.id} className="wallet-option" disabled={wallet.pending} onClick={() => void wallet.connect(w)}>
+            <button
+              key={w.id}
+              className="wallet-option"
+              disabled={wallet.pending}
+              onClick={() => void wallet.connect(w)}
+            >
               <Wallet size={18} /> Connect {w.name}
             </button>
           ))}
@@ -347,14 +421,20 @@ function SwapPanel({
       ) : (
         <div className="devnet4-actions">
           <p className="muted">
-            Wallet <code>{wallet.account.address}</code> on chain {BigInt(wallet.account.chainId).toString()}
+            Wallet <code>{wallet.account.address}</code> on chain{' '}
+            {BigInt(wallet.account.chainId).toString()}
             {!onChain && ' (it will be asked to switch to devnet4)'}
           </p>
           {needsApproval && quote && input && (
             <button
               className="button primary"
               disabled={busy}
-              onClick={() => void run(`Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`, () => approveTransaction(d, input.token.address, account!, quote.amountIn))}
+              onClick={() =>
+                void run(
+                  `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`,
+                  () => approveTransaction(d, input.token.address, account!, quote.amountIn),
+                )
+              }
             >
               Approve {formatAmount(quote.amountIn, input.token.decimals)} {input.label}
             </button>
@@ -364,7 +444,14 @@ function SwapPanel({
             disabled={busy || !quote || needsApproval || !input || !output}
             onClick={() =>
               void run(`Swap ${amount} ${input!.label} for ${output!.label}`, () =>
-                swapTransaction(d, quote!, { token: input!.token.address, native: input!.native }, { token: output!.token.address, native: output!.native }, account!, deadlineFrom(now())),
+                swapTransaction(
+                  d,
+                  quote!,
+                  { token: input!.token.address, native: input!.native },
+                  { token: output!.token.address, native: output!.native },
+                  account!,
+                  deadlineFrom(now()),
+                ),
               )
             }
           >

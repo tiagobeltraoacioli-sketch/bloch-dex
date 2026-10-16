@@ -88,14 +88,26 @@ export async function verifyDeploymentRecord(
   const c = input.config as AnyRecord;
   const g = input.gateReport as AnyRecord;
   refuse(p && p.domain === PLAN_DOMAIN && p.schemaVersion === 1, 'unsupported plan');
-  refuse(p.chain?.id === DEX_STAGING_CHAIN_ID && p.chain?.rehearsal === true, 'the plan is not a devnet4 rehearsal');
-  refuse(sha256Hex(stableJson(c)) === p.configSha256, 'the plan was not derived from this configuration');
-  refuse(c.network?.chainId === p.chain.id && c.network?.genesisHash === p.chain.genesisHash, 'configuration and plan disagree');
+  refuse(
+    p.chain?.id === DEX_STAGING_CHAIN_ID && p.chain?.rehearsal === true,
+    'the plan is not a devnet4 rehearsal',
+  );
+  refuse(
+    sha256Hex(stableJson(c)) === p.configSha256,
+    'the plan was not derived from this configuration',
+  );
+  refuse(
+    c.network?.chainId === p.chain.id && c.network?.genesisHash === p.chain.genesisHash,
+    'configuration and plan disagree',
+  );
   const genesisHash = hash(p.chain.genesisHash, 'chain.genesisHash');
 
   refuse(g && g.domain === GATE_DOMAIN && g.schemaVersion === 2, 'unsupported gate report');
   refuse(g.decision === 'liquidity-enabled', 'the finality gate did not enable liquidity');
-  refuse(g.chainId === p.chain.id && g.genesisHash === genesisHash, 'the gate report is for another chain');
+  refuse(
+    g.chainId === p.chain.id && g.genesisHash === genesisHash,
+    'the gate report is for another chain',
+  );
   refuse(g.feeTo === p.feeTo, 'the gate report fee recipient differs from the plan');
   refuse(
     Array.isArray(g.pairs) &&
@@ -103,14 +115,20 @@ export async function verifyDeploymentRecord(
       g.pairs.every((pair: AnyRecord, i: number) => pair.address === p.pairs[i].address),
     'the gate report pairs differ from the plan',
   );
-  refuse(Array.isArray(g.transactions) && g.transactions.length === p.steps.length, 'the gate report transactions differ from the plan');
+  refuse(
+    Array.isArray(g.transactions) && g.transactions.length === p.steps.length,
+    'the gate report transactions differ from the plan',
+  );
   const finalizedNumber = BigInt(g.finalized?.number ?? -1);
   refuse(finalizedNumber > 0n, 'the gate report has no finalized block');
 
   const contracts = p.contracts as Record<string, { address: string; codeHash: string }>;
   const codeHashes: Record<Address, Hex> = {};
   for (const key of ['wrappedNative', 'factory', 'router', 'lens']) {
-    codeHashes[address(contracts[key]?.address, key)] = hash(contracts[key]?.codeHash, `${key}.codeHash`);
+    codeHashes[address(contracts[key]?.address, key)] = hash(
+      contracts[key]?.codeHash,
+      `${key}.codeHash`,
+    );
   }
   const pairs: DevnetPair[] = (p.pairs as AnyRecord[]).map((pair, i) => {
     codeHashes[address(pair.address, `pairs[${i}]`)] = hash(pair.codeHash, `pairs[${i}].codeHash`);
@@ -123,7 +141,10 @@ export async function verifyDeploymentRecord(
   const wrapped = contracts.wrappedNative.address as Address;
   const symbols = new Map<string, string>(
     (p.externalTokens as AnyRecord[]).map((t) => {
-      codeHashes[address(t.token, 'externalTokens.token')] = hash(t.codeHash, 'externalTokens.codeHash');
+      codeHashes[address(t.token, 'externalTokens.token')] = hash(
+        t.codeHash,
+        'externalTokens.codeHash',
+      );
       return [t.token, t.symbol];
     }),
   );
@@ -131,11 +152,17 @@ export async function verifyDeploymentRecord(
     const token = address(entry.token, `reserveCaps[${i}].token`);
     const isWrapped = token === wrapped;
     refuse(isWrapped || symbols.has(token), `reserveCaps[${i}] has no reviewed token entry`);
-    return { address: token, symbol: isWrapped ? 'WBLCH' : symbols.get(token)!, cap: BigInt(entry.cap), wrapped: isWrapped };
+    return {
+      address: token,
+      symbol: isWrapped ? 'WBLCH' : symbols.get(token)!,
+      cap: BigInt(entry.cap),
+      wrapped: isWrapped,
+    };
   });
   for (const pair of pairs) {
     refuse(
-      tokens.some((t) => t.address === pair.token0) && tokens.some((t) => t.address === pair.token1),
+      tokens.some((t) => t.address === pair.token0) &&
+        tokens.some((t) => t.address === pair.token1),
       'a planned pair holds an uncapped token',
     );
   }
@@ -153,7 +180,11 @@ export async function verifyDeploymentRecord(
     codeHashes,
     tokens,
     pairs,
-    gate: { decision: 'liquidity-enabled', finalizedNumber, finalizedHash: hash(g.finalized.hash, 'gate finalized hash') },
+    gate: {
+      decision: 'liquidity-enabled',
+      finalizedNumber,
+      finalizedHash: hash(g.finalized.hash, 'gate finalized hash'),
+    },
   };
 }
 

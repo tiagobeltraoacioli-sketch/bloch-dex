@@ -546,12 +546,19 @@ function Devnet4Application() {
         </div>
       </header>
       <main id="main-content" className="main-content">
-        <Devnet4Live load={loadDevnet4Record} rpc={DEVNET4_RPC} walletRpcUrl={DEVNET4_WALLET_RPC} wallet={wallet} />
+        <Devnet4Live
+          load={loadDevnet4Record}
+          rpc={DEVNET4_RPC}
+          walletRpcUrl={DEVNET4_WALLET_RPC}
+          wallet={wallet}
+        />
       </main>
       <footer className="footer">
         <div className="footer-inner">
           <span className="footer-status">Bloch L2 devnet4 · chain 700771 · not mainnet</span>
-          <span className="muted">Reviewed deployment record · Finalized reads · Explicit wallet transactions</span>
+          <span className="muted">
+            Reviewed deployment record · Finalized reads · Explicit wallet transactions
+          </span>
         </div>
       </footer>
     </div>

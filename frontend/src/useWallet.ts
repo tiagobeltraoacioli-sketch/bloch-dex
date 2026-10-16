@@ -127,5 +127,13 @@ export function useWallet() {
       }
     }
   }
-  return { wallets, account, provider: account ? provider : null, pending, error, connect, disconnect };
+  return {
+    wallets,
+    account,
+    provider: account ? provider : null,
+    pending,
+    error,
+    connect,
+    disconnect,
+  };
 }
