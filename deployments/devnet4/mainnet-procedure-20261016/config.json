@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.mainnet-deploy.v1",
+  "network": { "name": "bloch-l2-devnet4-rehearsal", "chainId": 700771, "genesisHash": "0xaec9844384415c8ba7157298fa13f7e6c951a6ba9332f516180a4aa22208fefa", "rehearsal": true },
+  "source": { "revision": "5d46244dd73e79e295384e9de0a7f158b7e82eea", "compiler": { "solc": "0.8.24", "evmVersion": "paris", "optimizer": true, "optimizerRuns": 200, "bytecodeHash": "none" } },
+  "deployer": { "address": "0x18ab18d38110751fb540c5cbc9d520b9486c2ebe", "startNonce": 0 },
+  "blochInc": { "address": "0x92b249fedcbfa52d6e0e973a23f1a2b5690d8c13", "codeHash": "0xb752e0c5bb305dd9dc24fc2cd59ea1a68ccc88c20b046a35ba7018554187683b" },
+  "wrappedNative": { "deploy": true },
+  "fees": { "feeTo": "blochInc" },
+  "reserveCaps": [
+    { "token": "WBLCH", "cap": "10000000000000000000" },
+    { "symbol": "bUSDC", "token": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6", "codeHash": "0x3ee441a107fee17b2cb47b251e9db6aeb8c4ce029c0bce6a039ab263ca2c281b", "bridgeBucketCapacity": "10000000000", "cap": "1000000000" }
+  ],
+  "initialPairs": [ { "tokenA": "WBLCH", "tokenB": "bUSDC" } ],
+  "gate": { "maxWrappedReserveCap": "10000000000000000000" }
+}

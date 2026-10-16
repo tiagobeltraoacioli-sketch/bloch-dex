@@ -2,6 +2,14 @@
 
 Status on 2026-10-14, branch `feat/dex-mainnet-readiness-20261014` (from `a050da9`).
 
+Update 2026-10-16: the §6 procedure ran live on devnet4 (chain 700771,
+rehearsal mode) against the real bridged bUSDC, with a test 2-of-3 multisig
+as Bloch Inc: plan, refusals, dry run, broadcast, record, gate refused before
+finality and returned `liquidity-enabled` after it, then a pilot seed, swaps
+and the multisig's fee redemption. Evidence and numbers:
+[DEVNET4-MAINNET-PROCEDURE.md](DEVNET4-MAINNET-PROCEDURE.md); rows D4, D5,
+D13, D16, D17 and F3 below reflect it.
+
 The Bloch L2 mainnet is **not live**: the L1 activation gate
 (`L2_SETTLEMENT_ACTIVATION_EPOCH`) is inert and `activation_policy()` returns
 `None` because the L2 genesis, proof keys and attestor set are not final.
@@ -43,8 +51,8 @@ be built), the L2 RPC items in D4/D13/D15 and the timestamp decision (F3).
 | D1 | Chain ID 700771 | Done | Mainnet 700770 from `deployments/networks.json`. 700771 and 31337 are accepted only with `network.rehearsal: true` **and** `--rehearsal`; any other non-mainnet ID and 8400/84001 are refused. The frontend reads the same file and stays in preview on devnet4 until a reviewed mainnet integration |
 | D2 | Genesis hash `0xaec98443…fefa` (devnet4) | Pending input (M9) | `network.genesisHash: null`; the driver and the gate compare it with `eth_getBlockByNumber(0)` |
 | D3 | Devnet4 addresses | Done | Never reused; mainnet addresses come from the plan (CREATE from the pinned deployer/nonce, CREATE2 for pairs) |
-| D4 | `scripts/devnet4/rpc_compat_proxy.py` fills `sha3Uncles`/`nonce` | Open | The mainnet runbook does not use the shim; the L2 RPC must return Ethereum-shaped blocks (L2 eth-compat work) |
-| D5 | L2 block timestamp = +1 per block | Open, M9 | See F3 |
+| D4 | `scripts/devnet4/rpc_compat_proxy.py` fills `sha3Uncles`/`nonce` | Resolved on devnet4 (2026-10-16); M9 for mainnet | The devnet4 settled RPC (18945) now returns `sha3Uncles` and `nonce`; forge and cast broadcast against it directly, without the shim ([DEVNET4-MAINNET-PROCEDURE.md](DEVNET4-MAINNET-PROCEDURE.md)). The shim is no longer needed; the mainnet node must ship the same RPC build |
+| D5 | L2 block timestamp = +1 per block | Resolved on devnet4; M9 for mainnet | Devnet4 blocks carry wall-clock timestamps from block 228 on (blocks ≤ 227 kept `timestamp = number`). See F3 |
 | D6 | One dev key was deployer, fee authority and treasury | Done | Two roles left: the fresh deployer (no power after deployment) and the Bloch Inc multisig (fee recipient, fixed) |
 | D7 | Test asset D4TEST | Done | `DeployMainnet` deploys only WBLCH (optional) and the core/periphery; no test assets, liquidity or approvals |
 | D8 | Cap values | Done (values), Pending input (wGnB bucket) | §3 |
@@ -52,9 +60,11 @@ be built), the L2 RPC items in D4/D13/D15 and the timestamp decision (F3).
 | D10 | Deployer nonce and addresses not pinned | Done | `DeployMainnet` pins deployer, start nonce, every address and runtime code hash |
 | D11 | WBLCH mode | Done | `wrappedNative: {deploy: true}` (recommended) or a reviewed predeploy |
 | D12 | Gate schema 1 pins little | Done | Schema 2 (below); schema 1 unchanged for the devnet4 record |
-| D13 | `finalized` tag and `bloch_finality` | Open, M9 | The gate fails closed without them; run it against an own node replaying from genesis |
+| D13 | `finalized` tag and `bloch_finality` | Served on devnet4; M9 for mainnet | The devnet4 settled RPC serves both (native FFG replay from the pinned genesis); the schema-2 gate refused before finality and returned `liquidity-enabled` after it ([DEVNET4-MAINNET-PROCEDURE.md](DEVNET4-MAINNET-PROCEDURE.md)). Run it against an own node replaying from genesis |
 | D14 | Legacy staging tooling hard-codes 700771 | Done | Removed (§5) |
 | D15 | EVM rules (`paris`, `BLOCKHASH` over 256 blocks, router creation ~3.9M gas) | Open, M9 | Mainnet L2 must provide them |
+| D16 | Gas estimation against `pending` fails on the L2 RPC ("pending Bloch derivation is unavailable") | Worked around in tooling | `forge script` uses its own simulation's gas (no RPC estimate), so `deploy-dex.mjs run` needs no change; every `cast send` in `scripts/devnet4/rehearse-mainnet-procedure.sh` passes an explicit `--gas-limit`. `eth_estimateGas` without a block tag (latest) works. One L2 block per settlement proof (10–20 min observed): forge needs `--timeout 1800` and the `--slow` broadcast of 5 transactions took ~1 h |
+| D17 | Bridged tokens must expose `bucketCapacity()` | Required | The real devnet4 bUSDC (v3) does; the devnet4 wGnB (`0xC756…6812`) does not (the call reverts) and was left out of the rehearsal. The mainnet wGnB token must expose `bucketCapacity()`, otherwise the `run` preflight and the gate refuse it |
 
 ## 2. Admin surfaces
 
@@ -142,7 +152,7 @@ deployment record in a separate reviewed change.
 |---|---|---|
 | F1 | `BDexLens` quotes ignored the per-pair reserve caps | **Fixed** (`test/ReserveCap.t.sol::testLensQuoteRespectsReserveCaps`) |
 | F2 | Gate schema 1 did not pin runtime code, sender, fee state or bindings | **Fixed** for mainnet by schema 2 |
-| F3 | L2 timestamps +1 per block: deadlines, permits, TWAPs in block units | **Open, M9.** Recommended: wall-clock L2 timestamps. (The fee path no longer depends on TWAP windows: the collector is not deployed.) |
+| F3 | L2 timestamps +1 per block: deadlines, permits, TWAPs in block units | **Resolved on devnet4** (wall-clock timestamps since block 228, observed 2026-10-16); **M9:** the mainnet L2 must use the same rule. (The fee path no longer depends on TWAP windows: the collector is not deployed.) |
 | F4 | Caps bind each pair, not aggregate exposure; anyone can fill a capped side up to its cap, pausing inflows on it | Residual by design. Every token of a planned pair must be capped |
 | F5 | No external audit | **Open (decision 6: later).** Required before stage 1 |
 | F6 | The fee recipient is permanent | By design (decision 2). If Bloch Inc's Safe must change, deploy a new factory; the Safe can rotate its own owners without touching the DEX |

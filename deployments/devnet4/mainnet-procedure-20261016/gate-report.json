@@ -1,0 +1,48 @@
+{
+  "domain": "postern.dex.finality-gate.v1",
+  "schemaVersion": 2,
+  "decision": "liquidity-enabled",
+  "chainId": 700771,
+  "genesisHash": "0xaec9844384415c8ba7157298fa13f7e6c951a6ba9332f516180a4aa22208fefa",
+  "finalized": {
+    "number": "414",
+    "hash": "0xccf96aa827401bbbc65b29e167b14d6fcc9542f82e2f370be8f5a6c5d035aaec"
+  },
+  "trust": "finalized: native FFG replay from the pinned genesis; safe: the local native node's head; no checkpoint signatures",
+  "wrappedReserveCap": "10000000000000000000",
+  "feeTo": "0x92b249fedcbfa52d6e0e973a23f1a2b5690d8c13",
+  "pairs": [
+    {
+      "address": "0xe437dfcb73c711a9511ced3660e5d38218213439",
+      "token0": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "token1": "0xde215b8672fb89692c89b9f5b75d09d4f6e3c2be"
+    }
+  ],
+  "transactions": [
+    {
+      "hash": "0xa6823a4d51fef9ab1bfea3a7f904be1f1534ddb474027b8b5dbb6f04e09554cc",
+      "blockNumber": "410",
+      "blockHash": "0x1542708a46bdcb761534d053f5688863b66108aa78bf33cd43198d348bd62456"
+    },
+    {
+      "hash": "0x04cf0566b8b29e42eb7b95bd1e19e98c9c661ac555b45581f45e3d8482209a82",
+      "blockNumber": "411",
+      "blockHash": "0xfd2f87934430e6695d2b1e5361f9d872d39d83b707a8f7223b05e344a6d85d9b"
+    },
+    {
+      "hash": "0x68ca6599f5bdf8b6c430927d7cedbe0d8bf48171079cebfe5f9afbd3e7f73e8b",
+      "blockNumber": "412",
+      "blockHash": "0xaffb1da6b19d172c5aee0958efff84c06bf0daf7f7ecfc11154d4043882a358f"
+    },
+    {
+      "hash": "0xb77acdddd73fecd91d33cdadc72d99c1c2c43b48731b9c0afa3b839c749ddd58",
+      "blockNumber": "413",
+      "blockHash": "0x99d5dba3969d44f2c752842dd5f23e49fb4bcee956a1a6f919e41e9b82ac260e"
+    },
+    {
+      "hash": "0x20ae868ab93ce2c55b08f6dd64f13eccb087ba1b7acb312e1ba57f8876b70fd8",
+      "blockNumber": "414",
+      "blockHash": "0xccf96aa827401bbbc65b29e167b14d6fcc9542f82e2f370be8f5a6c5d035aaec"
+    }
+  ]
+}

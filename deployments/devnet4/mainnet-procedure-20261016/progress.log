@@ -1,0 +1,58 @@
+2026-10-16T00:34:56Z deployer 0x18ab18d38110751fb540c5cbc9d520b9486c2ebe
+2026-10-16T00:34:56Z ownerA 0x9af5b5db50b520a5243927f55fcfa1b3b81efe47
+2026-10-16T00:34:56Z ownerB 0x27ebe9b4999dcd825cd187c233d25be99b550edc
+2026-10-16T00:34:56Z ownerC 0x5531d58cc6834d33ddbbff231f2e856cd34ef8a9
+2026-10-16T00:34:56Z funder 0xa3cfcb09a9fcf3cd1c98b5b2ecc1d676f8144c7d
+2026-10-16T00:34:56Z dev 0x72dc623d4c03c996a3d20ed2674f24570e8acf44
+2026-10-16T00:36:34Z sent multisig.deploy nonce 13 0x7bcfd91a1560194b4c8af86881c656b3e7cf3e39e39f06de828c4b4b5e796b1c
+2026-10-16T00:36:34Z sent fund.deployer nonce 14 0x66380ec4d64f4abbb8c220198247d922320806fb48ad66309a9956ea3357323a
+2026-10-16T00:36:34Z sent fund.ownerA nonce 15 0x56997bdd881c82e964ad1fb294f0b5568149bf2242ae2d4b50c9d36259af819b
+2026-10-16T00:36:35Z sent fund.ownerB nonce 16 0x3b74194089cd9c13461003d5cf13e270c6ca279dcbb4c4580b2f0fa1318c3bb7
+2026-10-16T00:45:15Z mined multisig.deploy: block/gas/price/status 409 431360 195782801 0x1
+2026-10-16T00:45:15Z mined fund.deployer: block/gas/price/status 409 21000 195782801 0x1
+2026-10-16T00:45:16Z mined fund.ownerA: block/gas/price/status 409 21000 195782801 0x1
+2026-10-16T00:45:16Z mined fund.ownerB: block/gas/price/status 409 21000 195782801 0x1
+2026-10-16T00:45:16Z Bloch Inc stand-in (RehearsalMultisig 2-of-3) 0x92b249fedcbfa52d6e0e973a23f1a2b5690d8c13
+2026-10-16T00:45:16Z configSha256 0x029893ff8f411365a4fcbec9b26e9c7c456778209528d0b2ae37043b51774482
+2026-10-16T00:45:16Z == a development chain without --rehearsal is refused
+2026-10-16T00:45:17Z == broadcast without --confirm is refused
+2026-10-16T00:45:53Z == dry run
+2026-10-16T00:45:54Z == broadcast (one transaction at a time; ~1 L2 block each)
+2026-10-16T01:45:29Z == record
+2026-10-16T01:45:30Z mined deploy.0: block/gas/price/status 410 612333 293812284 0x1
+2026-10-16T01:45:30Z mined deploy.1: block/gas/price/status 411 2456799 293070270 0x1
+2026-10-16T01:45:30Z mined deploy.2: block/gas/price/status 412 4074135 292423143 0x1
+2026-10-16T01:45:30Z mined deploy.3: block/gas/price/status 413 1938471 291858650 0x1
+2026-10-16T01:45:30Z mined deploy.4: block/gas/price/status 414 2135695 291185783 0x1
+2026-10-16T01:45:30Z == gate before finality must refuse
+2026-10-16T01:45:30Z == waiting until the finalized L2 block reaches 414
+2026-10-16T02:03:32Z gate: liquidity-enabled at 2026-10-16T02:03:31Z
+2026-10-16T02:04:05Z sent seed.approve nonce 31 0xafdddb22a14726dc37a94b552d23ca22c2df603d13d5319e8f67e9f51222d8c6
+2026-10-16T02:04:05Z sent seed.add nonce 32 0x6f7f6193a6f975b7c8e1c2750ecd56763e501d9350e26142c3c03bffbfa99be7
+2026-10-16T02:08:05Z mined seed.approve: block/gas/price/status 416 46184 289757989 0x1
+2026-10-16T02:08:05Z mined seed.add: block/gas/price/status 416 287069 289757989 0x1
+2026-10-16T02:08:05Z reserves after seed: 10000000 500000000000000000 1792116463 (token0 0x1b7c0fb59f34683cd9214566636e63a0f7e092f6)
+2026-10-16T02:08:06Z sent trade.1.usd-to-blch nonce 33 0xbdd07a4c289c39dd904db58ccb45d6380246ae977ba4343b2af9ea05cdcc26f7
+2026-10-16T02:08:06Z sent trade.1.blch-to-usd nonce 34 0x0d2008e318a3fa58c5e6003d47edd3da99ca8ef8c2c38d49e2d7e20150b1259b
+2026-10-16T02:08:06Z sent trade.2.usd-to-blch nonce 35 0x6748e5aeac877648259d9de9e1476838da77327d71e72b5a4dce56c6c533691e
+2026-10-16T02:08:06Z sent trade.2.blch-to-usd nonce 36 0x365b55e1946ef6cf07e04f81950d578d7f4ce05a2297d36f7cc6db8d28df6382
+2026-10-16T02:08:06Z sent trade.3.usd-to-blch nonce 37 0xc4a47cfc59ed8cf8d1e81c68143030b9be0c9cc2d072aa8874b0bfab7563151d
+2026-10-16T02:08:06Z sent trade.3.blch-to-usd nonce 38 0x069ce15f45e88df47d7f9f3c0c3166865934f575b06c59025d9f7bf1faf0410b
+2026-10-16T02:08:06Z sent trade.top-up nonce 39 0xf6a17403a0d97090fc5ad4699323ae3b8e07a7a23af5d0fbb9ebe4f9a3da745b
+2026-10-16T02:19:47Z mined trade.1.usd-to-blch: block/gas/price/status 417 173178 289010645 0x1
+2026-10-16T02:19:47Z mined trade.1.blch-to-usd: block/gas/price/status 417 110992 289010645 0x1
+2026-10-16T02:19:47Z mined trade.2.usd-to-blch: block/gas/price/status 417 136492 289010645 0x1
+2026-10-16T02:19:47Z mined trade.2.blch-to-usd: block/gas/price/status 417 110992 289010645 0x1
+2026-10-16T02:19:47Z mined trade.3.usd-to-blch: block/gas/price/status 417 136492 289010645 0x1
+2026-10-16T02:19:48Z mined trade.3.blch-to-usd: block/gas/price/status 417 110992 289010645 0x1
+2026-10-16T02:19:48Z mined trade.top-up: block/gas/price/status 417 180424 289010645 0x1
+2026-10-16T02:19:48Z protocol fee minted to Bloch Inc: 735375076 LP
+2026-10-16T02:19:48Z sent fee.transfer.ownerA nonce 0 0x8cc6782a38a2458522de1c2a183a74eb2aa2ffe7f1f2ef6426c4621bb511901b
+2026-10-16T02:19:48Z sent fee.transfer.ownerB nonce 0 0xf299e3235b1cf240a611e3d312154e92eb62d3ea6212ee005ae869512dde0228
+2026-10-16T02:32:49Z mined fee.transfer.ownerA: block/gas/price/status 418 72758 288298012 0x1
+2026-10-16T02:32:49Z mined fee.transfer.ownerB: block/gas/price/status 418 103841 288298012 0x1
+2026-10-16T02:32:49Z sent fee.burn.ownerA nonce 1 0xddf42d8d5af7faefa3c83acaa55e058259af3607c94d46739a5db236c90b8686
+2026-10-16T02:32:50Z sent fee.burn.ownerB nonce 1 0xc8b419e397484e107aefd0e7b8858477121bd8ebcd9e01a29be4242c0c94ea26
+2026-10-16T02:44:31Z mined fee.burn.ownerA: block/gas/price/status 419 204541 287548457 0x1
+2026-10-16T02:44:31Z mined fee.burn.ownerB: block/gas/price/status 419 72570 287548457 0x1
+2026-10-16T02:44:31Z Bloch Inc redeemed 735375076 LP -> 181329660471387 WBLCH wei + 2992 bUSDC base units
