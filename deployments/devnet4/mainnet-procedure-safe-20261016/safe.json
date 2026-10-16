@@ -1,0 +1,29 @@
+{
+  "address": "0xc4bee72f3f47e855a0e88356f8f7074631a12031",
+  "codeHash": "0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c",
+  "safe": {
+    "version": "1.4.1",
+    "singleton": {
+      "address": "0xa4c5b945978f770588b6ecb45f2468bec1ba8430",
+      "codeHash": "0xb1f926978a0f44a2c0ec8fe822418ae969bd8c3f18d61e5103100339894f81ff"
+    },
+    "fallbackHandler": {
+      "address": "0x6b021610fad4921cd4c4ff46e54d7d7d506a0274",
+      "codeHash": "0x7c6007a5d711cea8dfd5d91f5940ec29c7f200fe511eb1fc1397b367af3c42f9"
+    },
+    "threshold": 3,
+    "owners": [
+      "0x1e76c29c10705d1809afa40dd6aeac0bb49aa3f3",
+      "0x38c310f30f578968cb9c9e1347f5d152c00fd529",
+      "0x4ae37a4d469c72590e580ab3e42623413bc5bd4c",
+      "0x9639be8c5464536bcc59d9e48233ae7b07fcb0f8",
+      "0xc6c2e5fd23d8b40329d60eb2c8bd918dfb3fd698"
+    ]
+  },
+  "proxyFactory": {
+    "address": "0x343a2a8aa3be8bb089d0119060b4261638b0a664",
+    "codeHash": "0x50c3cdc4074750a7a974204a716c999edd37482f907608d960b2b025ee0b3317"
+  },
+  "saltNonce": "20261016",
+  "bootstrap": "0x4cf4511b16b1ef0fe0a450667f86d74d66642b0f"
+}

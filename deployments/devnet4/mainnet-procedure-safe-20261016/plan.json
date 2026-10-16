@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.mainnet-plan.v1",
+  "configSha256": "0x8ea4bd774d26f58827b2a0b41090889da455e38e8976b156b3e842be96e79828",
+  "chain": {
+    "id": 700771,
+    "genesisHash": "0xaec9844384415c8ba7157298fa13f7e6c951a6ba9332f516180a4aa22208fefa",
+    "rehearsal": true
+  },
+  "source": {
+    "revision": "fb914d4542765479a9ee74b14f46fd518f98f44d",
+    "compiler": {
+      "solc": "0.8.24",
+      "evmVersion": "paris",
+      "optimizer": true,
+      "optimizerRuns": 200,
+      "bytecodeHash": "none"
+    }
+  },
+  "deployer": "0xa9ad7020f7351e990d43c2cec393440c8be72809",
+  "startNonce": 0,
+  "finalNonce": 6,
+  "deployWrapped": true,
+  "feeTo": "0xc4bee72f3f47e855a0e88356f8f7074631a12031",
+  "roles": {
+    "blochInc": {
+      "address": "0xc4bee72f3f47e855a0e88356f8f7074631a12031",
+      "codeHash": "0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c",
+      "safe": {
+        "version": "1.4.1",
+        "singleton": {
+          "address": "0xa4c5b945978f770588b6ecb45f2468bec1ba8430",
+          "codeHash": "0xb1f926978a0f44a2c0ec8fe822418ae969bd8c3f18d61e5103100339894f81ff"
+        },
+        "fallbackHandler": {
+          "address": "0x6b021610fad4921cd4c4ff46e54d7d7d506a0274",
+          "codeHash": "0x7c6007a5d711cea8dfd5d91f5940ec29c7f200fe511eb1fc1397b367af3c42f9"
+        },
+        "threshold": 3,
+        "owners": [
+          "0x1e76c29c10705d1809afa40dd6aeac0bb49aa3f3",
+          "0x38c310f30f578968cb9c9e1347f5d152c00fd529",
+          "0x4ae37a4d469c72590e580ab3e42623413bc5bd4c",
+          "0x9639be8c5464536bcc59d9e48233ae7b07fcb0f8",
+          "0xc6c2e5fd23d8b40329d60eb2c8bd918dfb3fd698"
+        ]
+      }
+    }
+  },
+  "reserveCaps": [
+    {
+      "token": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "cap": "10000000000000000000"
+    },
+    {
+      "token": "0xb2b4952b6e57e589109af764859886e236798ad4",
+      "cap": "100000000"
+    },
+    {
+      "token": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "cap": "1000000000"
+    }
+  ],
+  "externalTokens": [
+    {
+      "token": "0xb2b4952b6e57e589109af764859886e236798ad4",
+      "symbol": "wGSMH",
+      "codeHash": "0xa7602699759ecff36f21ef98bcd31f8a2f3cd82b79ca742472978a6455c0a7d5",
+      "bridgeBucketCapacity": "1000000000"
+    },
+    {
+      "token": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "symbol": "bUSDC",
+      "codeHash": "0x3ee441a107fee17b2cb47b251e9db6aeb8c4ce029c0bce6a039ab263ca2c281b",
+      "bridgeBucketCapacity": "10000000000"
+    }
+  ],
+  "contracts": {
+    "wrappedNative": {
+      "address": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "codeHash": "0x09b5b121f866f2c565e1ffead9867bb0a5a08e07369b239ccd38e8d1a73a928c"
+    },
+    "factory": {
+      "address": "0x58b91f9e32207ea61efa30212b5f721e7b15ac86",
+      "codeHash": "0x6817f9fcb7df9acba2ca470accb8c1fd9f0861b86758dd34c9fa46231d8fa807"
+    },
+    "router": {
+      "address": "0xd22f09fd791870733b2d6fd4c399f93796546fc0",
+      "codeHash": "0x3a272425e979f34c8d869ce3edce65399d0534ef3b293021141f509784fcd83f"
+    },
+    "lens": {
+      "address": "0x412b79fead3c35ad1b89b5744f0040f97c05063c",
+      "codeHash": "0x021ff133abce029ff42c88b3bcbe03a701ffaba66c06e6497760c9d5e3e99e5f"
+    }
+  },
+  "pairInitCodeHash": "0x2249ef38f618407ce9328e89491648a4e8ad4b234e70a538ef9d2096b1ceb820",
+  "pairCodeHash": "0xc3d554f4ce3eb48a4bc510260e9ad1bd68d23082ce38cac571e0daf5cf5abe7d",
+  "pairs": [
+    {
+      "address": "0x446b80d4a8a7fc49647e537bc706172ad10b50f4",
+      "token0": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "token1": "0xb2b4952b6e57e589109af764859886e236798ad4",
+      "codeHash": "0xc3d554f4ce3eb48a4bc510260e9ad1bd68d23082ce38cac571e0daf5cf5abe7d"
+    },
+    {
+      "address": "0xd662252c89e6a0f62e0bd6500f45e319caac7fe3",
+      "token0": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "token1": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "codeHash": "0xc3d554f4ce3eb48a4bc510260e9ad1bd68d23082ce38cac571e0daf5cf5abe7d"
+    }
+  ],
+  "steps": [
+    {
+      "nonce": 0,
+      "action": "deploy wrappedNative",
+      "address": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "initCodeHash": "0x9946e0055b0872f93404a801850f387f3b741ef35f90d0bc71b8c165fcd9b007"
+    },
+    {
+      "nonce": 1,
+      "action": "deploy factory",
+      "address": "0x58b91f9e32207ea61efa30212b5f721e7b15ac86",
+      "initCodeHash": "0x76a0b486cd7c02020a556eb5e9fa98a6e76fe307ac6fb44100efe991ca0f2cef"
+    },
+    {
+      "nonce": 2,
+      "action": "deploy router",
+      "address": "0xd22f09fd791870733b2d6fd4c399f93796546fc0",
+      "initCodeHash": "0xb8b5d145c7eefa9912073439beeddd9329f1756f80b6af6f3d6e9955d8aca934"
+    },
+    {
+      "nonce": 3,
+      "action": "deploy lens",
+      "address": "0x412b79fead3c35ad1b89b5744f0040f97c05063c",
+      "initCodeHash": "0xf4785e128e9454e7abe4d3518e069f41cbc378ab33a2e74bfba3d91e4ecaeca0"
+    },
+    {
+      "nonce": 4,
+      "action": "createPair",
+      "address": "0x446b80d4a8a7fc49647e537bc706172ad10b50f4",
+      "tokenA": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "tokenB": "0xb2b4952b6e57e589109af764859886e236798ad4"
+    },
+    {
+      "nonce": 5,
+      "action": "createPair",
+      "address": "0xd662252c89e6a0f62e0bd6500f45e319caac7fe3",
+      "tokenA": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "tokenB": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6"
+    }
+  ],
+  "gate": {
+    "maxWrappedReserveCap": "10000000000000000000"
+  }
+}

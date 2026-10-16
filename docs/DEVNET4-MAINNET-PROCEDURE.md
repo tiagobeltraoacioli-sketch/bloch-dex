@@ -332,3 +332,151 @@ against 0.04 BLCH at the mid price.
 
 The two multi-hop paths run through the router across both pools. The wGSMH
 token exposes `bucketCapacity()` and passed the preflight and the gate (D17).
+
+# Third run: Bloch Inc as a real Safe v1.4.1, 3 of 5 (2026-10-16)
+
+Runbook step 0 was done for real, then the procedure ran again with the DEX fee
+recipient pinned to that Safe. Bloch Inc is the **official Safe v1.4.1**, not a
+test multisig.
+
+The new gate checks were exercised live:
+- **Config:** the `blochInc.safe` pin.
+- **Preflight:** at `latest`.
+- **Schema-2 gate:** at the finalized block.
+
+**Setup:**
+- Driver: `scripts/devnet4/rehearse-mainnet-procedure.sh` in Safe mode (`BLOCH_INC_MODE=safe`).
+- Revision: `fb914d4542765479a9ee74b14f46fd518f98f44d`.
+- Records: `deployments/devnet4/mainnet-procedure-safe-20261016/` (including
+  `safe.json` and `safe.fee.txt`).
+
+## Step 0: the Safe
+
+**Bytecode.** It is the build shipped in the npm package
+`@safe-global/safe-contracts@1.4.1` (tarball sha256
+`8803f7cf26e2c58300b8136342faa7b8bce59436e300f52115fa25b095e0bf79`). Before
+sending, the script checks that each runtime hash equals the canonical
+`codeHash` in `@safe-global/safe-deployments` (src/assets/v1.4.1). It checks
+again on chain after deployment.
+
+**Fallback path.** There is no Safe singleton factory on chain 700771, so:
+1. A fresh bootstrap key (`0x4cf4511b16b1ef0fe0a450667f86d74d66642b0f`) was
+   funded with 0.03 BLCH (tx `0x7d1b5c32…8058`, block 462).
+2. It deployed the three contracts by CREATE.
+3. It created the proxy with `createProxyWithNonce`.
+
+All four transactions landed in block 463:
+
+| Contract | Address | Runtime code hash (= canonical v1.4.1) | Tx | Gas |
+|---|---|---|---|---|
+| SafeL2 singleton | `0xa4c5b945978f770588b6ecb45f2468bec1ba8430` | `0xb1f92697…81ff` | `0x394a61da84bb8333ea8f4c6a0d79680ab61d670482eed8969de4a1193c239bfd` | 5,321,999 |
+| SafeProxyFactory | `0x343a2a8aa3be8bb089d0119060b4261638b0a664` | `0x50c3cdc4…3317` | `0x13348ae6093cc77003c9dcd2d2988c3177cc5475a4adf4af5111a301783a8c33` | 711,231 |
+| CompatibilityFallbackHandler | `0x6b021610fad4921cd4c4ff46e54d7d7d506a0274` | `0x7c6007a5…42f9` | `0x8d1c2be1f9dcb64eca24377af7668a8c6efefc36c2e64f6aa69134527f554894` | 1,267,726 |
+| **Bloch Inc Safe** (proxy, `createProxyWithNonce`, salt 20261016) | `0xc4bee72f3f47e855a0e88356f8f7074631a12031` | `0xd7d408eb…fb4c` | `0xefc49a445b276c8a44687ddefe74967d348801a8f9853542a4891ec973c638d7` | 352,836 |
+
+The four transactions used 7,653,792 gas, which cost the bootstrap key
+0.003985267 BLCH. The bootstrap key holds nothing else.
+
+**Owners.** The Safe is **3 of 5**. Five fresh keys stand in for the hardware
+wallets:
+- `0x1e76c29c10705d1809afa40dd6aeac0bb49aa3f3`
+- `0x38c310f30f578968cb9c9e1347f5d152c00fd529`
+- `0x4ae37a4d469c72590e580ab3e42623413bc5bd4c`
+- `0x9639be8c5464536bcc59d9e48233ae7b07fcb0f8`
+- `0xc6c2e5fd23d8b40329d60eb2c8bd918dfb3fd698`
+
+**Checks on chain after deployment** (all passed):
+- slot 0 is the singleton;
+- the fallback-handler slot is the handler;
+- the guard slot is 0;
+- `getModulesPaginated` returns no module;
+- `getThreshold()` is 3;
+- `getOwners()` is the set above;
+- `VERSION()` is 1.4.1.
+
+## DEX deployment with feeTo = the Safe
+
+**Config:**
+- SHA-256 `0x8ea4bd774d26f58827b2a0b41090889da455e38e8976b156b3e842be96e79828`;
+- `blochInc` = the Safe, with its `safe` pin;
+- both pilot pairs as in the mainnet config.
+
+**Refusals and dry run.** The refusals behaved as before. The dry run and
+broadcast preflights verified the Safe pin at `latest`.
+
+**Broadcast.** Deployer `0xa9ad7020f7351e990d43c2cec393440c8be72809`, from
+11:15Z to 12:28Z:
+
+| Nonce | Action | Address | Tx | Block | Gas |
+|---|---|---|---|---|---|
+| 0 | deploy WBLCH | `0x4a644af569f211ac1b845f2afabffb49eb29d82c` | `0x9379d168947b30e62f5587fc113e237a79cb2bc853c4a6ecf1a3a4f8c0095f85` | 465 | 612,333 |
+| 1 | deploy factory (feeTo = Safe) | `0x58b91f9e32207ea61efa30212b5f721e7b15ac86` | `0x0a3e5f699d067a9194df787b6bdb5d471d3a9ce15ee142f3d28225e33331b858` | 466 | 2,481,605 |
+| 2 | deploy router | `0xd22f09fd791870733b2d6fd4c399f93796546fc0` | `0xe094a65e2a5e6e52eb45b153316a076d07ece972186e368b24623fb2efdc5900` | 467 | 4,074,147 |
+| 3 | deploy lens | `0x412b79fead3c35ad1b89b5744f0040f97c05063c` | `0x0b7d854a0d7dc3cffc1b940a738056b6d52bea94277e1f4395fe65bf212eb192` | 468 | 1,938,483 |
+| 4 | createPair WBLCH/wGSMH | `0x446b80d4a8a7fc49647e537bc706172ad10b50f4` | `0xfedb3eb425bf8655a9fd3e4ba7641a2a8a52e3dbefab995b116b36ef631da1a3` | 469 | 2,135,685 |
+| 5 | createPair WBLCH/bUSDC | `0xd662252c89e6a0f62e0bd6500f45e319caac7fe3` | `0x20c0d83ccedd6631a45d225c423bc3892d4cbf2d6c6d4271d4fb856c8f45016e` | 470 | 2,118,595 |
+
+**Totals:** 13,360,848 gas, costing the deployer 0.006926075 BLCH at
+~0.52 gwei.
+
+**Gate:**
+- **Before finality (12:28:57Z): refused.** Message:
+  `transaction 0xfedb3eb4…a1a3 is not finalized`.
+- **After finality (12:46:58Z): `liquidity-enabled`** at finalized block 470
+  (`0x361b4c30…887f`). The report includes
+  `blochIncSafe: {address 0xc4be…2031, threshold 3, owners (5), singleton 0xa4c5…8430}`.
+
+## Pilot liquidity and protocol fee
+
+| Step | Sender | Tx | Block | Gas | Result |
+|---|---|---|---|---|---|
+| approve + seed WBLCH/bUSDC | dev | `0xef308ac7…3e2b`, `0x94ff480e771ab2fc29af5c1f7fc28eb82020b8a021561eb530ad5ad1512cac07` | 472 | 46,184 + 286,316 | 1 bUSDC + 0.060606 BLCH (16.5 bUSDC/BLCH) |
+| approve + seed WBLCH/wGSMH | holder | `0xf2c84cef…8989`, `0x19093692190d7ad0934082f6616e02c4d9cf5c1cffa8a380377e22b110e06c6e` | 472 | 46,184 + 266,400 | 0.05 wGSMH + 0.01 BLCH (0.2 BLCH/wGSMH) |
+| swap 0.3 bUSDC → BLCH | dev | `0xe486049e5e2ae268910aafc19aef04ec1dd4440474ab7bd49c31b93a1f681f6a` | 473 | 173,178 | out 0.013953716209123798 BLCH |
+| swap 0.02 BLCH → bUSDC | dev | `0xd9abadbeb5fcd15a680500b9608226f2b4f39a09a2bf2a093f9049c3db2f44ed` | 473 | 110,992 | out 0.389263 bUSDC |
+| top-up (fee mint) | dev | `0x93aee65d989ba22936f2d7eb2f925db41deb9f62756a7ab67b42ef5b2c8d713b` | 473 | 180,865 | Mint 0.1 bUSDC / 0.007318506 WBLCH; **32,696,833 LP to the Safe** |
+
+**Redemption by the Safe.** Both calls are `execTransaction` with **3 of 5**
+signatures. The signatures are packed in ascending owner order (65 bytes each,
+`v` 27/28, over the EIP-712 Safe transaction hash). The signers were:
+- `0x1e76…a3f3`
+- `0x4ae3…bd4c`
+- `0xc6c2…d698`
+
+The funder (`0xa3cf…4c7d`) submitted both calls, so the owners never needed
+gas.
+
+**Two signatures refused.** First, an `eth_call` of the same transfer with only
+two signatures reverted with **`GS020`**.
+
+| Safe nonce | Call | safeTxHash | Tx | Block | Gas |
+|---|---|---|---|---|---|
+| 0 | `pair.transfer(pair, 32696833)` | `0x4fc55b57c2a15e8c99a183e4187f860e29f0fd2373b801443d2176601a83c5a8` | `0x5216ed4972536bc338993dcbd37ed0d28954e3231d1a1b9f85a31cf77cf59f5f` | 474 | 118,733 |
+| 1 | `pair.burn(Safe)` | `0x4e5134ead3caf971fe84dd8c06a911b936a1814ad5305b68c8ff3a2eb040e4fc` | `0x3323f0da1996fc13166da4687d9472a1db1eae2245f8edc57e2affbc3b76bff6` | 474 | 217,095 |
+
+**Result.** Both transactions emitted `ExecutionSuccess`, and the Safe nonce is
+now 2. The Safe now holds **120 bUSDC base units + 8,851,266,436,457 WBLCH wei**.
+Its fee LP balance is 0.
+
+Unlike the test multisig, a Safe signs over an explicit nonce. Both
+transactions were therefore signed in advance and mined in the same block.
+
+### State at 2026-10-16T13:17:24Z (latest 474, finalized 472)
+
+**Pair reserves:**
+
+| Pair | Reserves |
+|---|---|
+| WBLCH/wGSMH | 0.01 WBLCH / 0.05 wGSMH |
+| WBLCH/bUSDC | 1.010617 bUSDC / 0.073961999394870504 WBLCH |
+
+**Account balances:**
+
+| Account | bUSDC | wGSMH | BLCH | LP |
+|---|---|---|---|---|
+| Dev | 3.898033 | n/a | 0.458366 | 273,217,753,761 (bUSDC pair) |
+| Holder | 0.428785 | 0.25 | 0.188809 | 223,606,796,749 (wGSMH pair) |
+
+The funder ends at 0.505694 BLCH, nonce 24.
+
+The earlier two-pair deployment (second run) is unchanged.

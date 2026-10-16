@@ -12,6 +12,10 @@ D13, D16, D17 and F3 below reflect it.
 A second run the same day deployed both pilot pairs exactly as the mainnet
 config (WBLCH/wGSMH with the real devnet4 wGSMH, WBLCH/bUSDC), passed the
 gate and executed multi-hop swaps across both pools.
+A third run deployed the official Safe v1.4.1 (3 of 5) as Bloch Inc per step 0,
+a DEX with that Safe as the fixed fee recipient, and redeemed the protocol fee
+with `execTransaction` and 3 packed owner signatures; the new Safe checks of
+the preflight and the gate passed live (step 0 below).
 
 The Bloch L2 mainnet is **not live**: the L1 activation gate
 (`L2_SETTLEMENT_ACTIVATION_EPOCH`) is inert and `activation_policy()` returns
@@ -181,10 +185,21 @@ Kept (the mainnet path):
 - `scripts/staging/finality-gate.mjs` + `check-finality-gate.mjs`: schema 1
   (devnet4 record) and schema 2 (mainnet).
 - `scripts/staging/rehearse-deploy-anvil.sh`: full local rehearsal on anvil
-  (chain 700770 by default) with a test 2-of-3 multisig as Bloch Inc and test
-  tokens exposing `bucketCapacity()` as wGSMH and bUSDC: plan, refusals, dry
-  run, broadcast, record, on-chain hash check, gate before/after finality,
-  over-cap deposit reverts, fee accrues to the multisig and it redeems it.
+  (chain 700770 by default).
+  - **Bloch Inc.** On the mainnet path it is the official Safe v1.4.1, 3 of 5,
+    deployed from
+    `SAFE_ARTIFACTS=<@safe-global/safe-contracts@1.4.1 build/artifacts>`; the
+    path refuses to run without it. On the `--rehearsal` path it is a test
+    2-of-3 multisig.
+  - **Tokens.** Test tokens exposing `bucketCapacity()` stand in for wGSMH and
+    bUSDC.
+  - **Coverage:**
+    - plan, refusals, dry run, broadcast and record;
+    - on-chain hash check;
+    - gate before and after finality;
+    - an over-cap deposit reverts;
+    - the fee accrues to Bloch Inc, which redeems it: on the Safe path with
+      `execTransaction` and 3 packed signatures, after 2 signatures are refused.
 - Frontend: `frontend/src/network-identity.ts` reads `deployments/networks.json`.
 
 Removed on 2026-10-14 (git history keeps them, last at `84b3f03`): the
@@ -241,10 +256,41 @@ Before recording it in the config, verify on the own node: proxy runtime code
 hash; storage slot 0 (the singleton) = the reviewed v1.4.1 singleton;
 `getThreshold() == 3`; `getOwners()` = the five reviewed hardware-wallet
 addresses; no modules (`getModulesPaginated`), no guard; the reviewed fallback
-handler. Then set `blochInc = {address, codeHash}` (the proxy's runtime code
-hash). The DEX tooling checks that it is a contract with that code hash; the
-owner/threshold checks above are manual (pinning them in the gate is a
-possible follow-up once the owners are known).
+handler. Then set `blochInc = {address, codeHash, safe}`. Here `codeHash` is
+the proxy's runtime code hash, and `safe` is:
+
+```
+{version: "1.4.1", singleton: {address, codeHash}, fallbackHandler: {address, codeHash}, threshold, owners}
+```
+
+These checks are pinned (since 2026-10-16), so none of them is manual any more.
+
+Config validation, on the mainnet:
+- requires the `safe` pin;
+- requires the official v1.4.1 runtimes (`SAFE_V141` in
+  `scripts/staging/dex-deploy-config.mjs`):
+  - the proxy is `0xd7d408eb…fb4c`;
+  - the singleton is `Safe` `0x1fe2df85…e1c4` or `SafeL2` `0xb1f92697…81ff`;
+  - the fallback handler is `0x7c6007a5…42f9`;
+- requires a threshold of at least 2;
+- forbids the deployer and the Safe itself as owners.
+
+On chain, the `run` preflight (at `latest`) and the schema-2 gate (at the
+finalized block) check:
+- slot 0 is the singleton;
+- the fallback-handler slot is the pinned handler;
+- the guard slot is empty;
+- no module is enabled;
+- `getThreshold()` and `getOwners()` (as a set) match the pin;
+- `VERSION()` is `1.4.1`;
+- the singleton and handler runtime code hashes match the pin.
+
+**Proven live on devnet4.** See
+[DEVNET4-MAINNET-PROCEDURE.md](DEVNET4-MAINNET-PROCEDURE.md), third run.
+
+**Sources:** the official bytecode is the build in the npm package
+`@safe-global/safe-contracts@1.4.1`. Its runtime hashes equal
+safe-deployments' canonical `codeHash`.
 
 ### Steps
 
@@ -261,7 +307,8 @@ possible follow-up once the owners are known).
    A second reviewer regenerates it on another machine; the files must be
    byte-identical. Commit the plan (every address, nonce, init and runtime
    code hash, the fee recipient and the pair init code hash).
-4. **Rehearse locally.** `scripts/staging/rehearse-deploy-anvil.sh <revision>`
+4. **Rehearse locally.**
+   `SAFE_ARTIFACTS=… scripts/staging/rehearse-deploy-anvil.sh <revision>`
    must end with `REHEARSAL OK`.
 5. **Fund the deployer** with gas only; send nothing else from it.
 6. **Dry run** against the own node:
@@ -297,6 +344,12 @@ deployer's current nonce, re-plan and re-review.
 - runtime code hash of WBLCH, factory, router, lens, both pairs, both bridged
   tokens and the **Bloch Inc Safe proxy** equals the plan (the Safe must be a
   contract);
+- the **Bloch Inc Safe pin** holds (required on chain 700770):
+  - the singleton (slot 0) and fallback handler are the pinned contracts, with
+    the pinned runtime code;
+  - no guard and no module is set;
+  - `getThreshold()` and `getOwners()` equal the pin;
+  - `VERSION()` is 1.4.1;
 - `factory.INIT_CODE_PAIR_HASH()` equals the plan (`0x2249ef38…b820` at this
   revision);
 - `factory.feeTo()` is Bloch Inc (the fee is on and goes nowhere else; the
@@ -316,5 +369,6 @@ The deploy script additionally asserts every pair is empty and
 ### What the gate does not prove
 
 It trusts the RPC it is given: run it against a node you operate. It does not
-verify the L2 proof system, the bridges' security, the Safe's owners and
-threshold (step 0 manual checks), token economics or the frontend.
+verify the L2 proof system, the bridges' security, that the pinned owner keys
+are really hardware wallets held by the right people, token economics or the
+frontend.

@@ -1,0 +1,70 @@
+{
+  "domain": "postern.dex.finality-gate.v1",
+  "schemaVersion": 2,
+  "decision": "liquidity-enabled",
+  "chainId": 700771,
+  "genesisHash": "0xaec9844384415c8ba7157298fa13f7e6c951a6ba9332f516180a4aa22208fefa",
+  "finalized": {
+    "number": "470",
+    "hash": "0x361b4c303a644eeaede2cd060d560ffbe5aad7aa934a6587edbad31e978e887f"
+  },
+  "trust": "finalized: native FFG replay from the pinned genesis; safe: the local native node's head; no checkpoint signatures",
+  "wrappedReserveCap": "10000000000000000000",
+  "feeTo": "0xc4bee72f3f47e855a0e88356f8f7074631a12031",
+  "blochIncSafe": {
+    "address": "0xc4bee72f3f47e855a0e88356f8f7074631a12031",
+    "threshold": 3,
+    "owners": [
+      "0x1e76c29c10705d1809afa40dd6aeac0bb49aa3f3",
+      "0x38c310f30f578968cb9c9e1347f5d152c00fd529",
+      "0x4ae37a4d469c72590e580ab3e42623413bc5bd4c",
+      "0x9639be8c5464536bcc59d9e48233ae7b07fcb0f8",
+      "0xc6c2e5fd23d8b40329d60eb2c8bd918dfb3fd698"
+    ],
+    "singleton": "0xa4c5b945978f770588b6ecb45f2468bec1ba8430"
+  },
+  "pairs": [
+    {
+      "address": "0x446b80d4a8a7fc49647e537bc706172ad10b50f4",
+      "token0": "0x4a644af569f211ac1b845f2afabffb49eb29d82c",
+      "token1": "0xb2b4952b6e57e589109af764859886e236798ad4"
+    },
+    {
+      "address": "0xd662252c89e6a0f62e0bd6500f45e319caac7fe3",
+      "token0": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "token1": "0x4a644af569f211ac1b845f2afabffb49eb29d82c"
+    }
+  ],
+  "transactions": [
+    {
+      "hash": "0x9379d168947b30e62f5587fc113e237a79cb2bc853c4a6ecf1a3a4f8c0095f85",
+      "blockNumber": "465",
+      "blockHash": "0x11d295653ebf0f16c28de0da1c97781580ac40bea0ef3ec69ac6b305a3f2f49c"
+    },
+    {
+      "hash": "0x0a3e5f699d067a9194df787b6bdb5d471d3a9ce15ee142f3d28225e33331b858",
+      "blockNumber": "466",
+      "blockHash": "0xb526d025e2af6a493f52e107fc873ba3c3a65d9a0a4c4c135628e5f1f3d27f83"
+    },
+    {
+      "hash": "0xe094a65e2a5e6e52eb45b153316a076d07ece972186e368b24623fb2efdc5900",
+      "blockNumber": "467",
+      "blockHash": "0xeaac3dd00c8f871e201e437ab9b8a2a93a6a6238703ba9550047fe3b6d9a2abd"
+    },
+    {
+      "hash": "0x0b7d854a0d7dc3cffc1b940a738056b6d52bea94277e1f4395fe65bf212eb192",
+      "blockNumber": "468",
+      "blockHash": "0x10dfcecfe21d12c6dc3cb51a4c7d3dba6cf542ec6557a547b7a3b21aeaaef265"
+    },
+    {
+      "hash": "0xfedb3eb425bf8655a9fd3e4ba7641a2a8a52e3dbefab995b116b36ef631da1a3",
+      "blockNumber": "469",
+      "blockHash": "0x443636757630639f15099918375ec9a13b9d0287fc0a11f74f2c93bf21e01eff"
+    },
+    {
+      "hash": "0x20c0d83ccedd6631a45d225c423bc3892d4cbf2d6c6d4271d4fb856c8f45016e",
+      "blockNumber": "470",
+      "blockHash": "0x361b4c303a644eeaede2cd060d560ffbe5aad7aa934a6587edbad31e978e887f"
+    }
+  ]
+}

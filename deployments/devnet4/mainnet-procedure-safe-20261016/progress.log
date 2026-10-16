@@ -1,0 +1,61 @@
+2026-10-16T10:44:50Z deployer 0xa9ad7020f7351e990d43c2cec393440c8be72809
+2026-10-16T10:44:50Z bootstrap 0x4cf4511b16b1ef0fe0a450667f86d74d66642b0f
+2026-10-16T10:44:50Z safe1 0xc6c2e5fd23d8b40329d60eb2c8bd918dfb3fd698
+2026-10-16T10:44:50Z safe2 0x38c310f30f578968cb9c9e1347f5d152c00fd529
+2026-10-16T10:44:50Z safe3 0x1e76c29c10705d1809afa40dd6aeac0bb49aa3f3
+2026-10-16T10:44:50Z safe4 0x4ae37a4d469c72590e580ab3e42623413bc5bd4c
+2026-10-16T10:44:50Z safe5 0x9639be8c5464536bcc59d9e48233ae7b07fcb0f8
+2026-10-16T10:44:50Z funder 0xa3cfcb09a9fcf3cd1c98b5b2ecc1d676f8144c7d
+2026-10-16T10:44:50Z dev 0x72dc623d4c03c996a3d20ed2674f24570e8acf44
+2026-10-16T10:44:50Z holder 0x4630a5eb8d04401e610dd986b481a489410122d9
+2026-10-16T10:44:51Z sent safe.fund.bootstrap nonce 20 0x7d1b5c32b7bd718a89cc2aaa4db493fe4649488aee62778d09380fb00f038058
+2026-10-16T10:49:51Z mined safe.fund.bootstrap: block/gas/price/status 462 21000 521703102 0x1
+2026-10-16T10:49:52Z sent safe.singleton nonce 0 0x394a61da84bb8333ea8f4c6a0d79680ab61d670482eed8969de4a1193c239bfd
+2026-10-16T10:49:52Z sent safe.factory nonce 1 0x13348ae6093cc77003c9dcd2d2988c3177cc5475a4adf4af5111a301783a8c33
+2026-10-16T10:49:52Z sent safe.handler nonce 2 0x8d1c2be1f9dcb64eca24377af7668a8c6efefc36c2e64f6aa69134527f554894
+2026-10-16T10:49:52Z sent safe.proxy nonce 3 0xefc49a445b276c8a44687ddefe74967d348801a8f9853542a4891ec973c638d7
+2026-10-16T11:01:53Z mined safe.singleton: block/gas/price/status 463 5321999 520691858 0x1
+2026-10-16T11:01:53Z mined safe.factory: block/gas/price/status 463 711231 520691858 0x1
+2026-10-16T11:01:53Z mined safe.handler: block/gas/price/status 463 1267726 520691858 0x1
+2026-10-16T11:01:53Z mined safe.proxy: block/gas/price/status 463 352836 520691858 0x1
+2026-10-16T11:01:54Z Bloch Inc Safe v1.4.1 0xc4bee72f3f47e855a0e88356f8f7074631a12031 (3 of 5): singleton 0xa4c5b945978f770588b6ecb45f2468bec1ba8430 factory 0x343a2a8aa3be8bb089d0119060b4261638b0a664 handler 0x6b021610fad4921cd4c4ff46e54d7d7d506a0274
+2026-10-16T11:13:03Z sent fund.deployer nonce 21 0xe15b59af99a97d3289716690dc6c2e9d75fd0d5633690f34e41726df45a91cc4
+2026-10-16T11:15:04Z mined fund.deployer: block/gas/price/status 464 21000 520380042 0x1
+2026-10-16T11:15:04Z configSha256 0x8ea4bd774d26f58827b2a0b41090889da455e38e8976b156b3e842be96e79828
+2026-10-16T11:15:04Z == a development chain without --rehearsal is refused
+2026-10-16T11:15:05Z == broadcast without --confirm is refused
+2026-10-16T11:15:05Z == dry run
+2026-10-16T11:15:06Z == broadcast (one transaction at a time; ~1 L2 block each)
+2026-10-16T12:28:56Z == record
+2026-10-16T12:28:57Z mined deploy.0: block/gas/price/status 465 612333 519834944 0x1
+2026-10-16T12:28:57Z mined deploy.1: block/gas/price/status 466 2481605 519228420 0x1
+2026-10-16T12:28:57Z mined deploy.2: block/gas/price/status 467 4074147 518707335 0x1
+2026-10-16T12:28:57Z mined deploy.3: block/gas/price/status 468 1938483 518251858 0x1
+2026-10-16T12:28:57Z mined deploy.4: block/gas/price/status 469 2135685 517705948 0x1
+2026-10-16T12:28:57Z mined deploy.5: block/gas/price/status 470 2118595 517170153 0x1
+2026-10-16T12:28:57Z == gate before finality must refuse
+2026-10-16T12:28:58Z == waiting until the finalized L2 block reaches 470
+2026-10-16T12:46:59Z gate: liquidity-enabled at 2026-10-16T12:46:58Z
+2026-10-16T12:46:59Z sent seed3.usd.approve nonce 43 0xef308ac77e91e5e5717972f285505e3e089dd5d513b46367d0f51fbd764b3e2b
+2026-10-16T12:46:59Z sent seed3.usd.add nonce 44 0x94ff480e771ab2fc29af5c1f7fc28eb82020b8a021561eb530ad5ad1512cac07
+2026-10-16T12:46:59Z sent seed3.gsmh.approve nonce 7 0xf2c84cef3943a32f38e9518845d926e8adc569790d98fdab5ca2aa219c188989
+2026-10-16T12:46:59Z sent seed3.gsmh.add nonce 8 0x19093692190d7ad0934082f6616e02c4d9cf5c1cffa8a380377e22b110e06c6e
+2026-10-16T12:52:20Z mined seed3.usd.approve: block/gas/price/status 472 46184 516015023 0x1
+2026-10-16T12:52:20Z mined seed3.usd.add: block/gas/price/status 472 286316 516015023 0x1
+2026-10-16T12:52:20Z mined seed3.gsmh.approve: block/gas/price/status 472 46184 516015023 0x1
+2026-10-16T12:52:20Z mined seed3.gsmh.add: block/gas/price/status 472 266400 516015023 0x1
+2026-10-16T12:52:20Z reserves WBLCH/bUSDC after seed: 1000000 60606060606060606 (token0 0x1b7c0fb59f34683cd9214566636e63a0f7e092f6)
+2026-10-16T12:52:20Z reserves WBLCH/wGSMH after seed: 10000000000000000 5000000 (token0 0x4a644af569f211ac1b845f2afabffb49eb29d82c)
+2026-10-16T12:52:20Z sent trade3.usd-to-blch nonce 45 0xe486049e5e2ae268910aafc19aef04ec1dd4440474ab7bd49c31b93a1f681f6a
+2026-10-16T12:52:20Z sent trade3.blch-to-usd nonce 46 0xd9abadbeb5fcd15a680500b9608226f2b4f39a09a2bf2a093f9049c3db2f44ed
+2026-10-16T12:52:20Z sent trade3.top-up nonce 47 0x93aee65d989ba22936f2d7eb2f925db41deb9f62756a7ab67b42ef5b2c8d713b
+2026-10-16T13:05:02Z mined trade3.usd-to-blch: block/gas/price/status 473 173178 515423618 0x1
+2026-10-16T13:05:02Z mined trade3.blch-to-usd: block/gas/price/status 473 110992 515423618 0x1
+2026-10-16T13:05:02Z mined trade3.top-up: block/gas/price/status 473 180865 515423618 0x1
+2026-10-16T13:05:02Z protocol fee minted to the Bloch Inc Safe: 32696833 LP
+2026-10-16T13:05:03Z == two signatures are refused (eth_call)
+2026-10-16T13:05:03Z sent safe.exec.transfer nonce 22 0x5216ed4972536bc338993dcbd37ed0d28954e3231d1a1b9f85a31cf77cf59f5f
+2026-10-16T13:05:03Z sent safe.exec.burn nonce 23 0x3323f0da1996fc13166da4687d9472a1db1eae2245f8edc57e2affbc3b76bff6
+2026-10-16T13:17:24Z mined safe.exec.transfer: block/gas/price/status 474 118733 514827087 0x1
+2026-10-16T13:17:24Z mined safe.exec.burn: block/gas/price/status 474 217095 514827087 0x1
+2026-10-16T13:17:24Z Bloch Inc Safe redeemed 32696833 LP -> 8851266436457 WBLCH wei + 120 bUSDC base units (Safe nonce now 2)
