@@ -20,9 +20,16 @@
 #   fee     Bloch Inc multisig redeems its fee LP: transfer + burn, 2 of 3
 #   report  balances, reserves and every recorded transaction
 #
+# Two-pair mode (set WGSMH_TOKEN, the bridged GSMH token, 8 dp): the config
+# caps and pairs WBLCH/wGSMH and WBLCH/bUSDC exactly like the mainnet config,
+# and `all` runs keys fund config deploy gate seed2 multihop report:
+#   seed2     dev seeds WBLCH/bUSDC; the wGSMH holder seeds WBLCH/wGSMH
+#   multihop  dev swaps bUSDC -> WBLCH -> wGSMH (output to the holder) and the
+#             holder swaps wGSMH -> WBLCH -> bUSDC, both through the router
+#
 # Environment: RPC (default http://127.0.0.1:18945); REVISION (40-hex commit
 # of this tree, config step); FUNDER_KEY_FILE and DEV_KEY_FILE (raw hex keys,
-# keys step only). Keys live as encrypted keystores in <work-dir>/keys (0700,
+# keys step only); HOLDER_KEY_FILE (two-pair mode: the wGSMH holder's key). Keys live as encrypted keystores in <work-dir>/keys (0700,
 # random password file 0600) and are never printed. Every transaction hash is
 # written to <work-dir>/tx/<label> before it is awaited, so a rerun waits for
 # it instead of sending it again.
@@ -46,8 +53,20 @@ BUSDC_BUCKET=10000000000
 BUSDC_CAP=1000000000
 WBLCH_CAP=10000000000000000000
 DEADLINE=99999999999
-DEPLOYER_GAS_FUNDS=0.1ether
-OWNER_GAS_FUNDS=0.005ether
+DEPLOYER_GAS_FUNDS=${DEPLOYER_GAS_FUNDS:-0.1ether}
+OWNER_GAS_FUNDS=${OWNER_GAS_FUNDS:-0.005ether}
+WGSMH=${WGSMH_TOKEN:-}
+WGSMH=${WGSMH,,}
+WGSMH_BUCKET=${WGSMH_BUCKET:-1000000000}
+WGSMH_CAP=${WGSMH_CAP:-100000000}
+# Two-pair ceremony amounts: WBLCH/bUSDC at ~16.5 bUSDC per BLCH,
+# WBLCH/wGSMH at 0.2 BLCH per wGSMH (50% of the 1 wGSMH cap).
+SEED2_USD=5000000
+SEED2_USD_BLCH=0.30303030303030303ether
+SEED2_GSMH=50000000
+SEED2_GSMH_BLCH=0.1ether
+HOP_USD=1000000
+HOP_GSMH=20000000
 # Pilot ceremony amounts (each at most 50% of its cap).
 SEED_USD=10000000
 SEED_BLCH=0.5ether
@@ -124,9 +143,10 @@ step_keys() {
     CAST_PASSWORD=$(cat "$KEYS/password") cast wallet new "$KEYS" "$name.json" > /dev/null
     cast wallet address --keystore "$KEYS/$name.json" --password-file "$KEYS/password" | tr 'A-F' 'a-f' > "$KEYS/$name.addr"
   done
-  for name in funder dev; do
+  local names="funder dev"; [ -z "$WGSMH" ] || names="$names holder"
+  for name in $names; do
     [ -e "$KEYS/$name.json" ] && continue
-    local file=FUNDER_KEY_FILE; [ $name = dev ] && file=DEV_KEY_FILE
+    local file=FUNDER_KEY_FILE; [ $name = dev ] && file=DEV_KEY_FILE; [ $name = holder ] && file=HOLDER_KEY_FILE
     [ -r "${!file:-}" ] || { echo "$file must name a readable raw key file" >&2; exit 1; }
     CAST_UNSAFE_PASSWORD=$(cat "$KEYS/password") cast wallet import "$name.json" --keystore-dir "$KEYS" \
       --private-key "$(tr -d ' \n' < "${!file}")" > /dev/null
@@ -134,7 +154,7 @@ step_keys() {
   done
   chmod 600 "$KEYS"/*
   [ "$(cast nonce "$(addr deployer)" --rpc-url "$RPC")" = 0 ] || { echo "deployer nonce is not 0" >&2; exit 1; }
-  for name in deployer ownerA ownerB ownerC funder dev; do log "$name $(addr "$name")"; done
+  for name in deployer ownerA ownerB ownerC $names; do log "$name $(addr "$name")"; done
   done_mark keys
 }
 
@@ -147,9 +167,13 @@ step_fund() {
   batch funder fund
   send multisig.deploy --gas-limit 1500000 --create "$initcode${args#0x}"
   send fund.deployer --gas-limit 21000 --value "$DEPLOYER_GAS_FUNDS" "$(addr deployer)"
-  send fund.ownerA --gas-limit 21000 --value "$OWNER_GAS_FUNDS" "$(addr ownerA)"
-  send fund.ownerB --gas-limit 21000 --value "$OWNER_GAS_FUNDS" "$(addr ownerB)"
-  await multisig.deploy fund.deployer fund.ownerA fund.ownerB
+  local labels=(multisig.deploy fund.deployer)
+  if [ "$OWNER_GAS_FUNDS" != 0 ]; then
+    send fund.ownerA --gas-limit 21000 --value "$OWNER_GAS_FUNDS" "$(addr ownerA)"
+    send fund.ownerB --gas-limit 21000 --value "$OWNER_GAS_FUNDS" "$(addr ownerB)"
+    labels+=(fund.ownerA fund.ownerB)
+  fi
+  await "${labels[@]}"
   cast rpc eth_getTransactionReceipt "$(cat "$TX/multisig.deploy")" --rpc-url "$RPC" | json "v.contractAddress.toLowerCase()" > "$WORK/blochinc.addr"
   local ms; ms=$(cat "$WORK/blochinc.addr")
   [ "$(call "$ms" "threshold()(uint256)")" = 2 ] || { echo "multisig threshold is not 2" >&2; exit 1; }
@@ -171,6 +195,16 @@ step_config() {
   bucket=$(call "$BUSDC" "bucketCapacity()(uint256)")
   [ "$bucket" = "$BUSDC_BUCKET" ] || { echo "bUSDC bucketCapacity() is $bucket, expected $BUSDC_BUCKET" >&2; exit 1; }
   [ "$(cast block 0 --field hash --rpc-url "$RPC")" = "$GENESIS" ] || { echo "genesis differs" >&2; exit 1; }
+  local gsmh_cap="" pairs='{ "tokenA": "WBLCH", "tokenB": "bUSDC" }'
+  if [ -n "$WGSMH" ]; then
+    local gsmh_hash gsmh_bucket
+    gsmh_hash=$(cast keccak "$(cast code "$WGSMH" --rpc-url "$RPC")")
+    gsmh_bucket=$(call "$WGSMH" "bucketCapacity()(uint256)")
+    [ "$gsmh_bucket" = "$WGSMH_BUCKET" ] || { echo "wGSMH bucketCapacity() is $gsmh_bucket, expected $WGSMH_BUCKET" >&2; exit 1; }
+    [ "$(call "$WGSMH" "decimals()(uint8)")" = 8 ] || { echo "wGSMH decimals differ" >&2; exit 1; }
+    gsmh_cap="{ \"symbol\": \"wGSMH\", \"token\": \"$WGSMH\", \"codeHash\": \"$gsmh_hash\", \"bridgeBucketCapacity\": \"$WGSMH_BUCKET\", \"cap\": \"$WGSMH_CAP\" },"
+    pairs='{ "tokenA": "WBLCH", "tokenB": "wGSMH" }, { "tokenA": "WBLCH", "tokenB": "bUSDC" }'
+  fi
   cat > "$WORK/config.json" <<JSON
 {
   "schemaVersion": 1,
@@ -182,10 +216,10 @@ step_config() {
   "wrappedNative": { "deploy": true },
   "fees": { "feeTo": "blochInc" },
   "reserveCaps": [
-    { "token": "WBLCH", "cap": "$WBLCH_CAP" },
+    { "token": "WBLCH", "cap": "$WBLCH_CAP" },$gsmh_cap
     { "symbol": "bUSDC", "token": "$BUSDC", "codeHash": "$usd_hash", "bridgeBucketCapacity": "$BUSDC_BUCKET", "cap": "$BUSDC_CAP" }
   ],
-  "initialPairs": [ { "tokenA": "WBLCH", "tokenB": "bUSDC" } ],
+  "initialPairs": [ $pairs ],
   "gate": { "maxWrappedReserveCap": "10000000000000000000" }
 }
 JSON
@@ -280,7 +314,9 @@ step_gate() {
   done_mark gate.final
 }
 
-pair() { plan_field "pairs[0].address"; }
+pair_of() { json "v.pairs.find((p) => p.token0 === '$1' || p.token1 === '$1').address" < "$WORK/plan.json"; }
+pair() { pair_of "$BUSDC"; }
+reserves() { echo "$(call "$1" "getReserves()(uint112,uint112,uint32)" | head -n 2 | xargs) (token0 $(json "v.pairs.find((p) => p.address === '$1').token0" < "$WORK/plan.json"))"; }
 
 step_seed() {
   is_done seed && return 0
@@ -339,20 +375,58 @@ step_fee() {
   done_mark fee
 }
 
+step_seed2() {
+  is_done seed2 && return 0
+  is_done gate.final || { echo "the gate has not enabled liquidity" >&2; exit 1; }
+  local router; router=$(plan_field contracts.router.address)
+  batch dev seed2.dev
+  send seed2.usd.approve --gas-limit 100000 "$BUSDC" "approve(address,uint256)" "$router" $((SEED2_USD + HOP_USD))
+  send seed2.usd.add --gas-limit 3000000 --value "$SEED2_USD_BLCH" "$router" \
+    "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$BUSDC" "$SEED2_USD" "$SEED2_USD" 0 "$(addr dev)" "$DEADLINE"
+  batch holder seed2.holder
+  send seed2.gsmh.approve --gas-limit 100000 "$WGSMH" "approve(address,uint256)" "$router" $((SEED2_GSMH + HOP_GSMH))
+  send seed2.gsmh.add --gas-limit 3000000 --value "$SEED2_GSMH_BLCH" "$router" \
+    "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$WGSMH" "$SEED2_GSMH" "$SEED2_GSMH" 0 "$(addr holder)" "$DEADLINE"
+  await seed2.usd.approve seed2.usd.add seed2.gsmh.approve seed2.gsmh.add
+  log "reserves WBLCH/bUSDC after seed: $(reserves "$(pair_of "$BUSDC")")"
+  log "reserves WBLCH/wGSMH after seed: $(reserves "$(pair_of "$WGSMH")")"
+  done_mark seed2
+}
+
+step_multihop() {
+  is_done multihop && return 0
+  is_done seed2 || { echo "seed2 has not run" >&2; exit 1; }
+  local router wrapped; router=$(plan_field contracts.router.address); wrapped=$(plan_field contracts.wrappedNative.address)
+  local sig="swapExactTokensForTokens(uint256,uint256,address[],address,uint256)"
+  log "quote bUSDC->WBLCH->wGSMH: $(call "$router" "getAmountsOut(uint256,address[])(uint256[])" "$HOP_USD" "[$BUSDC,$wrapped,$WGSMH]")"
+  log "quote wGSMH->WBLCH->bUSDC: $(call "$router" "getAmountsOut(uint256,address[])(uint256[])" "$HOP_GSMH" "[$WGSMH,$wrapped,$BUSDC]")"
+  batch dev multihop.dev
+  send hop.usd-to-gsmh --gas-limit 500000 "$router" "$sig" "$HOP_USD" 0 "[$BUSDC,$wrapped,$WGSMH]" "$(addr holder)" "$DEADLINE"
+  batch holder multihop.holder
+  send hop.gsmh-to-usd --gas-limit 500000 "$router" "$sig" "$HOP_GSMH" 0 "[$WGSMH,$wrapped,$BUSDC]" "$(addr holder)" "$DEADLINE"
+  await hop.usd-to-gsmh hop.gsmh-to-usd
+  log "reserves WBLCH/bUSDC after swaps: $(reserves "$(pair_of "$BUSDC")")"
+  log "reserves WBLCH/wGSMH after swaps: $(reserves "$(pair_of "$WGSMH")")"
+  done_mark multihop
+}
+
 step_report() {
   local p; p=$(pair)
   {
     echo "at $(date -u +%FT%TZ) latest $(cast block-number --rpc-url "$RPC") finalized $(cast block finalized --field number --rpc-url "$RPC")"
-    echo "pair $p token0 $(plan_field "pairs[0].token0") token1 $(plan_field "pairs[0].token1")"
-    echo "reserves $(call "$p" "getReserves()(uint112,uint112,uint32)" | xargs)"
-    echo "totalSupply $(call "$p" "totalSupply()(uint256)") kLast $(call "$p" "kLast()(uint256)")"
-    local name a
-    for name in deployer ownerA ownerB ownerC funder dev blochinc; do
+    local q
+    for q in $(json "v.pairs.map((x) => x.address).join(' ')" < "$WORK/plan.json"); do
+      echo "pair $q reserves $(reserves "$q") totalSupply $(call "$q" "totalSupply()(uint256)") kLast $(call "$q" "kLast()(uint256)")"
+    done
+    local name a names="deployer ownerA ownerB ownerC funder dev blochinc"
+    [ -z "$WGSMH" ] || names="$names holder"
+    for name in $names; do
       if [ $name = blochinc ]; then a=$(cat "$WORK/blochinc.addr"); else a=$(addr $name); fi
       echo "$name $a BLCH $(cast balance "$a" --rpc-url "$RPC") nonce $(cast nonce "$a" --rpc-url "$RPC")" \
         "bUSDC $(call "$BUSDC" "balanceOf(address)(uint256)" "$a")" \
         "WBLCH $(call "$(plan_field contracts.wrappedNative.address)" "balanceOf(address)(uint256)" "$a")" \
-        "LP $(call "$p" "balanceOf(address)(uint256)" "$a")"
+        "LP(bUSDC pair) $(call "$p" "balanceOf(address)(uint256)" "$a")" \
+        ${WGSMH:+"wGSMH $(call "$WGSMH" "balanceOf(address)(uint256)" "$a") LP(wGSMH pair) $(call "$(pair_of "$WGSMH")" "balanceOf(address)(uint256)" "$a")"}
     done
     echo "transactions (label hash block gasUsed effectiveGasPrice status):"
     cat "$WORK/txs.tsv"
@@ -361,8 +435,11 @@ step_report() {
 
 for step in "$@"; do
   case $step in
-    all) for s in keys fund config deploy gate seed trade fee report; do "step_$s"; done ;;
-    keys|fund|config|deploy|gate|seed|trade|fee|report) "step_$step" ;;
+    all)
+      if [ -n "$WGSMH" ]; then flow="keys fund config deploy gate seed2 multihop report"
+      else flow="keys fund config deploy gate seed trade fee report"; fi
+      for s in $flow; do "step_$s"; done ;;
+    keys|fund|config|deploy|gate|seed|trade|fee|seed2|multihop|report) "step_$step" ;;
     *) echo "unknown step $step" >&2; exit 2 ;;
   esac
 done
