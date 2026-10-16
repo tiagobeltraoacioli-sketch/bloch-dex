@@ -218,3 +218,117 @@ RPC=http://127.0.0.1:18945 REVISION=<commit> FUNDER_KEY_FILE=<raw key> DEV_KEY_F
 
 A new work directory makes a new deployer and multisig. Steps already done are
 skipped in an existing work directory.
+
+# Second run: both pilot pairs, wGSMH and bUSDC (2026-10-16)
+
+The same procedure ran again with a new work directory, so with a new deployer
+and a new RehearsalMultisig. This time the caps and pairs match the mainnet
+config exactly: WBLCH/wGSMH and WBLCH/bUSDC. wGSMH is the bridged GnB-SMH
+token; the coin's ticker is now GSMH.
+
+- **Driver:** `scripts/devnet4/rehearse-mainnet-procedure.sh` in two-pair mode
+  (`WGSMH_TOKEN` set; owners left unfunded because no fee redemption was
+  planned).
+- **Revision:** `source.revision` = `212299c37ee779368cd23b8b8bffcee8b07d2f95`.
+- **Records:** `deployments/devnet4/mainnet-procedure-2pairs-20261016/`.
+
+## Accounts and tokens
+
+| Role | Address |
+|---|---|
+| Deployer (fresh, funded 0.05 BLCH) | `0x00297df3a199fc93cb0b85e6310db6b5d731ab08` |
+| Bloch Inc (RehearsalMultisig 2-of-3, TEST ONLY) | `0xa2977d9b7d5baba4f74496ed0b9dabe1c11a0de2` (code hash `0xb752e0c5…683b`) |
+| Owners A/B/C (unfunded) | `0x5147805a4efe751052962a0eef45757f707daad3`, `0x8772959e835e1d6b5a1b405e59671e6fbd6ea914`, `0x9c16f6f458e1674496547dbba3b856399e865737` |
+| Funder | `0xa3cfcb09a9fcf3cd1c98b5b2ecc1d676f8144c7d` (nonces 18–19) |
+| bUSDC provider / trader (dev account) | `0x72dc623d4c03c996a3d20ed2674f24570e8acf44` |
+| wGSMH holder / trader | `0x4630a5eb8d04401e610dd986b481a489410122d9` |
+
+| Token | Address | Decimals | Code hash | `bucketCapacity()` | DEX cap |
+|---|---|---|---|---|---|
+| wGSMH | `0xb2b4952b6e57e589109af764859886e236798ad4` | 8 | `0xa7602699759ecff36f21ef98bcd31f8a2f3cd82b79ca742472978a6455c0a7d5` | 1,000,000,000 (10 wGSMH) | 100,000,000 (1 wGSMH) |
+| bUSDC | `0x1b7c0fb59f34683cd9214566636e63a0f7e092f6` | 6 | `0x3ee441a1…281b` | 10,000,000,000 | 1,000,000,000 |
+| WBLCH | deployed | 18 | n/a | n/a | 10 BLCH |
+
+## Deployment
+
+**Config SHA-256:** `0x01e662387d09ebbb7ec4c55cef0ac858b5a077bf10ede6c12f40685b0f81fd0b`.
+
+**Refusals:** both refused, with the same messages as the first run.
+
+**Dry run:** passed; the deployer nonce stayed 0.
+
+**Broadcast:** `--slow`, from 04:27:32Z to 05:38:36Z.
+
+| Nonce | Action | Address | Tx | Block | Gas used |
+|---|---|---|---|---|---|
+| 0 | deploy WBLCH | `0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6` | `0x363cb4a4a26e339dd99bcdcd64c440526872807691fd1a9cde5d364e98773a28` | 429 | 612,333 |
+| 1 | deploy factory | `0x8cf37b0885cb0cfbbcbd08f08dfc45b201e195a8` | `0x5a86864d7eb40971f17a52f725bf5042da4f7a62d49f31d84fe093cfc5c55c34` | 430 | 2,481,605 |
+| 2 | deploy router | `0xb3a451af23df72f72916064c6d33d1fbe25e7106` | `0x95bae1df767365a6c75a379f95005d4f43044fa6691932d21b14ad234fe47511` | 431 | 4,074,147 |
+| 3 | deploy lens | `0xb97473777fcf1f4b5be453ba1661b70b191a75cd` | `0x150663d8b5ee2a050477d056bb4f543629d582d083931feba770b96a2cfaba8d` | 432 | 1,938,483 |
+| 4 | createPair WBLCH/wGSMH | `0xd71fc81263ba585561ad4d784a4bc096739927b4` (token0 WBLCH) | `0x9bdf0cbaf0dfbf4ac787b04820f83793f28f16475148111e023972ee039b3666` | 433 | 2,135,685 |
+| 5 | createPair WBLCH/bUSDC | `0xd98230d9a13cb72f6d75e3bf46c01415027c8033` (token0 bUSDC) | `0x87e41ec8ebe3d831580cb35239411d297cd327bd3d55b5f11169361fba215f63` | 434 | 2,118,595 |
+
+**Totals:** 13,360,848 gas, costing the deployer 0.003722397454235779 BLCH.
+
+**Checks after the broadcast:**
+- `record` verified all six transactions;
+- the runtime hashes on chain equal the plan for 4 contracts + 2 pairs;
+- the pair init code hash is `0x2249ef38…b820`.
+
+## Gate
+
+- **Before finality (05:38:37Z): refused.** Message:
+  `transaction 0x9bdf0cba…3666 is not finalized`; the finalized block was 432.
+- **After finality (05:56:38Z): `liquidity-enabled`.** The finalized block was
+  434 (`0x941c13cf4b2e1514e23ceab9d45d54904833fe897378991be10d822df536e584`),
+  with `feeTo` = Bloch Inc.
+
+## Seed (block 436) and multi-hop swaps (block 437)
+
+**Seed prices:**
+- WBLCH/bUSDC: 16.5 bUSDC per BLCH (5 bUSDC + 0.30303 BLCH). That is 0.5% of
+  the bUSDC cap and 3% of the WBLCH cap.
+- WBLCH/wGSMH: **0.2 BLCH per wGSMH** (0.5 wGSMH + 0.1 BLCH), about
+  3.3 bUSDC per wGSMH at the bUSDC pool's price. That is 50% of the wGSMH cap.
+
+| Step | Sender | Tx | Block | Gas | Pair events |
+|---|---|---|---|---|---|
+| approve router 6 bUSDC | dev | `0x851787dfacbfbb5b3d636b2e78a969982a4f77d80e2453f8f9b6dffa41d6c778` | 436 | 46,184 | n/a |
+| seed WBLCH/bUSDC | dev | `0xb105c69a51c513a8046725dd6868af7ab0ddb7efd305fb1688a889c3c4fe8948` | 436 | 287,069 | Mint 5,000,000 bUSDC / 303,030,303,030,303,030 wei; LP 1,230,914,908,793 to dev |
+| approve router 0.7 wGSMH | holder | `0xcc05b50cb4d79fc4fde00a37fa93b4f0c0cf0e7885e53b0b7ddadd904d73a1a5` | 436 | 46,196 | n/a |
+| seed WBLCH/wGSMH | holder | `0xcb5806416a8e1d4f7db05d5b6b1c77502a76b9b9894805e7c356689e7f7f070f` | 436 | 271,977 | Mint 100,000,000,000,000,000 wei / 50,000,000 wGSMH; LP 2,236,067,976,499 to holder |
+| bUSDC → WBLCH → wGSMH, output to the holder | dev | `0xe6d85dc51fc71e299cf5ac635a9cdcc481b613297459f79667aed756bc5def9a` | 437 | 153,362 | 1,000,000 bUSDC in → 59,362,979,558,981,716 WBLCH → **31,704,232 wGSMH out** |
+| wGSMH → WBLCH → bUSDC | holder | `0x2be8a1d8830ee1d92beab16cd9bb231684d1b3c05da9412a791d9e9530ab2ae8` | 437 | 260,952 | 20,000,000 wGSMH in → 28,510,151,558,478,696 WBLCH → **428,785 bUSDC out** |
+
+Both multi-hop swaps landed in block 437. The holder's reverse swap ran first
+(transaction index 0) and the dev's forward swap second (index 1).
+
+The reverse swap's low bUSDC output is slippage, not a fault. Selling
+0.2 wGSMH into a 0.5 wGSMH pool (40% of the reserve) returned 0.0285 BLCH
+against 0.04 BLCH at the mid price.
+
+### State at 2026-10-16T06:13:42Z (latest 437, finalized 435)
+
+**Pair reserves:**
+
+| Pair | Reserves | `totalSupply` |
+|---|---|---|
+| WBLCH/wGSMH `0xd71f…27b4` | 130,852,828,000,503,020 WBLCH wei / 38,295,768 wGSMH | 2,236,067,977,499 |
+| WBLCH/bUSDC `0xd982…8033` | 5,571,215 bUSDC / 272,177,475,029,800,010 WBLCH wei | 1,230,914,909,793 |
+
+**Account balances:**
+
+| Account | BLCH | bUSDC | wGSMH | LP |
+|---|---|---|---|---|
+| Holder `0x4630…22d9` | 0.198994080907690901 (was 0.299153674404339946) | 0.428785 | **1.61704232** (was 2) | 2,236,067,976,499 (WBLCH/wGSMH) |
+| Dev `0x72dc…cf44` | 0.532748607685479154 (was 0.835913055275917679) | **4.908770** (was 10.908770) | 0 | 1,230,914,908,793 (WBLCH/bUSDC) |
+
+**For the bridge exits:**
+- the holder keeps ≥ 0.1 wGSMH for the wGSMH → GSMH exit;
+- the dev account keeps ≥ 1 bUSDC for the bUSDC → Ethereum exit;
+- nothing was burned.
+
+**Funder:** ends at 0.585888546877079570 BLCH, nonce 20.
+
+The two multi-hop paths run through the router across both pools. The wGSMH
+token exposes `bucketCapacity()` and passed the preflight and the gate (D17).

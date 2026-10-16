@@ -1,0 +1,1 @@
+deploy config: chain 700771 is a development network: set network.rehearsal and pass --rehearsal

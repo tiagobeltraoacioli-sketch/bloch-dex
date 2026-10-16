@@ -1,0 +1,58 @@
+{
+  "domain": "postern.dex.finality-gate.v1",
+  "schemaVersion": 2,
+  "decision": "liquidity-enabled",
+  "chainId": 700771,
+  "genesisHash": "0xaec9844384415c8ba7157298fa13f7e6c951a6ba9332f516180a4aa22208fefa",
+  "finalized": {
+    "number": "434",
+    "hash": "0x941c13cf4b2e1514e23ceab9d45d54904833fe897378991be10d822df536e584"
+  },
+  "trust": "finalized: native FFG replay from the pinned genesis; safe: the local native node's head; no checkpoint signatures",
+  "wrappedReserveCap": "10000000000000000000",
+  "feeTo": "0xa2977d9b7d5baba4f74496ed0b9dabe1c11a0de2",
+  "pairs": [
+    {
+      "address": "0xd71fc81263ba585561ad4d784a4bc096739927b4",
+      "token0": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "token1": "0xb2b4952b6e57e589109af764859886e236798ad4"
+    },
+    {
+      "address": "0xd98230d9a13cb72f6d75e3bf46c01415027c8033",
+      "token0": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "token1": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6"
+    }
+  ],
+  "transactions": [
+    {
+      "hash": "0x363cb4a4a26e339dd99bcdcd64c440526872807691fd1a9cde5d364e98773a28",
+      "blockNumber": "429",
+      "blockHash": "0x8da9cd39cc02b441073aec93c661f428a14f5573f8d342a1748652d197451836"
+    },
+    {
+      "hash": "0x5a86864d7eb40971f17a52f725bf5042da4f7a62d49f31d84fe093cfc5c55c34",
+      "blockNumber": "430",
+      "blockHash": "0xf3623c7bc22144103429596310dfed20b1c59277fcf6c1c9eee02fe0fa36926a"
+    },
+    {
+      "hash": "0x95bae1df767365a6c75a379f95005d4f43044fa6691932d21b14ad234fe47511",
+      "blockNumber": "431",
+      "blockHash": "0x37ab5b536c3b56d91a334575d7a87df9692e4a8a9f7faff561c10aa884ce4ddd"
+    },
+    {
+      "hash": "0x150663d8b5ee2a050477d056bb4f543629d582d083931feba770b96a2cfaba8d",
+      "blockNumber": "432",
+      "blockHash": "0xd77285396a39aa4acc47f415ca456cdbf3c9269fd6195d1b651b019248599aa5"
+    },
+    {
+      "hash": "0x9bdf0cbaf0dfbf4ac787b04820f83793f28f16475148111e023972ee039b3666",
+      "blockNumber": "433",
+      "blockHash": "0xaae22f6d7a7cfc2a2a0550aefed60e42188d9c6897f0d241a777a84c5d76f3c7"
+    },
+    {
+      "hash": "0x87e41ec8ebe3d831580cb35239411d297cd327bd3d55b5f11169361fba215f63",
+      "blockNumber": "434",
+      "blockHash": "0x941c13cf4b2e1514e23ceab9d45d54904833fe897378991be10d822df536e584"
+    }
+  ]
+}

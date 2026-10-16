@@ -1,0 +1,1 @@
+2026-10-16T05:38:37Z finality gate: transaction 0x9bdf0cbaf0dfbf4ac787b04820f83793f28f16475148111e023972ee039b3666 is not finalized

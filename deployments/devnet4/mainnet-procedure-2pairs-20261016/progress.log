@@ -1,0 +1,45 @@
+2026-10-16T04:18:02Z deployer 0x00297df3a199fc93cb0b85e6310db6b5d731ab08
+2026-10-16T04:18:02Z ownerA 0x5147805a4efe751052962a0eef45757f707daad3
+2026-10-16T04:18:02Z ownerB 0x8772959e835e1d6b5a1b405e59671e6fbd6ea914
+2026-10-16T04:18:02Z ownerC 0x9c16f6f458e1674496547dbba3b856399e865737
+2026-10-16T04:18:02Z funder 0xa3cfcb09a9fcf3cd1c98b5b2ecc1d676f8144c7d
+2026-10-16T04:18:02Z dev 0x72dc623d4c03c996a3d20ed2674f24570e8acf44
+2026-10-16T04:18:02Z holder 0x4630a5eb8d04401e610dd986b481a489410122d9
+2026-10-16T04:18:09Z sent multisig.deploy nonce 18 0x05a2c5d83d9c58444282eb6e3c246131db803b7003b0a2475deaa14d062b1a3f
+2026-10-16T04:18:09Z sent fund.deployer nonce 19 0x9d4783de2f675c6be1ee8271ba3cb6906e5e26baf335cd8f6cc4bef8d3e0a952
+2026-10-16T04:27:30Z mined multisig.deploy: block/gas/price/status 428 431360 280981265 0x1
+2026-10-16T04:27:30Z mined fund.deployer: block/gas/price/status 428 21000 280981265 0x1
+2026-10-16T04:27:30Z Bloch Inc stand-in (RehearsalMultisig 2-of-3) 0xa2977d9b7d5baba4f74496ed0b9dabe1c11a0de2
+2026-10-16T04:27:31Z configSha256 0x01e662387d09ebbb7ec4c55cef0ac858b5a077bf10ede6c12f40685b0f81fd0b
+2026-10-16T04:27:31Z == a development chain without --rehearsal is refused
+2026-10-16T04:27:31Z == broadcast without --confirm is refused
+2026-10-16T04:27:31Z == dry run
+2026-10-16T04:27:32Z == broadcast (one transaction at a time; ~1 L2 block each)
+2026-10-16T05:38:36Z == record
+2026-10-16T05:38:37Z mined deploy.0: block/gas/price/status 429 612333 280274038 0x1
+2026-10-16T05:38:37Z mined deploy.1: block/gas/price/status 430 2481605 279577301 0x1
+2026-10-16T05:38:37Z mined deploy.2: block/gas/price/status 431 4074147 278973412 0x1
+2026-10-16T05:38:37Z mined deploy.3: block/gas/price/status 432 1938483 278448107 0x1
+2026-10-16T05:38:37Z mined deploy.4: block/gas/price/status 433 2135685 277821950 0x1
+2026-10-16T05:38:37Z mined deploy.5: block/gas/price/status 434 2118595 277207395 0x1
+2026-10-16T05:38:37Z == gate before finality must refuse
+2026-10-16T05:38:37Z == waiting until the finalized L2 block reaches 434
+2026-10-16T05:56:38Z gate: liquidity-enabled at 2026-10-16T05:56:38Z
+2026-10-16T05:56:39Z sent seed2.usd.approve nonce 40 0x851787dfacbfbb5b3d636b2e78a969982a4f77d80e2453f8f9b6dffa41d6c778
+2026-10-16T05:56:39Z sent seed2.usd.add nonce 41 0xb105c69a51c513a8046725dd6868af7ab0ddb7efd305fb1688a889c3c4fe8948
+2026-10-16T05:56:39Z sent seed2.gsmh.approve nonce 3 0xcc05b50cb4d79fc4fde00a37fa93b4f0c0cf0e7885e53b0b7ddadd904d73a1a5
+2026-10-16T05:56:39Z sent seed2.gsmh.add nonce 4 0xcb5806416a8e1d4f7db05d5b6b1c77502a76b9b9894805e7c356689e7f7f070f
+2026-10-16T06:01:19Z mined seed2.usd.approve: block/gas/price/status 436 46184 275882465 0x1
+2026-10-16T06:01:20Z mined seed2.usd.add: block/gas/price/status 436 287069 275882465 0x1
+2026-10-16T06:01:20Z mined seed2.gsmh.approve: block/gas/price/status 436 46196 275882465 0x1
+2026-10-16T06:01:20Z mined seed2.gsmh.add: block/gas/price/status 436 271977 275882465 0x1
+2026-10-16T06:01:20Z reserves WBLCH/bUSDC after seed: 5000000 303030303030303030 (token0 0x1b7c0fb59f34683cd9214566636e63a0f7e092f6)
+2026-10-16T06:01:20Z reserves WBLCH/wGSMH after seed: 100000000000000000 50000000 (token0 0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6)
+2026-10-16T06:01:20Z quote bUSDC->WBLCH->wGSMH: [1000000
+2026-10-16T06:01:20Z quote wGSMH->WBLCH->bUSDC: [20000000
+2026-10-16T06:01:20Z sent hop.usd-to-gsmh nonce 42 0xe6d85dc51fc71e299cf5ac635a9cdcc481b613297459f79667aed756bc5def9a
+2026-10-16T06:01:20Z sent hop.gsmh-to-usd nonce 5 0x2be8a1d8830ee1d92beab16cd9bb231684d1b3c05da9412a791d9e9530ab2ae8
+2026-10-16T06:13:42Z mined hop.usd-to-gsmh: block/gas/price/status 437 153362 275204425 0x1
+2026-10-16T06:13:42Z mined hop.gsmh-to-usd: block/gas/price/status 437 260952 275204425 0x1
+2026-10-16T06:13:42Z reserves WBLCH/bUSDC after swaps: 5571215 272177475029800010 (token0 0x1b7c0fb59f34683cd9214566636e63a0f7e092f6)
+2026-10-16T06:13:42Z reserves WBLCH/wGSMH after swaps: 130852828000503020 38295768 (token0 0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6)

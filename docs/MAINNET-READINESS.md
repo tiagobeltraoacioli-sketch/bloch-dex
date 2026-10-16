@@ -9,6 +9,9 @@ finality and returned `liquidity-enabled` after it, then a pilot seed, swaps
 and the multisig's fee redemption. Evidence and numbers:
 [DEVNET4-MAINNET-PROCEDURE.md](DEVNET4-MAINNET-PROCEDURE.md); rows D4, D5,
 D13, D16, D17 and F3 below reflect it.
+A second run the same day deployed both pilot pairs exactly as the mainnet
+config (WBLCH/wGSMH with the real devnet4 wGSMH, WBLCH/bUSDC), passed the
+gate and executed multi-hop swaps across both pools.
 
 The Bloch L2 mainnet is **not live**: the L1 activation gate
 (`L2_SETTLEMENT_ACTIVATION_EPOCH`) is inert and `activation_policy()` returns
@@ -66,7 +69,7 @@ be built), the L2 RPC items in D4/D13/D15 and the timestamp decision (F3).
 | D14 | Legacy staging tooling hard-codes 700771 | Done | Removed (§5) |
 | D15 | EVM rules (`paris`, `BLOCKHASH` over 256 blocks, router creation ~3.9M gas) | Open, M9 | Mainnet L2 must provide them |
 | D16 | Gas estimation against `pending` fails on the L2 RPC ("pending Bloch derivation is unavailable") | Worked around in tooling | `forge script` uses its own simulation's gas (no RPC estimate), so `deploy-dex.mjs run` needs no change; every `cast send` in `scripts/devnet4/rehearse-mainnet-procedure.sh` passes an explicit `--gas-limit`. `eth_estimateGas` without a block tag (latest) works. One L2 block per settlement proof (10–20 min observed): forge needs `--timeout 1800` and the `--slow` broadcast of 5 transactions took ~1 h |
-| D17 | Bridged tokens must expose `bucketCapacity()` | Required | The real devnet4 bUSDC (v3) does; the devnet4 wGnB (`0xC756…6812`) does not (the call reverts) and was left out of the rehearsal. The mainnet wGSMH token must expose `bucketCapacity()`, otherwise the `run` preflight and the gate refuse it |
+| D17 | Bridged tokens must expose `bucketCapacity()` | Required | The real devnet4 bUSDC (v3) does; the devnet4 wGnB (`0xC756…6812`) does not (the call reverts) and was left out of the rehearsal. The devnet4 wGSMH (`0xB2B4…8AD4`, bucket 10 wGSMH, cap 1 wGSMH) does and was deployed against in the second run. The mainnet wGSMH token must expose `bucketCapacity()`, otherwise the `run` preflight and the gate refuse it |
 
 ## 2. Admin surfaces
 

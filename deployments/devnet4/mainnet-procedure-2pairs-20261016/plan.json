@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.mainnet-plan.v1",
+  "configSha256": "0x01e662387d09ebbb7ec4c55cef0ac858b5a077bf10ede6c12f40685b0f81fd0b",
+  "chain": {
+    "id": 700771,
+    "genesisHash": "0xaec9844384415c8ba7157298fa13f7e6c951a6ba9332f516180a4aa22208fefa",
+    "rehearsal": true
+  },
+  "source": {
+    "revision": "212299c37ee779368cd23b8b8bffcee8b07d2f95",
+    "compiler": {
+      "solc": "0.8.24",
+      "evmVersion": "paris",
+      "optimizer": true,
+      "optimizerRuns": 200,
+      "bytecodeHash": "none"
+    }
+  },
+  "deployer": "0x00297df3a199fc93cb0b85e6310db6b5d731ab08",
+  "startNonce": 0,
+  "finalNonce": 6,
+  "deployWrapped": true,
+  "feeTo": "0xa2977d9b7d5baba4f74496ed0b9dabe1c11a0de2",
+  "roles": {
+    "blochInc": {
+      "address": "0xa2977d9b7d5baba4f74496ed0b9dabe1c11a0de2",
+      "codeHash": "0xb752e0c5bb305dd9dc24fc2cd59ea1a68ccc88c20b046a35ba7018554187683b"
+    }
+  },
+  "reserveCaps": [
+    {
+      "token": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "cap": "10000000000000000000"
+    },
+    {
+      "token": "0xb2b4952b6e57e589109af764859886e236798ad4",
+      "cap": "100000000"
+    },
+    {
+      "token": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "cap": "1000000000"
+    }
+  ],
+  "externalTokens": [
+    {
+      "token": "0xb2b4952b6e57e589109af764859886e236798ad4",
+      "symbol": "wGSMH",
+      "codeHash": "0xa7602699759ecff36f21ef98bcd31f8a2f3cd82b79ca742472978a6455c0a7d5",
+      "bridgeBucketCapacity": "1000000000"
+    },
+    {
+      "token": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "symbol": "bUSDC",
+      "codeHash": "0x3ee441a107fee17b2cb47b251e9db6aeb8c4ce029c0bce6a039ab263ca2c281b",
+      "bridgeBucketCapacity": "10000000000"
+    }
+  ],
+  "contracts": {
+    "wrappedNative": {
+      "address": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "codeHash": "0x09b5b121f866f2c565e1ffead9867bb0a5a08e07369b239ccd38e8d1a73a928c"
+    },
+    "factory": {
+      "address": "0x8cf37b0885cb0cfbbcbd08f08dfc45b201e195a8",
+      "codeHash": "0x4d9797dbca2186f9c3c5c817d6d778047bb3fe35cdaf0ebcf6a443f81eddfa70"
+    },
+    "router": {
+      "address": "0xb3a451af23df72f72916064c6d33d1fbe25e7106",
+      "codeHash": "0x4fa6d3559089122a6883ed074907a657cf23a2a23d159ec88de375eab8ddf902"
+    },
+    "lens": {
+      "address": "0xb97473777fcf1f4b5be453ba1661b70b191a75cd",
+      "codeHash": "0x7064a29cc24733ff1b69923301770a3b3fb9f2e40c57296941a6d3e642ebfeec"
+    }
+  },
+  "pairInitCodeHash": "0x2249ef38f618407ce9328e89491648a4e8ad4b234e70a538ef9d2096b1ceb820",
+  "pairCodeHash": "0xc3d554f4ce3eb48a4bc510260e9ad1bd68d23082ce38cac571e0daf5cf5abe7d",
+  "pairs": [
+    {
+      "address": "0xd71fc81263ba585561ad4d784a4bc096739927b4",
+      "token0": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "token1": "0xb2b4952b6e57e589109af764859886e236798ad4",
+      "codeHash": "0xc3d554f4ce3eb48a4bc510260e9ad1bd68d23082ce38cac571e0daf5cf5abe7d"
+    },
+    {
+      "address": "0xd98230d9a13cb72f6d75e3bf46c01415027c8033",
+      "token0": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6",
+      "token1": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "codeHash": "0xc3d554f4ce3eb48a4bc510260e9ad1bd68d23082ce38cac571e0daf5cf5abe7d"
+    }
+  ],
+  "steps": [
+    {
+      "nonce": 0,
+      "action": "deploy wrappedNative",
+      "address": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "initCodeHash": "0x9946e0055b0872f93404a801850f387f3b741ef35f90d0bc71b8c165fcd9b007"
+    },
+    {
+      "nonce": 1,
+      "action": "deploy factory",
+      "address": "0x8cf37b0885cb0cfbbcbd08f08dfc45b201e195a8",
+      "initCodeHash": "0x88ff20ebbcc1a89f14b3a73ec486566213d4d0d01ad2807ed3e8340352372fa3"
+    },
+    {
+      "nonce": 2,
+      "action": "deploy router",
+      "address": "0xb3a451af23df72f72916064c6d33d1fbe25e7106",
+      "initCodeHash": "0xd02bb5215fb3d12b43aba20ee6c7d886e15b8b7a9278438265f4c3dabb45475f"
+    },
+    {
+      "nonce": 3,
+      "action": "deploy lens",
+      "address": "0xb97473777fcf1f4b5be453ba1661b70b191a75cd",
+      "initCodeHash": "0x842c968fe2534ae351476976659659b17d093343b6e077a38c6fc730a94dd897"
+    },
+    {
+      "nonce": 4,
+      "action": "createPair",
+      "address": "0xd71fc81263ba585561ad4d784a4bc096739927b4",
+      "tokenA": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "tokenB": "0xb2b4952b6e57e589109af764859886e236798ad4"
+    },
+    {
+      "nonce": 5,
+      "action": "createPair",
+      "address": "0xd98230d9a13cb72f6d75e3bf46c01415027c8033",
+      "tokenA": "0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6",
+      "tokenB": "0x1b7c0fb59f34683cd9214566636e63a0f7e092f6"
+    }
+  ],
+  "gate": {
+    "maxWrappedReserveCap": "10000000000000000000"
+  }
+}

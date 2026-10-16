@@ -398,8 +398,8 @@ step_multihop() {
   is_done seed2 || { echo "seed2 has not run" >&2; exit 1; }
   local router wrapped; router=$(plan_field contracts.router.address); wrapped=$(plan_field contracts.wrappedNative.address)
   local sig="swapExactTokensForTokens(uint256,uint256,address[],address,uint256)"
-  log "quote bUSDC->WBLCH->wGSMH: $(call "$router" "getAmountsOut(uint256,address[])(uint256[])" "$HOP_USD" "[$BUSDC,$wrapped,$WGSMH]")"
-  log "quote wGSMH->WBLCH->bUSDC: $(call "$router" "getAmountsOut(uint256,address[])(uint256[])" "$HOP_GSMH" "[$WGSMH,$wrapped,$BUSDC]")"
+  log "quote bUSDC->WBLCH->wGSMH: $(cast call --rpc-url "$RPC" "$router" "getAmountsOut(uint256,address[])(uint256[])" "$HOP_USD" "[$BUSDC,$wrapped,$WGSMH]")"
+  log "quote wGSMH->WBLCH->bUSDC: $(cast call --rpc-url "$RPC" "$router" "getAmountsOut(uint256,address[])(uint256[])" "$HOP_GSMH" "[$WGSMH,$wrapped,$BUSDC]")"
   batch dev multihop.dev
   send hop.usd-to-gsmh --gas-limit 500000 "$router" "$sig" "$HOP_USD" 0 "[$BUSDC,$wrapped,$WGSMH]" "$(addr holder)" "$DEADLINE"
   batch holder multihop.holder
