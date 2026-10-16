@@ -27,8 +27,8 @@ const addr = (c) => `0x${c.repeat(40)}`;
 const DEPLOYER = addr("d");
 const ASSET = addr("a");
 const ASSET_CODE = hash("c");
-const GNB = addr("b");
-const GNB_CODE = hash("e");
+const GSMH = addr("b");
+const GSMH_CODE = hash("e");
 const BLOCH_INC = addr("5");
 const BLOCH_INC_CODE = SAFE_V141.proxy;
 /// The pinned Bloch Inc Safe: official v1.4.1 singleton and handler, 3 of 5.
@@ -103,8 +103,8 @@ test("the committed mainnet configuration records the decisions and refuses what
     [/source.revision/, (c) => { c.source.revision = "b".repeat(40); }],
     [/deployer.address is undecided/, (c) => { c.deployer.address = DEPLOYER; }],
     [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) }; }],
-    [/wGSMH\).token is undecided/, (c) => { c.reserveCaps[1].token = GNB; }],
-    [/wGSMH\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = GNB_CODE; }],
+    [/wGSMH\).token is undecided/, (c) => { c.reserveCaps[1].token = GSMH; }],
+    [/wGSMH\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = GSMH_CODE; }],
     [/wGSMH\).bridgeBucketCapacity is undecided/, (c) => { c.reserveCaps[1].bridgeBucketCapacity = "1000000000000"; }],
     [/bUSDC\).token is undecided/, (c) => { c.reserveCaps[2].token = ASSET; }],
     [/bUSDC\).codeHash is undecided/, (c) => { c.reserveCaps[2].codeHash = ASSET_CODE; }],
@@ -208,7 +208,7 @@ test("refuses every unsafe or incomplete configuration", () => {
     [(c) => { c.reserveCaps[1].cap = "10000001"; }, /exceeds 1\/10 of the bridge bucket/],
     [(c) => { c.reserveCaps[1].bridgeBucketCapacity = "0"; }, /bridgeBucketCapacity/],
     [(c) => { c.reserveCaps[1].symbol = "WBLCH"; }, /symbol is invalid/],
-    [(c) => { c.reserveCaps.push({ ...c.reserveCaps[1], token: GNB }); }, /symbol is listed twice/],
+    [(c) => { c.reserveCaps.push({ ...c.reserveCaps[1], token: GSMH }); }, /symbol is listed twice/],
     [(c) => { c.reserveCaps.push({ ...c.reserveCaps[1], symbol: "bUSDC2" }); }, /token is listed twice/],
     [(c) => { c.reserveCaps[0].cap = "0"; }, /positive decimal/],
     [(c) => { c.reserveCaps[0].cap = "1e18"; }, /positive decimal/],

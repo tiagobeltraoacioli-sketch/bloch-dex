@@ -48,7 +48,7 @@ ISSUER_KEY=0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6
 ISSUER=0x90f79bf6eb2c4f870365e785982e1f101e93b906
 # Committed mainnet caps and the bridge buckets they imply (cap = bucket / 10).
 WBLCH_CAP=10000000000000000000
-GNB_CAP=100000000000; GNB_BUCKET=1000000000000
+GSMH_CAP=100000000; GSMH_BUCKET=1000000000
 USD_CAP=1000000000; USD_BUCKET=10000000000
 
 case "$CHAIN_ID" in
@@ -89,8 +89,8 @@ console.log(JSON.stringify({ address, codeHash, safe: { version: "1.4.1", single
   fallbackHandler: { address: handler, codeHash: handlerHash }, threshold: 3, owners: owners.split(",") } }));
 ' "$BLOCH_INC" "$(codehash "$BLOCH_INC")" "$SINGLETON" "$(codehash "$SINGLETON")" "$HANDLER" "$(codehash "$HANDLER")" "$OWNERS")
 fi
-GNB=$(forge create test/mocks/RehearsalBridgedToken.sol:RehearsalBridgedToken --rpc-url "$RPC" --private-key "$ISSUER_KEY" \
-  --broadcast --constructor-args "Rehearsal wGSMH" "wGSMH" 8 100000000000000 "$ISSUER" "$GNB_BUCKET" | created)
+GSMH=$(forge create test/mocks/RehearsalBridgedToken.sol:RehearsalBridgedToken --rpc-url "$RPC" --private-key "$ISSUER_KEY" \
+  --broadcast --constructor-args "Rehearsal wGSMH" "wGSMH" 8 100000000000000 "$ISSUER" "$GSMH_BUCKET" | created)
 ASSET=$(forge create test/mocks/RehearsalBridgedToken.sol:RehearsalBridgedToken --rpc-url "$RPC" --private-key "$ISSUER_KEY" \
   --broadcast --constructor-args "Rehearsal bUSDC" "bUSDC" 6 1000000000000 "$ISSUER" "$USD_BUCKET" | created)
 GENESIS=$(cast block 0 --field hash --rpc-url "$RPC")
@@ -107,7 +107,7 @@ cat > "$CONFIG" <<JSON
   "fees": { "feeTo": "blochInc" },
   "reserveCaps": [
     { "token": "WBLCH", "cap": "$WBLCH_CAP" },
-    { "symbol": "wGSMH", "token": "$GNB", "codeHash": "$(codehash "$GNB")", "bridgeBucketCapacity": "$GNB_BUCKET", "cap": "$GNB_CAP" },
+    { "symbol": "wGSMH", "token": "$GSMH", "codeHash": "$(codehash "$GSMH")", "bridgeBucketCapacity": "$GSMH_BUCKET", "cap": "$GSMH_CAP" },
     { "symbol": "bUSDC", "token": "$ASSET", "codeHash": "$(codehash "$ASSET")", "bridgeBucketCapacity": "$USD_BUCKET", "cap": "$USD_CAP" }
   ],
   "initialPairs": [ { "tokenA": "WBLCH", "tokenB": "wGSMH" }, { "tokenA": "WBLCH", "tokenB": "bUSDC" } ],

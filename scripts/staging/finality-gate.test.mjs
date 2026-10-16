@@ -133,12 +133,12 @@ const V2 = {
   deployer: addr("d"),
   wrapped: addr("1"),
   asset: addr("2"),
-  gnb: addr("6"),
+  gsmh: addr("6"),
   factory: addr("f"),
   router: addr("3"),
   lens: addr("4"),
   pair: addr("e"),
-  gnbPair: addr("c"),
+  gsmhPair: addr("c"),
   blochInc: addr("7"),
   singleton: addr("8"),
   handler: addr("9"),
@@ -147,12 +147,12 @@ const OWNERS = [addr("a"), addr("b"), addr("5"), addr("0").replace(/0$/, "3"), a
 const CODE = {
   [V2.wrapped]: "0x01",
   [V2.asset]: "0x02",
-  [V2.gnb]: "0x06",
+  [V2.gsmh]: "0x06",
   [V2.factory]: "0x0f",
   [V2.router]: "0x03",
   [V2.lens]: "0x04",
   [V2.pair]: "0x0e",
-  [V2.gnbPair]: "0x0e",
+  [V2.gsmhPair]: "0x0e",
   [V2.blochInc]: "0x0b",
   [V2.singleton]: "0x5a",
   [V2.handler]: "0x5b",
@@ -162,8 +162,8 @@ const sel = (signature) => toFunctionSelector(signature);
 const pad = (a) => a.slice(2).padStart(64, "0");
 const BUSDC_CAP = 1_000_000_000n; // 1,000 bUSDC (6 decimals)
 const BUSDC_BUCKET = 10_000_000_000n; // 10,000 bUSDC
-const GNB_CAP = 100_000_000_000n; // 1,000 wGSMH (8 decimals)
-const GNB_BUCKET = 1_000_000_000_000n; // 10,000 wGSMH
+const GSMH_CAP = 100_000_000_000n; // 1,000 wGSMH (8 decimals)
+const GSMH_BUCKET = 1_000_000_000_000n; // 10,000 wGSMH
 
 function configV2(change = () => {}) {
   const contract = (address) => ({ address, codeHash: keccak256(CODE[address]) });
@@ -195,15 +195,15 @@ function configV2(change = () => {}) {
       },
       reserveCaps: [
         { token: V2.wrapped, cap: CAP.toString() },
-        { token: V2.gnb, cap: GNB_CAP.toString() },
+        { token: V2.gsmh, cap: GSMH_CAP.toString() },
         { token: V2.asset, cap: BUSDC_CAP.toString() },
       ],
       tokens: [
-        { token: V2.gnb, symbol: "wGSMH", codeHash: keccak256(CODE[V2.gnb]), bridgeBucketCapacity: GNB_BUCKET.toString() },
+        { token: V2.gsmh, symbol: "wGSMH", codeHash: keccak256(CODE[V2.gsmh]), bridgeBucketCapacity: GSMH_BUCKET.toString() },
         { token: V2.asset, symbol: "bUSDC", codeHash: keccak256(CODE[V2.asset]), bridgeBucketCapacity: BUSDC_BUCKET.toString() },
       ],
       pairs: [
-        { address: V2.gnbPair, token0: V2.wrapped, token1: V2.gnb, codeHash: keccak256(CODE[V2.gnbPair]) },
+        { address: V2.gsmhPair, token0: V2.wrapped, token1: V2.gsmh, codeHash: keccak256(CODE[V2.gsmhPair]) },
         { address: V2.pair, token0: V2.wrapped, token1: V2.asset, codeHash: keccak256(CODE[V2.pair]) },
       ],
       transactions: [TX],
@@ -223,8 +223,8 @@ function rpcV2(change = {}) {
     code: { ...CODE },
     initHash: INIT_HASH,
     feeTo: V2.blochInc,
-    caps: { [V2.wrapped]: CAP, [V2.asset]: BUSDC_CAP, [V2.gnb]: GNB_CAP },
-    buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gnb]: GNB_BUCKET },
+    caps: { [V2.wrapped]: CAP, [V2.asset]: BUSDC_CAP, [V2.gsmh]: GSMH_CAP },
+    buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gsmh]: GSMH_BUCKET },
     routerFactory: V2.factory,
     routerWrapped: V2.wrapped,
     lensFactory: V2.factory,
@@ -288,11 +288,11 @@ function rpcV2(change = {}) {
           [`${V2.factory}${sel("feeTo()")}`]: `0x${pad(state.feeTo)}`,
           [`${V2.factory}0xbb75fd60${pad(V2.wrapped)}`]: `0x${word(state.caps[V2.wrapped])}`,
           [`${V2.factory}0xbb75fd60${pad(V2.asset)}`]: `0x${word(state.caps[V2.asset])}`,
-          [`${V2.factory}0xbb75fd60${pad(V2.gnb)}`]: `0x${word(state.caps[V2.gnb])}`,
+          [`${V2.factory}0xbb75fd60${pad(V2.gsmh)}`]: `0x${word(state.caps[V2.gsmh])}`,
           [`${V2.factory}0xe6a43905${pad(V2.wrapped)}${pad(V2.asset)}`]: `0x${pad(state.registered)}`,
-          [`${V2.factory}0xe6a43905${pad(V2.wrapped)}${pad(V2.gnb)}`]: `0x${pad(V2.gnbPair)}`,
+          [`${V2.factory}0xe6a43905${pad(V2.wrapped)}${pad(V2.gsmh)}`]: `0x${pad(V2.gsmhPair)}`,
           [`${V2.asset}${sel("bucketCapacity()")}`]: `0x${word(state.buckets[V2.asset])}`,
-          [`${V2.gnb}${sel("bucketCapacity()")}`]: `0x${word(state.buckets[V2.gnb])}`,
+          [`${V2.gsmh}${sel("bucketCapacity()")}`]: `0x${word(state.buckets[V2.gsmh])}`,
           [`${V2.router}${sel("factory()")}`]: `0x${pad(state.routerFactory)}`,
           [`${V2.router}${sel("WBLCH()")}`]: `0x${pad(state.routerWrapped)}`,
           [`${V2.lens}${sel("factory()")}`]: `0x${pad(state.lensFactory)}`,
@@ -300,10 +300,10 @@ function rpcV2(change = {}) {
           [`${V2.pair}0x0dfe1681`]: `0x${pad(state.token0)}`,
           [`${V2.pair}0xd21220a7`]: `0x${pad(state.token1)}`,
           [`${V2.pair}0xd3dc9b31`]: `0x${word(state.pairCaps[0])}${word(state.pairCaps[1])}`,
-          [`${V2.gnbPair}${sel("factory()")}`]: `0x${pad(V2.factory)}`,
-          [`${V2.gnbPair}0x0dfe1681`]: `0x${pad(V2.wrapped)}`,
-          [`${V2.gnbPair}0xd21220a7`]: `0x${pad(V2.gnb)}`,
-          [`${V2.gnbPair}0xd3dc9b31`]: `0x${word(CAP)}${word(GNB_CAP)}`,
+          [`${V2.gsmhPair}${sel("factory()")}`]: `0x${pad(V2.factory)}`,
+          [`${V2.gsmhPair}0x0dfe1681`]: `0x${pad(V2.wrapped)}`,
+          [`${V2.gsmhPair}0xd21220a7`]: `0x${pad(V2.gsmh)}`,
+          [`${V2.gsmhPair}0xd3dc9b31`]: `0x${word(CAP)}${word(GSMH_CAP)}`,
         }[`${to}${data}`];
         if (reply === undefined) throw new Error(`unexpected call ${to} ${data}`);
         return reply;
@@ -318,7 +318,7 @@ test("schema 2 enables liquidity only for the exact planned deployment", async (
   const report = await evaluateFinalityGate(configV2(), rpcV2());
   assert.equal(report.decision, "liquidity-enabled");
   assert.equal(report.schemaVersion, 2);
-  assert.deepEqual(report.pairs.map((p) => p.address), [V2.gnbPair, V2.pair]);
+  assert.deepEqual(report.pairs.map((p) => p.address), [V2.gsmhPair, V2.pair]);
   assert.equal(report.wrappedReserveCap, CAP.toString());
   assert.equal(report.feeTo, V2.blochInc);
   assert.deepEqual(report.blochIncSafe, { address: V2.blochInc, threshold: 3, owners: OWNERS, singleton: V2.singleton });
@@ -379,17 +379,17 @@ test("schema 2 refuses drift in code, fee recipient, bridges, bindings, caps, pa
     [{ receipt: { transactionHash: TX, status: "0x1", from: V2.deployer, blockNumber: hex(301), blockHash: hash("c") } }, /not finalized/],
     [{ code: { ...CODE, [V2.router]: "0x33" } }, /router runtime code/],
     [{ code: { ...CODE, [V2.asset]: "0x22" } }, /token bUSDC runtime code/],
-    [{ code: { ...CODE, [V2.gnb]: "0x" } }, /token wGSMH runtime code/],
+    [{ code: { ...CODE, [V2.gsmh]: "0x" } }, /token wGSMH runtime code/],
     [{ code: { ...CODE, [V2.pair]: "0x" } }, /runtime code/],
     [{ code: { ...CODE, [V2.blochInc]: "0x" } }, /Bloch Inc multisig runtime code/],
     [{ code: { ...CODE, [V2.blochInc]: "0x0c" } }, /Bloch Inc multisig runtime code/],
     [{ initHash: hash("2") }, /init-code hash/],
     [{ feeTo: addr("0") }, /protocol fee is off/],
     [{ feeTo: addr("8") }, /not Bloch Inc/],
-    [{ buckets: { [V2.asset]: BUSDC_BUCKET - 1n, [V2.gnb]: GNB_BUCKET } }, /bUSDC bridge bucket capacity differs/],
-    [{ buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gnb]: GNB_BUCKET * 2n } }, /wGSMH bridge bucket capacity differs/],
-    [{ caps: { [V2.wrapped]: CAP, [V2.asset]: 1n, [V2.gnb]: GNB_CAP } }, /cap for/],
-    [{ caps: { [V2.wrapped]: CAP + 1n, [V2.asset]: BUSDC_CAP, [V2.gnb]: GNB_CAP } }, /cap for/],
+    [{ buckets: { [V2.asset]: BUSDC_BUCKET - 1n, [V2.gsmh]: GSMH_BUCKET } }, /bUSDC bridge bucket capacity differs/],
+    [{ buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gsmh]: GSMH_BUCKET * 2n } }, /wGSMH bridge bucket capacity differs/],
+    [{ caps: { [V2.wrapped]: CAP, [V2.asset]: 1n, [V2.gsmh]: GSMH_CAP } }, /cap for/],
+    [{ caps: { [V2.wrapped]: CAP + 1n, [V2.asset]: BUSDC_CAP, [V2.gsmh]: GSMH_CAP } }, /cap for/],
     [{ routerFactory: addr("8") }, /router serves another factory/],
     [{ routerWrapped: addr("8") }, /router wraps another token/],
     [{ lensFactory: addr("8") }, /lens reads another factory/],

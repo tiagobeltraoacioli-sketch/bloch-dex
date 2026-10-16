@@ -25,10 +25,12 @@ a test-only 2-of-3 multisig deployed by the funder. On mainnet it is replaced by
 the Safe v1.4.1 (3-of-5, hardware-wallet owners).
 
 **Out of scope:**
-- wGnB. The devnet4 wGnB (`0xC756139C813aeE5b7a1D640d6265c09443E56812`) has
+- The GnB-SMH token. The devnet4 token then deployed for it, named wGnB on
+  chain (`0xC756139C813aeE5b7a1D640d6265c09443E56812`, deployed 2026-10-14 and
+  since superseded by wGSMH `0xB2B4952b6E57e589109aF764859886e236798AD4`), has
   no `bucketCapacity()` (the call reverts) and supply 0. The config allows any
   cap and pair list, so this rehearsal capped WBLCH and bUSDC and planned one
-  pair. The mainnet wGnB token must expose `bucketCapacity()`.
+  pair. The mainnet wGSMH token must expose `bucketCapacity()`.
 - An over-cap deposit. Reaching the cap needs 10 BLCH or 1,000 bUSDC; it is
   proven on anvil by `scripts/staging/rehearse-deploy-anvil.sh`.
 
@@ -204,7 +206,8 @@ burned.
      transactions were mined in block 417 in nonce order.
 5. **Block cadence.** 10–20 min per L2 block. The `--slow` broadcast of five
    transactions took ~1 h, and the whole procedure ~2 h 10 min (00:36Z–02:44Z).
-6. **wGnB (D17).** The devnet4 wGnB has no `bucketCapacity()`. A mainnet wGnB
+6. **wGSMH (D17).** The 2026-10-14 devnet4 token (named wGnB on chain,
+   `0xC756…6812`) has no `bucketCapacity()`. A mainnet wGSMH
    without it cannot pass the preflight or the gate.
 7. **Small fee at pilot size.** With pilot-size pools the protocol fee is small,
    as expected: 1/6 of the 0.3% fee on ~15 bUSDC-equivalent of volume.
