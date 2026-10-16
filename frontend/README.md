@@ -294,3 +294,67 @@ operationally reviewed public-key pin and custody process, then signing the gate
 and manifest, are the next deployment gate. Browser Ed25519 support, CORS and
 real-RPC behavior also require operational validation. The private signing key
 must remain outside the frontend, artifact and repository.
+
+## Devnet4 live route (`#/devnet4`)
+
+A separate route for the Bloch L2 **devnet4** (chain 700771, zero-value tokens),
+clearly labelled as not mainnet. It does not touch the preview's sample data or
+positions.
+
+- **Deployment record.** The route only uses the committed, reviewed record in
+  `deployments/devnet4/mainnet-procedure-2pairs-20261016/` (`plan.json`,
+  `config.json`, `gate-report.json`). `src/devnet4/record.ts` refuses it unless:
+  - the plan was derived from that configuration (SHA-256 of its canonical JSON);
+  - it targets devnet4 in rehearsal mode;
+  - the schema-2 finality gate report says `liquidity-enabled` for the same chain,
+    fee recipient, pairs and transactions.
+- **Live reads.** `src/devnet4/chain.ts` re-checks the chain ID, the genesis hash,
+  and that the finalized block is not older than the gate's. It also checks the
+  runtime code hash of every contract and token in the record at the RPC's
+  `finalized` block. It then reads reserves, reserve caps, decimals and symbols at
+  that block.
+- **Quotes.** Quotes come from the deployed `BDexLens.bestExactInput` at `latest`.
+  - The lens refuses a route whose input would exceed a reserve cap, and it
+    computes the slippage minimum.
+  - Routes are direct, or go through WBLCH.
+  - Amounts are integer base units.
+- **Swaps.** The swap flow is explicit, through an injected EIP-1193 wallet:
+  1. The wallet is asked to switch to (or add) chain 700771.
+  2. An approval of exactly the input amount is sent when the allowance is short.
+  3. `swapExactTokensForTokens`, `swapExactBLCHForTokens` or
+     `swapExactTokensForBLCH` is called with the lens minimum and a deadline 30
+     minutes ahead in wall-clock seconds.
+  4. Each transaction has an explicit gas limit (the L2 RPC cannot estimate
+     against `pending`). Receipts are polled for up to an hour, because there is
+     one L2 block per settlement proof (10–20 minutes).
+
+The settled RPC sends no CORS headers, so the app reads it through the dev or
+preview server proxy at `/devnet4-rpc`. From a workstation:
+
+```sh
+ssh -N -L 18945:127.0.0.1:18945 ubuntu@<devnet4 host>   # keep open
+npm run dev                                             # or: npm run build && npm run preview
+# open http://127.0.0.1:5173/#/devnet4 (preview: http://127.0.0.1:4173/#/devnet4)
+```
+
+Configuration:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `DEVNET4_RPC_TARGET` | Proxy target | `http://127.0.0.1:18945` |
+| `VITE_DEVNET4_RPC_URL` | URL the app reads; skips the proxy | `/devnet4-rpc` |
+| `VITE_DEVNET4_WALLET_RPC_URL` | RPC URL offered to the wallet in `wallet_addEthereumChain` | `http://127.0.0.1:18945`, the tunnel |
+
+Wallets make their own RPC requests, so the tunnel must stay open while signing.
+
+**Tests.**
+- `src/test/devnet4.test.tsx` runs the flow in jsdom against a mocked RPC and a
+  mocked EIP-1193 provider.
+- `src/test/devnet4.live.test.ts` is an opt-in, read-only check against the real
+  RPC:
+
+  ```sh
+  DEVNET4_LIVE_RPC=http://127.0.0.1:18945 npx vitest run src/test/devnet4.live.test.ts
+  ```
+
+Testing with a real browser wallet extension remains a separate step.

@@ -13,6 +13,16 @@ import { useWallet } from './useWallet';
 import { isMetaMaskWallet, METAMASK_MOBILE_URL } from './wallet';
 import type { LiquidityAction, Page, Pool } from './model';
 import { readLiveReadGate, type LiveReadGate } from './live-gate';
+import Devnet4Live from './Devnet4Live';
+import { httpRpc } from './devnet4/chain';
+import { verifyDeploymentRecord } from './devnet4/record';
+
+// Devnet4 live route. The settled RPC sends no CORS headers: the app reads it
+// through the dev/preview server proxy at /devnet4-rpc (see README); a wallet
+// adding the network uses VITE_DEVNET4_WALLET_RPC_URL.
+const DEVNET4_RPC = httpRpc(import.meta.env.VITE_DEVNET4_RPC_URL ?? '/devnet4-rpc');
+const DEVNET4_WALLET_RPC = import.meta.env.VITE_DEVNET4_WALLET_RPC_URL ?? 'http://127.0.0.1:18945';
+const loadDevnet4Record = () => verifyDeploymentRecord();
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
@@ -178,6 +188,7 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
               </a>
             ))}
             {liveAvailable && <a href="#/live-pools">Live read</a>}
+            <a href="#/devnet4">Devnet4 live</a>
           </nav>
           <div className="header-actions">
             <button className="network-button" onClick={() => setModal('network')}>
@@ -511,6 +522,42 @@ function LiveReadApplication({ gate }: { gate: LiveReadGate }) {
   );
 }
 
+function Devnet4Application() {
+  const wallet = useWallet();
+  useEffect(() => {
+    document.title = 'PosternDEX — Devnet4 live (zero value)';
+    window.dispatchEvent(new Event('postern:discover-wallets'));
+  }, []);
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <a className="brand" href="#/trade" aria-label="Postern preview home">
+            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
+            <span>POSTERN</span>
+          </a>
+          <nav className="main-nav" aria-label="Devnet4 navigation">
+            <a href="#/devnet4" aria-current="page">
+              Devnet4 live
+            </a>
+            <a href="#/trade">Preview</a>
+          </nav>
+          <span className="badge">Devnet4 · Zero value</span>
+        </div>
+      </header>
+      <main id="main-content" className="main-content">
+        <Devnet4Live load={loadDevnet4Record} rpc={DEVNET4_RPC} walletRpcUrl={DEVNET4_WALLET_RPC} wallet={wallet} />
+      </main>
+      <footer className="footer">
+        <div className="footer-inner">
+          <span className="footer-status">Bloch L2 devnet4 · chain 700771 · not mainnet</span>
+          <span className="muted">Reviewed deployment record · Finalized reads · Explicit wallet transactions</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
 function ApplicationRouter() {
   const [hash, setHash] = useState(location.hash);
   const [gate, setGate] = useState<LiveReadGate>({ available: false, reason: 'loading' });
@@ -528,7 +575,9 @@ function ApplicationRouter() {
     window.addEventListener('hashchange', change);
     return () => window.removeEventListener('hashchange', change);
   }, []);
-  return hash === '#/live-pools' ? (
+  return hash === '#/devnet4' ? (
+    <Devnet4Application />
+  ) : hash === '#/live-pools' ? (
     <LiveReadApplication gate={gate} />
   ) : (
     <Application liveAvailable={gate.available} />

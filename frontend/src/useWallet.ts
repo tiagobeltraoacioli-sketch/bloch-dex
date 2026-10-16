@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { connectAccount, discoverWallets, validAccounts, validChain, walletError } from './wallet';
-import type { WalletAccount, WalletOption } from './wallet';
+import type { Provider, WalletAccount, WalletOption } from './wallet';
 
 export function useWallet() {
   const [wallets, setWallets] = useState<WalletOption[]>([]);
   const [account, setAccount] = useState<WalletAccount | null>(null);
+  // The connected wallet's provider, for explicit transaction flows only.
+  const [provider, setProvider] = useState<Provider | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const generation = useRef(0);
@@ -32,6 +34,7 @@ export function useWallet() {
     cleanup.current();
     cleanup.current = () => {};
     setAccount(null);
+    setProvider(null);
     setPending(false);
     setError('');
   }
@@ -112,6 +115,7 @@ export function useWallet() {
       }
       initializing = false;
       setAccount(result);
+      setProvider(() => provider);
     } catch (failure) {
       if (attempt !== generation.current) return;
       cleanup.current();
@@ -123,5 +127,5 @@ export function useWallet() {
       }
     }
   }
-  return { wallets, account, pending, error, connect, disconnect };
+  return { wallets, account, provider: account ? provider : null, pending, error, connect, disconnect };
 }
