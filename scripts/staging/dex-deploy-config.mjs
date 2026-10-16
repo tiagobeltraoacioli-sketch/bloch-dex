@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { validateSafePin } from "./finality-gate.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, getContractAddress, encodeAbiParameters, encodePacked } = requireFromFrontend("viem");
@@ -35,6 +36,20 @@ export const MAX_WRAPPED_CAP = 10n * 10n ** 18n;
 export const BRIDGE_BUCKET_DIVISOR = 10n;
 /// Bloch Inc (fee recipient and treasury) is a multisig contract.
 export const BLOCH_INC_REF = "blochInc";
+/// Canonical Safe v1.4.1 runtime code hashes (safe-global/safe-deployments,
+/// src/assets/v1.4.1 `codeHash`; the proxy hash is SafeProxy's runtime from the
+/// npm package @safe-global/safe-contracts@1.4.1, the code every
+/// SafeProxyFactory v1.4.1 proxy has). Bloch Inc is a proxy of one of these
+/// singletons with the official fallback handler.
+export const SAFE_V141 = Object.freeze({
+  proxy: "0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c",
+  singletons: Object.freeze({
+    Safe: "0x1fe2df852ba3299d6534ef416eefa406e56ced995bca886ab7a553e6d0c5e1c4",
+    SafeL2: "0xb1f926978a0f44a2c0ec8fe822418ae969bd8c3f18d61e5103100339894f81ff",
+  }),
+  fallbackHandler: "0x7c6007a5d711cea8dfd5d91f5940ec29c7f200fe511eb1fc1397b367af3c42f9",
+  proxyFactory: "0x50c3cdc4074750a7a974204a716c999edd37482f907608d960b2b025ee0b3317",
+});
 export const UINT112_MAX = (1n << 112n) - 1n;
 export const EMPTY_CODE_HASH = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
 export const MAX_CAP_TOKENS = 8;
@@ -157,11 +172,30 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   refuse(Number.isSafeInteger(config.deployer.startNonce) && config.deployer.startNonce >= 0, "deployer.startNonce is invalid");
 
   refuse(config.blochInc !== null, "blochInc is undecided (Bloch Inc multisig address and runtime code hash)");
-  exactKeys(config.blochInc, ["address", "codeHash"], "blochInc");
+  const blochIncKeys = ["address", "codeHash"];
+  if (config.blochInc && Object.hasOwn(config.blochInc, "safe")) blochIncKeys.push("safe");
+  exactKeys(config.blochInc, blochIncKeys, "blochInc");
   address(config.blochInc.address, "blochInc.address");
   hash(config.blochInc.codeHash, "blochInc.codeHash");
   refuse(config.blochInc.codeHash !== EMPTY_CODE_HASH, "blochInc must be a multisig contract, not an externally owned account");
   refuse(config.blochInc.address !== config.deployer.address, "the deployer and Bloch Inc must be distinct accounts");
+  const { safe } = config.blochInc;
+  refuse(network.rehearsal || safe, "blochInc.safe is required on the mainnet (the pinned Bloch Inc Safe v1.4.1)");
+  if (safe) {
+    validateSafePin(safe, "blochInc.safe", refuse);
+    // On the mainnet the code must be the official v1.4.1 release; a rehearsal
+    // may pin any reviewed code (the devnet4 rehearsal pins the official one).
+    if (!network.rehearsal) {
+      refuse(config.blochInc.codeHash === SAFE_V141.proxy, "blochInc.codeHash must be the Safe v1.4.1 proxy runtime");
+      refuse(Object.values(SAFE_V141.singletons).includes(safe.singleton.codeHash), "blochInc.safe.singleton must be the official Safe or SafeL2 v1.4.1");
+      refuse(safe.fallbackHandler.codeHash === SAFE_V141.fallbackHandler, "blochInc.safe.fallbackHandler must be the official CompatibilityFallbackHandler v1.4.1");
+    }
+    refuse(
+      !safe.owners.includes(config.deployer.address) && !safe.owners.includes(config.blochInc.address),
+      "the deployer and the Safe itself must not be Safe owners",
+    );
+    refuse(network.rehearsal || safe.threshold >= 2, "a mainnet Bloch Inc Safe needs a threshold of at least 2");
+  }
   const roles = [config.deployer.address, config.blochInc.address];
 
   const wrapped = config.wrappedNative;
@@ -382,7 +416,9 @@ export function planDeployment(config, artifacts, { rehearsal = false } = {}) {
     finalNonce: nonce,
     deployWrapped,
     feeTo: blochInc.address,
-    roles: { blochInc: { address: blochInc.address, codeHash: blochInc.codeHash } },
+    roles: {
+      blochInc: { address: blochInc.address, codeHash: blochInc.codeHash, ...(blochInc.safe ? { safe: blochInc.safe } : {}) },
+    },
     reserveCaps: capTokens.map((token, index) => ({ token, cap: caps[index].toString() })),
     externalTokens: config.reserveCaps
       .filter((entry) => entry.token !== WRAPPED_REF)

@@ -35,6 +35,25 @@ const EMPTY_CODE_HASH = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad
 const UINT112_MAX = (1n << 112n) - 1n;
 const CONTRACT_KEYS = Object.freeze(["wrappedNative", "factory", "router", "lens"]);
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
+/// The Bloch L2 mainnet chain ID (deployments/networks.json): its gate
+/// requires the Bloch Inc Safe checks below.
+const MAINNET_CHAIN_ID = 700770;
+
+/// Safe v1.4.1 storage layout and views used to pin the Bloch Inc Safe.
+export const SAFE = Object.freeze({
+  version: "1.4.1",
+  singletonSlot: "0x0",
+  fallbackHandlerSlot: "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5",
+  guardSlot: "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8",
+  sentinel: `0x${"0".repeat(39)}1`,
+  maxOwners: 20,
+  selectors: Object.freeze({
+    getThreshold: toFunctionSelector("getThreshold()"),
+    getOwners: toFunctionSelector("getOwners()"),
+    getModulesPaginated: toFunctionSelector("getModulesPaginated(address,uint256)"),
+    VERSION: toFunctionSelector("VERSION()"),
+  }),
+});
 
 function refuse(condition, message) {
   if (!condition) throw new Error(`finality gate: ${message}`);
@@ -211,6 +230,88 @@ function nonzeroHash(value, field) {
   refuse(typeof value === "string" && HASH.test(value) && value !== ZERO_HASH, `${field} must be a nonzero 32-byte hash`);
 }
 
+/// Validate a pinned Safe description: `{version, singleton: {address,
+/// codeHash}, fallbackHandler: {address, codeHash}, threshold, owners}`.
+export function validateSafePin(safe, field, fail = refuse) {
+  fail(
+    safe && typeof safe === "object" && !Array.isArray(safe) && Reflect.ownKeys(safe).length === 5 &&
+      ["version", "singleton", "fallbackHandler", "threshold", "owners"].every((key) => Object.hasOwn(safe, key)),
+    `${field} must have exactly the fields version, singleton, fallbackHandler, threshold, owners`,
+  );
+  fail(safe.version === SAFE.version, `${field}.version must be "${SAFE.version}"`);
+  for (const key of ["singleton", "fallbackHandler"]) {
+    const entry = safe[key];
+    fail(
+      entry && typeof entry === "object" && Reflect.ownKeys(entry).length === 2 &&
+        ADDRESS.test(entry.address) && entry.address !== ZERO_ADDRESS &&
+        HASH.test(entry.codeHash) && entry.codeHash !== ZERO_HASH && entry.codeHash !== EMPTY_CODE_HASH,
+      `${field}.${key} must be {address, codeHash} of a contract`,
+    );
+  }
+  const { owners, threshold } = safe;
+  fail(Array.isArray(owners) && owners.length > 0 && owners.length <= SAFE.maxOwners, `${field}.owners must list 1 to ${SAFE.maxOwners} owners`);
+  owners.forEach((owner, index) => fail(ADDRESS.test(owner) && owner !== ZERO_ADDRESS && owner !== SAFE.sentinel, `${field}.owners[${index}] is invalid`));
+  fail(new Set(owners).size === owners.length, `${field}.owners repeats an owner`);
+  fail(Number.isSafeInteger(threshold) && threshold >= 1 && threshold <= owners.length, `${field}.threshold is invalid`);
+}
+
+function dynamicAddresses(data, offsetWord, field) {
+  const offset = word(data, offsetWord, field);
+  refuse(offset % 32n === 0n && offset < 1n << 16n, `${field} returned a malformed array`);
+  const start = Number(offset / 32n);
+  const length = word(data, start, field);
+  refuse(length <= BigInt(SAFE.maxOwners + 1), `${field} returned too many entries`);
+  return Array.from({ length: Number(length) }, (_, i) => wordAddress(data, start + 1 + i, field));
+}
+
+function dynamicString(data, field) {
+  const offset = word(data, 0, field);
+  refuse(offset === 32n, `${field} returned a malformed string`);
+  const length = Number(word(data, 1, field));
+  refuse(length <= 32, `${field} returned a long string`);
+  const hex = data.slice(2 + 128, 2 + 128 + length * 2);
+  return new TextDecoder().decode(Uint8Array.from(hex.match(/../g) ?? [], (byte) => parseInt(byte, 16)));
+}
+
+/// Verify that `address` is the pinned Safe at block `at`: its singleton
+/// (storage slot 0) and fallback handler (slot) are the pinned contracts with
+/// the pinned runtime code, no guard and no module is set, the threshold and
+/// the owner set are exactly the pinned ones and VERSION() is 1.4.1. The
+/// proxy's own runtime code hash is checked by the caller.
+export async function verifySafe(safe, address, request, at) {
+  const call = async (data, field) => {
+    const result = await request("eth_call", [{ to: address, data }, at]);
+    refuse(typeof result === "string", `Bloch Inc Safe ${field} call failed`);
+    return result;
+  };
+  const slot = async (key, field) => {
+    const value = await request("eth_getStorageAt", [address, key, at]);
+    refuse(typeof value === "string" && /^0x[0-9a-f]{1,64}$/.test(value), `Bloch Inc Safe ${field} slot is unreadable`);
+    return wordAddress(`0x${value.slice(2).padStart(64, "0")}`, 0, `Bloch Inc Safe ${field}`);
+  };
+  refuse((await slot(SAFE.singletonSlot, "singleton")) === safe.singleton.address, "Bloch Inc Safe singleton differs from the pin");
+  refuse((await slot(SAFE.fallbackHandlerSlot, "fallback handler")) === safe.fallbackHandler.address, "Bloch Inc Safe fallback handler differs from the pin");
+  refuse((await slot(SAFE.guardSlot, "guard")) === ZERO_ADDRESS, "Bloch Inc Safe has a guard");
+  for (const [key, name] of [["singleton", "singleton"], ["fallbackHandler", "fallback handler"]]) {
+    const observed = codeHashOf(await request("eth_getCode", [safe[key].address, at]), `Safe ${name}`);
+    refuse(observed === safe[key].codeHash, `Bloch Inc Safe ${name} runtime code differs from the pin`);
+  }
+  const threshold = word(await call(SAFE.selectors.getThreshold, "getThreshold"), 0, "getThreshold");
+  refuse(threshold === BigInt(safe.threshold), "Bloch Inc Safe threshold differs from the pin");
+  const owners = dynamicAddresses(await call(SAFE.selectors.getOwners, "getOwners"), 0, "getOwners");
+  refuse(
+    owners.length === safe.owners.length && owners.every((o) => safe.owners.includes(o)),
+    "Bloch Inc Safe owners differ from the pin",
+  );
+  const modules = await call(
+    `${SAFE.selectors.getModulesPaginated}${encodeAddress(SAFE.sentinel)}${(10).toString(16).padStart(64, "0")}`,
+    "getModulesPaginated",
+  );
+  refuse(dynamicAddresses(modules, 0, "getModulesPaginated").length === 0, "Bloch Inc Safe has an enabled module");
+  refuse(dynamicString(await call(SAFE.selectors.VERSION, "VERSION"), "VERSION") === SAFE.version, "Bloch Inc Safe is not version 1.4.1");
+  return Object.freeze({ address, threshold: safe.threshold, owners: Object.freeze([...safe.owners]), singleton: safe.singleton.address });
+}
+
 function validateGateConfigV2(config) {
   exactKeys(config.chain, ["id", "genesisHash"], "chain");
   refuse(Number.isSafeInteger(config.chain.id) && config.chain.id > 0, "chain.id is invalid");
@@ -231,7 +332,10 @@ function validateGateConfigV2(config) {
   }
   nonzeroHash(deployment.pairInitCodeHash, "deployment.pairInitCodeHash");
   exactKeys(deployment.roles, ["blochInc"], "deployment.roles");
-  exactKeys(deployment.roles.blochInc, ["address", "codeHash"], "deployment.roles.blochInc");
+  const { blochInc } = deployment.roles;
+  exactKeys(blochInc, Object.hasOwn(blochInc ?? {}, "safe") ? ["address", "codeHash", "safe"] : ["address", "codeHash"], "deployment.roles.blochInc");
+  refuse(config.chain.id !== MAINNET_CHAIN_ID || blochInc.safe, "deployment.roles.blochInc.safe is required on the mainnet");
+  if (blochInc.safe) validateSafePin(blochInc.safe, "deployment.roles.blochInc.safe");
   lowerAddress(deployment.roles.blochInc.address, "deployment.roles.blochInc.address");
   nonzeroHash(deployment.roles.blochInc.codeHash, "deployment.roles.blochInc.codeHash");
   refuse(deployment.roles.blochInc.codeHash !== EMPTY_CODE_HASH, "deployment.roles.blochInc must be a multisig contract");
@@ -333,6 +437,7 @@ async function evaluateFinalityGateV2(config, request) {
   const { contracts, roles } = deployment;
   for (const key of CONTRACT_KEYS) await codeAt(contracts[key].address, contracts[key].codeHash, key);
   await codeAt(roles.blochInc.address, roles.blochInc.codeHash, "Bloch Inc multisig");
+  const safe = roles.blochInc.safe ? await verifySafe(roles.blochInc.safe, roles.blochInc.address, request, at) : null;
   for (const { token, symbol, codeHash, bridgeBucketCapacity } of deployment.tokens) {
     await codeAt(token, codeHash, `token ${symbol}`);
     const bucket = word(await call(token, SELECTORS.bucketCapacity, `${symbol}.bucketCapacity`), 0, `${symbol}.bucketCapacity`);
@@ -391,6 +496,7 @@ async function evaluateFinalityGateV2(config, request) {
     trust: typeof finality.trust === "string" ? finality.trust : null,
     wrappedReserveCap: wrappedCap.toString(),
     feeTo,
+    ...(safe ? { blochIncSafe: safe } : {}),
     pairs: Object.freeze(pairs),
     transactions: Object.freeze(included),
   });

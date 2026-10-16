@@ -9,6 +9,7 @@ import {
   MAINNET_CHAIN_ID,
   NETWORKS,
   RETIRED_CHAIN_IDS,
+  SAFE_V141,
   configSha256,
   forgeEnvironment,
   gateConfigFromPlan,
@@ -29,7 +30,15 @@ const ASSET_CODE = hash("c");
 const GNB = addr("b");
 const GNB_CODE = hash("e");
 const BLOCH_INC = addr("5");
-const BLOCH_INC_CODE = hash("7");
+const BLOCH_INC_CODE = SAFE_V141.proxy;
+/// The pinned Bloch Inc Safe: official v1.4.1 singleton and handler, 3 of 5.
+const SAFE_PIN = Object.freeze({
+  version: "1.4.1",
+  singleton: { address: addr("6"), codeHash: SAFE_V141.singletons.SafeL2 },
+  fallbackHandler: { address: addr("8"), codeHash: SAFE_V141.fallbackHandler },
+  threshold: 3,
+  owners: [addr("1"), addr("2"), addr("3"), addr("4"), addr("c")],
+});
 
 function config(change = (c) => c) {
   const base = {
@@ -41,7 +50,7 @@ function config(change = (c) => c) {
       compiler: { solc: "0.8.24", evmVersion: "paris", optimizer: true, optimizerRuns: 200, bytecodeHash: "none" },
     },
     deployer: { address: DEPLOYER, startNonce: 0 },
-    blochInc: { address: BLOCH_INC, codeHash: BLOCH_INC_CODE },
+    blochInc: { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) },
     wrappedNative: { deploy: true },
     fees: { feeTo: "blochInc" },
     reserveCaps: [
@@ -93,7 +102,7 @@ test("the committed mainnet configuration records the decisions and refuses what
     [/network.genesisHash is undecided/, (c) => { c.network.genesisHash = hash("9"); }],
     [/source.revision/, (c) => { c.source.revision = "b".repeat(40); }],
     [/deployer.address is undecided/, (c) => { c.deployer.address = DEPLOYER; }],
-    [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE }; }],
+    [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) }; }],
     [/wGSMH\).token is undecided/, (c) => { c.reserveCaps[1].token = GNB; }],
     [/wGSMH\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = GNB_CODE; }],
     [/wGSMH\).bridgeBucketCapacity is undecided/, (c) => { c.reserveCaps[1].bridgeBucketCapacity = "1000000000000"; }],
@@ -178,6 +187,21 @@ test("refuses every unsafe or incomplete configuration", () => {
     [(c) => { c.blochInc.codeHash = EMPTY_CODE_HASH; }, /multisig contract, not an externally owned account/],
     [(c) => { c.blochInc.codeHash = null; }, /blochInc.codeHash/],
     [(c) => { c.blochInc.treasury = addr("6"); }, /exactly the fields/],
+    // Mainnet: Bloch Inc is the pinned, official Safe v1.4.1.
+    [(c) => { delete c.blochInc.safe; }, /blochInc.safe is required on the mainnet/],
+    [(c) => { c.blochInc.codeHash = hash("7"); }, /Safe v1.4.1 proxy runtime/],
+    [(c) => { c.blochInc.safe.singleton.codeHash = hash("7"); }, /official Safe or SafeL2/],
+    [(c) => { c.blochInc.safe.fallbackHandler.codeHash = hash("7"); }, /official CompatibilityFallbackHandler/],
+    [(c) => { c.blochInc.safe.fallbackHandler.codeHash = EMPTY_CODE_HASH; }, /fallbackHandler must be/],
+    [(c) => { c.blochInc.safe.version = "1.3.0"; }, /version must be "1.4.1"/],
+    [(c) => { c.blochInc.safe.threshold = 1; }, /threshold of at least 2/],
+    [(c) => { c.blochInc.safe.threshold = 6; }, /threshold is invalid/],
+    [(c) => { c.blochInc.safe.owners = []; }, /owners must list/],
+    [(c) => { c.blochInc.safe.owners[4] = addr("1"); }, /repeats an owner/],
+    [(c) => { c.blochInc.safe.owners[4] = DEPLOYER; }, /must not be Safe owners/],
+    [(c) => { c.blochInc.safe.owners[4] = BLOCH_INC; }, /must not be Safe owners/],
+    [(c) => { c.blochInc.safe.owners[0] = "0x0000000000000000000000000000000000000001"; }, /owners\[0\] is invalid/],
+    [(c) => { c.blochInc.safe.modules = []; }, /exactly the fields version/],
     [(c) => { c.reserveCaps = []; }, /reserveCaps/],
     [(c) => { c.reserveCaps.shift(); c.initialPairs = []; }, /must cap "WBLCH"/],
     [(c) => { c.reserveCaps[0].cap = null; }, /cap is undecided/],
@@ -234,7 +258,7 @@ test("the plan is deterministic and matches CREATE/CREATE2 derivation", () => {
   assert.equal(a.contracts.lens.address, at(3));
   assert.deepEqual(Object.keys(a.contracts), ["wrappedNative", "factory", "router", "lens"]);
   assert.equal(a.feeTo, BLOCH_INC);
-  assert.deepEqual(a.roles, { blochInc: { address: BLOCH_INC, codeHash: BLOCH_INC_CODE } });
+  assert.deepEqual(a.roles, { blochInc: { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: SAFE_PIN } });
   assert.equal(a.finalNonce, 5);
   assert.equal(a.pairInitCodeHash, keccak256(artifacts().pair.bytecode));
   assert.equal(a.reserveCaps[0].token, a.contracts.wrappedNative.address);
@@ -335,12 +359,18 @@ function chain(plan, change = {}) {
   };
 }
 
+const devnet = (c) => {
+  c.network = { name: "devnet4-rehearsal", chainId: 700771, genesisHash: hash("9"), rehearsal: true };
+};
+
 test("preflight pins chain, genesis, nonce, empty targets, reviewed code and bridge buckets", async () => {
   const base = config((c) => {
+    devnet(c);
+    delete c.blochInc.safe;
     c.blochInc.codeHash = keccak256("0xbb");
     c.reserveCaps[1].codeHash = keccak256("0xaa");
   });
-  const plan = planDeployment(base, artifacts());
+  const plan = planDeployment(base, artifacts(), { rehearsal: true });
   assert.deepEqual(await preflight(plan, chain(plan).request), { nonce: "0" });
   for (const [change, pattern] of [
     [{ chainId: "0x1" }, /chain ID/],
@@ -354,6 +384,80 @@ test("preflight pins chain, genesis, nonce, empty targets, reviewed code and bri
     [{ bucket: 99_999_999n }, /bucket capacity differs/],
   ]) {
     await assert.rejects(preflight(plan, chain(plan, change).request), pattern);
+  }
+});
+
+/// Replies of a Safe v1.4.1 proxy at `safe` for the views and slots the
+/// preflight and the gate read.
+function safeView(safe, pin, change = {}) {
+  const st = {
+    singleton: pin.singleton.address,
+    handler: pin.fallbackHandler.address,
+    guard: addr("0"),
+    threshold: BigInt(pin.threshold),
+    owners: [...pin.owners].reverse(),
+    modules: [],
+    version: "1.4.1",
+    ...change,
+  };
+  const w = (v) => BigInt(v).toString(16).padStart(64, "0");
+  const p = (a) => a.slice(2).padStart(64, "0");
+  const sel = (sig) => keccak256(new TextEncoder().encode(sig)).slice(0, 10);
+  const text = Buffer.from(st.version).toString("hex").padEnd(64, "0");
+  return {
+    slot: { "0x0": `0x${p(st.singleton)}`, "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5": `0x${p(st.handler)}`,
+      "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8": `0x${p(st.guard)}` },
+    call: {
+      [sel("getThreshold()")]: `0x${w(st.threshold)}`,
+      [sel("getOwners()")]: `0x${w(32)}${w(st.owners.length)}${st.owners.map(p).join("")}`,
+      [`${sel("getModulesPaginated(address,uint256)")}${p("0x0000000000000000000000000000000000000001")}${w(10)}`]:
+        `0x${w(64)}${w(1)}${w(st.modules.length)}${st.modules.map(p).join("")}`,
+      [sel("VERSION()")]: `0x${w(32)}${w(st.version.length)}${text}`,
+    },
+  };
+}
+
+test("preflight verifies the pinned Bloch Inc Safe: singleton, handler, guard, modules, threshold, owners, version", async () => {
+  const pin = {
+    ...structuredClone(SAFE_PIN),
+    singleton: { address: addr("6"), codeHash: keccak256("0x61") },
+    fallbackHandler: { address: addr("8"), codeHash: keccak256("0x62") },
+  };
+  const base = config((c) => {
+    devnet(c);
+    c.blochInc.codeHash = keccak256("0xbb");
+    c.blochInc.safe = pin;
+    c.reserveCaps[1].codeHash = keccak256("0xaa");
+  });
+  const plan = planDeployment(base, artifacts(), { rehearsal: true });
+  assert.deepEqual(plan.roles.blochInc.safe, pin);
+  const withSafe = (viewChange = {}, code = {}) => {
+    const view = safeView(BLOCH_INC, pin, viewChange);
+    const inner = chain(plan, { code: { [ASSET]: "0xaa", [BLOCH_INC]: "0xbb", [addr("6")]: "0x61", [addr("8")]: "0x62", ...code } }).request;
+    return async (method, params) => {
+      if (method === "eth_getStorageAt") {
+        assert.equal(params[0], BLOCH_INC);
+        assert.equal(params[2], "latest");
+        return view.slot[params[1]];
+      }
+      if (method === "eth_call" && params[0].to === BLOCH_INC) return view.call[params[0].data];
+      return inner(method, params);
+    };
+  };
+  assert.deepEqual(await preflight(plan, withSafe()), { nonce: "0" });
+  for (const [viewChange, code, pattern] of [
+    [{ singleton: addr("9") }, {}, /singleton differs/],
+    [{ handler: addr("9") }, {}, /fallback handler differs/],
+    [{ guard: addr("9") }, {}, /has a guard/],
+    [{}, { [addr("6")]: "0x63" }, /singleton runtime code differs/],
+    [{}, { [addr("8")]: "0x" }, /fallback handler runtime code differs/],
+    [{ threshold: 2n }, {}, /threshold differs/],
+    [{ owners: [addr("1"), addr("2"), addr("3"), addr("4"), addr("9")] }, {}, /owners differ/],
+    [{ owners: [addr("1"), addr("2"), addr("3"), addr("4")] }, {}, /owners differ/],
+    [{ modules: [addr("9")] }, {}, /enabled module/],
+    [{ version: "1.3.0" }, {}, /not version 1.4.1/],
+  ]) {
+    await assert.rejects(preflight(plan, withSafe(viewChange, code)), pattern, [...Object.keys(viewChange), ...Object.keys(code)].join(","));
   }
 });
 

@@ -140,7 +140,10 @@ const V2 = {
   pair: addr("e"),
   gnbPair: addr("c"),
   blochInc: addr("7"),
+  singleton: addr("8"),
+  handler: addr("9"),
 };
+const OWNERS = [addr("a"), addr("b"), addr("5"), addr("0").replace(/0$/, "3"), addr("d").replace(/d$/, "e")];
 const CODE = {
   [V2.wrapped]: "0x01",
   [V2.asset]: "0x02",
@@ -151,6 +154,8 @@ const CODE = {
   [V2.pair]: "0x0e",
   [V2.gnbPair]: "0x0e",
   [V2.blochInc]: "0x0b",
+  [V2.singleton]: "0x5a",
+  [V2.handler]: "0x5b",
 };
 const INIT_HASH = hash("1");
 const sel = (signature) => toFunctionSelector(signature);
@@ -176,7 +181,18 @@ function configV2(change = () => {}) {
       },
       pairInitCodeHash: INIT_HASH,
       feeTo: V2.blochInc,
-      roles: { blochInc: contract(V2.blochInc) },
+      roles: {
+        blochInc: {
+          ...contract(V2.blochInc),
+          safe: {
+            version: "1.4.1",
+            singleton: contract(V2.singleton),
+            fallbackHandler: contract(V2.handler),
+            threshold: 3,
+            owners: [...OWNERS],
+          },
+        },
+      },
       reserveCaps: [
         { token: V2.wrapped, cap: CAP.toString() },
         { token: V2.gnb, cap: GNB_CAP.toString() },
@@ -217,6 +233,13 @@ function rpcV2(change = {}) {
     token1: V2.asset,
     registered: V2.pair,
     pairCaps: [CAP, BUSDC_CAP],
+    safeSingleton: V2.singleton,
+    safeHandler: V2.handler,
+    safeGuard: addr("0"),
+    safeThreshold: 3n,
+    safeOwners: [...OWNERS].reverse(),
+    safeModules: [],
+    safeVersion: "1.4.1",
     ...change,
   };
   return async (method, params) => {
@@ -234,9 +257,32 @@ function rpcV2(change = {}) {
       case "eth_getCode":
         assert.deepEqual(params[1], { blockHash: state.finalized.hash, requireCanonical: true });
         return state.code[params[0]] ?? "0x";
+      case "eth_getStorageAt": {
+        assert.equal(params[0], V2.blochInc);
+        assert.deepEqual(params[2], { blockHash: state.finalized.hash, requireCanonical: true });
+        const slot = {
+          "0x0": state.safeSingleton,
+          "0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5": state.safeHandler,
+          "0x4a204f620c8c5ccdca3fd54d003badd85ba500436a431f0cbda4f558c93c34c8": state.safeGuard,
+        }[params[1]];
+        if (slot === undefined) throw new Error(`unexpected slot ${params[1]}`);
+        return `0x${pad(slot)}`;
+      }
       case "eth_call": {
         assert.deepEqual(params[1], { blockHash: state.finalized.hash, requireCanonical: true });
         const { to, data } = params[0];
+        if (to === V2.blochInc) {
+          const text = Buffer.from(state.safeVersion).toString("hex").padEnd(64, "0");
+          const safeReply = {
+            [sel("getThreshold()")]: `0x${word(state.safeThreshold)}`,
+            [sel("getOwners()")]: `0x${word(32)}${word(state.safeOwners.length)}${state.safeOwners.map(pad).join("")}`,
+            [`${sel("getModulesPaginated(address,uint256)")}${pad(addr("0").replace(/0$/, "1"))}${word(10)}`]:
+              `0x${word(64)}${word(1)}${word(state.safeModules.length)}${state.safeModules.map(pad).join("")}`,
+            [sel("VERSION()")]: `0x${word(32)}${word(state.safeVersion.length)}${text}`,
+          }[data];
+          if (safeReply === undefined) throw new Error(`unexpected Safe call ${data}`);
+          return safeReply;
+        }
         const reply = {
           [`${V2.factory}${sel("INIT_CODE_PAIR_HASH()")}`]: `0x${state.initHash.slice(2)}`,
           [`${V2.factory}${sel("feeTo()")}`]: `0x${pad(state.feeTo)}`,
@@ -275,6 +321,54 @@ test("schema 2 enables liquidity only for the exact planned deployment", async (
   assert.deepEqual(report.pairs.map((p) => p.address), [V2.gnbPair, V2.pair]);
   assert.equal(report.wrappedReserveCap, CAP.toString());
   assert.equal(report.feeTo, V2.blochInc);
+  assert.deepEqual(report.blochIncSafe, { address: V2.blochInc, threshold: 3, owners: OWNERS, singleton: V2.singleton });
+});
+
+test("schema 2 pins the Bloch Inc Safe at the finalized block", async () => {
+  for (const [change, pattern] of [
+    [{ safeSingleton: addr("6") }, /singleton differs/],
+    [{ safeHandler: addr("6") }, /fallback handler differs/],
+    [{ safeGuard: addr("6") }, /has a guard/],
+    [{ code: { ...CODE, [V2.singleton]: "0x5c" } }, /singleton runtime code differs/],
+    [{ code: { ...CODE, [V2.handler]: "0x" } }, /fallback handler runtime code differs/],
+    [{ safeThreshold: 2n }, /threshold differs/],
+    [{ safeThreshold: 5n }, /threshold differs/],
+    [{ safeOwners: [...OWNERS.slice(0, 4), addr("6")] }, /owners differ/],
+    [{ safeOwners: [...OWNERS, addr("6")] }, /owners differ/],
+    [{ safeModules: [addr("6")] }, /enabled module/],
+    [{ safeVersion: "1.3.0" }, /not version 1.4.1/],
+  ]) {
+    await assert.rejects(evaluateFinalityGate(configV2(), rpcV2(change)), pattern, Object.keys(change).join(","));
+  }
+});
+
+test("schema 2 requires the Safe pin on the mainnet only", async () => {
+  let calls = 0;
+  const request = async () => {
+    calls += 1;
+    throw new Error("no RPC expected");
+  };
+  for (const change of [
+    (c) => { delete c.deployment.roles.blochInc.safe; },
+    (c) => { c.deployment.roles.blochInc.safe.threshold = 0; },
+    (c) => { c.deployment.roles.blochInc.safe.threshold = 6; },
+    (c) => { c.deployment.roles.blochInc.safe.owners.push(OWNERS[0]); },
+    (c) => { c.deployment.roles.blochInc.safe.owners = []; },
+    (c) => { c.deployment.roles.blochInc.safe.version = "1.3.0"; },
+    (c) => { c.deployment.roles.blochInc.safe.guard = addr("0"); },
+    (c) => { c.deployment.roles.blochInc.safe.singleton.codeHash = keccak256("0x"); },
+  ]) {
+    await assert.rejects(evaluateFinalityGate(configV2(change), request), /finality gate/, String(change));
+  }
+  assert.equal(calls, 0);
+  // A development-chain rehearsal may use a non-Safe stand-in.
+  const devnet = configV2((c) => {
+    c.chain.id = 700771;
+    delete c.deployment.roles.blochInc.safe;
+  });
+  const report = await evaluateFinalityGate(devnet, rpcV2({ chainId: hex(700771) }));
+  assert.equal(report.decision, "liquidity-enabled");
+  assert.equal(report.blochIncSafe, undefined);
 });
 
 test("schema 2 refuses drift in code, fee recipient, bridges, bindings, caps, pairs or sender", async () => {

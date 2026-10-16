@@ -16,7 +16,7 @@
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { BUCKET_CAPACITY_SELECTOR, createJsonRpcRequest, GATE_DOMAIN } from "./finality-gate.mjs";
+import { BUCKET_CAPACITY_SELECTOR, createJsonRpcRequest, GATE_DOMAIN, verifySafe } from "./finality-gate.mjs";
 import {
   BRIDGE_BUCKET_DIVISOR,
   EMPTY_CODE_HASH,
@@ -116,9 +116,10 @@ export async function preflight(plan, request) {
     refuse(BigInt(result) === BigInt(bridgeBucketCapacity), `${symbol} bridge bucket capacity differs from the config`);
     refuse(caps.get(token) * BRIDGE_BUCKET_DIVISOR <= BigInt(result), `${symbol} cap exceeds 1/${BRIDGE_BUCKET_DIVISOR} of its bridge bucket`);
   }
-  for (const [name, { address, codeHash }] of Object.entries(plan.roles)) {
+  for (const [name, { address, codeHash, safe }] of Object.entries(plan.roles)) {
     const observed = codeHashOf(await request("eth_getCode", [address, "latest"]));
     refuse(observed !== EMPTY_CODE_HASH && observed === codeHash, `${name} code hash differs (it must be the reviewed multisig)`);
+    if (safe) await verifySafe(safe, address, request, "latest");
   }
   return { nonce: latest.toString() };
 }
