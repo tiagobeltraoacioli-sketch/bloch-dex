@@ -30,7 +30,7 @@ limits fixed once in constructors; Ethereum-style finality (the L2
 replaying from the pinned genesis). The DEX has **no admin, setter or upgrade
 path**: the fee recipient and the reserve caps are constructor arguments.
 
-The GnB-SMH coin's ticker is **GSMH**; its bridged token on the L2 uses the symbol **wGSMH** (formerly written wGnB; contract names are unchanged).
+Naming: the coin and chain are **GnB-SMH**; its ticker is **GSMH**, and its bridged token on the L2 is **wGSMH** (token name "Wrapped GnB-SMH"). Earlier documents wrote it wGnB; code identifiers and contract names are unchanged, and the 2026-10-14 devnet4 token keeps its on-chain name (wGnB, "Wrapped GnB").
 
 Legend: **Done** = handled in this branch; **Open** = needs a decision or
 another workstream; **M9** = depends on the L2 mainnet going live;
