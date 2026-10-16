@@ -23,6 +23,8 @@ limits fixed once in constructors; Ethereum-style finality (the L2
 replaying from the pinned genesis). The DEX has **no admin, setter or upgrade
 path**: the fee recipient and the reserve caps are constructor arguments.
 
+The GnB-SMH coin's ticker is **GSMH**; its bridged token on the L2 uses the symbol **wGSMH** (formerly written wGnB; contract names are unchanged).
+
 Legend: **Done** = handled in this branch; **Open** = needs a decision or
 another workstream; **M9** = depends on the L2 mainnet going live;
 **Pending input** = decided, waiting for a value from the user or another
@@ -36,8 +38,8 @@ workstream (the config field is `null` and the tooling refuses it).
 | 2 | Protocol fee **on**, as revenue, to **Bloch Inc** | `UniswapV2Factory(feeTo, capTokens, caps)`: `feeTo` is immutable; `setFeeTo`, `setFeeToSetter`, `acceptFeeToSetter`, `cancelFeeToSetterTransfer`, `feeToSetter`, `pendingFeeToSetter` deleted. Config `fees.feeTo` must be `"blochInc"`. Pair init code hash unchanged (`0x2249ef38…b820`, pinned by `test/Core.t.sol` and checked on chain by the rehearsal) | **Bloch Inc address and Safe proxy code hash**: `blochInc` |
 | 2b | Bloch Inc is a **multisig**: Safe v1.4.1 (official contracts), 3-of-5 owners on hardware wallets | `blochInc.codeHash` must not be the empty-code hash; `DeployMainnet.s.sol`, `deploy-dex.mjs run` and the gate (at the finalized block) check the contract code | Owners, then the Safe deployment (runbook step 0) |
 | 3 | Treasury = Bloch Inc; deployer = a fresh Bloch Inc key with no role after deployment | Roles reduced to `deployer` and `blochInc`, which must differ; the deployer is never fee recipient, cap token or planned contract | **Deployer address** (fresh key, nonce 0): `deployer.address` |
-| 4 | Initial caps: guarded launch | §3 below; values committed in the config | wGnB bridge bucket capacity (from the wGnB bridge deployment) |
-| 5 | Pilot pairs **wGnB/WBLCH** and **bUSDC/WBLCH** | `initialPairs` references tokens by symbol; the plan, deploy script and gate create and check both pairs | **wGnB and bUSDC addresses and runtime code hashes** (bridge deployments) |
+| 4 | Initial caps: guarded launch | §3 below; values committed in the config | wGSMH bridge bucket capacity (from the wGSMH bridge deployment) |
+| 5 | Pilot pairs **wGSMH/WBLCH** and **bUSDC/WBLCH** | `initialPairs` references tokens by symbol; the plan, deploy script and gate create and check both pairs | **wGSMH and bUSDC addresses and runtime code hashes** (bridge deployments) |
 | 6 | External audit: later | F5 below | Commission before caps are raised |
 | 7 | Legacy devnet tooling: remove or make config-driven | §5 below | None |
 
@@ -55,7 +57,7 @@ be built), the L2 RPC items in D4/D13/D15 and the timestamp decision (F3).
 | D5 | L2 block timestamp = +1 per block | Resolved on devnet4; M9 for mainnet | Devnet4 blocks carry wall-clock timestamps from block 228 on (blocks ≤ 227 kept `timestamp = number`). See F3 |
 | D6 | One dev key was deployer, fee authority and treasury | Done | Two roles left: the fresh deployer (no power after deployment) and the Bloch Inc multisig (fee recipient, fixed) |
 | D7 | Test asset D4TEST | Done | `DeployMainnet` deploys only WBLCH (optional) and the core/periphery; no test assets, liquidity or approvals |
-| D8 | Cap values | Done (values), Pending input (wGnB bucket) | §3 |
+| D8 | Cap values | Done (values), Pending input (wGSMH bucket) | §3 |
 | D9 | forge batch broadcast file mislabels hashes | Done | `--slow`; `record` re-verifies every transaction from `receipts[]` |
 | D10 | Deployer nonce and addresses not pinned | Done | `DeployMainnet` pins deployer, start nonce, every address and runtime code hash |
 | D11 | WBLCH mode | Done | `wrappedNative: {deploy: true}` (recommended) or a reviewed predeploy |
@@ -64,7 +66,7 @@ be built), the L2 RPC items in D4/D13/D15 and the timestamp decision (F3).
 | D14 | Legacy staging tooling hard-codes 700771 | Done | Removed (§5) |
 | D15 | EVM rules (`paris`, `BLOCKHASH` over 256 blocks, router creation ~3.9M gas) | Open, M9 | Mainnet L2 must provide them |
 | D16 | Gas estimation against `pending` fails on the L2 RPC ("pending Bloch derivation is unavailable") | Worked around in tooling | `forge script` uses its own simulation's gas (no RPC estimate), so `deploy-dex.mjs run` needs no change; every `cast send` in `scripts/devnet4/rehearse-mainnet-procedure.sh` passes an explicit `--gas-limit`. `eth_estimateGas` without a block tag (latest) works. One L2 block per settlement proof (10–20 min observed): forge needs `--timeout 1800` and the `--slow` broadcast of 5 transactions took ~1 h |
-| D17 | Bridged tokens must expose `bucketCapacity()` | Required | The real devnet4 bUSDC (v3) does; the devnet4 wGnB (`0xC756…6812`) does not (the call reverts) and was left out of the rehearsal. The mainnet wGnB token must expose `bucketCapacity()`, otherwise the `run` preflight and the gate refuse it |
+| D17 | Bridged tokens must expose `bucketCapacity()` | Required | The real devnet4 bUSDC (v3) does; the devnet4 wGnB (`0xC756…6812`) does not (the call reverts) and was left out of the rehearsal. The mainnet wGSMH token must expose `bucketCapacity()`, otherwise the `run` preflight and the gate refuse it |
 
 ## 2. Admin surfaces
 
@@ -104,13 +106,13 @@ outflows are never blocked. Values (committed in
 | Token | Cap | Base units | Rule |
 |---|---|---|---|
 | WBLCH | 10 BLCH | `10000000000000000000` (18 dp) | The existing code ceiling (`MAX_WRAPPED_CAP`, gate `maxWrappedReserveCap`) |
-| wGnB | 1 wGnB | `100000000` (8 dp) | ≤ 1/10 of the wGnB bridge bucket. The bridge deploy config (bloch-l2-bridge `feat/pontes-mainnet-deploy`, docs/BRIDGES-MAINNET.md) sizes the pilot at supply 30 GNB, bucket 10 GNB/24 h → cap 1 wGnB; raise both together by redeploy |
+| wGSMH | 1 wGSMH | `100000000` (8 dp) | ≤ 1/10 of the wGSMH bridge bucket. The bridge deploy config (bloch-l2-bridge `feat/pontes-mainnet-deploy`, docs/BRIDGES-MAINNET.md) sizes the pilot at supply 30 GSMH, bucket 10 GSMH/24 h → cap 1 wGSMH; raise both together by redeploy |
 | bUSDC | 1,000 bUSDC | `1000000000` (6 dp) | 1/10 of the 10,000 bUSDC bucket (refill 24 h, supply cap 100,000) |
 
 Rationale:
 
 - **Loss ceiling while unaudited.** Everything a pair can ever hold is at most
-  its two caps. Worst case for both pilot pairs together: 20 BLCH + 1 wGnB
+  its two caps. Worst case for both pilot pairs together: 20 BLCH + 1 wGSMH
   + 1,000 bUSDC. WBLCH is capped per pair, so each extra WBLCH pair anyone
   creates is also limited to 10 WBLCH (F4).
 - **Relation to the bridges' token buckets.** A DEX cap on a bridged token is
@@ -121,7 +123,7 @@ Rationale:
   full bucket. The rule is enforced three times: config validation
   (`cap × 10 ≤ bridgeBucketCapacity`), the pre-broadcast check (reads the
   token's immutable `bucketCapacity()`), and the gate (reads it again at the
-  finalized block). A smaller wGnB bucket than planned forces a smaller cap.
+  finalized block). A smaller wGSMH bucket than planned forces a smaller cap.
 - **Bridge failure.** If a bridge is compromised and mints unbacked tokens up
   to its bucket, the cap stops the dump at `cap − reserve`: with the pool seeded
   at half its caps, an attacker with unlimited counterfeit bUSDC can take at
@@ -177,7 +179,7 @@ Kept (the mainnet path):
   (devnet4 record) and schema 2 (mainnet).
 - `scripts/staging/rehearse-deploy-anvil.sh`: full local rehearsal on anvil
   (chain 700770 by default) with a test 2-of-3 multisig as Bloch Inc and test
-  tokens exposing `bucketCapacity()` as wGnB and bUSDC: plan, refusals, dry
+  tokens exposing `bucketCapacity()` as wGSMH and bUSDC: plan, refusals, dry
   run, broadcast, record, on-chain hash check, gate before/after finality,
   over-cap deposit reverts, fee accrues to the multisig and it redeems it.
 - Frontend: `frontend/src/network-identity.ts` reads `deployments/networks.json`.
@@ -209,7 +211,7 @@ reviewed change.
    `from`, the `finalized` block tag and `bloch_finality`.
 3. The timestamp decision (F3) is made and, if not wall-clock seconds, the
    reviewed follow-up change is merged.
-4. The wGnB and bUSDC bridges are deployed on the L2 (other workstream); their
+4. The wGSMH and bUSDC bridges are deployed on the L2 (other workstream); their
    token addresses, runtime code hashes and `bucketCapacity()` are reviewed.
 
 ### Step 0: deploy the Bloch Inc Safe (before the DEX)
@@ -246,8 +248,8 @@ possible follow-up once the owners are known).
 1. **Record decisions.** Fill the remaining `null` fields of
    `deployments/mainnet/dex-mainnet.config.json`: `network.genesisHash`,
    `source.revision`, `deployer.address` (fresh Bloch Inc key; `startNonce`
-   = its current nonce, normally 0), `blochInc`, and for wGnB/bUSDC `token`,
-   `codeHash`, `bridgeBucketCapacity` (wGnB). Review it as a pull request.
+   = its current nonce, normally 0), `blochInc`, and for wGSMH/bUSDC `token`,
+   `codeHash`, `bridgeBucketCapacity` (wGSMH). Review it as a pull request.
 2. **Build reproducibly.** Check out `source.revision`, Foundry 1.7.1,
    `forge build`, `forge test`, `npm ci --ignore-scripts` in `frontend/`,
    `node --test scripts/staging/*.test.mjs`.
@@ -269,7 +271,7 @@ possible follow-up once the owners are known).
 7. **Broadcast:** the same command with
    `--broadcast --confirm <configSha256> -- <forge signer args, e.g. --ledger>`
    (one transaction at a time, `--slow`). Order: WBLCH, factory (fee recipient
-   = Bloch Inc, caps), router, lens, `createPair` wGnB/WBLCH, `createPair`
+   = Bloch Inc, caps), router, lens, `createPair` wGSMH/WBLCH, `createPair`
    bUSDC/WBLCH.
 8. **Record:**
    `node scripts/staging/deploy-dex.mjs record --config <config> --plan <plan> --rpc <own-node-url> --broadcast-file broadcast/DeployMainnet.s.sol/700770/run-latest.json --write deployments/mainnet/finality-gate.mainnet.json`.
@@ -296,7 +298,7 @@ deployer's current nonce, re-plan and re-review.
   revision);
 - `factory.feeTo()` is Bloch Inc (the fee is on and goes nowhere else; the
   factory code hash proves there is no setter);
-- `factory.reserveCap(token)` equals the plan for WBLCH, wGnB and bUSDC; the
+- `factory.reserveCap(token)` equals the plan for WBLCH, wGSMH and bUSDC; the
   WBLCH cap is within `maxWrappedReserveCap` (≤ 10 BLCH);
 - each bridged token's `bucketCapacity()` equals the reviewed value and is at
   least 10× its DEX cap;

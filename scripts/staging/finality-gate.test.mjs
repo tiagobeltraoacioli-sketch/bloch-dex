@@ -157,8 +157,8 @@ const sel = (signature) => toFunctionSelector(signature);
 const pad = (a) => a.slice(2).padStart(64, "0");
 const BUSDC_CAP = 1_000_000_000n; // 1,000 bUSDC (6 decimals)
 const BUSDC_BUCKET = 10_000_000_000n; // 10,000 bUSDC
-const GNB_CAP = 100_000_000_000n; // 1,000 wGnB (8 decimals)
-const GNB_BUCKET = 1_000_000_000_000n; // 10,000 wGnB
+const GNB_CAP = 100_000_000_000n; // 1,000 wGSMH (8 decimals)
+const GNB_BUCKET = 1_000_000_000_000n; // 10,000 wGSMH
 
 function configV2(change = () => {}) {
   const contract = (address) => ({ address, codeHash: keccak256(CODE[address]) });
@@ -183,7 +183,7 @@ function configV2(change = () => {}) {
         { token: V2.asset, cap: BUSDC_CAP.toString() },
       ],
       tokens: [
-        { token: V2.gnb, symbol: "wGnB", codeHash: keccak256(CODE[V2.gnb]), bridgeBucketCapacity: GNB_BUCKET.toString() },
+        { token: V2.gnb, symbol: "wGSMH", codeHash: keccak256(CODE[V2.gnb]), bridgeBucketCapacity: GNB_BUCKET.toString() },
         { token: V2.asset, symbol: "bUSDC", codeHash: keccak256(CODE[V2.asset]), bridgeBucketCapacity: BUSDC_BUCKET.toString() },
       ],
       pairs: [
@@ -285,7 +285,7 @@ test("schema 2 refuses drift in code, fee recipient, bridges, bindings, caps, pa
     [{ receipt: { transactionHash: TX, status: "0x1", from: V2.deployer, blockNumber: hex(301), blockHash: hash("c") } }, /not finalized/],
     [{ code: { ...CODE, [V2.router]: "0x33" } }, /router runtime code/],
     [{ code: { ...CODE, [V2.asset]: "0x22" } }, /token bUSDC runtime code/],
-    [{ code: { ...CODE, [V2.gnb]: "0x" } }, /token wGnB runtime code/],
+    [{ code: { ...CODE, [V2.gnb]: "0x" } }, /token wGSMH runtime code/],
     [{ code: { ...CODE, [V2.pair]: "0x" } }, /runtime code/],
     [{ code: { ...CODE, [V2.blochInc]: "0x" } }, /Bloch Inc multisig runtime code/],
     [{ code: { ...CODE, [V2.blochInc]: "0x0c" } }, /Bloch Inc multisig runtime code/],
@@ -293,7 +293,7 @@ test("schema 2 refuses drift in code, fee recipient, bridges, bindings, caps, pa
     [{ feeTo: addr("0") }, /protocol fee is off/],
     [{ feeTo: addr("8") }, /not Bloch Inc/],
     [{ buckets: { [V2.asset]: BUSDC_BUCKET - 1n, [V2.gnb]: GNB_BUCKET } }, /bUSDC bridge bucket capacity differs/],
-    [{ buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gnb]: GNB_BUCKET * 2n } }, /wGnB bridge bucket capacity differs/],
+    [{ buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gnb]: GNB_BUCKET * 2n } }, /wGSMH bridge bucket capacity differs/],
     [{ caps: { [V2.wrapped]: CAP, [V2.asset]: 1n, [V2.gnb]: GNB_CAP } }, /cap for/],
     [{ caps: { [V2.wrapped]: CAP + 1n, [V2.asset]: BUSDC_CAP, [V2.gnb]: GNB_CAP } }, /cap for/],
     [{ routerFactory: addr("8") }, /router serves another factory/],

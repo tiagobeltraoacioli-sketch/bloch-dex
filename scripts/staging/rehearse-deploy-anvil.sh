@@ -12,7 +12,7 @@
 # explicit --rehearsal path. The bloch_finality method is served by a local
 # shim that mirrors anvil's `finalized` tag; it proves the tooling, not Bloch
 # finality. Bloch Inc is played by a test-only 2-of-3 multisig contract and
-# the two pilot counter-assets (wGnB, bUSDC) by test-only tokens exposing the
+# the two pilot counter-assets (wGSMH, bUSDC) by test-only tokens exposing the
 # bridge's bucketCapacity(); the caps are the committed mainnet values.
 set -euo pipefail
 
@@ -59,7 +59,7 @@ codehash() { cast keccak "$(cast code "$1" --rpc-url "$RPC")"; }
 BLOCH_INC=$(forge create test/mocks/RehearsalMultisig.sol:RehearsalMultisig --rpc-url "$RPC" --private-key "$ISSUER_KEY" \
   --broadcast --constructor-args "[$OWNER_A,$OWNER_B,$OWNER_C]" 2 | created)
 GNB=$(forge create test/mocks/RehearsalBridgedToken.sol:RehearsalBridgedToken --rpc-url "$RPC" --private-key "$ISSUER_KEY" \
-  --broadcast --constructor-args "Rehearsal wGnB" "wGnB" 8 100000000000000 "$ISSUER" "$GNB_BUCKET" | created)
+  --broadcast --constructor-args "Rehearsal wGSMH" "wGSMH" 8 100000000000000 "$ISSUER" "$GNB_BUCKET" | created)
 ASSET=$(forge create test/mocks/RehearsalBridgedToken.sol:RehearsalBridgedToken --rpc-url "$RPC" --private-key "$ISSUER_KEY" \
   --broadcast --constructor-args "Rehearsal bUSDC" "bUSDC" 6 1000000000000 "$ISSUER" "$USD_BUCKET" | created)
 GENESIS=$(cast block 0 --field hash --rpc-url "$RPC")
@@ -76,10 +76,10 @@ cat > "$CONFIG" <<JSON
   "fees": { "feeTo": "blochInc" },
   "reserveCaps": [
     { "token": "WBLCH", "cap": "$WBLCH_CAP" },
-    { "symbol": "wGnB", "token": "$GNB", "codeHash": "$(codehash "$GNB")", "bridgeBucketCapacity": "$GNB_BUCKET", "cap": "$GNB_CAP" },
+    { "symbol": "wGSMH", "token": "$GNB", "codeHash": "$(codehash "$GNB")", "bridgeBucketCapacity": "$GNB_BUCKET", "cap": "$GNB_CAP" },
     { "symbol": "bUSDC", "token": "$ASSET", "codeHash": "$(codehash "$ASSET")", "bridgeBucketCapacity": "$USD_BUCKET", "cap": "$USD_CAP" }
   ],
-  "initialPairs": [ { "tokenA": "WBLCH", "tokenB": "wGnB" }, { "tokenA": "WBLCH", "tokenB": "bUSDC" } ],
+  "initialPairs": [ { "tokenA": "WBLCH", "tokenB": "wGSMH" }, { "tokenA": "WBLCH", "tokenB": "bUSDC" } ],
   "gate": { "maxWrappedReserveCap": "10000000000000000000" }
 }
 JSON

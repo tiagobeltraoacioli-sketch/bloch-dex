@@ -34,7 +34,7 @@
       "cap": "10000000000000000000"
     },
     {
-      "symbol": "wGnB",
+      "symbol": "wGSMH",
       "token": null,
       "codeHash": null,
       "bridgeBucketCapacity": null,
@@ -51,7 +51,7 @@
   "initialPairs": [
     {
       "tokenA": "WBLCH",
-      "tokenB": "wGnB"
+      "tokenB": "wGSMH"
     },
     {
       "tokenA": "WBLCH",
