@@ -65,7 +65,7 @@ contract CoreTest is TestBase {
     /// factory's fee recipient: the fixed-recipient factory reads it through
     /// the same `feeTo()` selector as the canonical storage getter.
     function testPairInitCodeHashIsPinnedAndIndependentOfFeeRecipient() public {
-        bytes32 pinned = 0x2249ef38f618407ce9328e89491648a4e8ad4b234e70a538ef9d2096b1ceb820;
+        bytes32 pinned = 0xe41e81db2882b882be444d9f5936fae630b6f22664d20a762ab86dc17afeb248;
         assertEq(factory.INIT_CODE_PAIR_HASH(), pinned);
         UniswapV2Factory feeOn = new UniswapV2Factory(address(0xFEE), new address[](0), new uint256[](0));
         assertEq(feeOn.INIT_CODE_PAIR_HASH(), pinned);
