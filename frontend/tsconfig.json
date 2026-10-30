@@ -13,7 +13,11 @@
     "isolatedModules": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    "paths": {
+      "@postern/mainnet-network": ["../deployments/mainnet/frontend.network.json"],
+      "@postern/mainnet-record": ["../deployments/mainnet/dex-mainnet.record.json"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }

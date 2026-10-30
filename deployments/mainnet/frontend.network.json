@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.frontend-network.v1",
+  "network": "bloch-l2-mainnet",
+  "chainId": 700770,
+  "chainName": "Bloch L2",
+  "nativeCurrency": { "name": "Bloch", "symbol": "BLCH", "decimals": 18 },
+  "genesisHash": null,
+  "rpc": { "url": "https://l2rpc.blochl1.com", "status": "placeholder" },
+  "explorer": { "url": null },
+  "bridges": [
+    {
+      "symbol": "bUSDC",
+      "name": "Bridged USDC (Ethereum USDC vault)",
+      "depositUrl": null,
+      "withdrawUrl": null,
+      "docsUrl": null
+    }
+  ]
+}

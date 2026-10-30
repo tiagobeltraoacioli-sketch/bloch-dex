@@ -32,9 +32,12 @@ export const LENS_ABI = parseAbi([
 ]);
 
 export class ChainError extends Error {}
-function refuse(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new ChainError(`devnet4: ${message}`);
+function refuseAs(condition: unknown, message: string, label: string): asserts condition {
+  if (!condition) throw new ChainError(`${label}: ${message}`);
 }
+/** RPC, call and quote helpers are shared by the devnet4 and mainnet routes. */
+const refuse: (condition: unknown, message: string) => asserts condition = (c, m) =>
+  refuseAs(c, m, 'chain');
 
 /** JSON-RPC over HTTP POST (the settled RPC has no CORS; see README for the proxy). */
 export function httpRpc(url: string, fetchImpl: typeof fetch = (...args) => fetch(...args)): Rpc {
@@ -53,7 +56,7 @@ export function httpRpc(url: string, fetchImpl: typeof fetch = (...args) => fetc
   };
 }
 
-type BlockTag = 'latest' | { blockHash: Hex };
+export type BlockTag = 'latest' | { blockHash: Hex };
 
 export async function readCall<T>(
   rpc: Rpc,
@@ -90,7 +93,13 @@ export type Snapshot = {
  * every pool. Refuses a different chain or genesis, a finalized block older
  * than the gate's, or any runtime code that differs from the record.
  */
-export async function readSnapshot(rpc: Rpc, d: DevnetDeployment): Promise<Snapshot> {
+export async function readSnapshot(
+  rpc: Rpc,
+  d: DevnetDeployment,
+  label = 'devnet4',
+): Promise<Snapshot> {
+  const refuse: (condition: unknown, message: string) => asserts condition = (c, m) =>
+    refuseAs(c, m, label);
   refuse(
     BigInt(String(await rpc('eth_chainId', []))) === BigInt(d.chainId),
     'the RPC serves another chain',
@@ -191,7 +200,11 @@ export type LensQuote = {
   blockNumber: bigint;
 };
 
-/** Quote through the lens at `latest`; null when every route is unavailable (no pool, a cap, or zero output). */
+/**
+ * Quote through the lens at `at` (devnet4: `latest`; the mainnet route passes
+ * the finalized block hash); null when every route is unavailable (no pool, a
+ * cap, or zero output).
+ */
 export async function quoteExactInput(
   rpc: Rpc,
   d: DevnetDeployment,
@@ -199,6 +212,7 @@ export async function quoteExactInput(
   tokenOut: Address,
   amountIn: bigint,
   slippageBps: number,
+  at: BlockTag = 'latest',
 ): Promise<LensQuote | null> {
   refuse(tokenIn !== tokenOut, 'choose two different tokens');
   refuse(amountIn > 0n, 'the amount must be positive');
@@ -222,7 +236,7 @@ export async function quoteExactInput(
     d.lens,
     'bestExactInput',
     [amountIn, routes, BigInt(slippageBps)],
-    'latest',
+    at,
   );
   if (bestIndex >= BigInt(routes.length)) return null;
   const q = quotes[Number(bestIndex)];

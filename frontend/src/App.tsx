@@ -16,6 +16,8 @@ import { readLiveReadGate, type LiveReadGate } from './live-gate';
 import Devnet4Live from './Devnet4Live';
 import { httpRpc } from './devnet4/chain';
 import { verifyDeploymentRecord } from './devnet4/record';
+import MainnetLive from './MainnetLive';
+import { bundledNetwork, bundledState, plannedCaps, plannedPairs } from './mainnet/config';
 
 // Devnet4 live route. The settled RPC sends no CORS headers: the app reads it
 // through the dev/preview server proxy at /devnet4-rpc (see README); a wallet
@@ -23,6 +25,13 @@ import { verifyDeploymentRecord } from './devnet4/record';
 const DEVNET4_RPC = httpRpc(import.meta.env.VITE_DEVNET4_RPC_URL ?? '/devnet4-rpc');
 const DEVNET4_WALLET_RPC = import.meta.env.VITE_DEVNET4_WALLET_RPC_URL ?? 'http://127.0.0.1:18945';
 const loadDevnet4Record = () => verifyDeploymentRecord();
+
+// Mainnet route (chain 700770). Reads go to the public RPC from the bundled
+// network file (it must send CORS headers for this site's origin and appear in
+// the CSP connect-src), or to VITE_MAINNET_RPC_URL (a same-origin proxy).
+const MAINNET_NETWORK = bundledNetwork();
+const MAINNET_RPC = httpRpc(import.meta.env.VITE_MAINNET_RPC_URL ?? MAINNET_NETWORK.rpcUrl);
+const MAINNET_PLANNED = { caps: plannedCaps(), pairs: plannedPairs() };
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
@@ -188,6 +197,7 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
               </a>
             ))}
             {liveAvailable && <a href="#/live-pools">Live read</a>}
+            <a href="#/mainnet">Mainnet</a>
             <a href="#/devnet4">Devnet4 live</a>
           </nav>
           <div className="header-actions">
@@ -565,6 +575,51 @@ function Devnet4Application() {
   );
 }
 
+function MainnetApplication() {
+  const wallet = useWallet();
+  useEffect(() => {
+    document.title = 'PosternDEX — Bloch L2 mainnet';
+    window.dispatchEvent(new Event('postern:discover-wallets'));
+  }, []);
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <a className="brand" href="#/trade" aria-label="Postern preview home">
+            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
+            <span>POSTERN</span>
+          </a>
+          <nav className="main-nav" aria-label="Mainnet navigation">
+            <a href="#/mainnet" aria-current="page">
+              Mainnet
+            </a>
+            <a href="#/trade">Preview</a>
+          </nav>
+          <span className="badge">Bloch L2 · Chain {MAINNET_NETWORK.chainId}</span>
+        </div>
+      </header>
+      <main id="main-content" className="main-content">
+        <MainnetLive
+          network={MAINNET_NETWORK}
+          load={bundledState}
+          rpc={MAINNET_RPC}
+          wallet={wallet}
+          planned={MAINNET_PLANNED}
+        />
+      </main>
+      <footer className="footer">
+        <div className="footer-inner">
+          <span className="footer-status">Bloch L2 mainnet · chain {MAINNET_NETWORK.chainId}</span>
+          <span className="muted">
+            Reviewed deployment record · Finalized reads · Fixed reserve caps · Explicit wallet
+            transactions
+          </span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
 function ApplicationRouter() {
   const [hash, setHash] = useState(location.hash);
   const [gate, setGate] = useState<LiveReadGate>({ available: false, reason: 'loading' });
@@ -582,7 +637,9 @@ function ApplicationRouter() {
     window.addEventListener('hashchange', change);
     return () => window.removeEventListener('hashchange', change);
   }, []);
-  return hash === '#/devnet4' ? (
+  return hash === '#/mainnet' ? (
+    <MainnetApplication />
+  ) : hash === '#/devnet4' ? (
     <Devnet4Application />
   ) : hash === '#/live-pools' ? (
     <LiveReadApplication gate={gate} />

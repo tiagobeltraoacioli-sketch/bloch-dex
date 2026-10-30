@@ -8,6 +8,8 @@ plan, dry run, broadcast, on-chain record, schema-2 finality gate) is in
 | --- | --- |
 | `networks.json` | Single source of chain IDs: Bloch L2 mainnet `700770`, development chains (devnet4 `700771`, local anvil `31337`) and retired IDs (`8400`, `84001`). Read by `scripts/staging/dex-deploy-config.mjs` and `frontend/src/network-identity.ts`; a Node test keeps `script/DeployMainnet.s.sol` equal to it. |
 | `mainnet/dex-mainnet.config.json` | The reviewed mainnet input. Pending decisions are `null` and the tooling refuses them. |
+| `mainnet/frontend.network.json` | Wallet network parameters for the frontend's `#/mainnet` route: RPC URL and status (`placeholder` until published), explorer, pinned L2 genesis (`null` until reviewed), bridge links (`null` until live). |
+| `mainnet/dex-mainnet.record.json` | The frontend's deployment record. `status: "not-deployed"` keeps the route "not yet live"; after the deployment it holds the plan, config and gate report (`scripts/staging/frontend-record.mjs`). |
 
 No verified mainnet deployment exists. The frontend must remain in preview mode.
 

@@ -1,5 +1,6 @@
 // The committed, reviewed devnet4 deployment record the devnet4 live route is
-// allowed to use: the deployment plan, the configuration it was derived from
+// allowed to use (the same verifier checks the mainnet record against a
+// mainnet target, see ../mainnet/config.ts): the deployment plan, the configuration it was derived from
 // and the schema-2 finality-gate report that enabled liquidity. Nothing here
 // talks to an RPC; chain checks live in chain.ts.
 import { sha256, stringToBytes, type Address, type Hex } from 'viem';
@@ -43,6 +44,22 @@ export type DevnetDeployment = {
 
 export type RecordInput = { plan: unknown; config: unknown; gateReport: unknown };
 
+/** Which chain a record must target: devnet4 in rehearsal mode, or the mainnet. */
+export type RecordTarget = {
+  chainId: number;
+  rehearsal: boolean;
+  name: string;
+  path: string;
+  /** When set, the record's genesis must equal it (the reviewed L2 genesis). */
+  genesisHash?: Hex | null;
+};
+export const DEVNET4_TARGET: RecordTarget = {
+  chainId: DEX_STAGING_CHAIN_ID,
+  rehearsal: true,
+  name: RECORD_NAME,
+  path: RECORD_PATH,
+};
+
 export class RecordError extends Error {}
 
 function refuse(condition: unknown, message: string): asserts condition {
@@ -83,14 +100,17 @@ type AnyRecord = Record<string, any>;
  */
 export async function verifyDeploymentRecord(
   input: RecordInput = { plan, config, gateReport },
+  target: RecordTarget = DEVNET4_TARGET,
 ): Promise<DevnetDeployment> {
   const p = input.plan as AnyRecord;
   const c = input.config as AnyRecord;
   const g = input.gateReport as AnyRecord;
   refuse(p && p.domain === PLAN_DOMAIN && p.schemaVersion === 1, 'unsupported plan');
   refuse(
-    p.chain?.id === DEX_STAGING_CHAIN_ID && p.chain?.rehearsal === true,
-    'the plan is not a devnet4 rehearsal',
+    p.chain?.id === target.chainId && p.chain?.rehearsal === target.rehearsal,
+    target.rehearsal
+      ? 'the plan is not a devnet4 rehearsal'
+      : `the plan is not a chain ${target.chainId} deployment`,
   );
   refuse(
     sha256Hex(stableJson(c)) === p.configSha256,
@@ -101,6 +121,10 @@ export async function verifyDeploymentRecord(
     'configuration and plan disagree',
   );
   const genesisHash = hash(p.chain.genesisHash, 'chain.genesisHash');
+  refuse(
+    !target.genesisHash || genesisHash === target.genesisHash,
+    'the plan genesis differs from the reviewed network genesis',
+  );
 
   refuse(g && g.domain === GATE_DOMAIN && g.schemaVersion === 2, 'unsupported gate report');
   refuse(g.decision === 'liquidity-enabled', 'the finality gate did not enable liquidity');
@@ -167,8 +191,8 @@ export async function verifyDeploymentRecord(
     );
   }
   return {
-    name: RECORD_NAME,
-    path: RECORD_PATH,
+    name: target.name,
+    path: target.path,
     revision: String(p.source?.revision ?? ''),
     chainId: p.chain.id,
     genesisHash,
