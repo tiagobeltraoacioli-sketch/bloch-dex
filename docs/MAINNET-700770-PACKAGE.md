@@ -12,7 +12,7 @@ never settled a block, and its head is still the genesis `0x632e45ae…f468`.
 |---|---|
 | `deployments/mainnet/700770/pins.json` | Chain ID 700770; L2 genesis `0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468` (state root `0x2ad7e807…c05d`); rules domain and genesis time; L1 timing and network pin; v2 release binary hashes; Safe v1.4.1 npm integrity and runtime code hashes |
 | `deployments/mainnet/700770/safe.config.json` | Bloch Inc Safe: SafeL2 v1.4.1, 3 of 5, salt nonce 0. `bootstrap.address` and the five owners are `TBD-owner` |
-| `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision`, `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
+| `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision` is `bbd5ab0`, the commit with the DEX-01 fix and this tooling; later commits change no contract (check with `git diff bbd5ab0 -- contracts foundry.toml`). `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
 | `scripts/staging/deploy-safe.mjs` (+ `safe-deploy-config.mjs`) | `validate`, `pending`, `plan`, `preflight`, `txs`, `blochinc` |
 | `scripts/staging/deploy-dex.mjs` | Existing `validate`/`plan`/`run`/`record`, plus `pending`, `preflight`, `txs` and `record --tx-hashes` |
 | `scripts/staging/sign-and-publish.sh` | Signs each planned transaction offline with `cast mktx` (explicit nonce, gas limit and fees; `--ledger` or any cast signer), publishes it with `cast publish`, and waits for the receipt |
@@ -217,8 +217,8 @@ The sequence:
 2. Fund the bootstrap key with gas only.
 3. Run `deploy-safe.mjs preflight` and then `txs`.
 4. Run `sign-and-publish.sh … -- --ledger` (or the bootstrap key's signer).
-5. Set `blochInc` from `deploy-safe.mjs blochinc`. Fill `deployer.address`,
-   `source.revision` and the bUSDC `token`/`codeHash`. Then run
+5. Set `blochInc` from `deploy-safe.mjs blochinc`. Fill `deployer.address`
+   and the bUSDC `token`/`codeHash`. Then run
    `deploy-dex.mjs validate`, then `plan --write`, and commit the plan.
 6. Fund the deployer with gas only. Run `deploy-dex.mjs run` (preflight plus
    forge dry run), then `txs`, then `sign-and-publish.sh`, then `record

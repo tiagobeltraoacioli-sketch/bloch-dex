@@ -105,13 +105,14 @@ test("the committed mainnet configuration records the decisions and refuses what
   // Guarded-launch caps: WBLCH at the 10 BLCH ceiling, bUSDC at 1/10 of the 10,000 bUSDC bucket.
   assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "1000000000"]);
   assert.equal(committed.reserveCaps[1].bridgeBucketCapacity, "10000000000");
+  // Built revision: contracts with the DEX-01 fix and this package's tooling.
+  assert.equal(committed.source.revision, "bbd5ab0452cc94266bba1d1419319bdc7751bf1e");
   assert.deepEqual(pendingFields(committed), [
-    "source.revision", "deployer.address", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash",
+    "deployer.address", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash",
   ]);
   // Every pending field is refused, one at a time, until filled.
   const decided = structuredClone(committed);
   const steps = [
-    [/source.revision is undecided/, (c) => { c.source.revision = "b".repeat(40); }],
     [/deployer.address is undecided/, (c) => { c.deployer.address = DEPLOYER; }],
     [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) }; }],
     [/bUSDC\).token is undecided/, (c) => { c.reserveCaps[1].token = ASSET; }],

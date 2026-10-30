@@ -8,7 +8,7 @@
     "rehearsal": false
   },
   "source": {
-    "revision": "TBD-owner",
+    "revision": "bbd5ab0452cc94266bba1d1419319bdc7751bf1e",
     "compiler": {
       "solc": "0.8.24",
       "evmVersion": "paris",
