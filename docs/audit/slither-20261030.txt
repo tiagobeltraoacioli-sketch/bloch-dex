@@ -1,0 +1,453 @@
+Detector: weak-prng
+UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185) uses a weak PRNG: "blockTimestamp = uint32(block.timestamp % 2 ** 32) (contracts/UniswapV2Pair.sol#167)" 
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#weak-PRNG
+
+Detector: reentrancy-balance
+Reentrancy in TreasuryFeeCollector._redeemExact(address,uint256,bool) (contracts/TreasuryFeeCollector.sol#187-200):
+	External call allowing reentrancy:
+	- require(bool,string)(IUniswapV2Pair(pair).transfer(pair,lpAmount),TFC: LP_TRANSFER) (contracts/TreasuryFeeCollector.sol#195)
+	Balance read before the call:
+	- before0 = IERC20(token0).balanceOf(address(this)) (contracts/TreasuryFeeCollector.sol#193)
+	Possible stale balance used after the call in a condition:
+	- require(bool,string)(IERC20(token0).balanceOf(address(this)) - before0 == a0,TFC: NONSTANDARD_REDEMPTION) (contracts/TreasuryFeeCollector.sol#197)
+		- stale variable `before0`
+Reentrancy in TreasuryFeeCollector._redeemExact(address,uint256,bool) (contracts/TreasuryFeeCollector.sol#187-200):
+	External call allowing reentrancy:
+	- require(bool,string)(IUniswapV2Pair(pair).transfer(pair,lpAmount),TFC: LP_TRANSFER) (contracts/TreasuryFeeCollector.sol#195)
+	Balance read before the call:
+	- before1 = IERC20(token1).balanceOf(address(this)) (contracts/TreasuryFeeCollector.sol#194)
+	Possible stale balance used after the call in a condition:
+	- require(bool,string)(IERC20(token1).balanceOf(address(this)) - before1 == a1,TFC: NONSTANDARD_REDEMPTION) (contracts/TreasuryFeeCollector.sol#198)
+		- stale variable `before1`
+Reentrancy in TreasuryFeeCollector._redeemExact(address,uint256,bool) (contracts/TreasuryFeeCollector.sol#187-200):
+	External call allowing reentrancy:
+	- (a0,a1) = IUniswapV2Pair(pair).burn(address(this)) (contracts/TreasuryFeeCollector.sol#196)
+	Balance read before the call:
+	- before0 = IERC20(token0).balanceOf(address(this)) (contracts/TreasuryFeeCollector.sol#193)
+	Possible stale balance used after the call in a condition:
+	- require(bool,string)(IERC20(token0).balanceOf(address(this)) - before0 == a0,TFC: NONSTANDARD_REDEMPTION) (contracts/TreasuryFeeCollector.sol#197)
+		- stale variable `before0`
+Reentrancy in TreasuryFeeCollector._redeemExact(address,uint256,bool) (contracts/TreasuryFeeCollector.sol#187-200):
+	External call allowing reentrancy:
+	- (a0,a1) = IUniswapV2Pair(pair).burn(address(this)) (contracts/TreasuryFeeCollector.sol#196)
+	Balance read before the call:
+	- before1 = IERC20(token1).balanceOf(address(this)) (contracts/TreasuryFeeCollector.sol#194)
+	Possible stale balance used after the call in a condition:
+	- require(bool,string)(IERC20(token1).balanceOf(address(this)) - before1 == a1,TFC: NONSTANDARD_REDEMPTION) (contracts/TreasuryFeeCollector.sol#198)
+		- stale variable `before1`
+Reentrancy in BDexRouter.swapExactTokensForBLCHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256) (contracts/periphery/BDexRouter.sol#591-610):
+	External call allowing reentrancy:
+	- _safeTransferFrom(path[0],msg.sender,BDexLibrary.pairFor(factory,path[0],path[1]),amountIn) (contracts/periphery/BDexRouter.sol#602)
+		- (success,data) = token.call(abi.encodeWithSelector(0x23b872dd,from,to,value)) (contracts/periphery/BDexRouter.sol#77)
+	Balance read before the call:
+	- wrappedBefore = IWBLCH(WBLCH).balanceOf(address(this)) (contracts/periphery/BDexRouter.sol#601)
+	Possible stale balance used after the call in a condition:
+	- require(bool,string)(amountOut >= amountOutMin,BDEX: INSUFFICIENT_OUTPUT_AMOUNT) (contracts/periphery/BDexRouter.sol#607)
+		- stale variable `amountOut`
+Reentrancy in BDexRouter.swapExactTokensForBLCHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256) (contracts/periphery/BDexRouter.sol#591-610):
+	External call allowing reentrancy:
+	- _swapSupportingFeeOnTransferTokens(path,address(this)) (contracts/periphery/BDexRouter.sol#603)
+		- pair.swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#547)
+	Balance read before the call:
+	- wrappedBefore = IWBLCH(WBLCH).balanceOf(address(this)) (contracts/periphery/BDexRouter.sol#601)
+	Possible stale balance used after the call in a condition:
+	- require(bool,string)(amountOut >= amountOutMin,BDEX: INSUFFICIENT_OUTPUT_AMOUNT) (contracts/periphery/BDexRouter.sol#607)
+		- stale variable `amountOut`
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities
+
+Detector: reentrancy-eth
+Reentrancy in WBLCH.withdraw(uint256) (contracts/assets/WBLCH.sol#32-43):
+	External calls:
+	- (sent,None) = msg.sender.call{value: value}() (contracts/assets/WBLCH.sol#40)
+	State variables written after the call(s):
+	- withdrawing = false (contracts/assets/WBLCH.sol#42)
+	WBLCH.withdrawing (contracts/assets/WBLCH.sol#14) can be used in cross function reentrancies:
+	- WBLCH.withdraw(uint256) (contracts/assets/WBLCH.sol#32-43)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-1
+
+Detector: incorrect-equality
+TreasuryFeeCollector._redeemExact(address,uint256,bool) (contracts/TreasuryFeeCollector.sol#187-200) uses a dangerous strict equality:
+	- require(bool,string)(IERC20(token0).balanceOf(address(this)) - before0 == a0,TFC: NONSTANDARD_REDEMPTION) (contracts/TreasuryFeeCollector.sol#197)
+TreasuryFeeCollector._redeemExact(address,uint256,bool) (contracts/TreasuryFeeCollector.sol#187-200) uses a dangerous strict equality:
+	- require(bool,string)(IERC20(token1).balanceOf(address(this)) - before1 == a1,TFC: NONSTANDARD_REDEMPTION) (contracts/TreasuryFeeCollector.sol#198)
+UniswapV2Pair._safeTransfer(address,address,uint256) (contracts/UniswapV2Pair.sol#137-140) uses a dangerous strict equality:
+	- require(bool,string)(success && (data.length == 0 || abi.decode(data,(bool))),BDEX: TRANSFER_FAILED) (contracts/UniswapV2Pair.sol#139)
+UniswapV2Pair.mint(address) (contracts/UniswapV2Pair.sol#242-263) uses a dangerous strict equality:
+	- _totalSupply == 0 (contracts/UniswapV2Pair.sol#251)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) uses a dangerous strict equality:
+	- out == 0 (contracts/periphery/BDexLens.sol#196)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) uses a dangerous strict equality:
+	- q.minimumOut == 0 (contracts/periphery/BDexLens.sol#203)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#dangerous-strict-equalities
+
+Detector: reentrancy-no-eth
+Reentrancy in UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295):
+	External calls:
+	- _safeTransfer(_token0,to,amount0) (contracts/UniswapV2Pair.sol#284)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- _safeTransfer(_token1,to,amount1) (contracts/UniswapV2Pair.sol#285)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	State variables written after the call(s):
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#292)
+		- blockTimestampLast = blockTimestamp (contracts/UniswapV2Pair.sol#176)
+	UniswapV2Pair.blockTimestampLast (contracts/UniswapV2Pair.sol#50) can be used in cross function reentrancies:
+	- UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185)
+	- UniswapV2Pair.getReserves() (contracts/UniswapV2Pair.sol#126-130)
+	- kLast = uint256(reserve0) * reserve1 (contracts/UniswapV2Pair.sol#293)
+	UniswapV2Pair.kLast (contracts/UniswapV2Pair.sol#65) can be used in cross function reentrancies:
+	- UniswapV2Pair._mintFee(uint112,uint112) (contracts/UniswapV2Pair.sol#212-230)
+	- UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295)
+	- UniswapV2Pair.kLast (contracts/UniswapV2Pair.sol#65)
+	- UniswapV2Pair.mint(address) (contracts/UniswapV2Pair.sol#242-263)
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#292)
+		- reserve0 = uint112(balance0) (contracts/UniswapV2Pair.sol#181)
+	UniswapV2Pair.reserve0 (contracts/UniswapV2Pair.sol#48) can be used in cross function reentrancies:
+	- UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185)
+	- UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295)
+	- UniswapV2Pair.getReserves() (contracts/UniswapV2Pair.sol#126-130)
+	- UniswapV2Pair.mint(address) (contracts/UniswapV2Pair.sol#242-263)
+	- UniswapV2Pair.skim(address) (contracts/UniswapV2Pair.sol#359-364)
+	- UniswapV2Pair.sync() (contracts/UniswapV2Pair.sol#369-371)
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#292)
+		- reserve1 = uint112(balance1) (contracts/UniswapV2Pair.sol#183)
+	UniswapV2Pair.reserve1 (contracts/UniswapV2Pair.sol#49) can be used in cross function reentrancies:
+	- UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185)
+	- UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295)
+	- UniswapV2Pair.getReserves() (contracts/UniswapV2Pair.sol#126-130)
+	- UniswapV2Pair.mint(address) (contracts/UniswapV2Pair.sol#242-263)
+	- UniswapV2Pair.skim(address) (contracts/UniswapV2Pair.sol#359-364)
+	- UniswapV2Pair.sync() (contracts/UniswapV2Pair.sol#369-371)
+Reentrancy in UniswapV2Factory.createPair(address,address) (contracts/UniswapV2Factory.sol#74-87):
+	External calls:
+	- UniswapV2Pair(pair).initialize(token0,token1) (contracts/UniswapV2Factory.sol#82)
+	State variables written after the call(s):
+	- getPair[token0][token1] = pair (contracts/UniswapV2Factory.sol#83)
+	UniswapV2Factory.getPair (contracts/UniswapV2Factory.sol#26) can be used in cross function reentrancies:
+	- UniswapV2Factory.createPair(address,address) (contracts/UniswapV2Factory.sol#74-87)
+	- UniswapV2Factory.getPair (contracts/UniswapV2Factory.sol#26)
+	- getPair[token1][token0] = pair (contracts/UniswapV2Factory.sol#84)
+	UniswapV2Factory.getPair (contracts/UniswapV2Factory.sol#26) can be used in cross function reentrancies:
+	- UniswapV2Factory.createPair(address,address) (contracts/UniswapV2Factory.sol#74-87)
+	- UniswapV2Factory.getPair (contracts/UniswapV2Factory.sol#26)
+Reentrancy in UniswapV2Pair.swap(uint256,uint256,address,bytes) (contracts/UniswapV2Pair.sol#313-351):
+	External calls:
+	- _safeTransfer(_token0,to,amount0Out) (contracts/UniswapV2Pair.sol#325)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- _safeTransfer(_token1,to,amount1Out) (contracts/UniswapV2Pair.sol#326)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- IUniswapV2Callee(to).uniswapV2Call(msg.sender,amount0Out,amount1Out,data) (contracts/UniswapV2Pair.sol#327)
+	State variables written after the call(s):
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#349)
+		- blockTimestampLast = blockTimestamp (contracts/UniswapV2Pair.sol#176)
+	UniswapV2Pair.blockTimestampLast (contracts/UniswapV2Pair.sol#50) can be used in cross function reentrancies:
+	- UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185)
+	- UniswapV2Pair.getReserves() (contracts/UniswapV2Pair.sol#126-130)
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#349)
+		- reserve0 = uint112(balance0) (contracts/UniswapV2Pair.sol#181)
+	UniswapV2Pair.reserve0 (contracts/UniswapV2Pair.sol#48) can be used in cross function reentrancies:
+	- UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185)
+	- UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295)
+	- UniswapV2Pair.getReserves() (contracts/UniswapV2Pair.sol#126-130)
+	- UniswapV2Pair.mint(address) (contracts/UniswapV2Pair.sol#242-263)
+	- UniswapV2Pair.skim(address) (contracts/UniswapV2Pair.sol#359-364)
+	- UniswapV2Pair.sync() (contracts/UniswapV2Pair.sol#369-371)
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#349)
+		- reserve1 = uint112(balance1) (contracts/UniswapV2Pair.sol#183)
+	UniswapV2Pair.reserve1 (contracts/UniswapV2Pair.sol#49) can be used in cross function reentrancies:
+	- UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185)
+	- UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295)
+	- UniswapV2Pair.getReserves() (contracts/UniswapV2Pair.sol#126-130)
+	- UniswapV2Pair.mint(address) (contracts/UniswapV2Pair.sol#242-263)
+	- UniswapV2Pair.skim(address) (contracts/UniswapV2Pair.sol#359-364)
+	- UniswapV2Pair.sync() (contracts/UniswapV2Pair.sol#369-371)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-2
+
+Detector: uninitialized-local
+BDexLens.bestExactInput(uint256,address[][],uint256).bestOut (contracts/periphery/BDexLens.sol#132) is a local variable never initialized
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#uninitialized-local-variables
+
+Detector: unused-return
+TreasuryFeeCollector._sellNonWblchGuarded(address,bool,uint256,uint256) (contracts/TreasuryFeeCollector.sol#226-243) ignores return value by (r0,r1,None) = IUniswapV2Pair(pair).getReserves() (contracts/TreasuryFeeCollector.sol#234)
+TreasuryFeeCollector._requireLiquidity(address) (contracts/TreasuryFeeCollector.sol#259-262) ignores return value by (reserve0,reserve1,None) = IUniswapV2Pair(pair).getReserves() (contracts/TreasuryFeeCollector.sol#260)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) ignores return value by (r0,r1,None) = IUniswapV2Pair(pair).getReserves() (contracts/periphery/BDexLens.sol#186)
+BDexLibrary.getReserves(address,address,address) (contracts/periphery/BDexLibrary.sol#55-64) ignores return value by (reserve0,reserve1,None) = IUniswapV2Pair(pairFor(factory,tokenA,tokenB)).getReserves() (contracts/periphery/BDexLibrary.sol#61)
+BDexRouter._addLiquidity(address,address,uint256,uint256,uint256,uint256) (contracts/periphery/BDexRouter.sol#122-157) ignores return value by IUniswapV2Factory(factory).createPair(tokenA,tokenB) (contracts/periphery/BDexRouter.sol#131)
+BDexRouter._removeLiquidity(address,address,uint256,uint256,uint256,address) (contracts/periphery/BDexRouter.sol#216-235) ignores return value by (token0,None) = BDexLibrary.sortTokens(tokenA,tokenB) (contracts/periphery/BDexRouter.sol#231)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) ignores return value by (token0,None) = BDexLibrary.sortTokens(input,output) (contracts/periphery/BDexRouter.sol#354)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) ignores return value by (token0,None) = BDexLibrary.sortTokens(input,output) (contracts/periphery/BDexRouter.sol#532)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) ignores return value by (reserve0,reserve1,None) = pair.getReserves() (contracts/periphery/BDexRouter.sol#537)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#unused-return
+
+Detector: events-maths
+UniswapV2Pair.initialize(address,address) (contracts/UniswapV2Pair.sol#108-119) should emit an event for: 
+	- reserveCap0 = uint112(IUniswapV2Factory(factory).reserveCap(_token0)) (contracts/UniswapV2Pair.sol#116) 
+	- reserveCap1 = uint112(IUniswapV2Factory(factory).reserveCap(_token1)) (contracts/UniswapV2Pair.sol#118) 
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-events-arithmetic
+
+Detector: missing-zero-check
+UniswapV2Factory.constructor(address,address[],uint256[])._feeTo (contracts/UniswapV2Factory.sol#33) lacks a zero-check on :
+		- feeTo = _feeTo (contracts/UniswapV2Factory.sol#35)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#missing-zero-address-validation
+
+Detector: calls-loop
+BDexLens.pools(uint256,uint256) (contracts/periphery/BDexLens.sol#67-81) has external calls inside a loop: page[i] = _pool(factory.allPairs(cursor + i)) (contracts/periphery/BDexLens.sol#78)
+BDexLens._pool(address) (contracts/periphery/BDexLens.sol#144-151) has external calls inside a loop: p.token0 = tokenPair.token0() (contracts/periphery/BDexLens.sol#147)
+	Calls stack containing the loop:
+		BDexLens.pools(uint256,uint256)
+BDexLens._pool(address) (contracts/periphery/BDexLens.sol#144-151) has external calls inside a loop: p.token1 = tokenPair.token1() (contracts/periphery/BDexLens.sol#148)
+	Calls stack containing the loop:
+		BDexLens.pools(uint256,uint256)
+BDexLens._pool(address) (contracts/periphery/BDexLens.sol#144-151) has external calls inside a loop: (p.reserve0,p.reserve1,p.reserveTimestamp) = tokenPair.getReserves() (contracts/periphery/BDexLens.sol#149)
+	Calls stack containing the loop:
+		BDexLens.pools(uint256,uint256)
+BDexLens._pool(address) (contracts/periphery/BDexLens.sol#144-151) has external calls inside a loop: p.totalSupply = tokenPair.totalSupply() (contracts/periphery/BDexLens.sol#150)
+	Calls stack containing the loop:
+		BDexLens.pools(uint256,uint256)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) has external calls inside a loop: pair = factory.getPair(path[i],path[i + 1]) (contracts/periphery/BDexLens.sol#184)
+	Calls stack containing the loop:
+		BDexLens.quoteExactInput(uint256,address[],uint256)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) has external calls inside a loop: (r0,r1,None) = IUniswapV2Pair(pair).getReserves() (contracts/periphery/BDexLens.sol#186)
+	Calls stack containing the loop:
+		BDexLens.quoteExactInput(uint256,address[],uint256)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) has external calls inside a loop: (cap0,cap1) = IUniswapV2Pair(pair).reserveCaps() (contracts/periphery/BDexLens.sol#192)
+	Calls stack containing the loop:
+		BDexLens.quoteExactInput(uint256,address[],uint256)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) has external calls inside a loop: pair = factory.getPair(path[i],path[i + 1]) (contracts/periphery/BDexLens.sol#184)
+	Calls stack containing the loop:
+		BDexLens.bestExactInput(uint256,address[][],uint256)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) has external calls inside a loop: (r0,r1,None) = IUniswapV2Pair(pair).getReserves() (contracts/periphery/BDexLens.sol#186)
+	Calls stack containing the loop:
+		BDexLens.bestExactInput(uint256,address[][],uint256)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) has external calls inside a loop: (cap0,cap1) = IUniswapV2Pair(pair).reserveCaps() (contracts/periphery/BDexLens.sol#192)
+	Calls stack containing the loop:
+		BDexLens.bestExactInput(uint256,address[][],uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForTokens(uint256,uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapTokensForExactTokens(uint256,uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapExactBLCHForTokens(uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapTokensForExactBLCH(uint256,uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForBLCH(uint256,uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForTokensAnchored(uint256,uint256,address[],address,uint256,uint256,bytes32)
+		BDexRouter.swapExactTokensForTokens(uint256,uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapExactBLCHForTokensAnchored(uint256,address[],address,uint256,uint256,bytes32)
+		BDexRouter.swapExactBLCHForTokens(uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForBLCHAnchored(uint256,uint256,address[],address,uint256,uint256,bytes32)
+		BDexRouter.swapExactTokensForBLCH(uint256,uint256,address[],address,uint256)
+BDexRouter._swap(uint256[],address[],address) (contracts/periphery/BDexRouter.sol#351-363) has external calls inside a loop: IUniswapV2Pair(pair).swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#361)
+	Calls stack containing the loop:
+		BDexRouter.swapBLCHForExactTokens(uint256,address[],address,uint256)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) has external calls inside a loop: (reserve0,reserve1,None) = pair.getReserves() (contracts/periphery/BDexRouter.sol#537)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) has external calls inside a loop: pair.swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#547)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForTokensSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) has external calls inside a loop: (reserve0,reserve1,None) = pair.getReserves() (contracts/periphery/BDexRouter.sol#537)
+	Calls stack containing the loop:
+		BDexRouter.swapExactBLCHForTokensSupportingFeeOnTransferTokens(uint256,address[],address,uint256)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) has external calls inside a loop: pair.swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#547)
+	Calls stack containing the loop:
+		BDexRouter.swapExactBLCHForTokensSupportingFeeOnTransferTokens(uint256,address[],address,uint256)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) has external calls inside a loop: (reserve0,reserve1,None) = pair.getReserves() (contracts/periphery/BDexRouter.sol#537)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForBLCHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+BDexRouter._balanceOf(address,address) (contracts/periphery/BDexRouter.sol#646-650) has external calls inside a loop: (success,data) = token.staticcall(abi.encodeWithSelector(0x70a08231,owner)) (contracts/periphery/BDexRouter.sol#647)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForBLCHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+		BDexRouter._swapSupportingFeeOnTransferTokens(address[],address)
+BDexRouter._swapSupportingFeeOnTransferTokens(address[],address) (contracts/periphery/BDexRouter.sol#529-549) has external calls inside a loop: pair.swap(amount0Out,amount1Out,to,) (contracts/periphery/BDexRouter.sol#547)
+	Calls stack containing the loop:
+		BDexRouter.swapExactTokensForBLCHSupportingFeeOnTransferTokens(uint256,uint256,address[],address,uint256)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation/#calls-inside-a-loop
+
+Detector: reentrancy-benign
+Reentrancy in UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295):
+	External calls:
+	- _safeTransfer(_token0,to,amount0) (contracts/UniswapV2Pair.sol#284)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- _safeTransfer(_token1,to,amount1) (contracts/UniswapV2Pair.sol#285)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	State variables written after the call(s):
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#292)
+		- price0CumulativeLast += uint256(UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed (contracts/UniswapV2Pair.sol#173)
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#292)
+		- price1CumulativeLast += uint256(UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed (contracts/UniswapV2Pair.sol#174)
+Reentrancy in UniswapV2Factory.createPair(address,address) (contracts/UniswapV2Factory.sol#74-87):
+	External calls:
+	- UniswapV2Pair(pair).initialize(token0,token1) (contracts/UniswapV2Factory.sol#82)
+	State variables written after the call(s):
+	- allPairs.push(pair) (contracts/UniswapV2Factory.sol#85)
+Reentrancy in UniswapV2Pair.swap(uint256,uint256,address,bytes) (contracts/UniswapV2Pair.sol#313-351):
+	External calls:
+	- _safeTransfer(_token0,to,amount0Out) (contracts/UniswapV2Pair.sol#325)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- _safeTransfer(_token1,to,amount1Out) (contracts/UniswapV2Pair.sol#326)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- IUniswapV2Callee(to).uniswapV2Call(msg.sender,amount0Out,amount1Out,data) (contracts/UniswapV2Pair.sol#327)
+	State variables written after the call(s):
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#349)
+		- price0CumulativeLast += uint256(UQ112x112.encode(_reserve1).uqdiv(_reserve0)) * timeElapsed (contracts/UniswapV2Pair.sol#173)
+	- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#349)
+		- price1CumulativeLast += uint256(UQ112x112.encode(_reserve0).uqdiv(_reserve1)) * timeElapsed (contracts/UniswapV2Pair.sol#174)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-3
+
+Detector: reentrancy-events
+Reentrancy in UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295):
+	External calls:
+	- _safeTransfer(_token0,to,amount0) (contracts/UniswapV2Pair.sol#284)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- _safeTransfer(_token1,to,amount1) (contracts/UniswapV2Pair.sol#285)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	Event emitted after the call(s):
+	- Burn(msg.sender,amount0,amount1,to) (contracts/UniswapV2Pair.sol#294)
+	- Sync(reserve0,reserve1) (contracts/UniswapV2Pair.sol#184)
+		- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#292)
+Reentrancy in TreasuryFeeCollector.convertViaTwap(address,uint256) (contracts/TreasuryFeeCollector.sol#165-182):
+	External calls:
+	- (amtNonWblch,amtWblch) = _redeemExact(pair,lpAmount,wblchIs0) (contracts/TreasuryFeeCollector.sol#176)
+		- require(bool,string)(IUniswapV2Pair(pair).transfer(pair,lpAmount),TFC: LP_TRANSFER) (contracts/TreasuryFeeCollector.sol#195)
+		- (a0,a1) = IUniswapV2Pair(pair).burn(address(this)) (contracts/TreasuryFeeCollector.sol#196)
+	- out = _sellNonWblchGuarded(pair,wblchIs0,amtNonWblch,avgPriceQ112) (contracts/TreasuryFeeCollector.sol#179)
+		- (success,data) = token.call(abi.encodeWithSelector(0xa9059cbb,to,value)) (contracts/TreasuryFeeCollector.sol#294)
+		- IUniswapV2Pair(pair).swap(o0,o1,treasury,) (contracts/TreasuryFeeCollector.sol#242)
+	- _safeTransfer(wblch,treasury,amtWblch) (contracts/TreasuryFeeCollector.sol#180)
+		- (success,data) = token.call(abi.encodeWithSelector(0xa9059cbb,to,value)) (contracts/TreasuryFeeCollector.sol#294)
+	Event emitted after the call(s):
+	- ConvertViaTwap(pair,lpAmount,amtNonWblch,out + amtWblch) (contracts/TreasuryFeeCollector.sol#181)
+Reentrancy in UniswapV2Factory.createPair(address,address) (contracts/UniswapV2Factory.sol#74-87):
+	External calls:
+	- UniswapV2Pair(pair).initialize(token0,token1) (contracts/UniswapV2Factory.sol#82)
+	Event emitted after the call(s):
+	- PairCreated(token0,token1,pair,allPairs.length) (contracts/UniswapV2Factory.sol#86)
+Reentrancy in UniswapV2Pair.swap(uint256,uint256,address,bytes) (contracts/UniswapV2Pair.sol#313-351):
+	External calls:
+	- _safeTransfer(_token0,to,amount0Out) (contracts/UniswapV2Pair.sol#325)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- _safeTransfer(_token1,to,amount1Out) (contracts/UniswapV2Pair.sol#326)
+		- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+	- IUniswapV2Callee(to).uniswapV2Call(msg.sender,amount0Out,amount1Out,data) (contracts/UniswapV2Pair.sol#327)
+	Event emitted after the call(s):
+	- Swap(msg.sender,amount0In,amount1In,amount0Out,amount1Out,to) (contracts/UniswapV2Pair.sol#350)
+	- Sync(reserve0,reserve1) (contracts/UniswapV2Pair.sol#184)
+		- _update(balance0,balance1,_reserve0,_reserve1) (contracts/UniswapV2Pair.sol#349)
+Reentrancy in TreasuryFeeCollector.sweep(address) (contracts/TreasuryFeeCollector.sol#120-130):
+	External calls:
+	- require(bool,string)(IUniswapV2Pair(pair).transfer(pair,bal),TFC: LP_TRANSFER) (contracts/TreasuryFeeCollector.sol#127)
+	- (amount0,amount1) = IUniswapV2Pair(pair).burn(treasury) (contracts/TreasuryFeeCollector.sol#128)
+	Event emitted after the call(s):
+	- Sweep(pair,bal,amount0,amount1) (contracts/TreasuryFeeCollector.sol#129)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#reentrancy-vulnerabilities-4
+
+Detector: timestamp
+TreasuryFeeCollector._twapPriceNonWblch(address,bool) (contracts/TreasuryFeeCollector.sol#204-222) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(elapsed >= MIN_TWAP_WINDOW,TFC: WINDOW_TOO_SHORT) (contracts/TreasuryFeeCollector.sol#209)
+	- require(bool,string)(elapsed <= MAX_TWAP_WINDOW,TFC: WINDOW_TOO_LONG) (contracts/TreasuryFeeCollector.sol#210)
+	- require(bool,string)(avgPriceQ112 > 0,TFC: ZERO_TWAP) (contracts/TreasuryFeeCollector.sol#221)
+TreasuryFeeCollector._sellNonWblchGuarded(address,bool,uint256,uint256) (contracts/TreasuryFeeCollector.sol#226-243) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(minOut > 0,TFC: DUST_CONVERSION) (contracts/TreasuryFeeCollector.sol#233)
+	- require(bool,string)(out >= minOut,TFC: TWAP_SLIPPAGE) (contracts/TreasuryFeeCollector.sol#237)
+TreasuryFeeCollector._currentCumulatives(address) (contracts/TreasuryFeeCollector.sol#269-282) uses timestamp for comparisons
+	Dangerous comparisons:
+	- tsLast != now32 && r0 != 0 && r1 != 0 (contracts/TreasuryFeeCollector.sol#275)
+UniswapV2ERC20.permit(address,address,uint256,uint256,uint8,bytes32,bytes32) (contracts/UniswapV2ERC20.sol#102-125) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(deadline >= block.timestamp,BDEX: EXPIRED) (contracts/UniswapV2ERC20.sol#109)
+UniswapV2Pair._safeTransfer(address,address,uint256) (contracts/UniswapV2Pair.sol#137-140) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(success && (data.length == 0 || abi.decode(data,(bool))),BDEX: TRANSFER_FAILED) (contracts/UniswapV2Pair.sol#139)
+UniswapV2Pair._update(uint256,uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#158-185) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(balance0 <= type()(uint112).max && balance1 <= type()(uint112).max,BDEX: OVERFLOW) (contracts/UniswapV2Pair.sol#159)
+	- require(bool,string)((cap0 == 0 || balance0 <= cap0 || balance0 <= _reserve0) && (cap1 == 0 || balance1 <= cap1 || balance1 <= _reserve1),BDEX: RESERVE_CAP) (contracts/UniswapV2Pair.sol#161-165)
+	- timeElapsed > 0 && _reserve0 != 0 && _reserve1 != 0 (contracts/UniswapV2Pair.sol#169)
+UniswapV2Pair._exitBound(uint256,uint112,uint112) (contracts/UniswapV2Pair.sol#191-195) uses timestamp for comparisons
+	Dangerous comparisons:
+	- cap > reserve (contracts/UniswapV2Pair.sol#193)
+	- balance > bound (contracts/UniswapV2Pair.sol#194)
+UniswapV2Pair._mintFee(uint112,uint112) (contracts/UniswapV2Pair.sol#212-230) uses timestamp for comparisons
+	Dangerous comparisons:
+	- _kLast != 0 (contracts/UniswapV2Pair.sol#217)
+	- rootK > rootKLast (contracts/UniswapV2Pair.sol#220)
+	- liquidity > 0 (contracts/UniswapV2Pair.sol#224)
+	- _kLast != 0 (contracts/UniswapV2Pair.sol#227)
+UniswapV2Pair.mint(address) (contracts/UniswapV2Pair.sol#242-263) uses timestamp for comparisons
+	Dangerous comparisons:
+	- _totalSupply == 0 (contracts/UniswapV2Pair.sol#251)
+	- require(bool,string)(liquidity > 0,BDEX: INSUFFICIENT_LIQUIDITY_MINTED) (contracts/UniswapV2Pair.sol#257)
+UniswapV2Pair.burn(address) (contracts/UniswapV2Pair.sol#270-295) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(amount0 > 0 && amount1 > 0,BDEX: INSUFFICIENT_LIQUIDITY_BURNED) (contracts/UniswapV2Pair.sol#282)
+UniswapV2Pair.swap(uint256,uint256,address,bytes) (contracts/UniswapV2Pair.sol#313-351) uses timestamp for comparisons
+	Dangerous comparisons:
+	- require(bool,string)(amount0Out < _reserve0 && amount1Out < _reserve1,BDEX: INSUFFICIENT_LIQUIDITY) (contracts/UniswapV2Pair.sol#316)
+	- require(bool,string)(amount0In > 0 || amount1In > 0,BDEX: INSUFFICIENT_INPUT_AMOUNT) (contracts/UniswapV2Pair.sol#336)
+	- require(bool,string)(balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * _reserve1 * (1000 ** 2),BDEX: K) (contracts/UniswapV2Pair.sol#346)
+	- balance0 > _reserve0 - amount0Out (contracts/UniswapV2Pair.sol#334)
+	- balance1 > _reserve1 - amount1Out (contracts/UniswapV2Pair.sol#335)
+BDexLens.bestExactInput(uint256,address[][],uint256) (contracts/periphery/BDexLens.sol#121-142) uses timestamp for comparisons
+	Dangerous comparisons:
+	- quotes[i].available && quotes[i].amountOut > bestOut (contracts/periphery/BDexLens.sol#137)
+BDexLens._quote(uint256,address[],uint256) (contracts/periphery/BDexLens.sol#170-205) uses timestamp for comparisons
+	Dangerous comparisons:
+	- rIn == 0 || rOut == 0 || q.amounts[i] > type()(uint112).max - rIn (contracts/periphery/BDexLens.sol#189)
+	- capIn != 0 && rIn + q.amounts[i] > capIn (contracts/periphery/BDexLens.sol#194)
+	- out == 0 (contracts/periphery/BDexLens.sol#196)
+	- q.minimumOut == 0 (contracts/periphery/BDexLens.sol#203)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#block-timestamp
+
+Detector: low-level-calls
+Low level call in TreasuryFeeCollector._safeTransfer(address,address,uint256) (contracts/TreasuryFeeCollector.sol#293-296):
+	- (success,data) = token.call(abi.encodeWithSelector(0xa9059cbb,to,value)) (contracts/TreasuryFeeCollector.sol#294)
+Low level call in UniswapV2Pair._safeTransfer(address,address,uint256) (contracts/UniswapV2Pair.sol#137-140):
+	- (success,data) = token.call(abi.encodeWithSelector(SELECTOR,to,value)) (contracts/UniswapV2Pair.sol#138)
+Low level call in WBLCH.withdraw(uint256) (contracts/assets/WBLCH.sol#32-43):
+	- (sent,None) = msg.sender.call{value: value}() (contracts/assets/WBLCH.sol#40)
+Low level call in BDexRouter._safeTransfer(address,address,uint256) (contracts/periphery/BDexRouter.sol#71-74):
+	- (success,data) = token.call(abi.encodeWithSelector(0xa9059cbb,to,value)) (contracts/periphery/BDexRouter.sol#72)
+Low level call in BDexRouter._safeTransferFrom(address,address,address,uint256) (contracts/periphery/BDexRouter.sol#76-79):
+	- (success,data) = token.call(abi.encodeWithSelector(0x23b872dd,from,to,value)) (contracts/periphery/BDexRouter.sol#77)
+Low level call in BDexRouter._safeTransferNative(address,uint256) (contracts/periphery/BDexRouter.sol#85-88):
+	- (success,None) = to.call{value: value}() (contracts/periphery/BDexRouter.sol#86)
+Low level call in BDexRouter._balanceOf(address,address) (contracts/periphery/BDexRouter.sol#646-650):
+	- (success,data) = token.staticcall(abi.encodeWithSelector(0x70a08231,owner)) (contracts/periphery/BDexRouter.sol#647)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#low-level-calls
+
+Detector: naming-convention
+Function UniswapV2ERC20.DOMAIN_SEPARATOR() (contracts/UniswapV2ERC20.sol#38-48) is not in mixedCase
+Function UniswapV2Factory.INIT_CODE_PAIR_HASH() (contracts/UniswapV2Factory.sol#61-63) is not in mixedCase
+Parameter UniswapV2Pair.initialize(address,address)._token0 (contracts/UniswapV2Pair.sol#108) is not in mixedCase
+Parameter UniswapV2Pair.initialize(address,address)._token1 (contracts/UniswapV2Pair.sol#108) is not in mixedCase
+Function IUniswapV2ERC20.DOMAIN_SEPARATOR() (contracts/interfaces/IUniswapV2ERC20.sol#21) is not in mixedCase
+Function IUniswapV2ERC20.PERMIT_TYPEHASH() (contracts/interfaces/IUniswapV2ERC20.sol#22) is not in mixedCase
+Function IUniswapV2Factory.INIT_CODE_PAIR_HASH() (contracts/interfaces/IUniswapV2Factory.sol#28) is not in mixedCase
+Function IUniswapV2Pair.MINIMUM_LIQUIDITY() (contracts/interfaces/IUniswapV2Pair.sol#20) is not in mixedCase
+Variable BDexRouter.WBLCH (contracts/periphery/BDexRouter.sol#25) is not in mixedCase
+Function IBDexRouter.WBLCH() (contracts/periphery/interfaces/IBDexRouter.sol#11) is not in mixedCase
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#conformance-to-solidity-naming-conventions
+
+Detector: too-many-digits
+UniswapV2Factory.INIT_CODE_PAIR_HASH() (contracts/UniswapV2Factory.sol#61-63) uses literals with too many digits:
+	- keccak256(bytes)(type()(UniswapV2Pair).creationCode) (contracts/UniswapV2Factory.sol#62)
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#too-many-digits
+
+Detector: immutable-states
+UniswapV2Pair.factory (contracts/UniswapV2Pair.sol#39) should be immutable 
+Reference: https://github.com/crytic/slither/wiki/Detector-Documentation#state-variables-that-could-be-declared-immutable
+. analyzed (18 contracts with 102 detectors), 96 result(s) found
