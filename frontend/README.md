@@ -359,3 +359,79 @@ Wallets make their own RPC requests, so the tunnel must stay open while signing.
   ```
 
 Testing with a real browser wallet extension remains a separate step.
+
+## Mainnet route (`#/mainnet`)
+
+The Bloch L2 **mainnet** (chain 700770, `0xab162`). The DEX is not deployed
+there yet, so the route ships in a **"Not yet live"** state: it shows the
+network parameters, the planned pools and their reserve caps (from
+`deployments/mainnet/dex-mainnet.config.json`) and the bridge placeholders, and
+it sends **no RPC request and no transaction**.
+
+**Inputs, bundled at build time** (never fetched at run time):
+
+| File                                          | Content                                                                                                                                                                                |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployments/mainnet/frontend.network.json`   | Chain name and currency for `wallet_addEthereumChain`, the public RPC URL and its status (`placeholder` or `live`), the explorer URL, the pinned L2 genesis hash and the bridge links. |
+| `deployments/mainnet/dex-mainnet.record.json` | `status: "not-deployed"` until the deployment; then the plan, config and schema-2 gate report, assembled by `scripts/staging/frontend-record.mjs`.                                     |
+
+`src/mainnet/config.ts` keeps the route "not yet live" while the record is the
+placeholder, the RPC is a placeholder or the genesis is not pinned. Otherwise it
+verifies the record with the devnet4 verifier against a mainnet target
+(chain 700770, `rehearsal: false`, the pinned genesis); a record that fails is
+an error, never a fallback. URLs must be `https` without credentials.
+
+**Once live:**
+
+- **Finalized-only reads.** Chain ID, genesis, every runtime code hash, reserves,
+  reserve caps, your BLCH and token balances, your allowance and the lens quote
+  are all read at the finalized block hash (EIP-1898); nothing reads `latest`.
+  An approval mined after that block is remembered for the session, so the swap
+  can follow before it is finalized.
+- **Reserve caps.** The pools table shows each cap, how much of it is used and
+  how much more can flow in ("inflow paused" at the cap). When the lens finds no
+  route, `src/mainnet/caps.ts` replays the route on the finalized reserves and
+  says which pool and cap would revert it (`BDEX: RESERVE_CAP`) and how much
+  input still fits. A quote shows the share of each cap's headroom it uses and
+  the conditions that can still revert it (cap filled by others, price move
+  beyond slippage, deadline).
+- **Defaults.** Slippage 0.50% (0.01–5.00%); deadline 60 minutes (10–180),
+  because there is one L2 block per settlement proof. A swap above your
+  finalized balance is blocked.
+- **Wallet.** `wallet_switchEthereumChain` to `0xab162`, falling back to
+  `wallet_addEthereumChain` with the network file's RPC and explorer; exact
+  approvals; explicit gas limits; explorer links for transactions when an
+  explorer is configured.
+
+**Static hosting.** `public/_headers` (Cloudflare Pages / Netlify format,
+copied into `dist/`) sets a strict CSP (`default-src 'none'`, scripts from
+`'self'` only, `connect-src` limited to the site, the L2 RPC origin and
+WalletConnect, `frame-ancestors 'none'`), HSTS, `nosniff`, `no-referrer`,
+`X-Frame-Options: DENY`, a restrictive `Permissions-Policy` and cache rules. It
+is generated from `src/mainnet/headers.ts`; `src/test/hosting.test.ts` fails
+when they diverge, for example after changing the RPC URL. Hosts without
+`_headers` support must send the same headers. The public RPC must answer CORS
+requests from the site's origin (or the host must proxy it same-origin and set
+`VITE_MAINNET_RPC_URL`).
+
+**Going live** (after the deployment and the finality gate):
+
+```sh
+node scripts/staging/frontend-record.mjs --config deployments/mainnet/dex-mainnet.config.json --plan deployments/mainnet/dex-mainnet.plan.json --gate-report deployments/mainnet/dex-mainnet.gate-report.json --write deployments/mainnet/dex-mainnet.record.json
+```
+
+Then set `genesisHash`, `rpc.status: "live"` and the explorer and bridge URLs in
+`frontend.network.json`, and review both files in the same change.
+
+**Local render check.** Build against a throwaway anvil deployment without
+touching the committed files (absolute paths):
+
+```sh
+POSTERN_MAINNET_NETWORK=/abs/network.json POSTERN_MAINNET_RECORD=/abs/record.json VITE_MAINNET_RPC_URL=/mainnet-rpc MAINNET_RPC_TARGET=http://127.0.0.1:18571 npm run dev
+```
+
+A production build must use the committed files.
+
+**Tests.** `src/test/mainnet.test.tsx` (network file, record states, cap
+explanations, finalized-only reads, approval and swap calldata, settings
+bounds, genesis refusal) and `src/test/hosting.test.ts`.

@@ -96,7 +96,7 @@ export function approveTransaction(
   };
 }
 
-export function deadlineFrom(nowMs: number, minutes = DEFAULT_DEADLINE_MINUTES): bigint {
+export function deadlineFrom(nowMs: number, minutes: number = DEFAULT_DEADLINE_MINUTES): bigint {
   return BigInt(Math.floor(nowMs / 1000) + minutes * 60);
 }
 
@@ -109,13 +109,21 @@ export async function allowanceOf(
   return readCall<bigint>(rpc, ERC20_ABI, token, 'allowance', [owner, d.router], 'latest');
 }
 
-/** Ask the wallet to use devnet4, adding the network when the wallet does not know it. */
-export async function ensureDevnet4(
-  provider: Provider,
-  d: DevnetDeployment,
-  walletRpcUrl: string,
-): Promise<void> {
-  const chainId = `0x${d.chainId.toString(16)}`;
+/** EIP-3085 parameters for `wallet_addEthereumChain`. */
+export type AddChainParameters = {
+  chainId: number;
+  chainName: string;
+  nativeCurrency: { name: string; symbol: string; decimals: number };
+  rpcUrls: string[];
+  blockExplorerUrls?: string[];
+};
+
+/**
+ * Ask the wallet to use `params.chainId`: switch when it knows the network,
+ * add it (EIP-3085) when it answers 4902, then re-read the wallet's chain.
+ */
+export async function ensureChain(provider: Provider, params: AddChainParameters): Promise<void> {
+  const chainId = `0x${params.chainId.toString(16)}`;
   if (String(await provider.request({ method: 'eth_chainId' })).toLowerCase() === chainId) return;
   try {
     await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId }] });
@@ -126,17 +134,34 @@ export async function ensureDevnet4(
       params: [
         {
           chainId,
-          chainName: 'Bloch L2 devnet4 (zero value)',
-          nativeCurrency: { name: 'Bloch', symbol: 'BLCH', decimals: 18 },
-          rpcUrls: [walletRpcUrl],
+          chainName: params.chainName,
+          nativeCurrency: params.nativeCurrency,
+          rpcUrls: params.rpcUrls,
+          ...(params.blockExplorerUrls?.length
+            ? { blockExplorerUrls: params.blockExplorerUrls }
+            : {}),
         },
       ],
     });
   }
   refuse(
     String(await provider.request({ method: 'eth_chainId' })).toLowerCase() === chainId,
-    'The wallet is not on Bloch L2 devnet4.',
+    `The wallet is not on ${params.chainName}.`,
   );
+}
+
+/** Ask the wallet to use devnet4, adding the network when the wallet does not know it. */
+export async function ensureDevnet4(
+  provider: Provider,
+  d: DevnetDeployment,
+  walletRpcUrl: string,
+): Promise<void> {
+  await ensureChain(provider, {
+    chainId: d.chainId,
+    chainName: 'Bloch L2 devnet4 (zero value)',
+    nativeCurrency: { name: 'Bloch', symbol: 'BLCH', decimals: 18 },
+    rpcUrls: [walletRpcUrl],
+  });
 }
 
 /** Send through the wallet; returns the transaction hash. */

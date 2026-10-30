@@ -2192,3 +2192,96 @@
 }
 
 .qr-wallet-option{padding:16px;border:1px solid #526941;border-radius:16px;background:linear-gradient(120deg,#26382055,transparent);margin:18px 0}.qr-wallet-option .wallet-option{width:100%;margin:0}.qr-wallet-option .microcopy{margin-bottom:0}
+
+@layer components {
+  /* Live routes (#/mainnet, #/devnet4): plain cards and definition lists. */
+  .mainnet-page {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .mainnet-page .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    overflow-x: auto;
+  }
+  .mainnet-page .card h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 17px;
+    font-weight: 520;
+    margin-bottom: 12px;
+  }
+  .mainnet-page .card h3 {
+    font-size: 14px;
+    margin: 16px 0 6px;
+  }
+  .mainnet-page .detail-list {
+    display: grid;
+    grid-template-columns: minmax(130px, max-content) 1fr;
+    gap: 6px 16px;
+    margin: 12px 0;
+    font-size: 13px;
+  }
+  .mainnet-page .detail-list dt {
+    color: var(--subtle);
+  }
+  .mainnet-page .detail-list dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .mainnet-page table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .mainnet-page th,
+  .mainnet-page td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .mainnet-page .devnet4-form {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+    align-items: end;
+  }
+  .mainnet-page .devnet4-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-top: 12px;
+  }
+  .mainnet-page ul,
+  .mainnet-page ol {
+    margin: 8px 0;
+    padding-left: 20px;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .mainnet-page .mainnet-blocked li {
+    color: #f0b3a6;
+  }
+  .mainnet-page code {
+    overflow-wrap: anywhere;
+  }
+  .mainnet-page .devnet4-form .field-label {
+    margin: 0;
+  }
+  .mainnet-page select {
+    border: 1px solid #485141;
+    border-radius: 8px;
+    background: #111710;
+    padding: 14px;
+    width: 100%;
+    font-size: 14px;
+  }
+}
