@@ -42,7 +42,7 @@ workstream (the config field is `null` and the tooling refuses it).
 | # | Decision | Implemented as | Still missing |
 |---|---|---|---|
 | 1 | L2 mainnet chain ID **700770** (devnet stays 700771) | `deployments/networks.json` is the single source; `dex-deploy-config.mjs` and the frontend read it; `DeployMainnet.s.sol` mirrors it (a Node test keeps them equal). A non-rehearsal deployment is refused on any other chain | L2 mainnet **genesis hash** (M9): `network.genesisHash` |
-| 2 | Protocol fee **on**, as revenue, to **Bloch Inc** | `UniswapV2Factory(feeTo, capTokens, caps)`: `feeTo` is immutable; `setFeeTo`, `setFeeToSetter`, `acceptFeeToSetter`, `cancelFeeToSetterTransfer`, `feeToSetter`, `pendingFeeToSetter` deleted. Config `fees.feeTo` must be `"blochInc"`. Pair init code hash unchanged (`0x2249ef38…b820`, pinned by `test/Core.t.sol` and checked on chain by the rehearsal) | **Bloch Inc address and Safe proxy code hash**: `blochInc` |
+| 2 | Protocol fee **on**, as revenue, to **Bloch Inc** | `UniswapV2Factory(feeTo, capTokens, caps)`: `feeTo` is immutable; `setFeeTo`, `setFeeToSetter`, `acceptFeeToSetter`, `cancelFeeToSetterTransfer`, `feeToSetter`, `pendingFeeToSetter` deleted. Config `fees.feeTo` must be `"blochInc"`. Pair init code hash `0xe41e81db…b248` (changed from `0x2249ef38…b820` by the 2026-10-30 burn cap fix, see AUDIT-SCOPE-DEX.md; pinned by `test/Core.t.sol` and checked on chain by the rehearsal) | **Bloch Inc address and Safe proxy code hash**: `blochInc` |
 | 2b | Bloch Inc is a **multisig**: Safe v1.4.1 (official contracts), 3-of-5 owners on hardware wallets | `blochInc.codeHash` must not be the empty-code hash; `DeployMainnet.s.sol`, `deploy-dex.mjs run` and the gate (at the finalized block) check the contract code | Owners, then the Safe deployment (runbook step 0) |
 | 3 | Treasury = Bloch Inc; deployer = a fresh Bloch Inc key with no role after deployment | Roles reduced to `deployer` and `blochInc`, which must differ; the deployer is never fee recipient, cap token or planned contract | **Deployer address** (fresh key, nonce 0): `deployer.address` |
 | 4 | Initial caps: guarded launch | §3 below; values committed in the config | wGSMH bridge bucket capacity (from the wGSMH bridge deployment) |
@@ -165,6 +165,8 @@ deployment record in a separate reviewed change.
 | F4 | Caps bind each pair, not aggregate exposure; anyone can fill a capped side up to its cap, pausing inflows on it | Residual by design. Every token of a planned pair must be capped |
 | F5 | No external audit | **Open (decision 6: later).** Required before stage 1 |
 | F6 | The fee recipient is permanent | By design (decision 2). If Bloch Inc's Safe must change, deploy a new factory; the Safe can rotate its own owners without touching the DEX |
+| F7 | A donation above a cap could make `burn` revert with `RESERVE_CAP`, blocking LP exits (DEX-01 in [AUDIT-SCOPE-DEX.md](AUDIT-SCOPE-DEX.md)) | **Fixed** 2026-10-30: burn records at most `max(cap, previous reserve)` and leaves the excess skimmable. Pair init code hash changed |
+| F8 | A standing donation above a cap blocks swaps and deposits on that side until someone calls `skim` (DEX-02) | Residual; the griefer forfeits the donation to whoever skims |
 
 ## 5. Tooling
 
@@ -350,7 +352,7 @@ deployer's current nonce, re-plan and re-review.
   - no guard and no module is set;
   - `getThreshold()` and `getOwners()` equal the pin;
   - `VERSION()` is 1.4.1;
-- `factory.INIT_CODE_PAIR_HASH()` equals the plan (`0x2249ef38…b820` at this
+- `factory.INIT_CODE_PAIR_HASH()` equals the plan (`0xe41e81db…b248` at this
   revision);
 - `factory.feeTo()` is Bloch Inc (the fee is on and goes nowhere else; the
   factory code hash proves there is no setter);

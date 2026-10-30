@@ -71,7 +71,9 @@ contract UniswapV2Pair is UniswapV2ERC20 {
 
     // --- reserve caps, copied from the factory at initialize -------------
     // 0 = uncapped. A cap binds only reserve increases, so burn, a downward
-    // sync and skim always work and a donation cannot lock LPs in.
+    // sync and skim always work and a donation cannot lock LPs in: burn
+    // records at most max(cap, pre-burn reserve) and leaves any donated
+    // excess skimmable (see _exitBound).
     uint112 private reserveCap0;
     uint112 private reserveCap1;
 
@@ -182,6 +184,16 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         emit Sync(reserve0, reserve1);
     }
 
+    /// @dev The largest reserve burn may record for a side: the balance, but
+    ///      never above max(cap, pre-burn reserve) on a capped side. This is
+    ///      exactly the bound _update enforces, so burn cannot revert on
+    ///      RESERVE_CAP and cannot move a reserve above it either.
+    function _exitBound(uint256 balance, uint112 cap, uint112 reserve) private pure returns (uint256) {
+        if (cap == 0) return balance;
+        uint256 bound = cap > reserve ? cap : reserve;
+        return balance > bound ? bound : balance;
+    }
+
     /// @dev Lazy protocol-fee settlement, exactly canonical. If feeTo is set,
     ///      mint feeTo LP shares equal to 1/6 of the growth of sqrt(k) since
     ///      the last liquidity event:
@@ -271,8 +283,11 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         _burn(address(this), liquidity);
         _safeTransfer(_token0, to, amount0);
         _safeTransfer(_token1, to, amount1);
-        balance0 = IERC20(_token0).balanceOf(address(this));
-        balance1 = IERC20(_token1).balanceOf(address(this));
+        // A reserve cap must never block an exit. A donation can leave the
+        // post-burn balance above both the cap and the pre-burn reserve; that
+        // excess stays outside the reserves, where skim recovers it.
+        balance0 = _exitBound(IERC20(_token0).balanceOf(address(this)), reserveCap0, _reserve0);
+        balance1 = _exitBound(IERC20(_token1).balanceOf(address(this)), reserveCap1, _reserve1);
 
         _update(balance0, balance1, _reserve0, _reserve1);
         if (feeOn) kLast = uint256(reserve0) * reserve1; // reserve0/1 are up to date
