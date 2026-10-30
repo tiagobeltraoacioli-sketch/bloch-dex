@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.safe-deploy.v1",
+  "network": {
+    "name": "bloch-l2-mainnet",
+    "chainId": 700770,
+    "genesisHash": "0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468",
+    "rehearsal": false
+  },
+  "artifacts": {
+    "package": "@safe-global/safe-contracts",
+    "version": "1.4.1",
+    "integrity": "sha512-fP1jewywSwsIniM04NsqPyVRFKPMAuirC3ftA/TA4X3Zc5EnwQp/UCJUU2PL/37/z/jMo8UUaJ+pnFNWmMU7dQ==",
+    "singleton": "SafeL2"
+  },
+  "bootstrap": {
+    "address": "TBD-owner",
+    "startNonce": 0
+  },
+  "safe": {
+    "owners": ["TBD-owner", "TBD-owner", "TBD-owner", "TBD-owner", "TBD-owner"],
+    "threshold": 3,
+    "saltNonce": "0"
+  }
+}

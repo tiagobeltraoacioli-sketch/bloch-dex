@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.mainnet-pins.v1",
+  "l2": {
+    "chainId": 700770,
+    "genesisHash": "0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468",
+    "genesisStateRoot": "0x2ad7e807ac2ea14e2f423572fcb9e0f168de4cb26b5bbbd2711caf34cb05c05d",
+    "rulesDomain": "1c3f8772d0bdfc22f33efce250a4f471343587859f815f083cfee69d3b6f0733",
+    "genesisTime": 1786656679,
+    "l1Activation": { "epoch": 5850, "slot": 187200 }
+  },
+  "l1": {
+    "genesisTime": 1786656679,
+    "slotSeconds": 30,
+    "epochSeconds": 960,
+    "networkPin": "f47d3e498ff978e34471dafff5f94fe139fc3ff489b1a00f469c030258311966"
+  },
+  "l2Release": {
+    "native": "78d4921c",
+    "follower": "c18752fd4c6942678bcb45d8d36436bcd644b1ee6e48416d67e4999e7c7cf29a",
+    "produceDev": "7c1cc62bf5fb5aa142dced01156e3a51ddb6239096034400558ef46586025a3c",
+    "settledRpc": "4fc9fa1ecc2b75dec8c918e77cefb81fe7fc216c5baead133e17c15fc4c54534"
+  },
+  "safe": {
+    "package": "@safe-global/safe-contracts",
+    "version": "1.4.1",
+    "integrity": "sha512-fP1jewywSwsIniM04NsqPyVRFKPMAuirC3ftA/TA4X3Zc5EnwQp/UCJUU2PL/37/z/jMo8UUaJ+pnFNWmMU7dQ==",
+    "tarballSha256": "8803f7cf26e2c58300b8136342faa7b8bce59436e300f52115fa25b095e0bf79",
+    "runtimeCodeHashes": {
+      "SafeL2": "0xb1f926978a0f44a2c0ec8fe822418ae969bd8c3f18d61e5103100339894f81ff",
+      "SafeProxyFactory": "0x50c3cdc4074750a7a974204a716c999edd37482f907608d960b2b025ee0b3317",
+      "SafeProxy": "0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c",
+      "CompatibilityFallbackHandler": "0x7c6007a5d711cea8dfd5d91f5940ec29c7f200fe511eb1fc1397b367af3c42f9"
+    }
+  }
+}

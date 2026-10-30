@@ -11,9 +11,13 @@ import {
   RETIRED_CHAIN_IDS,
   SAFE_V141,
   configSha256,
+  dexTransactions,
   forgeEnvironment,
   gateConfigFromPlan,
+  PENDING,
+  pendingFields,
   planDeployment,
+  RAW_TXS_DOMAIN,
   validateDeployConfig,
 } from "./dex-deploy-config.mjs";
 import { GATE_DOMAIN, validateGateConfig } from "./finality-gate.mjs";
@@ -91,36 +95,79 @@ test("accepts a complete mainnet configuration and hashes it canonically", () =>
 
 test("the committed mainnet configuration records the decisions and refuses what is pending", async () => {
   const committed = JSON.parse(await readFile(new URL("../../deployments/mainnet/dex-mainnet.config.json", import.meta.url), "utf8"));
+  const pins = JSON.parse(await readFile(new URL("../../deployments/mainnet/700770/pins.json", import.meta.url), "utf8"));
   assert.equal(committed.network.chainId, MAINNET_CHAIN_ID);
+  assert.equal(committed.network.genesisHash, pins.l2.genesisHash);
+  assert.equal(committed.network.rehearsal, false);
   assert.equal(committed.fees.feeTo, "blochInc");
-  assert.deepEqual(committed.initialPairs, [{ tokenA: "WBLCH", tokenB: "wGSMH" }, { tokenA: "WBLCH", tokenB: "bUSDC" }]);
-  // Guarded-launch caps: WBLCH at the 10 BLCH ceiling, bridged tokens at 1/10 of the bucket.
-  assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "100000000", "1000000000"]);
+  // Pilot (2026-10-30): bUSDC/WBLCH only; wGSMH is deferred to a later deployment.
+  assert.deepEqual(committed.initialPairs, [{ tokenA: "WBLCH", tokenB: "bUSDC" }]);
+  // Guarded-launch caps: WBLCH at the 10 BLCH ceiling, bUSDC at 1/10 of the 10,000 bUSDC bucket.
+  assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "1000000000"]);
+  assert.equal(committed.reserveCaps[1].bridgeBucketCapacity, "10000000000");
+  assert.deepEqual(pendingFields(committed), [
+    "source.revision", "deployer.address", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash",
+  ]);
   // Every pending field is refused, one at a time, until filled.
   const decided = structuredClone(committed);
   const steps = [
-    [/network.genesisHash is undecided/, (c) => { c.network.genesisHash = hash("9"); }],
-    [/source.revision/, (c) => { c.source.revision = "b".repeat(40); }],
+    [/source.revision is undecided/, (c) => { c.source.revision = "b".repeat(40); }],
     [/deployer.address is undecided/, (c) => { c.deployer.address = DEPLOYER; }],
     [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) }; }],
-    [/wGSMH\).token is undecided/, (c) => { c.reserveCaps[1].token = GSMH; }],
-    [/wGSMH\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = GSMH_CODE; }],
-    [/wGSMH\).bridgeBucketCapacity is undecided/, (c) => { c.reserveCaps[1].bridgeBucketCapacity = "1000000000000"; }],
-    [/bUSDC\).token is undecided/, (c) => { c.reserveCaps[2].token = ASSET; }],
-    [/bUSDC\).codeHash is undecided/, (c) => { c.reserveCaps[2].codeHash = ASSET_CODE; }],
+    [/bUSDC\).token is undecided/, (c) => { c.reserveCaps[1].token = ASSET; }],
+    [/bUSDC\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = ASSET_CODE; }],
   ];
   for (const [pattern, fill] of steps) {
     assert.throws(() => validateDeployConfig(decided), pattern);
     fill(decided);
   }
   validateDeployConfig(decided);
-  // A smaller wGSMH bridge bucket than planned forces a smaller DEX cap.
-  decided.reserveCaps[1].bridgeBucketCapacity = "999999999";
+  assert.deepEqual(pendingFields(decided), []);
+  // A smaller bUSDC bridge bucket than planned forces a smaller DEX cap.
+  decided.reserveCaps[1].bridgeBucketCapacity = "9999999999";
   assert.throws(() => validateDeployConfig(decided), /exceeds 1\/10 of the bridge bucket/);
-  decided.reserveCaps[1].bridgeBucketCapacity = "1000000000";
+  decided.reserveCaps[1].bridgeBucketCapacity = "10000000000";
   const plan = planDeployment(decided, artifacts());
-  assert.equal(plan.pairs.length, 2);
+  assert.equal(plan.pairs.length, 1);
   assert.equal(plan.feeTo, BLOCH_INC);
+  assert.equal(plan.steps.length, 5);
+});
+
+test("TBD-owner is refused exactly like null", () => {
+  for (const [change, pattern] of [
+    [(c) => { c.deployer.address = PENDING; }, /deployer.address is undecided/],
+    [(c) => { c.blochInc = PENDING; }, /blochInc is undecided/],
+    [(c) => { c.network.genesisHash = PENDING; }, /genesisHash is undecided/],
+    [(c) => { c.reserveCaps[1].token = PENDING; }, /token is undecided/],
+  ]) {
+    assert.throws(() => validateDeployConfig(config(change)), pattern);
+  }
+});
+
+test("raw transactions re-derive every init code and createPair call from the plan", () => {
+  const c = config();
+  const a = artifacts();
+  const plan = planDeployment(c, a);
+  const txs = dexTransactions(c, a, plan);
+  assert.equal(txs.domain, RAW_TXS_DOMAIN);
+  assert.equal(txs.from, DEPLOYER);
+  assert.equal(txs.configSha256, plan.configSha256);
+  assert.deepEqual(txs.transactions.map((t) => t.nonce), plan.steps.map((s) => s.nonce));
+  for (const [i, t] of txs.transactions.entries()) {
+    const step = plan.steps[i];
+    assert.equal(t.expect, step.address);
+    assert.ok(t.gasLimit > 0);
+    if (step.action === "createPair") {
+      assert.equal(t.to, plan.contracts.factory.address);
+      assert.ok(t.data.startsWith("0xc9c65396"));
+    } else {
+      assert.equal(t.to, null);
+      assert.equal(keccak256(t.data), step.initCodeHash);
+    }
+  }
+  const tampered = structuredClone(plan);
+  tampered.steps[1].initCodeHash = hash("1");
+  assert.throws(() => dexTransactions(c, a, tampered), /plan differs/);
 });
 
 test("chain IDs come from deployments/networks.json, mirrored by DeployMainnet.s.sol", async () => {

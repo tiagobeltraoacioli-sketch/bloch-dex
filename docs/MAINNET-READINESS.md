@@ -17,7 +17,18 @@ a DEX with that Safe as the fixed fee recipient, and redeemed the protocol fee
 with `execTransaction` and 3 packed owner signatures; the new Safe checks of
 the preflight and the gate passed live (step 0 below).
 
-The Bloch L2 mainnet is **not live**: the L1 activation gate
+Update 2026-10-30 (branch `codex/dex-mainnet-700770-20261030`): the chain 700770
+deployment package is in [MAINNET-700770-PACKAGE.md](MAINNET-700770-PACKAGE.md).
+The L2 genesis is pinned (`0x632e45ae…f468`). The Bloch Inc Safe is deployed by
+a bootstrap key, because 700770 has no singleton factory. Every transaction is
+signed offline with `cast mktx` and published with `cast publish`. The package
+adds post-deployment verification and a mainnet gate pinned to the chain
+and the Safe. The pilot is now **bUSDC/WBLCH only**: wGSMH is deprioritized
+and removed from the launch config and caps. Unfilled values are written
+`TBD-owner`, and they are refused like `null`. Sections 0 and 3 below
+predate this change for wGSMH.
+
+: the L1 activation gate
 (`L2_SETTLEMENT_ACTIVATION_EPOCH`) is inert and `activation_policy()` returns
 `None` because the L2 genesis, proof keys and attestor set are not final.
 "Mainnet DEX ready" therefore means: when the L2 goes live, the DEX is deployed

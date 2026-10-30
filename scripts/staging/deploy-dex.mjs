@@ -6,8 +6,15 @@
 //   plan     --config C [--rehearsal] [--out-dir out] [--write P]
 //   run      --config C --plan P --rpc URL [--rehearsal] [--out-dir out]
 //            [--broadcast --confirm <configSha256>] [-- <forge signer args>]
-//   record   --config C --plan P --rpc URL --broadcast-file F [--rehearsal]
-//            [--out-dir out] --write G
+//   record   --config C --plan P --rpc URL (--broadcast-file F | --tx-hashes H)
+//            [--rehearsal] [--out-dir out] --write G
+//   pending  --config C                    list every TBD-owner/null field
+//   preflight --config C --plan P --rpc URL [--rehearsal]   read-only checks only
+//   txs      --config C --plan P --write T [--rehearsal]    unsigned transactions
+//
+// `txs` + scripts/staging/sign-and-publish.sh is the raw-transaction path
+// (`cast mktx` offline, `cast publish`), for RPCs whose `pending` view a
+// forge broadcast cannot rely on; `record --tx-hashes` then verifies it.
 //
 // `run` without --broadcast is a forge simulation against the RPC (dry run).
 // `record` verifies the broadcast on chain (sender, nonces, init code,
@@ -21,9 +28,11 @@ import {
   BRIDGE_BUCKET_DIVISOR,
   EMPTY_CODE_HASH,
   configSha256,
+  dexTransactions,
   forgeEnvironment,
   gateConfigFromPlan,
   loadArtifacts,
+  pendingFields,
   planDeployment,
   stableJson,
   validateDeployConfig,
@@ -38,7 +47,10 @@ const USAGE = `Usage:
   node scripts/staging/deploy-dex.mjs run --config <c.json> --plan <plan.json> --rpc <url> [--rehearsal]
       [--broadcast --confirm <configSha256>] [-- <forge signer args>]
   node scripts/staging/deploy-dex.mjs record --config <c.json> --plan <plan.json> --rpc <url>
-      --broadcast-file <run-latest.json> --write <gate.json> [--rehearsal]`;
+      (--broadcast-file <run-latest.json> | --tx-hashes <hashes.txt>) --write <gate.json> [--rehearsal]
+  node scripts/staging/deploy-dex.mjs pending --config <c.json>
+  node scripts/staging/deploy-dex.mjs preflight --config <c.json> --plan <plan.json> --rpc <url> [--rehearsal]
+  node scripts/staging/deploy-dex.mjs txs --config <c.json> --plan <plan.json> --write <txs.json> [--rehearsal]`;
 
 function refuse(condition, message) {
   if (!condition) throw new Error(`deploy-dex: ${message}`);
@@ -58,12 +70,12 @@ export function parseArgs(argv) {
       continue;
     }
     const key = { "--config": "config", "--plan": "plan", "--rpc": "rpc", "--write": "write", "--confirm": "confirm",
-      "--out-dir": "outDir", "--broadcast-file": "broadcastFile" }[arg];
+      "--out-dir": "outDir", "--broadcast-file": "broadcastFile", "--tx-hashes": "txHashes" }[arg];
     refuse(key && i + 1 < own.length, `unknown or incomplete argument ${arg}`);
     refuse(options[key] === undefined || key === "outDir", `${arg} given twice`);
     options[key] = own[++i];
   }
-  refuse(["validate", "plan", "run", "record"].includes(command), "unknown command");
+  refuse(["validate", "plan", "run", "record", "pending", "preflight", "txs"].includes(command), "unknown command");
   refuse(options.config, "--config is required");
   refuse(!options.broadcast || command === "run", "--broadcast only applies to run");
   refuse(forgeArgs.length === 0 || command === "run", "forge arguments only apply to run");
@@ -159,28 +171,41 @@ function runForge(plan, options) {
 
 export async function main(argv) {
   const options = parseArgs(argv);
+  if (options.command === "pending") {
+    return { pending: pendingFields(await readJson(options.config)) };
+  }
   if (options.command === "validate") {
     const config = validateDeployConfig(await readJson(options.config), { rehearsal: options.rehearsal });
     return { decision: "config-valid", configSha256: configSha256(config) };
   }
-  const { plan } = await currentPlan(options);
+  const { config, plan } = await currentPlan(options);
   if (options.command === "plan") {
     if (options.write) await writeFile(options.write, `${JSON.stringify(plan, null, 2)}\n`, { flag: "wx" });
     return plan;
   }
+  if (options.command === "txs") {
+    refuse(options.plan && options.write, "--plan and --write are required");
+    const txs = dexTransactions(config, await loadArtifacts(options.outDir), plan);
+    await writeFile(options.write, `${JSON.stringify(txs, null, 2)}\n`, { flag: "wx" });
+    return { decision: "transactions-written", file: options.write, count: txs.transactions.length, configSha256: plan.configSha256 };
+  }
   refuse(options.plan && options.rpc, "--plan and --rpc are required");
   const request = createJsonRpcRequest(options.rpc);
+  if (options.command === "preflight") {
+    return { decision: "preflight-ok", configSha256: plan.configSha256, ...(await preflight(plan, request)) };
+  }
   if (options.command === "run") {
     refuse(!options.broadcast || options.confirm === plan.configSha256, `--broadcast needs --confirm ${plan.configSha256}`);
     const checked = await preflight(plan, request);
     runForge(plan, options);
     return { decision: options.broadcast ? "broadcast" : "dry-run", configSha256: plan.configSha256, ...checked };
   }
-  refuse(options.broadcastFile && options.write, "--broadcast-file and --write are required");
-  const broadcast = await readJson(options.broadcastFile);
+  refuse(Boolean(options.broadcastFile) !== Boolean(options.txHashes) && options.write, "one of --broadcast-file or --tx-hashes, and --write, are required");
   // forge's transactions[] can mislabel hashes in a batch; receipts[] are the
   // chain's own, and every one is re-verified against the chain anyway.
-  const hashes = (broadcast.receipts ?? []).map((r) => r.transactionHash);
+  const hashes = options.broadcastFile
+    ? ((await readJson(options.broadcastFile)).receipts ?? []).map((r) => r.transactionHash)
+    : (await readFile(options.txHashes, "utf8")).split(/\s+/).filter(Boolean);
   const ordered = await verifyBroadcast(plan, hashes, request);
   const gate = gateConfigFromPlan(plan, ordered, GATE_DOMAIN);
   await writeFile(options.write, `${JSON.stringify(gate, null, 2)}\n`, { flag: "wx" });

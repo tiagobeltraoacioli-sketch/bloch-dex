@@ -4,11 +4,11 @@
   "network": {
     "name": "bloch-l2-mainnet",
     "chainId": 700770,
-    "genesisHash": null,
+    "genesisHash": "0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468",
     "rehearsal": false
   },
   "source": {
-    "revision": null,
+    "revision": "TBD-owner",
     "compiler": {
       "solc": "0.8.24",
       "evmVersion": "paris",
@@ -18,10 +18,10 @@
     }
   },
   "deployer": {
-    "address": null,
+    "address": "TBD-owner",
     "startNonce": 0
   },
-  "blochInc": null,
+  "blochInc": "TBD-owner",
   "wrappedNative": {
     "deploy": true
   },
@@ -34,25 +34,14 @@
       "cap": "10000000000000000000"
     },
     {
-      "symbol": "wGSMH",
-      "token": null,
-      "codeHash": null,
-      "bridgeBucketCapacity": null,
-      "cap": "100000000"
-    },
-    {
       "symbol": "bUSDC",
-      "token": null,
-      "codeHash": null,
+      "token": "TBD-owner",
+      "codeHash": "TBD-owner",
       "bridgeBucketCapacity": "10000000000",
       "cap": "1000000000"
     }
   ],
   "initialPairs": [
-    {
-      "tokenA": "WBLCH",
-      "tokenB": "wGSMH"
-    },
     {
       "tokenA": "WBLCH",
       "tokenB": "bUSDC"

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { validateSafePin } from "./finality-gate.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
-const { keccak256, getContractAddress, encodeAbiParameters, encodePacked } = requireFromFrontend("viem");
+const { keccak256, getContractAddress, encodeAbiParameters, encodeFunctionData, encodePacked } = requireFromFrontend("viem");
 
 export const DEPLOY_DOMAIN = "postern.dex.mainnet-deploy.v1";
 export const PLAN_DOMAIN = "postern.dex.mainnet-plan.v1";
@@ -70,6 +70,24 @@ const DECIMAL = /^[1-9][0-9]*$/;
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const SYMBOL = /^[A-Za-z0-9.-]{2,12}$/;
+
+/// Placeholder for a value only the owner can supply (an address, a key's
+/// public address, a reviewed revision). It is refused like `null`.
+export const PENDING = "TBD-owner";
+
+export function isPending(value) {
+  return value === null || value === PENDING;
+}
+
+/// Every leaf that is still `null` or "TBD-owner", as a JSON path.
+export function pendingFields(value, path = "") {
+  if (isPending(value)) return [path || "(root)"];
+  if (Array.isArray(value)) return value.flatMap((item, i) => pendingFields(item, `${path}[${i}]`));
+  if (value && typeof value === "object") {
+    return Object.entries(value).flatMap(([key, item]) => pendingFields(item, path ? `${path}.${key}` : key));
+  }
+  return [];
+}
 
 /// Canonical JSON: object keys sorted at every level, no whitespace.
 export function stableJson(value) {
@@ -144,7 +162,7 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   refuse(typeof network.name === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(network.name), "network.name is invalid");
   refuse(Number.isSafeInteger(network.chainId) && network.chainId > 0, "network.chainId is undecided or invalid");
   refuse(!RETIRED_CHAIN_IDS.includes(network.chainId), `chain ${network.chainId} is retired and never a target`);
-  refuse(network.genesisHash !== null, "network.genesisHash is undecided (L2 mainnet genesis, M9)");
+  refuse(!isPending(network.genesisHash), "network.genesisHash is undecided (L2 mainnet genesis, M9)");
   hash(network.genesisHash, "network.genesisHash");
   refuse(typeof network.rehearsal === "boolean", "network.rehearsal must be a boolean");
   const development = DEVELOPMENT_CHAIN_IDS.includes(network.chainId);
@@ -160,6 +178,7 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   refuse(!network.rehearsal || /rehearsal|devnet|local/.test(network.name), "a rehearsal network.name must say so");
 
   exactKeys(config.source, ["revision", "compiler"], "source");
+  refuse(!isPending(config.source.revision), "source.revision is undecided (the reviewed commit to build)");
   refuse(typeof config.source.revision === "string" && REVISION.test(config.source.revision), "source.revision must be a 40-hex commit");
   exactKeys(config.source.compiler, Object.keys(COMPILER), "source.compiler");
   for (const [key, value] of Object.entries(COMPILER)) {
@@ -167,11 +186,11 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   }
 
   exactKeys(config.deployer, ["address", "startNonce"], "deployer");
-  refuse(config.deployer.address !== null, "deployer.address is undecided (fresh Bloch Inc deployer key)");
+  refuse(!isPending(config.deployer.address), "deployer.address is undecided (fresh Bloch Inc deployer key)");
   address(config.deployer.address, "deployer.address");
   refuse(Number.isSafeInteger(config.deployer.startNonce) && config.deployer.startNonce >= 0, "deployer.startNonce is invalid");
 
-  refuse(config.blochInc !== null, "blochInc is undecided (Bloch Inc multisig address and runtime code hash)");
+  refuse(!isPending(config.blochInc), "blochInc is undecided (Bloch Inc multisig address and runtime code hash)");
   const blochIncKeys = ["address", "codeHash"];
   if (config.blochInc && Object.hasOwn(config.blochInc, "safe")) blochIncKeys.push("safe");
   exactKeys(config.blochInc, blochIncKeys, "blochInc");
@@ -228,7 +247,7 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
     const field = `reserveCaps[${index}]`;
     if (entry?.token === WRAPPED_REF) {
       exactKeys(entry, ["token", "cap"], field);
-      refuse(entry.cap !== null, `${field}.cap is undecided`);
+      refuse(!isPending(entry.cap), `${field}.cap is undecided`);
       wrappedCap = amount(entry.cap, `${field}.cap`, UINT112_MAX);
       refuse(!symbols.has(WRAPPED_REF), `${field} caps "${WRAPPED_REF}" twice`);
       symbols.add(WRAPPED_REF);
@@ -239,14 +258,14 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
     const name = `${field} (${entry.symbol})`;
     refuse(!symbols.has(entry.symbol), `${name} symbol is listed twice`);
     symbols.add(entry.symbol);
-    refuse(entry.token !== null, `${name}.token is undecided (bridge deployment address)`);
+    refuse(!isPending(entry.token), `${name}.token is undecided (bridge deployment address)`);
     address(entry.token, `${name}.token`);
-    refuse(entry.codeHash !== null, `${name}.codeHash is undecided (bridge deployment runtime code hash)`);
+    refuse(!isPending(entry.codeHash), `${name}.codeHash is undecided (bridge deployment runtime code hash)`);
     hash(entry.codeHash, `${name}.codeHash`);
     refuse(entry.codeHash !== EMPTY_CODE_HASH, `${name}.codeHash is the empty-code hash`);
-    refuse(entry.bridgeBucketCapacity !== null, `${name}.bridgeBucketCapacity is undecided (the bridge token's bucketCapacity())`);
+    refuse(!isPending(entry.bridgeBucketCapacity), `${name}.bridgeBucketCapacity is undecided (the bridge token's bucketCapacity())`);
     const bucket = amount(entry.bridgeBucketCapacity, `${name}.bridgeBucketCapacity`, (1n << 256n) - 1n);
-    refuse(entry.cap !== null, `${name}.cap is undecided`);
+    refuse(!isPending(entry.cap), `${name}.cap is undecided`);
     const cap = amount(entry.cap, `${name}.cap`, UINT112_MAX);
     refuse(
       cap * BRIDGE_BUCKET_DIVISOR <= bucket,
@@ -484,5 +503,73 @@ export function gateConfigFromPlan(plan, transactions, gateDomain) {
       transactions,
     },
     limits: { maxWrappedReserveCap: plan.gate.maxWrappedReserveCap },
+  };
+}
+
+/// Explicit gas limits for the raw-transaction path (cast mktx): the settled
+/// L2 RPC cannot estimate a sequence whose later steps depend on earlier ones.
+/// About 1.5x the gas measured on anvil and on the private L2 (612,333 /
+/// 2,456,799 / 4,074,147 / 1,938,483 / 2,135,685).
+export const DEX_GAS = Object.freeze({
+  wrappedNative: 1_000_000,
+  factory: 3_700_000,
+  router: 6_200_000,
+  lens: 3_000_000,
+  createPair: 3_300_000,
+});
+
+const CREATE_PAIR_ABI = [
+  {
+    type: "function",
+    name: "createPair",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "tokenA", type: "address" }, { name: "tokenB", type: "address" }],
+    outputs: [{ name: "pair", type: "address" }],
+  },
+];
+
+/// Unsigned deployment transactions in plan order, for signing offline with
+/// `cast mktx` and publishing with `cast publish`
+/// (scripts/staging/sign-and-publish.sh). Each creation's init code is
+/// re-derived from the artifacts and must hash to the plan's initCodeHash.
+export function dexTransactions(config, artifacts, plan) {
+  const derived = planDeployment(config, artifacts, { rehearsal: plan.chain.rehearsal });
+  refuse(stableJson(derived) === stableJson(plan), "the plan differs from the plan derived from this config and build");
+  const { contracts } = plan;
+  const wrapped = contracts.wrappedNative.address;
+  const args = {
+    wrappedNative: "0x",
+    factory: encodeAbiParameters(
+      [{ type: "address" }, { type: "address[]" }, { type: "uint256[]" }],
+      [plan.feeTo, plan.reserveCaps.map((c) => c.token), plan.reserveCaps.map((c) => BigInt(c.cap))],
+    ),
+    router: encodeAbiParameters([{ type: "address" }, { type: "address" }], [contracts.factory.address, wrapped]),
+    lens: encodeAbiParameters([{ type: "address" }], [contracts.factory.address]),
+  };
+  const transactions = plan.steps.map((step) => {
+    if (step.action === "createPair") {
+      const data = encodeFunctionData({ abi: CREATE_PAIR_ABI, functionName: "createPair", args: [step.tokenA, step.tokenB] });
+      return { nonce: step.nonce, label: step.action, to: contracts.factory.address, value: "0", data, gasLimit: DEX_GAS.createPair, expect: step.address };
+    }
+    const key = step.action.replace(/^deploy /, "");
+    const data = `${code(artifacts[key].bytecode, `${key}.bytecode`)}${args[key].slice(2)}`;
+    refuse(keccak256(data) === step.initCodeHash, `${step.action} init code differs from the plan`);
+    return { nonce: step.nonce, label: step.action, to: null, value: "0", data, gasLimit: DEX_GAS[key], expect: step.address };
+  });
+  return rawTxFile(plan.chain, plan.deployer, plan.configSha256, transactions);
+}
+
+export const RAW_TXS_DOMAIN = "postern.dex.raw-txs.v1";
+
+/// The unsigned-transaction file read by scripts/staging/sign-and-publish.sh.
+export function rawTxFile(chain, from, configSha, transactions) {
+  return {
+    schemaVersion: 1,
+    domain: RAW_TXS_DOMAIN,
+    chainId: chain.id,
+    genesisHash: chain.genesisHash,
+    from,
+    configSha256: configSha,
+    transactions,
   };
 }
