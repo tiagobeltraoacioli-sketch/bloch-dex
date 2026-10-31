@@ -60,9 +60,11 @@ contract ReserveCapTest is TestBase {
     }
 
     function testLiquidityUpToCapIsAcceptedAndAboveIsRefused() public {
-        seed(NATIVE_CAP, 1_000 ether);
-        vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+        seed(NATIVE_CAP * 8 / 10, 1_000 ether);
+        vm.expectRevert(bytes("BDEX: LIFT_LIMIT"));
         router.addLiquidityBLCH{value: 0.1 ether}(address(token), 100 ether, 0, 0, address(this), block.timestamp);
+        vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+        router.addLiquidityBLCH{value: 2.1 ether}(address(token), 3_000 ether, 0, 0, address(this), block.timestamp);
     }
 
     function testFirstDepositAboveCapIsRefused() public {
@@ -73,10 +75,10 @@ contract ReserveCapTest is TestBase {
     }
 
     function testSwapThatGrowsCappedReserveAboveCapIsRefused() public {
-        seed(9 ether, 9_000 ether);
+        seed(8 ether, 8_000 ether);
         address[] memory path = new address[](2);
         (path[0], path[1]) = (address(wrapped), address(token));
-        router.swapExactBLCHForTokens{value: 1 ether}(0, path, address(this), block.timestamp);
+        router.swapExactBLCHForTokens{value: 2 ether}(0, path, address(this), block.timestamp);
         vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
         router.swapExactBLCHForTokens{value: 0.01 ether}(0, path, address(this), block.timestamp);
 
@@ -87,7 +89,7 @@ contract ReserveCapTest is TestBase {
     }
 
     function testDonationAboveCapCannotLockLiquidityProviders() public {
-        UniswapV2Pair pair = seed(NATIVE_CAP, 1_000 ether);
+        UniswapV2Pair pair = seed(NATIVE_CAP * 8 / 10, 1_000 ether);
         wrapped.deposit{value: 5 ether}();
         wrapped.transfer(address(pair), 5 ether);
 
