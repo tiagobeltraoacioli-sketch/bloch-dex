@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createRequire } from "node:module";
-import { verifyBroadcast } from "./deploy-dex.mjs";
+import { parseArgs, verifyBroadcast } from "./deploy-dex.mjs";
 import { gateConfigFromPlan } from "./dex-deploy-config.mjs";
 
 const { keccak256, stringToHex } = createRequire(new URL("../../frontend/package.json", import.meta.url))("viem");
@@ -79,4 +79,8 @@ test("F2: the gate configuration records the reverted createPair", () => {
   const full = { ...plan, chain: { id: 1, genesisHash: HASH }, feeTo: DEPLOYER, roles: {}, externalTokens: [], gate: { maxWrappedReserveCap: "1" } };
   assert.deepEqual(gateConfigFromPlan(full, [HASH], "d", [HASH]).deployment.existingPairTransactions, [HASH]);
   assert.equal(Object.hasOwn(gateConfigFromPlan(full, [HASH], "d").deployment, "existingPairTransactions"), false);
+});
+
+test("F2: check-pair needs only a plan and an RPC", () => {
+  assert.equal(parseArgs(["check-pair", "--plan", "p.json", "--rpc", "http://127.0.0.1:1"]).command, "check-pair");
 });

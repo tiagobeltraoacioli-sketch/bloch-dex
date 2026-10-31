@@ -77,8 +77,8 @@ export function parseArgs(argv) {
     refuse(options[key] === undefined || key === "outDir", `${arg} given twice`);
     options[key] = own[++i];
   }
-  refuse(["validate", "plan", "run", "record", "pending", "preflight", "txs"].includes(command), "unknown command");
-  refuse(options.config, "--config is required");
+  refuse(["validate", "plan", "run", "record", "pending", "preflight", "txs", "check-pair"].includes(command), "unknown command");
+  refuse(options.config || command === "check-pair", "--config is required");
   refuse(!options.broadcast || command === "run", "--broadcast only applies to run");
   refuse(forgeArgs.length === 0 || command === "run", "forge arguments only apply to run");
   for (const arg of forgeArgs) {
