@@ -1,5 +1,7 @@
 # Initial liquidity runbook
 
+The price and cap options and the owner's inputs are in `OPS-OPENING-KIT.md`.
+
 Covers the opening ratio, DEX-04 (a donation sets the opening ratio) and DEX-09 (a donation can make the pair unusable). Pair: WBLCH/bUSDC only.
 
 ## Before you start
@@ -58,7 +60,7 @@ On a pair with no LP shares, the router takes the desired amounts as given. The 
 
 ## DEX-09: fixed
 
-Donations synced exactly to both caps of an empty pair used to block `mint` and `swap` forever. `sync` now reverts with `BDEX: EMPTY_POOL` while no LP shares exist, so a donation stays outside the reserves until `skim` removes it. A donation above a cap blocks the seed only until that skim. The griefer forfeits it to whoever skims. The monitor's and planner's `bricked` and synced-donation branches stay as defensive checks and are unreachable on this pair code. See `AUDIT-SCOPE-DEX.md`.
+Donations synced exactly to both caps of an empty pair used to block `mint` and `swap` forever. `sync` now reverts with `BDEX: EMPTY_POOL` while no LP shares exist, so a donation stays outside the reserves until `skim` removes it. A donation above a cap blocks the seed only until that skim. The griefer forfeits it to whoever skims. The monitor's and planner's `bricked` and synced-donation branches stay as defensive checks. Their exact condition (no LP shares) is unreachable on this pair code, but **the same closed state is reachable with LP shares through a mint to both caps (review finding F1, open), and neither branch reports it**. See `AUDIT-SCOPE-DEX.md`.
 
 ## After the seed
 

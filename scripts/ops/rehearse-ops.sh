@@ -5,7 +5,7 @@
 #   anvil       anvil --chain-id 700770 plus the anvil finality shim; includes the
 #               scenes that need snapshots or state edits. Its genesis is not the
 #               mainnet pin, so the monitor runs with --rehearsal (generic gate).
-#   private-l2  the v2 L2 binaries under the mainnet rules (real settled-RPC,
+#   private-l2  the v2.1 L2 binaries under the mainnet rules (real settled-RPC,
 #               pinned genesis, SYNTHETIC finality: no L1, no proof). Runs the
 #               scenes that need no snapshots, to prove the kit against the RPC it
 #               will really talk to. ANCHOR_EXPIRY=1 adds the 256-block window test.

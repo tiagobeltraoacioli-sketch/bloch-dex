@@ -9,12 +9,25 @@ It is an internal review, not an audit.
 
 | Item | Value |
 |---|---|
-| Branch | `codex/dex-audit-20261030` |
-| Base | `feat/dex-safe-frontend-20261016` @ `4dfb32d` |
-| Audit commit | The tip of `codex/dex-audit-20261030` that contains this file |
+| Branch | `codex/dex-mainnet-rc-20261030` |
+| Contracts commit | `f1ad6f25ddd8082f17124f5dc0dbcf88a167617f`, the `source.revision` of `deployments/mainnet/dex-mainnet.config.json`. Contains fix DEX-09 |
+| Audit commit | The tip of `codex/dex-mainnet-rc-20261030` that contains this file. `git diff f1ad6f2 <tip> -- contracts foundry.toml` must be empty |
+| Internal review base | The review below began on `codex/dex-audit-20261030` (from `feat/dex-safe-frontend-20261016` @ `4dfb32d`). The pair and the Lens changed after it, so an external audit uses the commits above |
 | Compiler | solc 0.8.24, `evmVersion = paris`, optimizer 200 runs, `bytecode_hash = none` (`foundry.toml`) |
 | Pair init code hash | `0x1a88e06e32bd3402d34e0e10bd6aa7ab3df2123c3057289409ee89b807e0490f` (`0xe41e81db…b248` before fix DEX-09, `0x2249ef38…b820` before fix DEX-01) |
 | Target chain | Bloch L2 mainnet, chain ID 700770. Nothing is deployed there yet |
+
+### Open review findings at this revision
+
+An independent review at `258fdd2` reported these. None is fixed here, and the review's failing tests are not on this branch (`codex/dex-review-r3-20261031` @ `3f6722c`).
+
+| ID | Severity | Summary | Fix touches |
+|---|---|---|---|
+| F1 | High (liveness) | A mint to both caps closes the pair to swaps and mints, before or after the seed, and the capital can be recovered. Same end state as DEX-09, by a route that fix leaves open | Pair, if the contract fix is chosen. That changes the init code hash and this scope |
+| F2 | Medium-High (launch) | A front-run `createPair` strands the deployment tooling | Tooling |
+| F3 | Medium (user funds) | After a favourable move, the signed minimum stays tied to the older finalized quote | Frontend |
+| F4 | Medium (user funds) | One failed receipt poll shows a pending swap as failed and re-enables Swap | Frontend |
+| F5 | Low-Medium (user funds) | A quote that arrives after an edit sends the old amount | Frontend |
 
 ## 2. Scope
 

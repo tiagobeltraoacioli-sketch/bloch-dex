@@ -5,7 +5,7 @@
 #   anvil       anvil --chain-id 700770 (its genesis differs from the pin, so
 #               the mainnet gate wrapper must refuse it; the generic gate is
 #               run through the anvil finality shim)
-#   private-l2  the v2 L2 binaries under the mainnet rules: chain 700770 and
+#   private-l2  the v2.1 L2 binaries under the mainnet rules: chain 700770 and
 #               the pinned genesis 0x632e45ae…f468 (scripts/staging/private-l2.sh),
 #               so the mainnet gate wrapper itself must pass
 #

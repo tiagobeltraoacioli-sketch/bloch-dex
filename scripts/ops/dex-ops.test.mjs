@@ -517,3 +517,17 @@ test("fee redemption: signatures are checked, deduplicated and sorted for the Sa
   const personal = `${sigs[0].slice(0, -2)}1f`;
   await assert.rejects(assembleSignatures({ tx, signatures: [personal], owners, threshold: 1 }), /27\/28/);
 });
+
+// Agent 51 review. Both tests fail on the RC: a hostile first mint is invisible
+// to the pre-seed monitor run, and the planner has no way forward from it.
+test("review51 F1d: the pre-seed monitor must flag LP shares nobody planned", async () => {
+  const node = fakeNode({ reserves: [1_000_000n, 1_000_000n], balances: [1_000_000n, 1_000_000n], totalSupply: 1_000_000n, kLast: 10n ** 12n });
+  const result = await runMonitor(gate, {}, node.request, monitorDeps(node));
+  assert.notEqual(result.level, OK);
+});
+
+test("review51 F1d: the planner must offer a recovery from a hostile first mint", () => {
+  const side = (reserve, cap) => ({ reserve, balance: reserve, cap });
+  const plan = planOpening({ wrapped: side(1_000_000n, 10n ** 19n), quote: side(1_000_000n, 10n ** 9n), totalSupply: 1_000_000n, price: 25_500_000n, fractionBps: 5000n });
+  assert.notEqual(plan.decision, "refuse", plan.reason);
+});

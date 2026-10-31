@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -20,7 +20,7 @@ import {
   verifyDeploymentRecord,
   type DevnetDeployment,
 } from '../devnet4/record';
-import { ensureChain, ROUTER_ABI } from '../devnet4/swap';
+import { ensureChain, ReceiptUnknownError, ROUTER_ABI, waitForReceipt } from '../devnet4/swap';
 import {
   addChainParameters,
   bundledNetwork,
@@ -33,7 +33,8 @@ import {
   type MainnetNetwork,
 } from '../mainnet/config';
 import { checkRoute, explainBlock, headroom, headroomUse } from '../mainnet/caps';
-import { blocksSwap, compareQuotes } from '../mainnet/quotecheck';
+import { parsePendingSwap, pendingSwapKey, pollPendingSwap } from '../mainnet/pendingswap';
+import { blocksSwap, compareQuotes, signedQuote } from '../mainnet/quotecheck';
 import { MULTICALL3_ABI, readBalances, skimTransaction } from '../mainnet/reads';
 import networkJson from '../../../deployments/mainnet/frontend.network.json';
 import type { Provider } from '../wallet';
@@ -859,5 +860,555 @@ describe('mainnet route', () => {
     expect(sent[0].method).toBe('eth_call');
     expect(sent[0].params[1]).toEqual({ blockHash: FINALIZED.hash });
     expect((sent[0].params[0] as { to: Address }).to).toBe(MULTICALL);
+  });
+});
+
+// Agent 51 review. These three tests fail on the RC.
+describe('review51 transaction safety', () => {
+  const mount = async (rpc: Rpc, chain: ChainState) => {
+    const user = userEvent.setup();
+    const { wallet, requests } = fakeWallet(chain);
+    render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => NOW_MS}
+      />,
+    );
+    await screen.findByRole('table');
+    await screen.findByLabelText('Finalized balances');
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+    const sends = () => requests.filter((r) => r.method === 'eth_sendTransaction');
+    return { user, sends };
+  };
+
+  it('F3: a much better latest price must tighten the signed minimum', async () => {
+    const { rpc, state } = fakeChain({
+      allowance: 10n ** 12n,
+      latestQuote: { available: true, amountOut: 60_000_000n, minimumOut: 59_700_000n },
+    });
+    const { user, sends } = await mount(rpc, state);
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    await waitFor(() => expect(sends()).toHaveLength(1));
+    const data = (sends()[0].params![0] as { data: Hex }).data;
+    expect(decodeFunctionData({ abi: ROUTER_ABI, data }).args![1]).toBeGreaterThanOrEqual(
+      59_700_000n,
+    );
+  });
+
+  it('F4: one failed receipt poll must not report a pending swap as failed', async () => {
+    const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+    let polls = 0;
+    let settle: (value: unknown) => void = () => {};
+    const flaky: Rpc = (method, params) => {
+      if (method === 'eth_getTransactionReceipt' && ++polls === 1)
+        return Promise.reject(new Error('eth_getTransactionReceipt returned HTTP 502'));
+      if (method === 'eth_getTransactionReceipt') return new Promise((r) => (settle = r));
+      return rpc(method, params);
+    };
+    const { user } = await mount(flaky, state);
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    const list = await screen.findByLabelText('Transactions');
+    await waitFor(() => expect(polls).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    settle(null);
+    expect(list.textContent).not.toContain('failed');
+  });
+
+  it('F5: a quote that resolves after the amount was edited must not be sendable', async () => {
+    const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+    let release: () => void = () => {};
+    let hold = true;
+    const slow: Rpc = async (method, params) => {
+      const data = (params[0] as { data?: Hex } | undefined)?.data ?? '';
+      if (method === 'eth_call' && hold && data.startsWith('0x') && params[1] !== 'latest') {
+        const name = (() => {
+          try {
+            return decodeFunctionData({ abi: LENS_ABI, data: data as Hex }).functionName;
+          } catch {
+            return '';
+          }
+        })();
+        if (name === 'bestExactInput') await new Promise<void>((r) => (release = r));
+      }
+      return rpc(method, params);
+    };
+    const { user, sends } = await mount(slow, state);
+    const amount = screen.getByLabelText('Amount');
+    await user.type(amount, '20');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await user.clear(amount);
+    await user.type(amount, '1');
+    hold = false;
+    release();
+    await screen.findByLabelText('Quote');
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    await waitFor(() => expect(sends()).toHaveLength(1));
+    const data = (sends()[0].params![0] as { data: Hex }).data;
+    // The form says 1 bUSDC; the wallet must not be handed 20.
+    expect(decodeFunctionData({ abi: ROUTER_ABI, data }).args![0]).toBe(1_000_000n);
+  });
+});
+
+describe('swap panel safety fixes', () => {
+  const HASH = `0x${'a'.repeat(64)}` as Hex;
+  const swapButton = () => screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement;
+  const router = (data: Hex) => decodeFunctionData({ abi: ROUTER_ABI, data }).args!;
+  const app = (rpc: Rpc, wallet: Devnet4Wallet) => (
+    <MainnetLive
+      network={network}
+      load={async () => ({ status: 'live', deployment })}
+      rpc={rpc}
+      wallet={wallet}
+      planned={PLANNED}
+      now={() => NOW_MS}
+      receiptPollMs={5}
+    />
+  );
+  const mount = async (
+    rpc: Rpc,
+    chain: ChainState,
+    change?: (w: Devnet4Wallet) => Devnet4Wallet,
+  ) => {
+    const user = userEvent.setup();
+    const { wallet, requests } = fakeWallet(chain);
+    const view = render(app(rpc, change ? change(wallet) : wallet));
+    await screen.findByRole('table');
+    await screen.findByLabelText('Finalized balances');
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+    const sends = () => requests.filter((r) => r.method === 'eth_sendTransaction');
+    return { user, sends, wallet, view };
+  };
+  const quoted = async (user: ReturnType<typeof userEvent.setup>, amount = '1') => {
+    await user.type(screen.getByLabelText('Amount'), amount);
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+    await waitFor(() => expect(swapButton().disabled).toBe(false));
+  };
+  /** Receipt replies under test control; everything else goes to the fake chain. */
+  const withReceipts =
+    (rpc: Rpc, reply: () => unknown, head?: () => unknown): Rpc =>
+    (m, p) => {
+      if (m === 'eth_getTransactionReceipt') return Promise.resolve().then(reply);
+      if (m === 'eth_getBlockByNumber' && p[0] === 'latest')
+        return Promise.resolve().then(head ?? (() => null));
+      return rpc(m, p);
+    };
+  const MINED = { status: '0x1', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
+  const REVERTED = { status: '0x0', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
+  const pause = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+
+  describe('F3: the signed minimum follows a better latest price', () => {
+    const base = { amountIn: 1n, amounts: [], executionLossBps: [], blockNumber: 1n };
+    const active = {
+      ...base,
+      path: ['0xa', '0xb'] as Address[],
+      amountOut: 1000n,
+      minimumOut: 995n,
+    };
+
+    it('never lowers the minimum, and ignores a quote for another amount', () => {
+      const lower = { ...active, amountOut: 999n, minimumOut: 994n };
+      const higher = { ...active, amountOut: 2000n, minimumOut: 1990n };
+      expect(signedQuote(active, null).minimumOut).toBe(995n);
+      expect(signedQuote(active, { status: 'unknown' }).minimumOut).toBe(995n);
+      expect(signedQuote(active, { status: 'ok', latest: lower }).minimumOut).toBe(995n);
+      expect(signedQuote(active, { status: 'ok', latest: higher })).toMatchObject({
+        amountOut: 2000n,
+        minimumOut: 1990n,
+      });
+      expect(signedQuote(active, { status: 'unknown', last: higher }).minimumOut).toBe(1990n);
+      expect(
+        signedQuote(active, { status: 'ok', latest: { ...higher, amountIn: 2n } }).minimumOut,
+      ).toBe(995n);
+    });
+
+    it('takes the route together with a minimum from another route', () => {
+      const other = {
+        ...active,
+        path: ['0xa', '0xc', '0xb'] as Address[],
+        amounts: [1n, 2n, 2000n],
+        amountOut: 2000n,
+        minimumOut: 1990n,
+        blockNumber: 9n,
+      };
+      expect(signedQuote(active, { status: 'ok', latest: other })).toMatchObject({
+        path: other.path,
+        amounts: other.amounts,
+        minimumOut: 1990n,
+        amountOut: 2000n,
+        blockNumber: 1n,
+      });
+    });
+
+    it('shows the minimum it signs, while the quote stays a finalized one', async () => {
+      const { rpc, state } = fakeChain({
+        allowance: 10n ** 12n,
+        latestQuote: { available: true, amountOut: 60_000_000n, minimumOut: 59_700_000n },
+      });
+      const { user } = await mount(rpc, state);
+      await quoted(user);
+      const panel = screen.getByLabelText('Quote').textContent!;
+      expect(panel).toContain('better price at the latest block');
+      expect(panel).toContain('Finalized block 440');
+      expect(panel).toContain('Amount in1 bUSDC');
+    });
+
+    it('keeps a tightened minimum when the latest read then fails, and only notes it', async () => {
+      const { rpc, state } = fakeChain({
+        allowance: 10n ** 12n,
+        latestQuote: { available: true, amountOut: 60_000_000n, minimumOut: 59_700_000n },
+      });
+      const { user, sends } = await mount(rpc, state);
+      await quoted(user);
+      state.latestDown = true;
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      expect(router((sends()[0].params![0] as { data: Hex }).data)[1]).toBe(59_700_000n);
+      expect(screen.getByLabelText('Stale quote').textContent).toContain('not cross-checked');
+    });
+
+    it('signs the finalized minimum when the latest block was never readable', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n, latestDown: true });
+      const { user, sends } = await mount(rpc, state);
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      expect(router((sends()[0].params![0] as { data: Hex }).data)[1]).toBe(30_845_000n);
+    });
+  });
+
+  describe('F4: Swap stays disabled until the outcome is known', () => {
+    const sendOne = async (rpc: Rpc, state: ChainState) => {
+      const mounted = await mount(rpc, state);
+      await quoted(mounted.user);
+      await mounted.user.click(swapButton());
+      await waitFor(() => expect(mounted.sends()).toHaveLength(1));
+      await screen.findByLabelText('Transactions');
+      return mounted;
+    };
+    const steps = () => screen.getByLabelText('Transactions').textContent!;
+
+    it('holds through failing polls, then releases on the receipt', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let reply: () => unknown = () => {
+        throw new Error('HTTP 502');
+      };
+      await sendOne(
+        withReceipts(rpc, () => reply()),
+        state,
+      );
+      await waitFor(() => expect(steps()).toContain('did not answer'));
+      await pause();
+      expect(steps()).not.toContain('failed');
+      expect(swapButton().disabled).toBe(true);
+      reply = () => null;
+      await waitFor(() => expect(steps()).toContain('Waiting for the next L2 block'));
+      expect(swapButton().disabled).toBe(true);
+      reply = () => MINED;
+      await waitFor(() => expect(steps()).toContain('Mined in block 442'));
+      await waitFor(() => expect(swapButton().disabled).toBe(false));
+    });
+
+    it('holds across a page reload, and a reverted receipt then releases it', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let reply: () => unknown = () => null;
+      const flaky = withReceipts(rpc, () => reply());
+      const { view } = await sendOne(flaky, state);
+      const stored = localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT));
+      expect(parsePendingSwap(stored)?.label).toBe('Swap 1 bUSDC for BLCH');
+      view.unmount();
+
+      const again = await mount(flaky, state);
+      await again.user.type(screen.getByLabelText('Amount'), '1');
+      await again.user.click(screen.getByRole('button', { name: 'Get quote' }));
+      await screen.findByLabelText('Quote');
+      expect(steps()).toContain('Swap 1 bUSDC for BLCH: pending');
+      await pause();
+      expect(swapButton().disabled).toBe(true);
+      reply = () => REVERTED;
+      await waitFor(() => expect(steps()).toContain('Reverted in block 442'));
+      await waitFor(() => expect(swapButton().disabled).toBe(false));
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+    });
+
+    it('holds when the panel remounts on a new finalized block', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let finalized = FINALIZED;
+      const moving: Rpc = (m, p) =>
+        m === 'eth_getBlockByNumber' && p[0] === 'finalized'
+          ? Promise.resolve(finalized)
+          : rpc(m, p);
+      const { user } = await sendOne(
+        withReceipts(moving, () => null),
+        state,
+      );
+      finalized = { ...FINALIZED, number: '0x1b9', hash: `0x${'e'.repeat(64)}` };
+      await user.click(screen.getByRole('button', { name: 'Refresh' }));
+      await screen.findByText(/Pools at finalized block 441/);
+      await user.type(screen.getByLabelText('Amount'), '1');
+      await user.click(screen.getByRole('button', { name: 'Get quote' }));
+      await screen.findByLabelText('Quote');
+      await pause();
+      expect(swapButton().disabled).toBe(true);
+    });
+
+    it('holds in memory when the browser refuses to store it', async () => {
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new Error('blocked');
+      });
+      try {
+        const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+        await sendOne(
+          withReceipts(rpc, () => null),
+          state,
+        );
+        await waitFor(() => expect(steps()).toContain('a reload loses this hold'));
+        expect(swapButton().disabled).toBe(true);
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+
+    it('holds a record stored by another tab when Swap is pressed', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const { user, sends } = await mount(
+        withReceipts(rpc, () => null),
+        state,
+      );
+      await quoted(user);
+      localStorage.setItem(
+        pendingSwapKey(network.chainId, ACCOUNT),
+        JSON.stringify({ hash: HASH, label: 'Other tab', deadline: '9', sentAtMs: NOW_MS }),
+      );
+      await user.click(swapButton());
+      await waitFor(() => expect(steps()).toContain('Other tab: pending'));
+      expect(sends()).toHaveLength(0);
+      expect(swapButton().disabled).toBe(true);
+    });
+
+    it('sends once when Swap is pressed again during the check at Swap', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const held: (() => void)[] = [];
+      let hold = false;
+      const slow: Rpc = async (m, p) => {
+        if (m === 'eth_call' && hold && p[1] === 'latest')
+          await new Promise<void>((r) => held.push(r));
+        return rpc(m, p);
+      };
+      const { user, sends } = await mount(
+        withReceipts(slow, () => null),
+        state,
+      );
+      await quoted(user);
+      hold = true;
+      await user.click(swapButton());
+      await user.click(swapButton());
+      hold = false;
+      held.splice(0).forEach((release) => release());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      await pause();
+      expect(sends()).toHaveLength(1);
+    });
+
+    it('releases only when the latest block is past the deadline and no receipt exists', async () => {
+      const swap = { hash: HASH, label: 'x', deadline: 1_000n, sentAtMs: 0 };
+      const after = 1_001_000;
+      const fake =
+        (receipt: () => unknown, head: () => unknown): Rpc =>
+        async (m) =>
+          m === 'eth_getTransactionReceipt' ? receipt() : head();
+      const past = () => ({ timestamp: '0x3e9' });
+      const atDeadline = () => ({ timestamp: '0x3e8' });
+      const fail = () => {
+        throw new Error('HTTP 502');
+      };
+      const none = () => null;
+      const poll = (r: Rpc, at = after) => pollPendingSwap(r, swap, at);
+      expect((await poll(fake(none, past), 1_000_000)).kind).toBe('waiting');
+      expect((await poll(fake(none, past))).kind).toBe('expired');
+      // The router accepts deadline >= block.timestamp.
+      expect((await poll(fake(none, atDeadline))).kind).toBe('waiting');
+      expect((await poll(fake(none, none))).kind).toBe('waiting');
+      expect((await poll(fake(fail, past))).kind).toBe('unreachable');
+      expect((await poll(fake(none, fail))).kind).toBe('unreachable');
+      expect((await poll(fake(() => MINED, past))).kind).toBe('receipt');
+    });
+
+    it('marks a swap with no receipt after an hour as unknown and keeps holding', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const { wallet } = fakeWallet(state);
+      localStorage.setItem(
+        pendingSwapKey(network.chainId, ACCOUNT),
+        JSON.stringify({
+          hash: HASH,
+          label: 'Old swap',
+          deadline: String(NOW_MS),
+          sentAtMs: NOW_MS - 3_600_000,
+        }),
+      );
+      render(
+        app(
+          withReceipts(rpc, () => null),
+          wallet,
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText('Transactions').textContent).toContain('unknown'),
+      );
+      expect(steps()).toContain('Do not resend');
+    });
+
+    it('ignores a malformed stored record', () => {
+      for (const raw of [null, '{', '{}', JSON.stringify({ hash: 'x', deadline: '1' })])
+        expect(parsePendingSwap(raw)).toBeNull();
+    });
+
+    it('waitForReceipt retries a failed poll and ends a timeout as unknown', async () => {
+      let polls = 0;
+      const flaky: Rpc = async () => {
+        if (++polls < 3) throw new Error('HTTP 502');
+        return MINED;
+      };
+      const receipt = await waitForReceipt(flaky, HASH, { sleep: async () => {} });
+      expect(receipt.status).toBe('success');
+      expect(polls).toBe(3);
+      const down: Rpc = async () => {
+        throw new Error('HTTP 502');
+      };
+      await expect(waitForReceipt(down, HASH, { timeoutMs: 0 })).rejects.toBeInstanceOf(
+        ReceiptUnknownError,
+      );
+    });
+  });
+
+  describe('F5: a stale quote never reaches the transaction', () => {
+    const lensName = (params: unknown[]) => {
+      try {
+        const data = (params[0] as { data: Hex }).data;
+        return decodeFunctionData({ abi: LENS_ABI, data }).functionName;
+      } catch {
+        return '';
+      }
+    };
+
+    it('drops the old reply, quotes the current amount and labels the step from the quote', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const held: (() => void)[] = [];
+      let hold = true;
+      const slow: Rpc = async (m, p) => {
+        if (m === 'eth_call' && hold && lensName(p) === 'bestExactInput')
+          await new Promise<void>((r) => held.push(r));
+        return rpc(m, p);
+      };
+      const { user, sends } = await mount(slow, state);
+      const amount = screen.getByLabelText('Amount');
+      await user.type(amount, '20');
+      await user.click(screen.getByRole('button', { name: 'Get quote' }));
+      await waitFor(() => expect(held).toHaveLength(1));
+      await user.clear(amount);
+      await user.type(amount, '1');
+      // The re-quote is held too, so the old reply alone must show nothing.
+      held.shift()!();
+      await waitFor(() => expect(held).toHaveLength(1));
+      expect(screen.queryByLabelText('Quote')).toBeNull();
+      hold = false;
+      held.shift()!();
+      expect((await screen.findByLabelText('Quote')).textContent).toContain('Amount in1 bUSDC');
+      await waitFor(() => expect(swapButton().disabled).toBe(false));
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      expect(router((sends()[0].params![0] as { data: Hex }).data)[0]).toBe(1_000_000n);
+      expect((await screen.findByLabelText('Transactions')).textContent).toContain(
+        'Swap 1 bUSDC for BLCH',
+      );
+    });
+
+    it('settles after two presses of Get quote with replies held', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const held: (() => void)[] = [];
+      let finalizedQuotes = 0;
+      const slow: Rpc = async (m, p) => {
+        if (m === 'eth_call' && lensName(p) === 'bestExactInput' && p[1] !== 'latest') {
+          finalizedQuotes++;
+          await new Promise<void>((r) => held.push(r));
+        }
+        return rpc(m, p);
+      };
+      const { user } = await mount(slow, state);
+      await user.type(screen.getByLabelText('Amount'), '1');
+      const get = screen.getByRole('button', { name: 'Get quote' });
+      await user.click(get);
+      await user.click(get);
+      await waitFor(() => expect(held).toHaveLength(2));
+      held.splice(0).forEach((release) => release());
+      await screen.findByLabelText('Quote');
+      await pause();
+      expect(finalizedQuotes).toBe(2);
+    });
+
+    it('sends nothing when the amount changes during the check at Swap', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let release: () => void = () => {};
+      let hold = false;
+      const slow: Rpc = async (m, p) => {
+        if (m === 'eth_call' && hold && p[1] === 'latest')
+          await new Promise<void>((r) => (release = r));
+        return rpc(m, p);
+      };
+      const { user, sends } = await mount(slow, state);
+      await quoted(user, '20');
+      hold = true;
+      await user.click(swapButton());
+      await user.type(screen.getByLabelText('Amount'), '1');
+      hold = false;
+      release();
+      await screen.findByText(/nothing was sent/);
+      await pause();
+      expect(sends()).toHaveLength(0);
+    });
+
+    it('sends nothing when the amount changes during the wallet network switch', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let release: () => void = () => {};
+      let hold = true;
+      const { user, sends } = await mount(rpc, state, (wallet) => ({
+        ...wallet,
+        provider: {
+          request: async (args) => {
+            if (args.method === 'wallet_switchEthereumChain' && hold) {
+              hold = false;
+              await new Promise<void>((r) => (release = r));
+            }
+            return wallet.provider!.request(args);
+          },
+        },
+      }));
+      await quoted(user, '20');
+      await user.click(swapButton());
+      await waitFor(() => expect(hold).toBe(false));
+      await user.type(screen.getByLabelText('Amount'), '1');
+      release();
+      await waitFor(() =>
+        expect(screen.getByLabelText('Transactions').textContent).toContain('nothing was sent'),
+      );
+      expect(sends()).toHaveLength(0);
+    });
   });
 });
