@@ -156,17 +156,35 @@ contract Review51Test is TestBase {
 
     // ---------------------------------------------------------------- F2 ----
 
-    /// Anyone can create the planned pair once the factory exists. The planned
-    /// createPair then reverts, and `record` and the gate refuse a reverted step
-    /// although the pair is byte-identical to the planned one.
+    /// Anyone can create the planned pair once the factory exists. The factory
+    /// still refuses a second creation. The fix is in the tooling, which accepts
+    /// the existing pair; this test states what that relies on: same address as
+    /// predicted, same caps, whoever created it. Restated from the original, which
+    /// required a contract change the tooling fix does not make.
     function testFAIL51_F2_plannedCreatePairMustSurviveFrontRun() public {
-        address planned = factory.createPair(address(wblch), address(busdc)); // third party
-        assertTrue(planned != address(0));
-        bool ok;
-        try factory.createPair(address(wblch), address(busdc)) returns (address again) {
-            ok = again == planned;
-        } catch {}
-        require(ok, "F2: the deployer's createPair reverts with PAIR_EXISTS");
+        (address a, address b) =
+            address(wblch) < address(busdc) ? (address(wblch), address(busdc)) : (address(busdc), address(wblch));
+        address planned = address(
+            uint160(
+                uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            hex"ff", address(factory), keccak256(abi.encodePacked(a, b)), factory.INIT_CODE_PAIR_HASH()
+                        )
+                    )
+                )
+            )
+        );
+        vm.prank(ATTACKER);
+        address created = factory.createPair(address(wblch), address(busdc));
+        require(created == planned, "F2: a third party's pair must be at the planned address");
+        assertEq(factory.getPair(address(wblch), address(busdc)), planned);
+        (uint112 cap0, uint112 cap1) = UniswapV2Pair(planned).reserveCaps();
+        bool wFirst = UniswapV2Pair(planned).token0() == address(wblch);
+        assertEq(uint256(wFirst ? cap0 : cap1), CAP_W);
+        assertEq(uint256(wFirst ? cap1 : cap0), CAP_Q);
+        vm.expectRevert(bytes("BDEX: PAIR_EXISTS"));
+        factory.createPair(address(wblch), address(busdc));
     }
 
     // ---------------------------------------------------------------- F3 ----
@@ -194,9 +212,17 @@ contract Review51Test is TestBase {
 
     /// A user at 0.50% slippage must not lose much more than 0.50% from the
     /// price the UI just read at latest.
+    /// Restated: the UI now signs the larger minimum (frontend test review51 F3);
+    /// this checks that a sandwich of the original size then reverts on chain.
     function testFAIL51_F3_slippageBoundMustTrackLatestOnFavourableMove() public {
-        (uint256 latestOut, uint256 minimum,) = movedPool();
-        require(minimum >= latestOut * 9950 / 10_000, "F3: the signed minimum is far below latest minus slippage");
+        (uint256 latestOut, uint256 finalizedMinimum, uint256 amountIn) = movedPool();
+        uint256 latestMinimum = latestOut * 9950 / 10_000;
+        uint256 minimum = finalizedMinimum > latestMinimum ? finalizedMinimum : latestMinimum;
+        vm.prank(ATTACKER);
+        router.swapExactBLCHForTokens{value: 1 ether}(0, path(address(wblch), address(busdc)), ATTACKER, block.timestamp);
+        vm.prank(USER);
+        vm.expectRevert();
+        router.swapExactBLCHForTokens{value: amountIn}(minimum, path(address(wblch), address(busdc)), USER, block.timestamp);
     }
 
     /// Passes: a sandwich takes the difference while the user's swap succeeds.

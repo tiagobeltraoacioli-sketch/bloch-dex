@@ -11,6 +11,7 @@
 //   pending  --config C                    list every TBD-owner/null field
 //   preflight --config C --plan P --rpc URL [--rehearsal]   read-only checks only
 //   txs      --config C --plan P --write T [--rehearsal]    unsigned transactions
+//   check-pair --plan P --rpc URL   is the planned pair, created by anyone, identical?
 //
 // `txs` + scripts/staging/sign-and-publish.sh is the raw-transaction path
 // (`cast mktx` offline, `cast publish`), for RPCs whose `pending` view a
@@ -39,7 +40,7 @@ import {
 } from "./dex-deploy-config.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
-const { keccak256 } = requireFromFrontend("viem");
+const { keccak256, stringToHex } = requireFromFrontend("viem");
 
 const USAGE = `Usage:
   node scripts/staging/deploy-dex.mjs validate --config <c.json> [--rehearsal]
@@ -50,7 +51,8 @@ const USAGE = `Usage:
       (--broadcast-file <run-latest.json> | --tx-hashes <hashes.txt>) --write <gate.json> [--rehearsal]
   node scripts/staging/deploy-dex.mjs pending --config <c.json>
   node scripts/staging/deploy-dex.mjs preflight --config <c.json> --plan <plan.json> --rpc <url> [--rehearsal]
-  node scripts/staging/deploy-dex.mjs txs --config <c.json> --plan <plan.json> --write <txs.json> [--rehearsal]`;
+  node scripts/staging/deploy-dex.mjs txs --config <c.json> --plan <plan.json> --write <txs.json> [--rehearsal]
+  node scripts/staging/deploy-dex.mjs check-pair --plan <plan.json> --rpc <url>`;
 
 function refuse(condition, message) {
   if (!condition) throw new Error(`deploy-dex: ${message}`);
@@ -137,7 +139,53 @@ export async function preflight(plan, request) {
 }
 
 /// Verify broadcast transactions on chain and order them by nonce.
-export async function verifyBroadcast(plan, hashes, request) {
+const selector = (signature) => keccak256(stringToHex(signature)).slice(0, 10);
+const addressWord = (address) => address.slice(2).toLowerCase().padStart(64, "0");
+const lastAddress = (word) => `0x${word.slice(-40)}`.toLowerCase();
+
+/// A third party can call createPair before the planned step. The result is only
+/// acceptable if it is the planned pair: registered by the planned factory at the
+/// planned address, with the planned init code hash, code, tokens and caps. Its
+/// reserves and shares are returned, because a pair created by someone else may
+/// also hold a deposit: `dex-seed-plan.mjs` handles that case.
+export async function verifyExistingPair(plan, step, request) {
+  const factory = plan.contracts.factory.address;
+  const planned = plan.pairs.find((p) => p.address === step.address);
+  refuse(planned, `no planned pair at ${step.address}`);
+  const call = async (to, signature, args = "") => {
+    const result = await request("eth_call", [{ to, data: `${selector(signature)}${args}` }, "latest"]);
+    refuse(typeof result === "string" && result.length >= 66, `${signature} failed on ${to}`);
+    return result;
+  };
+  const { token0, token1 } = planned;
+  const registered = await call(factory, "getPair(address,address)", addressWord(token0) + addressWord(token1));
+  refuse(lastAddress(registered) === step.address, `the factory registers ${lastAddress(registered)}, not the planned pair ${step.address}`);
+  const initCode = (await call(factory, "INIT_CODE_PAIR_HASH()")).toLowerCase();
+  refuse(initCode === plan.pairInitCodeHash, "the factory's pair init code hash differs from the plan");
+  const code = await request("eth_getCode", [step.address, "latest"]);
+  refuse(typeof code === "string" && code.length > 2 && keccak256(code) === plan.pairCodeHash, "the pair's runtime code differs from the plan");
+  refuse(lastAddress(await call(step.address, "factory()")) === factory, "the pair belongs to another factory");
+  refuse(lastAddress(await call(step.address, "token0()")) === token0, "the pair's token0 differs from the plan");
+  refuse(lastAddress(await call(step.address, "token1()")) === token1, "the pair's token1 differs from the plan");
+  const capOf = (token) => BigInt(plan.reserveCaps.find((c) => c.token === token)?.cap ?? 0);
+  const caps = (await call(step.address, "reserveCaps()")).slice(2);
+  refuse(
+    BigInt(`0x${caps.slice(0, 64)}`) === capOf(token0) && BigInt(`0x${caps.slice(64, 128)}`) === capOf(token1),
+    "the pair's caps differ from the plan",
+  );
+  const reserves = (await call(step.address, "getReserves()")).slice(2);
+  return {
+    decision: "existing-pair-identical",
+    pair: step.address,
+    reserve0: BigInt(`0x${reserves.slice(0, 64)}`).toString(),
+    reserve1: BigInt(`0x${reserves.slice(64, 128)}`).toString(),
+    totalSupply: BigInt(await call(step.address, "totalSupply()")).toString(),
+  };
+}
+
+/// `onExisting(hash, state)` is told about each planned createPair that reverted
+/// because the identical pair already exists.
+export async function verifyBroadcast(plan, hashes, request, onExisting = () => {}) {
   refuse(Array.isArray(hashes) && hashes.length === plan.steps.length, `expected ${plan.steps.length} transactions, found ${hashes?.length}`);
   const seen = [];
   for (const hash of hashes) {
@@ -145,12 +193,13 @@ export async function verifyBroadcast(plan, hashes, request) {
     const receipt = await request("eth_getTransactionReceipt", [hash]);
     refuse(tx && receipt && tx.hash === hash && receipt.transactionHash === hash, `transaction ${hash} is unknown`);
     refuse(tx.from?.toLowerCase() === plan.deployer, `transaction ${hash} was not sent by the deployer`);
-    refuse(receipt.status === "0x1", `transaction ${hash} reverted`);
     const nonce = Number(BigInt(tx.nonce));
     const step = plan.steps.find((s) => s.nonce === nonce);
     refuse(step && !seen.some((s) => s.nonce === nonce), `transaction ${hash} has unplanned nonce ${nonce}`);
+    refuse(receipt.status === "0x1" || step.action === "createPair", `transaction ${hash} reverted`);
     if (step.action === "createPair") {
       refuse(tx.to?.toLowerCase() === plan.contracts.factory.address, `createPair ${hash} did not call the factory`);
+      if (receipt.status !== "0x1") onExisting(hash, await verifyExistingPair(plan, step, request));
     } else {
       refuse(tx.to === null || tx.to === undefined, `${step.action} ${hash} is not a contract creation`);
       refuse(keccak256(tx.input) === step.initCodeHash, `${step.action} ${hash} init code differs from the plan`);
@@ -177,6 +226,14 @@ export async function main(argv) {
   if (options.command === "validate") {
     const config = validateDeployConfig(await readJson(options.config), { rehearsal: options.rehearsal });
     return { decision: "config-valid", configSha256: configSha256(config) };
+  }
+  if (options.command === "check-pair") {
+    refuse(options.plan && options.rpc, "--plan and --rpc are required");
+    const plan = await readJson(options.plan);
+    const request = createJsonRpcRequest(options.rpc);
+    const states = [];
+    for (const step of plan.steps.filter((s) => s.action === "createPair")) states.push(await verifyExistingPair(plan, step, request));
+    return { decision: "existing-pair-identical", pairs: states };
   }
   const { config, plan } = await currentPlan(options);
   if (options.command === "plan") {
@@ -206,10 +263,11 @@ export async function main(argv) {
   const hashes = options.broadcastFile
     ? ((await readJson(options.broadcastFile)).receipts ?? []).map((r) => r.transactionHash)
     : (await readFile(options.txHashes, "utf8")).split(/\s+/).filter(Boolean);
-  const ordered = await verifyBroadcast(plan, hashes, request);
-  const gate = gateConfigFromPlan(plan, ordered, GATE_DOMAIN);
+  const existing = [];
+  const ordered = await verifyBroadcast(plan, hashes, request, (hash) => existing.push(hash));
+  const gate = gateConfigFromPlan(plan, ordered, GATE_DOMAIN, existing);
   await writeFile(options.write, `${JSON.stringify(gate, null, 2)}\n`, { flag: "wx" });
-  return { decision: "recorded", configSha256: plan.configSha256, gate: options.write };
+  return { decision: "recorded", configSha256: plan.configSha256, gate: options.write, createPairFrontRun: existing.length > 0 };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

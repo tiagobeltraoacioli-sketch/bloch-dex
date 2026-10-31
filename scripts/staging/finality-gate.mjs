@@ -319,9 +319,17 @@ function validateGateConfigV2(config) {
   const { deployment } = config;
   exactKeys(
     deployment,
-    ["deployer", "contracts", "pairInitCodeHash", "feeTo", "roles", "reserveCaps", "tokens", "pairs", "transactions"],
+    [
+      "deployer", "contracts", "pairInitCodeHash", "feeTo", "roles", "reserveCaps", "tokens", "pairs", "transactions",
+      ...(Object.hasOwn(deployment, "existingPairTransactions") ? ["existingPairTransactions"] : []),
+    ],
     "deployment",
   );
+  if (Object.hasOwn(deployment, "existingPairTransactions")) {
+    const listed = deployment.existingPairTransactions;
+    refuse(Array.isArray(listed) && listed.length > 0 && listed.length <= deployment.pairs?.length, "deployment.existingPairTransactions is invalid");
+    for (const hash of listed) refuse(deployment.transactions?.includes(hash), "deployment.existingPairTransactions names an unplanned transaction");
+  }
   lowerAddress(deployment.deployer, "deployment.deployer");
   exactKeys(deployment.contracts, CONTRACT_KEYS, "deployment.contracts");
   for (const key of CONTRACT_KEYS) {
@@ -412,7 +420,10 @@ async function evaluateFinalityGateV2(config, request) {
   for (const hash of deployment.transactions) {
     const receipt = await request("eth_getTransactionReceipt", [hash]);
     refuse(receipt && receipt.transactionHash === hash, `transaction ${hash} has no receipt`);
-    refuse(receipt.status === "0x1", `transaction ${hash} reverted`);
+    // A planned createPair may revert when a third party created the pair first.
+    // The pair checks below still require that pair to be exactly the planned one.
+    refuse(receipt.status === "0x1" || deployment.existingPairTransactions?.includes(hash), `transaction ${hash} reverted`);
+    refuse(receipt.status === "0x1" || receipt.to?.toLowerCase() === deployment.contracts.factory.address, `transaction ${hash} reverted and did not call the factory`);
     refuse(typeof receipt.from === "string" && receipt.from.toLowerCase() === deployment.deployer, `transaction ${hash} was not sent by the deployer`);
     const number = quantity(receipt.blockNumber, `receipt ${hash} blockNumber`);
     refuse(number <= finalized.number, `transaction ${hash} is not finalized`);

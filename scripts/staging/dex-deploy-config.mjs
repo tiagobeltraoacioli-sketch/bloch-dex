@@ -511,7 +511,7 @@ export function forgeEnvironment(plan) {
 
 /// Build the schema-2 finality gate configuration from the plan and the
 /// deployment transaction hashes (in nonce order, verified by `record`).
-export function gateConfigFromPlan(plan, transactions, gateDomain) {
+export function gateConfigFromPlan(plan, transactions, gateDomain, existingPairTransactions = []) {
   refuse(Array.isArray(transactions) && transactions.length === plan.steps.length, "one transaction per plan step is required");
   transactions.forEach((tx, index) => hash(tx, `transactions[${index}]`));
   refuse(plan.pairs.length > 0, "the plan creates no pair; add the pilot pair before generating a gate");
@@ -529,6 +529,7 @@ export function gateConfigFromPlan(plan, transactions, gateDomain) {
       tokens: plan.externalTokens,
       pairs: plan.pairs,
       transactions,
+      ...(existingPairTransactions.length ? { existingPairTransactions } : {}),
     },
     limits: { maxWrappedReserveCap: plan.gate.maxWrappedReserveCap },
   };
