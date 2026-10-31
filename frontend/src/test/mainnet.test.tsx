@@ -861,3 +861,105 @@ describe('mainnet route', () => {
     expect((sent[0].params[0] as { to: Address }).to).toBe(MULTICALL);
   });
 });
+
+// Agent 51 review. These three tests fail on the RC.
+describe('review51 transaction safety', () => {
+  const mount = async (rpc: Rpc, chain: ChainState) => {
+    const user = userEvent.setup();
+    const { wallet, requests } = fakeWallet(chain);
+    render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => NOW_MS}
+      />,
+    );
+    await screen.findByRole('table');
+    await screen.findByLabelText('Finalized balances');
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+    const sends = () => requests.filter((r) => r.method === 'eth_sendTransaction');
+    return { user, sends };
+  };
+
+  it('F3: a much better latest price must tighten the signed minimum', async () => {
+    const { rpc, state } = fakeChain({
+      allowance: 10n ** 12n,
+      latestQuote: { available: true, amountOut: 60_000_000n, minimumOut: 59_700_000n },
+    });
+    const { user, sends } = await mount(rpc, state);
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    await waitFor(() => expect(sends()).toHaveLength(1));
+    const data = (sends()[0].params![0] as { data: Hex }).data;
+    expect(decodeFunctionData({ abi: ROUTER_ABI, data }).args![1]).toBeGreaterThanOrEqual(
+      59_700_000n,
+    );
+  });
+
+  it('F4: one failed receipt poll must not report a pending swap as failed', async () => {
+    const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+    let polls = 0;
+    let settle: (value: unknown) => void = () => {};
+    const flaky: Rpc = (method, params) => {
+      if (method === 'eth_getTransactionReceipt' && ++polls === 1)
+        return Promise.reject(new Error('eth_getTransactionReceipt returned HTTP 502'));
+      if (method === 'eth_getTransactionReceipt') return new Promise((r) => (settle = r));
+      return rpc(method, params);
+    };
+    const { user } = await mount(flaky, state);
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    const list = await screen.findByLabelText('Transactions');
+    await waitFor(() => expect(polls).toBeGreaterThan(0));
+    await new Promise((r) => setTimeout(r, 50));
+    settle(null);
+    expect(list.textContent).not.toContain('failed');
+  });
+
+  it('F5: a quote that resolves after the amount was edited must not be sendable', async () => {
+    const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+    let release: () => void = () => {};
+    let hold = true;
+    const slow: Rpc = async (method, params) => {
+      const data = (params[0] as { data?: Hex } | undefined)?.data ?? '';
+      if (method === 'eth_call' && hold && data.startsWith('0x') && params[1] !== 'latest') {
+        const name = (() => {
+          try {
+            return decodeFunctionData({ abi: LENS_ABI, data: data as Hex }).functionName;
+          } catch {
+            return '';
+          }
+        })();
+        if (name === 'bestExactInput') await new Promise<void>((r) => (release = r));
+      }
+      return rpc(method, params);
+    };
+    const { user, sends } = await mount(slow, state);
+    const amount = screen.getByLabelText('Amount');
+    await user.type(amount, '20');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await user.clear(amount);
+    await user.type(amount, '1');
+    hold = false;
+    release();
+    await screen.findByLabelText('Quote');
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    await waitFor(() => expect(sends()).toHaveLength(1));
+    const data = (sends()[0].params![0] as { data: Hex }).data;
+    // The form says 1 bUSDC; the wallet must not be handed 20.
+    expect(decodeFunctionData({ abi: ROUTER_ABI, data }).args![0]).toBe(1_000_000n);
+  });
+});
