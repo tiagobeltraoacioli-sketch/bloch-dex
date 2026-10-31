@@ -329,6 +329,22 @@ function NotLive({
 }
 
 /**
+ * The settled RPC answers `finalized` with -32001 when its follower status is lost
+ * or invalid. This page was read at a finalized block that may be old by then, so
+ * nothing is sent until finality is back. Unlike a failed `latest` read, this blocks.
+ */
+async function requireFinality(rpc: Rpc): Promise<void> {
+  let block: unknown;
+  try {
+    block = await rpc('eth_getBlockByNumber', ['finalized', false]);
+  } catch {
+    block = null;
+  }
+  if (!block)
+    throw new Error('L2 finality is unavailable, so nothing was sent. Refresh when it is back.');
+}
+
+/**
  * How old the finalized block behind every figure on this page is. Past the
  * monitor's warning age it says so: nothing else on the page changes during a
  * finality stall, because every read is pinned to that block.
@@ -756,6 +772,7 @@ function SwapPanel({
     let hash: Hex | undefined;
     try {
       await ensureChain(provider, addChainParameters(network));
+      await requireFinality(rpc);
       if (generation !== formGeneration.current)
         throw new Error('The form changed, so nothing was sent. Get a new quote.');
       hash = await sendTransaction(provider, build());
