@@ -165,6 +165,12 @@ cannot disagree.
   origin, and the CSP's `connect-src` names the RPC origin.
   `scripts/devnet4/rpc_compat_proxy.py` is not in this path.
 
+## L2 binaries
+
+`deployments/mainnet/700770/pins.json` still records the v2 binaries. The RC
+rehearsal ran the v2.1 scratch build (settled-rpc `1e76b99a…`, with the spool
+limits and the receipt fix). Update `l2Release` when v2.1 is released.
+
 ## Post-deployment verification (`verify-deployment.mjs`)
 
 The script reads at `latest` or `finalized`, through EIP-1898 block-hash
