@@ -22,7 +22,7 @@ A dump takes the WBLCH side from `R` to `R * Rq / cap`, where `Rq` is the bUSDC 
 | 100 | 5 WBLCH + 500 bUSDC | 50% |
 | 400 | 1.25 WBLCH + 500 bUSDC | 50% |
 
-The WBLCH at risk stays bounded by the seed. **The bUSDC cap must be near `10 * P`**, since it cannot change after deployment. `openingPrice.quotePerWrapped` in `dex-mainnet.config.json` enforces it: `deploy-dex.mjs validate` and `plan` refuse a cap outside 75–125% of `10 * P`, unless the 1/10 bucket rule is what holds the cap below it. The table shows a 1,000 bUSDC cap. Use the same `P` for the plan here. The ops rehearsal uses a 255 bUSDC cap at P = 25.5.
+The WBLCH at risk stays bounded by the seed. **The bUSDC cap must be near `10 * P`**, since it cannot change after deployment. `openingPrice.quotePerWrapped` in `dex-mainnet.config.json` enforces it: `deploy-dex.mjs validate` and `plan` refuse a cap outside 75–125% of `10 * P`, unless the 1/10 bucket rule is what holds the cap below it. The table shows a 1,000 bUSDC cap. Use the same `P` for the plan here. The ops rehearsal uses a 255 bUSDC cap at P = 25.5 and measured a dump to the cap at 5.05 → 2.54 WBLCH, 49.6% lost, against 87% with the 1,000 bUSDC cap.
 
 ## Opening
 

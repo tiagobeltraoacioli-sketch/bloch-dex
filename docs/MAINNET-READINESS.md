@@ -152,7 +152,7 @@ Rationale:
   from `R` to `R * Rq / cap`, so "at most half" holds only when the bUSDC cap is
   near `10 × opening price`. With a 1,000 bUSDC cap it held at a price of 100 or
   more (50%), but measured at a price of about 25.5 a dump took 5.05 → 0.65 WBLCH,
-  **87% lost** in one transaction (97.5% at a price of 5). The loss stays bounded
+  **87% lost** in one transaction (97.5% at a price of 5). With a 255 bUSDC cap at that price it measured 5.05 → 2.54 WBLCH, 49.6%. The loss stays bounded
   by the seed. `openingPrice` in the deploy config makes this a pre-deployment
   check: `validate` and `plan` refuse a bUSDC cap above 125% of `WBLCH cap × price`
   (or below 75%, unless the bridge bucket rule is what holds it down).
