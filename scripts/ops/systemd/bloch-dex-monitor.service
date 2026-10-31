@@ -1,0 +1,14 @@
+[Unit]
+Description=Read-only health check of the postern-dex deployment on Bloch L2
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bloch-dex-ops
+EnvironmentFile=/etc/bloch-dex-ops/env
+ExecStart=/usr/bin/env node ${DEX_OPS_ROOT}/scripts/ops/dex-monitor.mjs --config ${DEX_GATE} --safe-plan ${DEX_SAFE_PLAN} --rpc ${DEX_RPC} --expect-seeded --json
+SuccessExitStatus=0 1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
