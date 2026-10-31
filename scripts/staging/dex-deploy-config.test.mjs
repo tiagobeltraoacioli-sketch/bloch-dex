@@ -353,7 +353,7 @@ test("the plan is deterministic and matches CREATE/CREATE2 derivation", () => {
   const shifted = planDeployment(config((c) => { c.deployer.startNonce = 3; }), artifacts());
   assert.equal(shifted.contracts.factory.address, at(4));
   assert.notEqual(shifted.pairs[0].address, a.pairs[0].address);
-  assert.notEqual(planDeployment(config((c) => { c.reserveCaps[1].cap = "9"; }), artifacts()).steps[1].initCodeHash, a.steps[1].initCodeHash);
+  assert.notEqual(planDeployment(config((c) => { c.reserveCaps[1].cap = "9000000"; }), artifacts()).steps[1].initCodeHash, a.steps[1].initCodeHash);
 });
 
 test("immutables are linked in declaration (AST id) order", () => {
