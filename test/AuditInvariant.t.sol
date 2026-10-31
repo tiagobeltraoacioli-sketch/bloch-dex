@@ -70,12 +70,6 @@ contract CappedFeeHandler {
         return false;
     }
 
-    /// Mint and sync may also refuse at the F1 lift limit. Swaps may not.
-    function _expectLift(bytes memory data) internal {
-        if (keccak256(bytes(_reason(data))) == keccak256("BDEX: LIFT_LIMIT")) ++capRefusals;
-        else _expect(data, "BDEX: RESERVE_CAP");
-    }
-
     function _expectedFee() internal view returns (uint256) {
         uint256 kl = pair.kLast();
         if (kl == 0) return 0;
@@ -152,7 +146,7 @@ contract CappedFeeHandler {
             _afterLiquidityEvent(feeBefore, expected);
             ++adds;
         } catch (bytes memory data) {
-            _expectLift(data);
+            _expect(data, "BDEX: RESERVE_CAP");
             pair.skim(address(0xD0));
         }
     }
@@ -189,7 +183,7 @@ contract CappedFeeHandler {
         try pair.sync() {
             ++syncs;
         } catch (bytes memory data) {
-            _expectLift(data);
+            _expect(data, "BDEX: RESERVE_CAP");
         }
     }
 

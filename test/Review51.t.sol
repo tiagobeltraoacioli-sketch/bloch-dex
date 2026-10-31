@@ -12,7 +12,6 @@ import {WBLCH} from "../contracts/assets/WBLCH.sol";
 /// the RC. `testEVIDENCE51_*` pass and log the measured attack economics.
 contract Review51Test is TestBase {
     event log_named_uint(string key, uint256 val);
-    event log_string(string val);
 
     uint256 internal constant CAP_W = 10 ether;
     uint256 internal constant CAP_Q = 1_000e6;
@@ -60,12 +59,11 @@ contract Review51Test is TestBase {
         (p[0], p[1]) = (a, b);
     }
 
-    /// Raw mint the way an attacker would: both sides brought to the mint limit,
-    /// 80% of each cap. The original test filled to the caps, which now reverts.
-    function fillToLimit(UniswapV2Pair pair) internal returns (uint256 shares, uint256 paidW, uint256 paidQ) {
+    /// Raw mint the way an attacker would: both sides brought exactly to the caps.
+    function fillToCaps(UniswapV2Pair pair) internal returns (uint256 shares, uint256 paidW, uint256 paidQ) {
         (uint256 rW, uint256 rQ) = reservesWQ(pair);
-        paidW = CAP_W * 8 / 10 - rW;
-        paidQ = CAP_Q * 8 / 10 - rQ;
+        paidW = CAP_W - rW;
+        paidQ = CAP_Q - rQ;
         vm.startPrank(ATTACKER);
         wblch.deposit{value: paidW}();
         wblch.transfer(address(pair), paidW);
@@ -99,113 +97,76 @@ contract Review51Test is TestBase {
 
     // ---------------------------------------------------------------- F1 ----
 
-    /// After the F1 fix a mint cannot reach both caps. The largest hostile first
-    /// mint leaves the pair open to swaps both ways. It does block a further
-    /// deposit while the attacker's capital stays in, which is the known residual.
+    /// A hostile first mint at both caps must not stop the planned seed.
     function testFAIL51_F1a_seedMustSurviveHostileFirstMintAtBothCaps() public {
-        UniswapV2Pair pair = pairOf();
-        address attacker = ATTACKER;
-        vm.startPrank(attacker);
-        wblch.deposit{value: CAP_W}();
-        wblch.transfer(address(pair), CAP_W);
-        busdc.transfer(address(pair), CAP_Q);
-        vm.expectRevert(bytes("BDEX: LIFT_LIMIT"));
-        pair.mint(attacker);
-        pair.skim(attacker);
-        vm.stopPrank();
-        fillToLimit(pair);
-        require(trySellQuote(1e6), "F1a: selling 1 bUSDC reverts after the hostile first mint");
-        require(trySellNative(0.001 ether), "F1a: selling 0.001 BLCH reverts after the hostile first mint");
+        fillToCaps(pairOf());
+        bool ok;
+        try router.addLiquidityBLCH{value: 5 ether}(address(busdc), 500e6, 0, 0, address(this), block.timestamp) {
+            ok = true;
+        } catch {}
+        require(ok, "F1a: seed reverts, the pair is closed until the attacker burns");
     }
 
-    /// DEX-09 removed the sync route to this state; the fix removes the mint route.
+    /// DEX-09 removed the sync route to this state. The mint route gives the
+    /// same result: no swap of any size in either direction.
     function testFAIL51_F1b_swapsMustSurviveLpFillAfterSeed() public {
         seed(5 ether, 500e6);
-        fillToLimit(pairOf());
+        fillToCaps(pairOf());
         require(trySellQuote(1e6), "F1b: selling 1 bUSDC reverts after the LP fill");
         require(trySellNative(0.001 ether), "F1b: selling 0.001 BLCH reverts after the LP fill");
     }
 
-    /// Passes: the replay after the fix, a donation passed through two swaps, and
-    /// what it costs. Pre-seed the attacker is the only LP, post-seed not.
+    /// Passes: what the freeze costs, and how little a defender gains by exiting.
     function testEVIDENCE51_F1c_freezeCostAndRefill() public {
-        replay("pre-seed", false);
-    }
-
-    function testEVIDENCE51_F1c_replayAfterSeed() public {
-        replay("post-seed", true);
-    }
-
-    function replay(string memory tag, bool seeded) internal {
         UniswapV2Pair pair = pairOf();
-        if (seeded) seed(5 ether, 500e6);
-        emit log_string(tag);
-        uint256 startW = address(ATTACKER).balance + wblch.balanceOf(ATTACKER);
-        uint256 startQ = busdc.balanceOf(ATTACKER);
-        fillToLimit(pair);
-        assertTrue(trySellQuote(1e6) && trySellNative(0.001 ether));
-        (uint256 rW, uint256 rQ) = reservesWQ(pair);
+        seed(5 ether, 500e6);
+        (uint256 shares, uint256 paidW, uint256 paidQ) = fillToCaps(pair);
+        emit log_named_uint("attacker capital WBLCH wei", paidW);
+        emit log_named_uint("attacker capital bUSDC units", paidQ);
+        for (uint256 q = 1; q <= CAP_Q; q *= 10) {
+            assertTrue(!trySellQuote(q));
+        }
+        for (uint256 w = 1e9; w <= CAP_W; w *= 10) {
+            assertTrue(!trySellNative(w));
+        }
+
+        // The seeder withdraws 10% to reopen the pool; a refill closes it again.
+        uint256 seederShares = pair.balanceOf(address(this)) / 10;
+        pair.approve(address(router), seederShares);
+        router.removeLiquidity(address(wblch), address(busdc), seederShares, 0, 0, address(this), block.timestamp);
+        assertTrue(trySellQuote(1e6));
+        (uint256 refill, uint256 refillW, uint256 refillQ) = fillToCaps(pair);
+        assertTrue(refill > 0);
+        assertTrue(!trySellQuote(1e6));
+
+        // Round trip: with no swaps the attacker gets the capital back.
+        uint256 beforeW = wblch.balanceOf(ATTACKER);
+        uint256 beforeQ = busdc.balanceOf(ATTACKER);
+        uint256 all = pair.balanceOf(ATTACKER);
         vm.startPrank(ATTACKER);
-        wblch.deposit{value: CAP_W}();
-        // First swap: donate bUSDC up to the cap, take 1 wei of WBLCH.
-        busdc.transfer(address(pair), CAP_Q - rQ);
-        bool wFirst = pair.token0() == address(wblch);
-        pair.swap(wFirst ? 1 : 0, wFirst ? 0 : 1, ATTACKER, "");
-        // Second swap: donate WBLCH up to the cap, take 1 unit of bUSDC.
-        (rW, rQ) = reservesWQ(pair);
-        wblch.transfer(address(pair), CAP_W - rW);
-        pair.swap(wFirst ? 0 : 1, wFirst ? 1 : 0, ATTACKER, "");
-        vm.stopPrank();
-        (rW, rQ) = reservesWQ(pair);
-        emit log_named_uint("reserve WBLCH wei", rW);
-        emit log_named_uint("reserve bUSDC units", rQ);
-        assertTrue(!trySellQuote(1e6) && !trySellNative(0.001 ether));
-        uint256 shares = pair.balanceOf(ATTACKER);
-        vm.startPrank(ATTACKER);
-        pair.transfer(address(pair), shares);
+        pair.transfer(address(pair), all);
         pair.burn(ATTACKER);
         vm.stopPrank();
-        assertTrue(trySellQuote(1e6));
-        uint256 endW = address(ATTACKER).balance + wblch.balanceOf(ATTACKER);
-        emit log_named_uint("attacker net loss WBLCH wei", startW - endW);
-        emit log_named_uint("attacker net loss bUSDC units", startQ - busdc.balanceOf(ATTACKER));
+        emit log_named_uint("first fill shares", shares);
+        emit log_named_uint("refill WBLCH wei", refillW);
+        emit log_named_uint("refill bUSDC units", refillQ);
+        emit log_named_uint("WBLCH recovered wei", wblch.balanceOf(ATTACKER) - beforeW);
+        emit log_named_uint("bUSDC recovered units", busdc.balanceOf(ATTACKER) - beforeQ);
     }
 
     // ---------------------------------------------------------------- F2 ----
 
-    /// Anyone can create the planned pair once the factory exists. The factory
-    /// still refuses a second creation. The fix is in the tooling, which accepts
-    /// the existing pair; this test states what that acceptance relies on: same
-    /// address as predicted, same code and same caps, whoever created it.
+    /// Anyone can create the planned pair once the factory exists. The planned
+    /// createPair then reverts, and `record` and the gate refuse a reverted step
+    /// although the pair is byte-identical to the planned one.
     function testFAIL51_F2_plannedCreatePairMustSurviveFrontRun() public {
-        address planned = address(
-            uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(
-                            hex"ff",
-                            address(factory),
-                            keccak256(
-                                address(wblch) < address(busdc)
-                                    ? abi.encodePacked(address(wblch), address(busdc))
-                                    : abi.encodePacked(address(busdc), address(wblch))
-                            ),
-                            factory.INIT_CODE_PAIR_HASH()
-                        )
-                    )
-                )
-            )
-        );
-        vm.prank(ATTACKER);
-        address created = factory.createPair(address(wblch), address(busdc));
-        require(created == planned, "F2: a third party's pair must be at the planned address");
-        assertEq(factory.getPair(address(wblch), address(busdc)), planned);
-        (uint112 cap0, uint112 cap1) = UniswapV2Pair(planned).reserveCaps();
-        bool wFirst = UniswapV2Pair(planned).token0() == address(wblch);
-        assertEq(uint256(wFirst ? cap0 : cap1), CAP_W);
-        assertEq(uint256(wFirst ? cap1 : cap0), CAP_Q);
-        vm.expectRevert(bytes("BDEX: PAIR_EXISTS"));
-        factory.createPair(address(wblch), address(busdc));
+        address planned = factory.createPair(address(wblch), address(busdc)); // third party
+        assertTrue(planned != address(0));
+        bool ok;
+        try factory.createPair(address(wblch), address(busdc)) returns (address again) {
+            ok = again == planned;
+        } catch {}
+        require(ok, "F2: the deployer's createPair reverts with PAIR_EXISTS");
     }
 
     // ---------------------------------------------------------------- F3 ----
@@ -232,21 +193,10 @@ contract Review51Test is TestBase {
     }
 
     /// A user at 0.50% slippage must not lose much more than 0.50% from the
-    /// price the UI just read at latest. The UI now signs the larger of the two
-    /// minimums (frontend test review51 F3); this checks that bound holds on chain.
+    /// price the UI just read at latest.
     function testFAIL51_F3_slippageBoundMustTrackLatestOnFavourableMove() public {
-        (uint256 latestOut, uint256 finalizedMinimum, uint256 amountIn) = movedPool();
-        uint256 latestMinimum = latestOut * 9950 / 10_000;
-        uint256 minimum = finalizedMinimum > latestMinimum ? finalizedMinimum : latestMinimum;
-        vm.prank(ATTACKER);
-        router.swapExactBLCHForTokens{value: 1 ether}(
-            0, path(address(wblch), address(busdc)), ATTACKER, block.timestamp
-        );
-        vm.prank(USER);
-        vm.expectRevert();
-        router.swapExactBLCHForTokens{value: amountIn}(
-            minimum, path(address(wblch), address(busdc)), USER, block.timestamp
-        );
+        (uint256 latestOut, uint256 minimum,) = movedPool();
+        require(minimum >= latestOut * 9950 / 10_000, "F3: the signed minimum is far below latest minus slippage");
     }
 
     /// Passes: a sandwich takes the difference while the user's swap succeeds.

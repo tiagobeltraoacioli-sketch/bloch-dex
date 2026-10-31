@@ -80,8 +80,6 @@ contract DexAuditTest is TestBase {
     AuditVm internal constant avm = AuditVm(address(uint160(uint256(keccak256("hevm cheat code")))));
     uint256 internal constant CAP0 = 1_000 ether;
     uint256 internal constant CAP1 = 5_000 ether;
-    uint256 internal constant LIMIT0 = CAP0 * 8 / 10;
-    uint256 internal constant LIMIT1 = CAP1 * 8 / 10;
     address internal constant FEE_TO = address(0xFEE5AFE);
 
     UniswapV2Factory internal factory;
@@ -124,14 +122,6 @@ contract DexAuditTest is TestBase {
         return lo + (x % (hi - lo + 1));
     }
 
-    /// Fill side 0 to its cap the only way that may: with a swap.
-    function _swapSide0ToCap() internal {
-        (uint112 r0, uint112 r1,) = pair.getReserves();
-        uint256 amount = CAP0 - r0;
-        token0.mint(address(pair), amount);
-        pair.swap(0, BDexLibrary.getAmountOut(amount, r0, r1), address(0xD0), "");
-    }
-
     // ------------------------------------------------------------------ //
     // Reserve caps                                                        //
     // ------------------------------------------------------------------ //
@@ -140,8 +130,7 @@ contract DexAuditTest is TestBase {
     /// above both the cap and the pre-burn reserve made burn revert with
     /// RESERVE_CAP, so a donor could block LP exits. Burn must always work.
     function testDonationAboveCapCannotBlockSmallBurn() public {
-        uint256 liquidity = _seed(LIMIT0, 1_000 ether);
-        _swapSide0ToCap();
+        uint256 liquidity = _seed(CAP0, 1_000 ether);
         token0.mint(address(pair), 500 ether);
         (uint256 amount0, uint256 amount1) = _burn(liquidity / 10);
         assertTrue(amount0 > 0 && amount1 > 0);
@@ -156,8 +145,8 @@ contract DexAuditTest is TestBase {
     function testFuzzBurnNeverBlockedByDonation(uint256 seed0, uint256 seed1, uint256 don0, uint256 don1, uint256 frac)
         public
     {
-        uint256 s0 = _bound(seed0, 1 ether, LIMIT0);
-        uint256 s1 = _bound(seed1, 1 ether, LIMIT1);
+        uint256 s0 = _bound(seed0, 1 ether, CAP0);
+        uint256 s1 = _bound(seed1, 1 ether, CAP1);
         uint256 liquidity = _seed(s0, s1);
         token0.mint(address(pair), _bound(don0, 0, 1e30));
         token1.mint(address(pair), _bound(don1, 0, 1e30));
@@ -170,7 +159,7 @@ contract DexAuditTest is TestBase {
         (uint112 p0, uint112 p1,) = pair.getReserves();
         _burn(shares);
         (uint112 r0, uint112 r1,) = pair.getReserves();
-        assertTrue(r0 <= (LIMIT0 > p0 ? LIMIT0 : p0) && r1 <= (LIMIT1 > p1 ? LIMIT1 : p1));
+        assertTrue(r0 <= (CAP0 > p0 ? CAP0 : p0) && r1 <= (CAP1 > p1 ? CAP1 : p1));
         assertTrue(r0 <= token0.balanceOf(address(pair)) && r1 <= token1.balanceOf(address(pair)));
         pair.skim(address(0xD0));
         (r0, r1,) = pair.getReserves();
@@ -180,10 +169,10 @@ contract DexAuditTest is TestBase {
 
     /// Cap bypass via direct transfer + sync is refused at any size above the cap.
     function testFuzzTransferThenSyncCannotExceedCap(uint256 seed0, uint256 extra) public {
-        uint256 s0 = _bound(seed0, 1 ether, LIMIT0);
+        uint256 s0 = _bound(seed0, 1 ether, CAP0);
         _seed(s0, 1_000 ether);
-        uint256 room = LIMIT0 - s0;
-        uint256 over = CAP0 - s0 + _bound(extra, 1, 1e30);
+        uint256 room = CAP0 - s0;
+        uint256 over = room + _bound(extra, 1, 1e30);
         token0.mint(address(pair), over);
         vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
         pair.sync();
@@ -191,16 +180,12 @@ contract DexAuditTest is TestBase {
         token0.mint(address(pair), room);
         pair.sync();
         (uint112 r0,,) = pair.getReserves();
-        assertEq(r0, LIMIT0);
-        // F1: sync cannot lift a reserve above the limit, even within the cap.
-        token0.mint(address(pair), 1);
-        vm.expectRevert(bytes("BDEX: LIFT_LIMIT"));
-        pair.sync();
+        assertEq(r0, CAP0);
     }
 
     /// Cap bypass via mint: a deposit above the cap reverts whatever the ratio.
     function testFuzzMintCannotExceedCap(uint256 seed0, uint256 extra) public {
-        uint256 s0 = _bound(seed0, 1 ether, (LIMIT0 < LIMIT1 ? LIMIT0 : LIMIT1) - 1);
+        uint256 s0 = _bound(seed0, 1 ether, CAP0 - 1);
         _seed(s0, s0);
         uint256 add0 = CAP0 - s0 + _bound(extra, 1, 1e24);
         token0.mint(address(pair), add0);
@@ -209,44 +194,14 @@ contract DexAuditTest is TestBase {
         pair.mint(address(this));
     }
 
-    /// F1: a deposit between the limit and the cap is refused, on either side.
-    function testFuzzMintCannotExceedLimit(uint256 seed0, uint256 extra, bool side0) public {
-        uint256 s0 = _bound(seed0, 1 ether, LIMIT0 / 2);
-        uint256 s1 = _bound(seed0, 1 ether, LIMIT1 / 2);
-        _seed(s0, s1);
-        uint256 over = _bound(extra, 1, (side0 ? CAP0 - LIMIT0 : CAP1 - LIMIT1));
-        token0.mint(address(pair), side0 ? LIMIT0 - s0 + over : 1 ether);
-        token1.mint(address(pair), side0 ? 1 ether : LIMIT1 - s1 + over);
-        vm.expectRevert(bytes("BDEX: LIFT_LIMIT"));
-        pair.mint(address(this));
-    }
-
-    /// F1: a burn cannot carry a donation into the reserves above the limit.
-    function testBurnCannotLiftReserveAboveLimit() public {
-        uint256 liquidity = _seed(LIMIT0, LIMIT1);
-        token0.mint(address(pair), CAP0 - LIMIT0);
-        token1.mint(address(pair), CAP1 - LIMIT1);
-        _burn(liquidity / 1_000_000);
-        (uint112 r0, uint112 r1,) = pair.getReserves();
-        assertTrue(r0 <= LIMIT0 && r1 <= LIMIT1);
-    }
-
-    /// F1: at the limit on both sides, swaps pass in both directions, up to the cap.
-    function testSwapReachesCapFromLimit() public {
-        _seed(LIMIT0, LIMIT1);
-        _swapSide0ToCap();
-        (uint112 r0,,) = pair.getReserves();
-        assertEq(r0, CAP0);
-    }
-
     /// Cap bypass via a flash swap that repays in the capped token.
     function testFlashSwapRepaidInCappedTokenCannotExceedCap() public {
-        _seed(LIMIT0, LIMIT1);
+        _seed(900 ether, 900 ether);
         FlashBorrower borrower = new FlashBorrower(pair);
-        token0.mint(address(borrower), CAP0);
-        uint256 out1 = LIMIT1 / 2;
-        uint256 in0 = BDexLibrary.getAmountIn(out1, LIMIT0, LIMIT1);
-        assertTrue(LIMIT0 + in0 > CAP0);
+        token0.mint(address(borrower), 1_000 ether);
+        uint256 out1 = 100 ether;
+        uint256 in0 = BDexLibrary.getAmountIn(out1, 900 ether, 900 ether);
+        assertTrue(900 ether + in0 > CAP0);
         borrower.configure("", address(token0), in0);
         vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
         borrower.borrow(0, out1);
@@ -254,10 +209,8 @@ contract DexAuditTest is TestBase {
 
     /// Outflows stay open with the capped side at its cap.
     function testSwapOutOfCappedSideAtCapSucceeds() public {
-        _seed(LIMIT0, 1_000 ether);
-        _swapSide0ToCap();
-        (, uint112 q,) = pair.getReserves();
-        uint256 out = BDexLibrary.getAmountOut(10 ether, q, CAP0);
+        _seed(CAP0, 1_000 ether);
+        uint256 out = BDexLibrary.getAmountOut(10 ether, 1_000 ether, CAP0);
         token1.mint(address(pair), 10 ether);
         pair.swap(out, 0, address(0xD0), "");
         (uint112 r0,,) = pair.getReserves();
@@ -271,8 +224,8 @@ contract DexAuditTest is TestBase {
     function testFuzzSwapPreservesKAndOverquoteFails(uint256 seed0, uint256 seed1, uint256 amountIn, bool zeroForOne)
         public
     {
-        uint256 s0 = _bound(seed0, 1e6, LIMIT0);
-        uint256 s1 = _bound(seed1, 1e6, LIMIT1);
+        uint256 s0 = _bound(seed0, 1e6, CAP0);
+        uint256 s1 = _bound(seed1, 1e6, CAP1);
         _seed(s0, s1);
         (uint256 rIn, uint256 rOut, uint256 capIn) = zeroForOne ? (s0, s1, CAP0) : (s1, s0, CAP1);
         if (capIn < rIn + 1000) return;
@@ -379,16 +332,16 @@ contract DexAuditTest is TestBase {
         token1.mint(address(pair), 1001);
         pair.mint(attacker);
         assertEq(pair.balanceOf(attacker), 1);
-        uint256 d = _bound(donation, 1, LIMIT0 - 1001);
+        uint256 d = _bound(donation, 1, CAP0 - 1001);
         token0.mint(address(pair), d);
-        token1.mint(address(pair), d * (LIMIT1 - 1001) / (LIMIT0 - 1001));
+        token1.mint(address(pair), d * (CAP1 - 1001) / (CAP0 - 1001));
         pair.sync();
         (uint112 r0, uint112 r1,) = pair.getReserves();
         uint256 attackerCost0 = 1001 + d;
-        if (r0 >= LIMIT0) return;
-        uint256 v0 = _bound(victimDeposit, 1, LIMIT0 - r0);
+        if (r0 >= CAP0) return;
+        uint256 v0 = _bound(victimDeposit, 1, CAP0 - r0);
         uint256 v1 = v0 * r1 / r0 + 1;
-        if (uint256(r1) + v1 > LIMIT1) return;
+        if (uint256(r1) + v1 > CAP1) return;
         token0.mint(address(pair), v0);
         token1.mint(address(pair), v1);
         try pair.mint(victim) {}

@@ -77,14 +77,6 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     uint112 private reserveCap0;
     uint112 private reserveCap1;
 
-    // Mint, burn and sync may lift a capped reserve only up to this share of its
-    // cap (F1). Only a swap may fill a side to the cap. A swap that raises one
-    // reserve lowers the other, so honest use cannot put both sides at their
-    // caps, where no swap of any size passes in either direction. A donation
-    // passed through a swap can still get there, and the donor forfeits it to
-    // the other LPs; see docs/AUDIT-SCOPE-DEX.md.
-    uint256 private constant LIFT_LIMIT_BPS = 8000;
-
     modifier lock() {
         require(unlocked == 1, "BDEX: LOCKED");
         unlocked = 0;
@@ -192,30 +184,14 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         emit Sync(reserve0, reserve1);
     }
 
-    /// @dev The highest reserve mint, burn or sync may record on a side:
-    ///      max(LIFT_LIMIT_BPS of the cap, the reserve before the call). It never
-    ///      forces a reserve down. An uncapped side has no bound.
-    function _liftBound(uint112 cap, uint112 reserve) private pure returns (uint256) {
-        if (cap == 0) return type(uint256).max;
-        uint256 limit = (uint256(cap) * LIFT_LIMIT_BPS) / 10_000;
-        return limit > reserve ? limit : reserve;
-    }
-
     /// @dev The largest reserve burn may record for a side: the balance, but
-    ///      never above _liftBound. That is within the bound _update enforces,
-    ///      so burn cannot revert on RESERVE_CAP, and a donation cannot lift a
-    ///      reserve through a burn.
+    ///      never above max(cap, pre-burn reserve) on a capped side. This is
+    ///      exactly the bound _update enforces, so burn cannot revert on
+    ///      RESERVE_CAP and cannot move a reserve above it either.
     function _exitBound(uint256 balance, uint112 cap, uint112 reserve) private pure returns (uint256) {
-        uint256 bound = _liftBound(cap, reserve);
+        if (cap == 0) return balance;
+        uint256 bound = cap > reserve ? cap : reserve;
         return balance > bound ? bound : balance;
-    }
-
-    /// @dev Refuses a mint or sync that lifts a reserve above _liftBound.
-    function _requireLiftBound(uint256 balance0, uint256 balance1, uint112 _reserve0, uint112 _reserve1) private view {
-        require(
-            balance0 <= _liftBound(reserveCap0, _reserve0) && balance1 <= _liftBound(reserveCap1, _reserve1),
-            "BDEX: LIFT_LIMIT"
-        );
     }
 
     /// @dev Lazy protocol-fee settlement, exactly canonical. If feeTo is set,
@@ -282,7 +258,6 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         _mint(to, liquidity);
 
         _update(balance0, balance1, _reserve0, _reserve1);
-        _requireLiftBound(balance0, balance1, _reserve0, _reserve1);
         if (feeOn) kLast = uint256(reserve0) * reserve1; // reserve0/1 are up to date
         emit Mint(msg.sender, amount0, amount1);
     }
@@ -398,10 +373,6 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///      removes it.
     function sync() external lock {
         require(totalSupply != 0, "BDEX: EMPTY_POOL");
-        (uint112 _reserve0, uint112 _reserve1,) = getReserves();
-        uint256 balance0 = IERC20(token0).balanceOf(address(this));
-        uint256 balance1 = IERC20(token1).balanceOf(address(this));
-        _update(balance0, balance1, _reserve0, _reserve1);
-        _requireLiftBound(balance0, balance1, _reserve0, _reserve1);
+        _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), reserve0, reserve1);
     }
 }
