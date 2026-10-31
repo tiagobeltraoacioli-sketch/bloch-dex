@@ -39,6 +39,9 @@ node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-ga
 | `proceed` | 0 | Send `steps[0]` (approve) and `steps[1]` (seed), in that order |
 | `skim-first` | 1 | An unsynced donation is in the pair. Skim, then plan again |
 | `refuse` | 2 | Seeded already, or a donation too large for this price within the caps |
+| `correct-price` | 1 | LP shares nobody planned, at another price. Send the plan's swap steps, then plan again |
+| `top-up` | 0 | LP shares nobody planned, at this price. Send `steps[0]` and `steps[1]`; the deposit follows the pool's ratio |
+| `closed` | 2 | Both reserves are at their caps. See "F1" below |
 | `bricked` | 2 | See DEX-09 |
 
 Send the plan's `to`, `value` and `data` with your signer, without changing them. Send them as soon as you have the plan: the plan is good only for the state it read.
@@ -61,6 +64,22 @@ On a pair with no LP shares, the router takes the desired amounts as given. The 
 ## DEX-09: fixed
 
 Donations synced exactly to both caps of an empty pair used to block `mint` and `swap` forever. `sync` now reverts with `BDEX: EMPTY_POOL` while no LP shares exist, so a donation stays outside the reserves until `skim` removes it. A donation above a cap blocks the seed only until that skim. The griefer forfeits it to whoever skims. The monitor's and planner's `bricked` and synced-donation branches stay as defensive checks. Their exact condition (no LP shares) is unreachable on this pair code, but **the same closed state is reachable with LP shares through a mint to both caps (review finding F1, open), and neither branch reports it**. See `AUDIT-SCOPE-DEX.md`.
+
+## F1: a mint to both caps closes the pair (open)
+
+**The contracts do not prevent this.** Anyone holding 10 WBLCH and the bUSDC cap can mint both reserves to their caps, before or after the seed. Every swap and deposit then reverts. Exits still work, and the attacker gets the capital back by burning. The monitor reports `closed` as CRIT, and `preseed` as WARN for any LP shares in a run without `--expect-seeded`.
+
+After the seed, any LP's burn reopens the pair until the next fill. Before the seed, only the attacker can reopen it.
+
+If the attacker stays in, the only recovery is a new deployment:
+
+1. Announce that the pool is closed. Do not bridge further seed funds.
+2. Use a fresh deployer key, or the next nonce of the current one. Set `deployer.startNonce`, run `deploy-dex.mjs plan --write`, and commit the new plan.
+3. Run `txs`, `sign-and-publish.sh --plan`, `record`, `verify-deployment`.
+4. Wait for the finality gate again, about 100 minutes.
+5. Rebuild the frontend record, then seed. The attacker can repeat this with the same capital after burning.
+
+The Safe and the Multicall3 and CREATE2 deployments are kept.
 
 ## After the seed
 

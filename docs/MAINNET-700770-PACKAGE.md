@@ -295,3 +295,28 @@ The sequence:
 
 Stop at any refusal. If a broadcast lands only partly, do not finish it by
 hand: re-plan from the current nonce.
+
+### If a third party calls `createPair` first (F2)
+
+`createPair` is permissionless, so the deployer's planned step can revert with
+`PAIR_EXISTS`. The pair is then the planned one, whoever created it, and the
+deployment goes on:
+
+- `sign-and-publish.sh --plan <plan>` runs `deploy-dex.mjs check-pair`. It accepts
+  the revert only if the factory registers the planned address and the init code
+  hash, runtime code, tokens and caps match the plan. It records the reverted hash.
+- `record` repeats that check, and lists the hash in the gate file as
+  `existingPairTransactions`.
+- The gate allows a revert only for a listed hash that called the factory, and
+  checks the pair at the finalized block as usual.
+- `verify-deployment` repeats the check. `--expect-empty` still refuses a pair
+  that holds a deposit.
+
+Check the pair by hand at any time:
+
+```
+node scripts/staging/deploy-dex.mjs check-pair --plan deployments/mainnet/700770/dex.plan.json --rpc http://127.0.0.1:18955
+```
+
+The check prints the reserves and shares. If they are not zero, someone also
+deposited: run `dex-seed-plan.mjs plan` before seeding.

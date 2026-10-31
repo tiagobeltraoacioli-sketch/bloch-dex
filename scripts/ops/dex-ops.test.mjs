@@ -206,7 +206,7 @@ test("createRequest separates node failures from reverts", async () => {
 
 test("monitor: a healthy pair is OK", async () => {
   const node = fakeNode();
-  const result = await runMonitor(gate, {}, node.request, monitorDeps(node));
+  const result = await runMonitor(gate, { expectSeeded: true }, node.request, monitorDeps(node));
   assert.equal(result.level, OK, JSON.stringify(result.checks.filter((c) => c.level)));
   assert.equal(result.facts.pairs[PAIR].fee.minted, 7n);
   assert.equal(result.facts.pairs[PAIR].fee.pending, 3n);
@@ -248,7 +248,7 @@ test("monitor: blocking excess is WARN at latest and CRIT once finalized", async
 
 test("monitor: dust stays OK; a stale head and a missing finalized block alarm", async () => {
   const dust = fakeNode({ balances: [500_000_001n, 5n * 10n ** 18n] });
-  assert.equal((await runMonitor(gate, {}, dust.request, monitorDeps(dust))).level, OK);
+  assert.equal((await runMonitor(gate, { expectSeeded: true }, dust.request, monitorDeps(dust))).level, OK);
   const old = fakeNode();
   const staleHead = await runMonitor(gate, {}, old.request, { ...monitorDeps(old), now: old.chain.now + 3000n });
   assert.deepEqual(levelOf(staleHead, "l2_head_age"), [CRIT]);
@@ -474,7 +474,8 @@ test("seed plan: 50% of the tighter cap on either side of a price of 100", () =>
 
 test("seed plan: an unsynced donation is skimmed first, a seeded pair refused", () => {
   assert.equal(planOpening({ wrapped: side(0n, WRAP_CAP, 1n), quote: side(0n, QUOTE_CAP), totalSupply: 0n, price: 1n, fractionBps: 5000n }).decision, "skim-first");
-  assert.equal(planOpening({ wrapped: side(1n, WRAP_CAP), quote: side(1n, QUOTE_CAP), totalSupply: 1n, price: 1n, fractionBps: 5000n }).decision, "refuse");
+  const price = 25_000_000n;
+  assert.equal(planOpening({ wrapped: side(5n * WAD, WRAP_CAP), quote: side(125_000_000n, QUOTE_CAP), totalSupply: 1n, price, fractionBps: 5000n }).decision, "refuse");
 });
 
 test("seed plan: a synced donation is compensated so the pool opens at the target", () => {
@@ -530,4 +531,23 @@ test("review51 F1d: the planner must offer a recovery from a hostile first mint"
   const side = (reserve, cap) => ({ reserve, balance: reserve, cap });
   const plan = planOpening({ wrapped: side(1_000_000n, 10n ** 19n), quote: side(1_000_000n, 10n ** 9n), totalSupply: 1_000_000n, price: 25_500_000n, fractionBps: 5000n });
   assert.notEqual(plan.decision, "refuse", plan.reason);
+});
+
+test("F1: a foreign first mint at the price gets a top-up, and a closed pair is named", () => {
+  const price = 25_000_000n;
+  const small = planOpening({ wrapped: side(WAD, WRAP_CAP), quote: side(25_000_000n, QUOTE_CAP), totalSupply: 5n, price, fractionBps: 5000n });
+  assert.equal(small.decision, "top-up");
+  assert.equal(small.depositWrapped, 4n * WAD);
+  const closed = planOpening({ wrapped: side(WRAP_CAP, WRAP_CAP), quote: side(QUOTE_CAP, QUOTE_CAP), totalSupply: 5n, price, fractionBps: 5000n });
+  assert.equal(closed.decision, "closed");
+});
+
+test("F1: a correcting swap reaches the target price", () => {
+  const price = 25_000_000n;
+  const plan = planOpening({ wrapped: side(WAD, WRAP_CAP), quote: side(100_000_000n, QUOTE_CAP), totalSupply: 5n, price, fractionBps: 5000n });
+  assert.equal(plan.decision, "correct-price");
+  assert.equal(plan.sellWrapped, true);
+  const out = (plan.amountIn * 997n * 100_000_000n) / (WAD * 1000n + plan.amountIn * 997n);
+  const after = ((100_000_000n - out) * WAD) / (WAD + plan.amountIn);
+  assert.ok(after > (price * 99n) / 100n && after < (price * 101n) / 100n, String(after));
 });
