@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A private, loopback-only Bloch L2 under the mainnet rules (chain 700770,
-# the pinned genesis 0x632e45ae…f468), built from the v2 release binaries
+# the pinned genesis 0x632e45ae…f468), built from the v2.1 release binaries
 # (bloch-l2-produce-dev, bloch-l2-settled-rpc). Rehearsal only: there is no
 # L1, no proof and no settlement. Block 1 mints synthetic deposits to
 # throwaway addresses; a producer loop includes spooled transactions; the

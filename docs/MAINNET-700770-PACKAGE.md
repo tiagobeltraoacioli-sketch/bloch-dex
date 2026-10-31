@@ -10,15 +10,15 @@ never settled a block, and its head is still the genesis `0x632e45ae…f468`.
 
 | File | Role |
 |---|---|
-| `deployments/mainnet/700770/pins.json` | Chain ID 700770; L2 genesis `0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468` (state root `0x2ad7e807…c05d`); rules domain and genesis time; L1 timing and network pin; v2 release binary hashes; Safe v1.4.1 npm integrity and runtime code hashes |
+| `deployments/mainnet/700770/pins.json` | Chain ID 700770; L2 genesis `0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468` (state root `0x2ad7e807…c05d`); rules domain and genesis time; L1 timing and network pin; provisional v2.1 release binary hashes; Safe v1.4.1 npm integrity and runtime code hashes |
 | `deployments/mainnet/700770/safe.config.json` | Bloch Inc Safe: SafeL2 v1.4.1, 3 of 5, salt nonce 0. `bootstrap.address` and the five owners are `TBD-owner` |
-| `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision` is `bbd5ab0`, the commit with the DEX-01 fix and this tooling; later commits change no contract (check with `git diff bbd5ab0 -- contracts foundry.toml`). `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
+| `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision` is `f1ad6f2`, the commit with the DEX-09 fix; later commits change no contract (check with `git diff f1ad6f2 -- contracts foundry.toml`). `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
 | `scripts/staging/deploy-safe.mjs` (+ `safe-deploy-config.mjs`) | `validate`, `pending`, `plan`, `preflight`, `txs`, `blochinc` |
 | `scripts/staging/deploy-dex.mjs` | Existing `validate`/`plan`/`run`/`record`, plus `pending`, `preflight`, `txs` and `record --tx-hashes` |
 | `scripts/staging/sign-and-publish.sh` | Signs each planned transaction offline with `cast mktx` (explicit nonce, gas limit and fees; `--ledger` or any cast signer), publishes it with `cast publish`, and waits for the receipt |
 | `scripts/staging/verify-deployment.mjs` | Post-deployment verification (details below) |
 | `scripts/staging/check-finality-gate-mainnet.mjs` | The schema-2 finality gate, with chain 700770, the genesis and the reviewed Safe plan pinned by the repository |
-| `scripts/staging/private-l2.sh`, `scripts/staging/rehearse-mainnet-package.sh` | Full dry run on anvil (chain 700770) or on a private L2 built from the v2 binaries at the real genesis |
+| `scripts/staging/private-l2.sh`, `scripts/staging/rehearse-mainnet-package.sh` | Full dry run on anvil (chain 700770) or on a private L2 built from the v2.1 binaries at the real genesis |
 
 ## Why a raw-transaction path
 
@@ -174,9 +174,11 @@ cannot disagree.
 
 ## L2 binaries
 
-`deployments/mainnet/700770/pins.json` still records the v2 binaries. The RC
-rehearsal ran the v2.1 scratch build (settled-rpc `1e76b99a…`, with the spool
-limits and the receipt fix). Update `l2Release` when v2.1 is released.
+`deployments/mainnet/700770/pins.json` records the v2.1 release
+`bloch-l2-2026-10-30-v21-native-78d4921c` with `status: provisional`: the hashes
+are not closed and the release is unsigned. Replace them and the status from the
+closed v2.1 hash list. No tool reads `l2Release` to select a binary; an operator
+compares the hashes with `sha256sum`.
 
 ## Post-deployment verification (`verify-deployment.mjs`)
 
@@ -246,8 +248,8 @@ The two runs differ as follows:
 - **anvil, chain 700770:** the mainnet gate wrapper refuses the run, because
   anvil's genesis is not the pin. The generic gate passes through the anvil
   finality shim.
-- **private L2:** it uses the v2 `bloch-l2-produce-dev` `7c1cc62b…` and
-  `bloch-l2-settled-rpc` `4fc9fa1e…` with `--rules mainnet` and the
+- **private L2:** it uses the `bloch-l2-produce-dev` and `bloch-l2-settled-rpc`
+  named by `l2Release` in `pins.json` with `--rules mainnet` and the
   ceremony's domain and genesis time. Its genesis is the real
   `0x632e45ae…f468`, so the mainnet gate wrapper itself passes.
   - Block 1 mints synthetic deposits to the throwaway keys.

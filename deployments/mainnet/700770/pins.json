@@ -16,10 +16,14 @@
     "networkPin": "f47d3e498ff978e34471dafff5f94fe139fc3ff489b1a00f469c030258311966"
   },
   "l2Release": {
+    "version": "v2.1",
+    "status": "provisional",
+    "release": "bloch-l2-2026-10-30-v21-native-78d4921c",
+    "l2Commit": "18b9e1d1645782b8c3cb2c095161f7649dd32d72",
     "native": "78d4921c",
     "follower": "c18752fd4c6942678bcb45d8d36436bcd644b1ee6e48416d67e4999e7c7cf29a",
-    "produceDev": "7c1cc62bf5fb5aa142dced01156e3a51ddb6239096034400558ef46586025a3c",
-    "settledRpc": "4fc9fa1ecc2b75dec8c918e77cefb81fe7fc216c5baead133e17c15fc4c54534"
+    "produceDev": "fb0d531311d4f19a97f0839968146f5737acf57eb313fc93972ec215de950be9",
+    "settledRpc": "1e76b99ad2a57dd6cfae1f4086529714d1bf3372cb578a348f4cfe9a37a91d38"
   },
   "safe": {
     "package": "@safe-global/safe-contracts",
