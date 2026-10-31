@@ -5,9 +5,11 @@
 // planned caps and sends no RPC request and no transaction. Once live, every
 // pool, balance, allowance and quote read is pinned to the finalized L2 block
 // (the snapshot's block hash), and transactions are explicit wallet steps. The
-// one read at `latest` is a lens quote used only to warn about a stale price
-// (mainnet/quotecheck.ts); a worse price needs an explicit reconfirmation.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+// one read at `latest` is a lens quote that warns about a stale price and
+// tightens the signed minimum after a better one (mainnet/quotecheck.ts); a
+// worse price needs an explicit reconfirmation. A sent swap holds the Swap button
+// until its outcome is known (mainnet/pendingswap.ts).
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
@@ -15,6 +17,7 @@ import {
   approveTransaction,
   deadlineFrom,
   ensureChain,
+  ReceiptUnknownError,
   sendTransaction,
   swapTransaction,
   waitForReceipt,
@@ -43,7 +46,8 @@ import {
   type PlannedCap,
 } from './mainnet/config';
 import { checkRoute, explainBlock, headroom, headroomUse, type RouteCheck } from './mainnet/caps';
-import { blocksSwap, compareQuotes, type QuoteCheck } from './mainnet/quotecheck';
+import { usePendingSwap } from './mainnet/pendingswap';
+import { blocksSwap, compareQuotes, signedQuote, type QuoteCheck } from './mainnet/quotecheck';
 import {
   readAllowance,
   readBalances,
@@ -56,7 +60,7 @@ type Option = { key: string; label: string; token: LiveToken; native: boolean };
 type Step = {
   label: string;
   hash?: Hex;
-  state: 'waiting' | 'pending' | 'mined' | 'failed';
+  state: 'waiting' | 'pending' | 'mined' | 'failed' | 'unknown';
   detail?: string;
 };
 
@@ -95,6 +99,7 @@ export default function MainnetLive({
   wallet,
   planned,
   now = () => Date.now(),
+  receiptPollMs,
 }: {
   network: MainnetNetwork;
   load: () => Promise<MainnetState>;
@@ -102,6 +107,7 @@ export default function MainnetLive({
   wallet: Devnet4Wallet;
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
   now?: () => number;
+  receiptPollMs?: number;
 }) {
   const [state, setState] = useState<MainnetState | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -130,6 +136,16 @@ export default function MainnetLive({
   }, [load, rpc, generation]);
 
   const live = state?.status === 'live';
+  // Lives above SwapPanel, which remounts on every new finalized block.
+  const pendingSwap = usePendingSwap({
+    rpc,
+    chainId: network.chainId,
+    account: wallet.account?.address.toLowerCase() as Address | undefined,
+    enabled: live && !!snapshot,
+    now,
+    onMined: () => setGeneration((g) => g + 1),
+    intervalMs: receiptPollMs,
+  });
   return (
     <section className="page devnet4-page mainnet-page" aria-labelledby="mainnet-title">
       <div className="section-heading">
@@ -187,7 +203,7 @@ export default function MainnetLive({
             rpc={rpc}
             wallet={wallet}
             now={now}
-            onMined={() => setGeneration((g) => g + 1)}
+            pendingSwap={pendingSwap}
           />
         </>
       )}
@@ -499,7 +515,7 @@ function SwapPanel({
   rpc,
   wallet,
   now,
-  onMined,
+  pendingSwap,
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
@@ -508,7 +524,7 @@ function SwapPanel({
   rpc: Rpc;
   wallet: Devnet4Wallet;
   now: () => number;
-  onMined: () => void;
+  pendingSwap: ReturnType<typeof usePendingSwap>;
 }) {
   const options = useMemo<Option[]>(
     () =>
@@ -537,6 +553,12 @@ function SwapPanel({
   const [approved, setApproved] = useState<Record<string, bigint>>({});
   const [steps, setSteps] = useState<Step[]>([]);
   const [busy, setBusy] = useState(false);
+  const tracked = pendingSwap.tracked;
+  // Bumped on every form change. A reply or a send that started under an older
+  // value belongs to a form the user has since changed, and is dropped.
+  const formGeneration = useRef(0);
+  const lastQuoteRequest = useRef(0);
+  const [requote, setRequote] = useState(0);
   const input = options.find((o) => o.key === inKey);
   const output = options.find((o) => o.key === outKey);
   const amountIn = input ? parseAmount(amount, input.token.decimals) : null;
@@ -572,6 +594,7 @@ function SwapPanel({
   }, [refreshAllowance]);
 
   const clear = () => (
+    formGeneration.current++,
     setQuote(null),
     setBlocked([]),
     setQuoteNote(''),
@@ -580,8 +603,18 @@ function SwapPanel({
   );
 
   /** Compare the active quote with the latest block; a failed read never hides the finalized quote. */
-  async function crossCheck(active: LensQuote): Promise<QuoteCheck> {
-    let result: QuoteCheck = { status: 'unknown' };
+  async function crossCheck(
+    active: LensQuote,
+    previous: QuoteCheck | null,
+    generation: number,
+  ): Promise<QuoteCheck> {
+    const last =
+      previous?.status === 'ok'
+        ? previous.latest
+        : previous?.status === 'unknown'
+          ? previous.last
+          : undefined;
+    let result: QuoteCheck = { status: 'unknown', last };
     try {
       const latest = await quoteExactInput(
         rpc,
@@ -596,7 +629,7 @@ function SwapPanel({
     } catch {
       // Stays 'unknown'.
     }
-    setCheck(result);
+    if (generation === formGeneration.current) setCheck(result);
     return result;
   }
 
@@ -609,6 +642,15 @@ function SwapPanel({
 
   async function getQuote() {
     clear();
+    const generation = formGeneration.current;
+    const request = ++lastQuoteRequest.current;
+    // The form changed during the read: this reply is dropped, and the newest
+    // request is asked again with what the form says now.
+    const superseded = () => {
+      if (generation === formGeneration.current) return false;
+      if (request === lastQuoteRequest.current) setRequote((n) => n + 1);
+      return true;
+    };
     if (!input || !output || input.key === output.key)
       return setQuoteNote('Choose two different tokens.');
     if (!amountIn || amountIn <= 0n) return setQuoteNote('Enter an amount.');
@@ -630,6 +672,7 @@ function SwapPanel({
         Number(slippageBps),
         { blockHash: at },
       );
+      if (superseded()) return;
       if (!q) {
         const checks = routesFor(d, input.token.address, output.token.address).map((path) =>
           checkRoute(snapshot.pools, path, amountIn),
@@ -640,22 +683,47 @@ function SwapPanel({
         );
       }
       setQuote(q);
-      await crossCheck(q);
+      await crossCheck(q, null, generation);
     } catch (error) {
+      if (superseded()) return;
       setQuoteNote(message(error, 'Quote unavailable.'));
     }
   }
 
-  async function run(label: string, build: () => Parameters<typeof sendTransaction>[1]) {
+  useEffect(() => {
+    if (requote > 0) void getQuote();
+    // Runs only when a reply was dropped, with the form of this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requote]);
+
+  /**
+   * One wallet step. With `onSent` the caller takes over the transaction once it
+   * has a hash. Without it, this waits for the receipt here. Only a failure before
+   * there is a hash means the transaction failed.
+   */
+  async function run(
+    label: string,
+    build: () => Parameters<typeof sendTransaction>[1],
+    onSent?: (hash: Hex) => void,
+  ) {
     const provider = wallet.provider;
     if (!provider) return false;
+    const generation = formGeneration.current;
     setBusy(true);
     const index = steps.length;
     const update = (step: Step) => setSteps((all) => [...all.slice(0, index), step]);
     update({ label, state: 'waiting', detail: 'Confirm in your wallet.' });
+    let hash: Hex | undefined;
     try {
       await ensureChain(provider, addChainParameters(network));
-      const hash = await sendTransaction(provider, build());
+      if (generation !== formGeneration.current)
+        throw new Error('The form changed, so nothing was sent. Get a new quote.');
+      hash = await sendTransaction(provider, build());
+      if (onSent) {
+        onSent(hash);
+        setSteps((all) => all.slice(0, index));
+        return false;
+      }
       update({ label, hash, state: 'pending', detail: 'Waiting for the next L2 block.' });
       const receipt = await waitForReceipt(rpc, hash);
       const ok = receipt.status === 'success';
@@ -669,8 +737,48 @@ function SwapPanel({
       });
       return ok;
     } catch (error) {
-      update({ label, state: 'failed', detail: message(error, 'Rejected.') });
+      update(
+        hash && error instanceof ReceiptUnknownError
+          ? {
+              label,
+              hash,
+              state: 'unknown',
+              detail: 'No receipt after an hour; check the explorer before you repeat this step.',
+            }
+          : { label, hash, state: 'failed', detail: message(error, 'Rejected.') },
+      );
       return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function swap(active: LensQuote) {
+    setBusy(true);
+    const generation = formGeneration.current;
+    try {
+      if (pendingSwap.holds()) return;
+      // The price may have moved while the form was open.
+      const fresh = await crossCheck(active, check, generation);
+      if (generation !== formGeneration.current)
+        return setQuoteNote('The form changed, so nothing was sent. Get a new quote.');
+      if (blocksSwap(fresh)) return;
+      const signed = signedQuote(active, fresh);
+      const label = `Swap ${formatAmount(signed.amountIn, input!.token.decimals)} ${input!.label} for ${output!.label}`;
+      const deadline = deadlineFrom(now(), deadlineMinutes);
+      await run(
+        label,
+        () =>
+          swapTransaction(
+            d,
+            signed,
+            { token: input!.token.address, native: input!.native },
+            { token: output!.token.address, native: output!.native },
+            account!,
+            deadline,
+          ),
+        (hash) => pendingSwap.begin({ hash, label, deadline, sentAtMs: now() }),
+      );
     } finally {
       setBusy(false);
     }
@@ -690,7 +798,10 @@ function SwapPanel({
         : (balances.tokens.get(input.token.address) ?? 0n)
       : null;
   const shortBalance = !!quote && balanceIn !== null && balanceIn < quote.amountIn;
-  const uses = quote ? headroomUse(snapshot.pools, quote.path, quote.amounts) : [];
+  const signed = quote ? signedQuote(quote, check) : null;
+  const tightened = !!quote && !!signed && signed.minimumOut > quote.minimumOut;
+  const staleForm = !!quote && quote.amountIn !== amountIn;
+  const uses = signed ? headroomUse(snapshot.pools, signed.path, signed.amounts) : [];
   const symbolOf = (a: Address) => options.find((o) => o.token.address === a)?.label ?? short(a);
 
   return (
@@ -774,19 +885,23 @@ function SwapPanel({
           ))}
         </ul>
       )}
-      {quote && input && output && (
+      {quote && signed && input && output && (
         <>
           <dl className="detail-list" aria-label="Quote">
             <dt>Route</dt>
-            <dd>{quote.path.map(symbolOf).join(' → ')}</dd>
+            <dd>{signed.path.map(symbolOf).join(' → ')}</dd>
+            <dt>Amount in</dt>
+            <dd>
+              {formatAmount(quote.amountIn, input.token.decimals)} {input.label}
+            </dd>
             <dt>Expected output</dt>
             <dd>
-              {formatAmount(quote.amountOut, output.token.decimals)} {output.label}
+              {formatAmount(signed.amountOut, output.token.decimals)} {output.label}
             </dd>
             <dt>Minimum received</dt>
             <dd>
-              {formatAmount(quote.minimumOut, output.token.decimals)} {output.label} ({slippage}%
-              slippage)
+              {formatAmount(signed.minimumOut, output.token.decimals)} {output.label} ({slippage}%
+              slippage{tightened && ' from the better price at the latest block'})
             </dd>
             <dt>Quoted at</dt>
             <dd>
@@ -794,6 +909,8 @@ function SwapPanel({
                 ? `Latest block ${quote.blockNumber.toString()}, not finalized; you reconfirmed this price`
                 : `Finalized block ${quote.blockNumber.toString()}`}{' '}
               (by the deployed lens, within the reserve caps)
+              {tightened &&
+                `. The latest block returns more than block ${quote.blockNumber.toString()}, so the expected output and minimum use the latest price`}
             </dd>
             <dt>Reserve cap headroom used</dt>
             <dd>
@@ -874,7 +991,7 @@ function SwapPanel({
           {needsApproval && quote && input && (
             <button
               className="button primary"
-              disabled={busy}
+              disabled={busy || staleForm}
               onClick={() =>
                 void run(
                   `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`,
@@ -896,31 +1013,17 @@ function SwapPanel({
               shortBalance ||
               !input ||
               !output ||
-              blocksSwap(check)
+              blocksSwap(check) ||
+              staleForm ||
+              pendingSwap.open
             }
-            onClick={() =>
-              void (async () => {
-                // The price may have moved while the form was open.
-                if (blocksSwap(await crossCheck(quote!))) return;
-                const ok = await run(`Swap ${amount} ${input!.label} for ${output!.label}`, () =>
-                  swapTransaction(
-                    d,
-                    quote!,
-                    { token: input!.token.address, native: input!.native },
-                    { token: output!.token.address, native: output!.native },
-                    account!,
-                    deadlineFrom(now(), deadlineMinutes),
-                  ),
-                );
-                if (ok) onMined();
-              })()
-            }
+            onClick={() => void swap(quote!)}
           >
             Swap
           </button>
         </div>
       )}
-      {steps.length > 0 && (
+      {(steps.length > 0 || tracked) && (
         <ol className="devnet4-steps" aria-label="Transactions">
           {steps.map((s, i) => (
             <li key={i} data-state={s.state}>
@@ -934,6 +1037,13 @@ function SwapPanel({
               {s.detail && <span className="muted"> {s.detail}</span>}
             </li>
           ))}
+          {tracked && (
+            <li data-state={tracked.state}>
+              <strong>{tracked.label}</strong>: {tracked.state}{' '}
+              <ExplorerLink network={network} kind="tx" value={tracked.hash} />
+              <span className="muted"> {tracked.detail}</span>
+            </li>
+          )}
         </ol>
       )}
     </div>
