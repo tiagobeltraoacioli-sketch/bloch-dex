@@ -179,7 +179,29 @@ export async function sendTransaction(provider: Provider, tx: TransactionRequest
 
 export type Receipt = { status: 'success' | 'reverted'; blockNumber: bigint; gasUsed: bigint };
 
-/** Poll the RPC for a receipt. */
+/** Read a receipt reply; null while the transaction is not in a block. */
+export function parseReceipt(reply: unknown): Receipt | null {
+  const receipt = reply as { status?: string; blockNumber?: string; gasUsed?: string } | null;
+  if (!receipt?.blockNumber) return null;
+  return {
+    status: receipt.status === '0x1' ? 'success' : 'reverted',
+    blockNumber: BigInt(receipt.blockNumber),
+    gasUsed: BigInt(receipt.gasUsed ?? '0x0'),
+  };
+}
+
+/** The wait ended with no receipt. The transaction may still be pending or mined. */
+export class ReceiptUnknownError extends Error {
+  constructor() {
+    super('No receipt yet; the outcome is unknown. Check the transaction later.');
+    this.name = 'ReceiptUnknownError';
+  }
+}
+
+/**
+ * Poll the RPC for a receipt. A failed poll says nothing about the transaction,
+ * so transport errors are retried until the timeout.
+ */
 export async function waitForReceipt(
   rpc: Rpc,
   hash: Hex,
@@ -191,19 +213,13 @@ export async function waitForReceipt(
 ): Promise<Receipt> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const receipt = (await rpc('eth_getTransactionReceipt', [hash])) as {
-      status?: string;
-      blockNumber?: string;
-      gasUsed?: string;
-    } | null;
-    if (receipt?.blockNumber) {
-      return {
-        status: receipt.status === '0x1' ? 'success' : 'reverted',
-        blockNumber: BigInt(receipt.blockNumber),
-        gasUsed: BigInt(receipt.gasUsed ?? '0x0'),
-      };
+    try {
+      const receipt = parseReceipt(await rpc('eth_getTransactionReceipt', [hash]));
+      if (receipt) return receipt;
+    } catch {
+      // Retried below.
     }
-    refuse(Date.now() < deadline, 'No receipt yet; check the transaction later.');
+    if (Date.now() >= deadline) throw new ReceiptUnknownError();
     await sleep(intervalMs);
   }
 }
