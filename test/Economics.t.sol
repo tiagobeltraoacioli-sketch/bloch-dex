@@ -15,7 +15,7 @@ contract EconomicsTest is TestBase {
     TestToken internal token1;
 
     function setUp() public {
-        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         TestToken a = new TestToken();
         TestToken b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
@@ -197,7 +197,7 @@ contract EconomicsTest is TestBase {
     }
 
     function _useFactory(address feeTo) private {
-        factory = new UniswapV2Factory(feeTo, new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(feeTo, address(0), new address[](0), new uint256[](0));
         TestToken a = new TestToken();
         TestToken b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));

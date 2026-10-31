@@ -18,7 +18,7 @@ contract LensTest is TestBase {
 
     function setUp() public {
         vm.warp(1_000);
-        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         lens = new BDexLens(address(factory));
         router = new BDexRouter(address(factory), address(new TestWrappedNative()));
         a = new TestToken();
@@ -160,7 +160,7 @@ contract LensTest is TestBase {
     }
 
     function testPositionIncludesPendingProtocolFeeDilution() public {
-        factory = new UniswapV2Factory(address(0xFEE), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0xFEE), address(0), new address[](0), new uint256[](0));
         lens = new BDexLens(address(factory));
         TestToken x = new TestToken();
         TestToken y = new TestToken();
@@ -226,7 +226,7 @@ contract LensPendingExcessTest is TestBase {
         uint256[] memory caps = new uint256[](2);
         caps[0] = CAP;
         caps[1] = CAP;
-        factory = new UniswapV2Factory(address(0), tokens, caps);
+        factory = new UniswapV2Factory(address(0), address(0), tokens, caps);
         lens = new BDexLens(address(factory));
         router = new BDexRouter(address(factory), address(new TestWrappedNative()));
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
@@ -259,7 +259,7 @@ contract LensPendingExcessTest is TestBase {
     }
 
     function testRefusesAnAddressThatIsNotARegisteredPair() public {
-        UniswapV2Factory other = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        UniswapV2Factory other = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         TestToken x = new TestToken();
         TestToken y = new TestToken();
         address foreign = other.createPair(address(x), address(y));

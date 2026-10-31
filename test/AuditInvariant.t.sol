@@ -42,7 +42,7 @@ contract CappedFeeHandler {
         address[] memory capTokens = new address[](2);
         uint256[] memory caps = new uint256[](2);
         (capTokens[0], caps[0], capTokens[1], caps[1]) = (address(lo), CAP0, address(hi), CAP1);
-        UniswapV2Factory factory = new UniswapV2Factory(FEE_TO, capTokens, caps);
+        UniswapV2Factory factory = new UniswapV2Factory(FEE_TO, address(0), capTokens, caps);
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
         token0 = TestToken(pair.token0());
         token1 = TestToken(pair.token1());

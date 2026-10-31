@@ -98,7 +98,7 @@ contract DeployMainnetTest is TestBase {
         hevm.prank(DEPLOYER);
         WBLCH w = new WBLCH();
         hevm.prank(DEPLOYER);
-        UniswapV2Factory f = new UniswapV2Factory(BLOCH_INC, capTokens, caps);
+        UniswapV2Factory f = new UniswapV2Factory(BLOCH_INC, address(0), capTokens, caps);
         hevm.prank(DEPLOYER);
         BDexRouter r = new BDexRouter(address(f), address(w));
         hevm.prank(DEPLOYER);

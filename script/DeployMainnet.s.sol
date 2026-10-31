@@ -105,7 +105,7 @@ contract DeployMainnet {
 
         vm.startBroadcast(s.deployer);
         if (s.deployWrapped) require(address(new WBLCH()) == p.wrapped, "MAINNET: WRAPPED_ADDRESS");
-        UniswapV2Factory factory = new UniswapV2Factory(s.blochInc, s.capTokens, s.caps);
+        UniswapV2Factory factory = new UniswapV2Factory(s.blochInc, address(0), s.capTokens, s.caps);
         BDexRouter router = new BDexRouter(address(factory), p.wrapped);
         BDexLens lens = new BDexLens(address(factory));
         for (uint256 i; i < s.pairs.length; ++i) {

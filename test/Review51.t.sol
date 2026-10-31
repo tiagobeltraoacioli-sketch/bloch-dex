@@ -35,7 +35,7 @@ contract Review51Test is TestBase {
         uint256[] memory caps = new uint256[](2);
         (tokens[0], caps[0]) = (address(wblch), CAP_W);
         (tokens[1], caps[1]) = (address(busdc), CAP_Q);
-        factory = new UniswapV2Factory(SAFE, tokens, caps);
+        factory = new UniswapV2Factory(SAFE, address(0), tokens, caps);
         router = new BDexRouter(address(factory), address(wblch));
         vm.deal(address(this), 100 ether);
         vm.deal(ATTACKER, 100 ether);

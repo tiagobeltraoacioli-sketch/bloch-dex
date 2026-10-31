@@ -284,6 +284,13 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         bool feeOn = _mintFee(_reserve0, _reserve1);
         uint256 _totalSupply = totalSupply; // must be AFTER _mintFee's dilution
         if (_totalSupply == 0) {
+            // tx.origin lets the depositor seed atomically through the router; a
+            // separate transfer and mint could be skimmed in between. Any first
+            // mint opens the pair, so `to` alone would not protect it.
+            address depositor = IUniswapV2Factory(factory).firstDepositor();
+            require(
+                depositor == address(0) || msg.sender == depositor || tx.origin == depositor, "BDEX: FIRST_DEPOSITOR"
+            );
             liquidity = Math.sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY;
             _mint(address(0), MINIMUM_LIQUIDITY); // permanently locked
         } else {

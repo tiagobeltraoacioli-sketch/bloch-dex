@@ -20,7 +20,7 @@ abstract contract DexFixture is TestBase {
     function setUp() public {
         vm.warp(1_000);
         vm.deal(address(this), 10_000 ether);
-        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         token = new TestToken();
         wrapped = new TestWrappedNative();
         router = new BDexRouter(address(factory), address(wrapped));

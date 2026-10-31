@@ -95,7 +95,7 @@ contract DexAuditTest is TestBase {
         address[] memory capTokens = new address[](2);
         uint256[] memory caps = new uint256[](2);
         (capTokens[0], caps[0], capTokens[1], caps[1]) = (address(lo), CAP0, address(hi), CAP1);
-        factory = new UniswapV2Factory(FEE_TO, capTokens, caps);
+        factory = new UniswapV2Factory(FEE_TO, address(0), capTokens, caps);
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
         token0 = TestToken(pair.token0());
         token1 = TestToken(pair.token1());
@@ -403,7 +403,7 @@ contract DexAuditTest is TestBase {
 
     /// No fee is minted when the recipient is address(0), and kLast stays 0.
     function testFeeOffFactoryNeverTracksKLast() public {
-        UniswapV2Factory off = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        UniswapV2Factory off = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         UniswapV2Pair p = UniswapV2Pair(off.createPair(address(token0), address(token1)));
         token0.mint(address(p), 100 ether);
         token1.mint(address(p), 100 ether);
@@ -483,7 +483,7 @@ contract DexAuditTest is TestBase {
     function testTokenHookReentryHitsLockOnEveryEntrypoint() public {
         HookToken hook = new HookToken();
         TestToken plain = new TestToken();
-        UniswapV2Factory f = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        UniswapV2Factory f = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         UniswapV2Pair p = UniswapV2Pair(f.createPair(address(hook), address(plain)));
         hook.mint(address(p), 500 ether);
         plain.mint(address(p), 500 ether);
@@ -547,7 +547,7 @@ contract DexAuditTest is TestBase {
 
     function testAnchorRejectsFutureCurrentZeroAndExpiredBlocks() public {
         TestWrappedNative w = new TestWrappedNative();
-        UniswapV2Factory f = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        UniswapV2Factory f = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         BDexRouter router = new BDexRouter(address(f), address(w));
         address[] memory path = new address[](2);
         (path[0], path[1]) = (address(token0), address(token1));

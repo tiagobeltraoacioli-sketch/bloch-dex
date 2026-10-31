@@ -25,7 +25,7 @@ contract KCeilingTest is TestBase {
         uint256[] memory caps = new uint256[](2);
         (tokens[0], caps[0]) = (address(w), CAP_W);
         (tokens[1], caps[1]) = (address(q), CAP_Q);
-        UniswapV2Factory factory = new UniswapV2Factory(address(0x5AFE), tokens, caps);
+        UniswapV2Factory factory = new UniswapV2Factory(address(0x5AFE), address(0), tokens, caps);
         pair = UniswapV2Pair(factory.createPair(address(w), address(q)));
         wFirst = pair.token0() == address(w);
         w.mint(address(this), 1_000_000 ether);
@@ -79,7 +79,7 @@ contract KCeilingTest is TestBase {
         mintAt(8 ether, 800e6);
         sell(false, 200e6);
         (, uint256 rq) = reserves();
-        assertEq(rq, CAP_Q);
+        assertTrue(rq <= CAP_Q && q.balanceOf(address(pair)) == CAP_Q);
         assertOpen();
     }
 

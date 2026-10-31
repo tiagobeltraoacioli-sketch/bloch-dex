@@ -19,6 +19,7 @@ interface IUniswapV2Factory {
     event ReserveCapSet(address indexed token, uint256 cap);
 
     function feeTo() external view returns (address);
+    function firstDepositor() external view returns (address);
 
     function getPair(address tokenA, address tokenB) external view returns (address pair);
     function allPairs(uint256) external view returns (address pair);

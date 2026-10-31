@@ -17,7 +17,7 @@ contract LiquidityHandler {
     uint256 public reconciliations;
 
     constructor() {
-        UniswapV2Factory factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        UniswapV2Factory factory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         TestToken a = new TestToken();
         TestToken b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
