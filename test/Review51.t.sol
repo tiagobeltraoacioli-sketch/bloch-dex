@@ -219,10 +219,14 @@ contract Review51Test is TestBase {
         uint256 latestMinimum = latestOut * 9950 / 10_000;
         uint256 minimum = finalizedMinimum > latestMinimum ? finalizedMinimum : latestMinimum;
         vm.prank(ATTACKER);
-        router.swapExactBLCHForTokens{value: 1 ether}(0, path(address(wblch), address(busdc)), ATTACKER, block.timestamp);
+        router.swapExactBLCHForTokens{value: 1 ether}(
+            0, path(address(wblch), address(busdc)), ATTACKER, block.timestamp
+        );
         vm.prank(USER);
         vm.expectRevert();
-        router.swapExactBLCHForTokens{value: amountIn}(minimum, path(address(wblch), address(busdc)), USER, block.timestamp);
+        router.swapExactBLCHForTokens{value: amountIn}(
+            minimum, path(address(wblch), address(busdc)), USER, block.timestamp
+        );
     }
 
     /// Passes: a sandwich takes the difference while the user's swap succeeds.
