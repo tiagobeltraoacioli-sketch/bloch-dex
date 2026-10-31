@@ -59,7 +59,7 @@ flush() {
       raw=$(cast mktx --chain 700770 --nonce "${nonces[$from]}" --gas-limit "$gas" --gas-price $MAXFEE --priority-gas-price "$tip" --value "$value" --private-key "$k" "$to" "$data")
     fi
     nonces[$from]=$((nonces[$from] + 1))
-    h=$(cast keccak "$raw"); cast publish --rpc-url "$RPC" "$raw" > /dev/null
+    h=$(cast keccak "$raw"); cast publish --async --rpc-url "$RPC" "$raw" > /dev/null
     hashes+=("$h|$want")
   done
   local entry r status block t0 last=0 got
@@ -82,6 +82,32 @@ flush() {
   LAST_BLOCK=$last; echo "$last" > "$WORK/last-block"
   Q=()
   note "burst done in $(( $(date +%s) - t0 ))s, last block $last ($(heads))"
+}
+# The kit's raw-tx file, published from the signer's next nonce in one burst, with the kit's checks
+# on each receipt and the kit's hash file. For this rehearsal only: PROVING.lock is contended here
+# (25-35 min per L2 block), and sign-and-publish.sh needs one block per transaction.
+publish_burst() {
+  local file=$1 k=$2 out=$3 from next count i
+  from=$(jsonget "$file" from); next=$(cast nonce "$from" --block latest --rpc-url "$RPC"); count=$(jsonget "$file" transactions.length)
+  : > "$out.new"
+  for i in $(seq 0 $((count - 1))); do
+    [ "$(jsonget "$file" "transactions.$i.nonce")" -ge "$next" ] || continue
+    local to data gas value tip=$TIP raw h
+    to=$(jsonget "$file" "transactions.$i.to"); data=$(jsonget "$file" "transactions.$i.data")
+    gas=$(jsonget "$file" "transactions.$i.gasLimit"); value=$(jsonget "$file" "transactions.$i.value")
+    if [ "$to" = null ]; then raw=$(cast mktx --chain 700770 --nonce "$(jsonget "$file" "transactions.$i.nonce")" --gas-limit "$gas" --gas-price $MAXFEE --priority-gas-price $tip --value "$value" --private-key "$k" --create "$data")
+    else raw=$(cast mktx --chain 700770 --nonce "$(jsonget "$file" "transactions.$i.nonce")" --gas-limit "$gas" --gas-price $MAXFEE --priority-gas-price $tip --value "$value" --private-key "$k" "$to" "$data"); fi
+    h=$(cast keccak "$raw"); cast publish --async --rpc-url "$RPC" "$raw" > /dev/null || note "publish refused (already in the spool?) $h"; echo "$h" >> "$out.new"
+    note "published $(jsonget "$file" "transactions.$i.label") $h"
+  done
+  while read -r h; do
+    local r
+    until r=$(cast rpc eth_getTransactionReceipt "$h" --rpc-url "$RPC") && [ "$r" != null ]; do sleep 5; done
+    [ "$(node -e 'console.log(JSON.parse(process.argv[1]).status)' "$r")" = 0x1 ] || { echo "FAIL: reverted $h" >&2; exit 1; }
+    echo "$h" >> "$out"
+    note "mined $h block $(node -e 'console.log(BigInt(JSON.parse(process.argv[1]).blockNumber).toString())' "$r")"
+  done < "$out.new"
+  rm -f "$out.new"
 }
 state_load() {
   ASSET=$(cat "$WORK/asset"); ROUTER=$(jsonget "$EV/dex.plan.json" contracts.router.address)
@@ -145,6 +171,7 @@ deploy)
   GENESIS=$(cast block 0 --field hash --rpc-url "$RPC")
   log "chain $(cast chain-id --rpc-url "$RPC") genesis $GENESIS (private stack, real settlement)"
   forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
+  if [ ! -e "$WORK/safe.txs.json" ]; then
   # infra
   node scripts/staging/deploy-infra.mjs pending --config deployments/mainnet/700770/infra.config.json > "$EV/infra.pending.json"
   node -e '
@@ -172,19 +199,21 @@ console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$BOOT" "$OWNERS_JSON" > "$
   $S preflight --config "$EV/safe.config.json" --artifacts "$SAFE_ARTIFACTS" --plan "$EV/safe.plan.json" --rpc "$RPC" > "$EV/safe.preflight.json"
   $S txs --config "$EV/safe.config.json" --artifacts "$SAFE_ARTIFACTS" --plan "$EV/safe.plan.json" --write "$WORK/safe.txs.json" >> "$EV/steps.log"
   $S blochinc --plan "$EV/safe.plan.json" > "$EV/blochinc.json"
-  log "infra and Safe: the kit's sign-and-publish, concurrently, one tx per block each"
+  fi
+  log "infra, Safe and the bUSDC stand-in: one burst"
   P=scripts/staging/sign-and-publish.sh
-  $P --txs "$WORK/infra.txs.json" --rpc "$RPC" --confirm "$INFRA_SHA" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$EV/infra.hashes.txt" -- --private-key "$INFRA_KEY" > "$EV/infra.publish.log" 2>&1 &
+  publish_burst "$WORK/infra.txs.json" "$INFRA_KEY" "$EV/infra.hashes.txt" &
   PA=$!
-  $P --txs "$WORK/safe.txs.json" --rpc "$RPC" --confirm "$SAFE_SHA" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$EV/safe.hashes.txt" -- --private-key "$BOOT_KEY" > "$EV/safe.publish.log" 2>&1 &
+  publish_burst "$WORK/safe.txs.json" "$BOOT_KEY" "$EV/safe.hashes.txt" &
   PB=$!
-  # The stand-in bUSDC (test token with bucketCapacity) in the same block as the first of them.
-  TOKEN_INIT=$(node -e 'const a=require(process.argv[1]);console.log(a.bytecode.object)' "$ROOT/out/RehearsalBridgedToken.sol/RehearsalBridgedToken.json")$(cast abi-encode "c(string,string,uint8,uint256,address,uint256)" "Rehearsal bUSDC" bUSDC 6 1000000000000 "$ISSUER" $USD_BUCKET | cut -c3-)
-  q "$ISSUER_KEY" create "$TOKEN_INIT" 0 3000000 0x1; flush
-  R=$(cast rpc eth_getTransactionByHash "$(grep -o '0x[0-9a-f]\{64\}' "$EV/steps.log" | tail -1)" --rpc-url "$RPC" >/dev/null; cast compute-address "$ISSUER" --nonce 0 | awk '{print tolower($NF)}')
-  echo "$R" > "$WORK/asset"
+  if [ ! -e "$WORK/asset" ]; then
+    TOKEN_INIT=$(node -e 'const a=require(process.argv[1]);console.log(a.bytecode.object)' "$ROOT/out/RehearsalBridgedToken.sol/RehearsalBridgedToken.json")$(cast abi-encode "c(string,string,uint8,uint256,address,uint256)" "Rehearsal bUSDC" bUSDC 6 1000000000000 "$ISSUER" $USD_BUCKET | cut -c3-)
+    q "$ISSUER_KEY" create "$TOKEN_INIT" 0 3000000 0x1; flush
+    cast compute-address "$ISSUER" --nonce 0 | awk '{print tolower($NF)}' > "$WORK/asset"
+  fi
   wait $PA; wait $PB
   log "infra and Safe published ($(heads))"
+  R=$(cat "$WORK/asset")
   ASSET=$R; ASSET_CODE=$(cast keccak "$(cast code "$ASSET" --rpc-url "$RPC")")
   note "bUSDC stand-in $ASSET code $ASSET_CODE"
   node -e '
@@ -215,7 +244,7 @@ console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$REVISION" "$DEPLOYER" "$E
     ATTACKER=$!
   fi
   log "DEX: sign-and-publish (factory, router, lens, WBLCH, pair)"
-  $P --txs "$WORK/dex.txs.json" --rpc "$RPC" --confirm "$DEX_SHA" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$EV/dex.hashes.txt" -- --private-key "$DEPLOYER_KEY" > "$EV/dex.publish.log" 2>&1
+  publish_burst "$WORK/dex.txs.json" "$DEPLOYER_KEY" "$EV/dex.hashes.txt" 2>&1 | tee "$EV/dex.publish.log"
   $DX record --config "$EV/dex.config.json" --plan "$EV/dex.plan.json" --rpc "$RPC" --tx-hashes "$EV/dex.hashes.txt" --write "$EV/gate.json" >> "$EV/steps.log"
   node scripts/staging/verify-deployment.mjs --safe-plan "$EV/safe.plan.json" --dex-plan "$EV/dex.plan.json" --infra-plan "$EV/infra.plan.json" --rpc "$RPC" \
     --safe-hashes "$EV/safe.hashes.txt" --dex-hashes "$EV/dex.hashes.txt" --infra-hashes "$EV/infra.hashes.txt" --expect-empty > "$EV/verify.latest.json"
@@ -245,12 +274,20 @@ seed)
   q "$ISSUER_KEY" "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" 1000000000000)" 0 100000 0x1
   q "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 500000000 0 0 "$ISSUER" $FAR)" 5000000000000000000 1000000 0x1
   q "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 600000000 0 0 "$ISSUER" $FAR)" 6000000000000000000 1000000 0x0
+  log "same block: 3 swap pairs and a top-up that mints the protocol fee"
+  for _ in 1 2 3; do
+    q "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$SWAP_IN" 100000000 0 "[$ASSET,$WRAPPED]" "$ISSUER" $FAR)" 0 400000 0x1
+    q "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$SWAP_OUT" 0 "[$WRAPPED,$ASSET]" "$ISSUER" $FAR)" 1000000000000000000 400000 0x1
+  done
+  q "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 1000000 0 0 "$ISSUER" $FAR)" 10000000000000000 1000000 0x1
   flush
+  note "protocol fee to the Safe: $(cast call "$PAIR" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC") LP"
   node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$RPC" --price 100 > "$EV/seed-verify.json" || note "seed verify exit $?"
   note "seed verify: $(cat "$EV/seed-verify.json" | head -c 300)"
   ;;
 swaps)
   state_load
+  [ "$(cast call "$PAIR" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')" = 0 ] || { note "swaps: already done with the seed"; exit 0; }
   log "swaps: 3 pairs and a top-up that mints the protocol fee"
   for _ in 1 2 3; do
     q "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$SWAP_IN" 100000000 0 "[$ASSET,$WRAPPED]" "$ISSUER" $FAR)" 0 400000 0x1
@@ -382,7 +419,7 @@ pending-probe)
   R2=$(m $((AN+1)) 100000 3000000000 0 "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" "$F_OUT")")
   R3=$(m $((AN+2)) 400000 0 0 "$ROUTER" "$(cast calldata "$SWAP_IN" "$F_OUT" 0 "[$ASSET,$WRAPPED]" "$DEPLOYER" $FAR)")
   H3=$(cast keccak "$R3")
-  for r in "$R1" "$R2" "$R3"; do cast publish --rpc-url "$RPC" "$r" > /dev/null; done
+  for r in "$R1" "$R2" "$R3"; do cast publish --async --rpc-url "$RPC" "$r" > /dev/null; done
   echo "attacker sent front (tip 3 gwei), approve, back (tip 0) AFTER the victim, knowing only its pending nonce" >> "$OUT"
   until [ "$(cast rpc eth_getTransactionReceipt "$VH" --rpc-url "$RPC")" != null ] && [ "$(cast rpc eth_getTransactionReceipt "$H3" --rpc-url "$RPC")" != null ]; do sleep 5; done
   for h in "$(cast keccak "$R1")" "$(cast keccak "$R2")" "$VH" "$H3"; do
