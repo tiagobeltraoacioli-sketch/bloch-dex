@@ -105,8 +105,8 @@ test("the committed mainnet configuration records the decisions and refuses what
   // Guarded-launch caps: WBLCH at the 10 BLCH ceiling, bUSDC at 1/10 of the 10,000 bUSDC bucket.
   assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "1000000000"]);
   assert.equal(committed.reserveCaps[1].bridgeBucketCapacity, "10000000000");
-  // Built revision: contracts with the DEX-01 fix and this package's tooling.
-  assert.equal(committed.source.revision, "bbd5ab0452cc94266bba1d1419319bdc7751bf1e");
+  // Built revision: contracts with the DEX-01 fix, the Lens pending excess and this package's tooling.
+  assert.equal(committed.source.revision, "081b4673673c3ff1f61307cf0eb798f770d9f22a");
   assert.deepEqual(pendingFields(committed), [
     "deployer.address", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash",
   ]);

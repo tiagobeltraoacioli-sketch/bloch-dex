@@ -203,6 +203,8 @@ calls.
 `rehearse-mainnet-package.sh` takes the committed configs, fills the
 `TBD-owner` fields with throwaway values and runs the whole sequence:
 
+0. Multicall3 and the CREATE2 deployer: config, plan, preflight, txs, sign and
+   publish.
 1. Safe: config, plan, preflight, txs, a refused wrong `--confirm`, then sign
    and publish.
 2. bUSDC test token with `bucketCapacity()`.
@@ -219,6 +221,9 @@ calls.
    - a seed at 50% of the caps succeeds;
    - an over-cap deposit reverts;
    - swaps run;
+   - an over-cap swap reverts and the lens reports it unavailable;
+   - a donation above the cap is reported, blocks swaps and is cleared by `skim`;
+   - both utility contracts work in real calls;
    - the protocol fee reaches the Safe;
    - the Safe redeems it with `execTransaction`, after 2 of 5 signatures are
      refused and with 3 of 5 accepted.
@@ -254,6 +259,9 @@ Preconditions:
 
 The sequence:
 
+0. Fill `deployer.address` in `infra.config.json` with a fresh key and fund it
+   with gas only. Run `deploy-infra.mjs validate`, `plan --write`, `preflight`
+   and `txs`, then `sign-and-publish.sh`, and commit the plan and the hashes.
 1. Fill `safe.config.json` (the bootstrap address and five hardware-wallet
    owners). Then run `deploy-safe.mjs validate`, then `plan --write`, and
    commit the plan.
@@ -266,7 +274,7 @@ The sequence:
 6. Fund the deployer with gas only. Run `deploy-dex.mjs run` (preflight plus
    forge dry run), then `txs`, then `sign-and-publish.sh`, then `record
    --tx-hashes`.
-7. Run `verify-deployment.mjs --expect-empty`.
+7. Run `verify-deployment.mjs --infra-plan … --infra-hashes … --expect-empty`.
 8. After L1 finality, run `check-finality-gate-mainnet.mjs`. Only
    `liquidity-enabled` allows the seeding ceremony (≤ 50% of the tighter
    cap).
