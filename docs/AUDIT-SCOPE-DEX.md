@@ -13,7 +13,7 @@ It is an internal review, not an audit.
 | Base | `feat/dex-safe-frontend-20261016` @ `4dfb32d` |
 | Audit commit | The tip of `codex/dex-audit-20261030` that contains this file |
 | Compiler | solc 0.8.24, `evmVersion = paris`, optimizer 200 runs, `bytecode_hash = none` (`foundry.toml`) |
-| Pair init code hash | `0xe41e81db2882b882be444d9f5936fae630b6f22664d20a762ab86dc17afeb248` (was `0x2249ef38…b820` before fix DEX-01) |
+| Pair init code hash | `0x1a88e06e32bd3402d34e0e10bd6aa7ab3df2123c3057289409ee89b807e0490f` (`0xe41e81db…b248` before fix DEX-09, `0x2249ef38…b820` before fix DEX-01) |
 | Target chain | Bloch L2 mainnet, chain ID 700770. Nothing is deployed there yet |
 
 ## 2. Scope
@@ -124,7 +124,7 @@ violated.
 
 | Suite | Count |
 |---|---|
-| `forge test` (19 suites) | **159 passed**, 0 failed (132 before this review, plus 19 in `Audit.t.sol` and 8 in `AuditInvariant.t.sol`) |
+| `forge test` (20 suites, release candidate) | **167 passed**, 0 failed (159 at the end of this review, then 6 for the Lens pending excess and 2 for DEX-09) |
 | Default profile | fuzz 512 runs; invariant 128 runs × depth 64, `fail_on_revert = true` |
 | Deep run of the audit suites | `FOUNDRY_FUZZ_RUNS=10000 FOUNDRY_INVARIANT_RUNS=1024 FOUNDRY_INVARIANT_DEPTH=128`: 27/27 passed, 131,072 handler calls per invariant |
 | `node --test scripts/staging/*.test.mjs` | 31 passed (plan and gate tooling, with the new pair artifacts) |
@@ -170,7 +170,7 @@ route shows it with a skim button (the caller receives the excess). Covered by
 (number of pairs) × cap. Documented in MAINNET-READINESS.md F4. Every token
 of a planned pair must be capped.
 
-### DEX-04 (Informational): a pre-synced donation sets the opening ratio of a fresh pool
+### DEX-04 (Informational; synced form closed by the DEX-09 fix): a donation sets the opening ratio of a fresh pool
 
 The router treats `totalSupply == 0` as fresh and deposits the desired
 amounts as given. If someone has donated and synced first, the opening price
@@ -180,6 +180,22 @@ from the mispricing never exceeds the donation, so the attack does not pay;
 `testFuzzFirstDepositorInflationIsUnprofitable` covers the related share
 inflation case. Recommendation: the frontend shows the resulting price for a
 first deposit when reserves are nonzero.
+
+Since the DEX-09 fix a donation cannot be synced into an empty pair, so reserves
+stay zero until the first mint. The unsynced form remains: a donation already in
+the pair counts toward the first mint. `skim` removes it, the ops seed planner
+asks for that first, and its `verify` checks the opening price afterwards.
+
+### DEX-09 (Low, fixed): donations could permanently block an empty pair
+
+Found by the DEX operations review. With no LP shares, syncing donations equal to
+both caps made `mint` and `swap` revert forever, and `createPair` refuses a second
+pair, so recovery needed a new factory, router and lens. The griefer lost both
+donations and no user funds were at risk. `sync` now requires `totalSupply != 0`
+(`BDEX: EMPTY_POOL`). Reserves of a pair with no LP shares therefore stay zero, and
+shares never return to zero after the first mint (1,000 are locked). Covered by
+`testDonationsAtBothCapsCannotBrickTheEmptyPair` and
+`testFuzzEmptyPairReservesStayZero`. It changes the pair init code hash.
 
 ### DEX-05 (Informational): anchored swaps depend on L2 `BLOCKHASH`
 

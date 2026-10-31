@@ -144,17 +144,44 @@ function role(value, field) {
   return value;
 }
 
+/// The quote cap must balance the wrapped cap at the opening price: a dump of
+/// unbacked quote tokens up to the cap takes a pool seeded at half the caps from
+/// R to R * Rq / cap, so the share lost is 1 - price * wrappedCap / (2 * cap).
+/// That is 50% when cap = wrappedCap * price, and it grows as the cap rises above
+/// that (87% at 1,000 bUSDC and a price of 25.5). The bridge bucket rule may hold
+/// the cap below the band at a high price, which only makes the pool shallower.
+export const OPENING_CAP_BAND_PERCENT = Object.freeze({ min: 75n, max: 125n });
+function checkOpeningPrice(config, wrappedCap) {
+  exactKeys(config.openingPrice, ["symbol", "quotePerWrapped"], "openingPrice");
+  const { symbol, quotePerWrapped } = config.openingPrice;
+  refuse(!isPending(quotePerWrapped), "openingPrice.quotePerWrapped is undecided (quote base units per 1 BLCH at the opening)");
+  const price = amount(quotePerWrapped, "openingPrice.quotePerWrapped", UINT112_MAX);
+  const entry = config.reserveCaps.find((e) => e.symbol === symbol);
+  refuse(entry, `openingPrice.symbol ${symbol} is not in reserveCaps`);
+  const cap = BigInt(entry.cap);
+  const balanced = (wrappedCap * price) / 10n ** 18n;
+  refuse(
+    cap * 100n <= balanced * OPENING_CAP_BAND_PERCENT.max,
+    `the ${symbol} cap ${cap} is too high for the opening price: set it near ${balanced} (WBLCH cap x price). Above that, a dump of unbacked ${symbol} takes more than half of the WBLCH side`,
+  );
+  const atBucketLimit = cap * BRIDGE_BUCKET_DIVISOR >= BigInt(entry.bridgeBucketCapacity);
+  refuse(
+    atBucketLimit || cap * 100n >= balanced * OPENING_CAP_BAND_PERCENT.min,
+    `the ${symbol} cap ${cap} is too low for the opening price: set it near ${balanced} (WBLCH cap x price)`,
+  );
+}
+
+
 /// Validate a deployment configuration. `rehearsal` is the operator's
 /// explicit command-line flag; it must agree with the configuration's own
 /// `network.rehearsal`. A rehearsal targets a development chain; anything
 /// else targets the Bloch L2 mainnet chain ID from deployments/networks.json.
 export function validateDeployConfig(config, { rehearsal = false } = {}) {
   refuse(typeof rehearsal === "boolean", "rehearsal flag must be a boolean");
-  exactKeys(
-    config,
-    ["schemaVersion", "domain", "network", "source", "deployer", "blochInc", "wrappedNative", "fees", "reserveCaps", "initialPairs", "gate"],
-    "configuration",
-  );
+  // openingPrice is required on the mainnet and absent from rehearsal records.
+  const topKeys = ["schemaVersion", "domain", "network", "source", "deployer", "blochInc", "wrappedNative", "fees", "reserveCaps", "initialPairs", "gate"];
+  if (config?.network?.rehearsal === false || Object.hasOwn(config ?? {}, "openingPrice")) topKeys.push("openingPrice");
+  exactKeys(config, topKeys, "configuration");
   refuse(config.schemaVersion === 1 && config.domain === DEPLOY_DOMAIN, "configuration schema is not supported");
 
   exactKeys(config.network, ["name", "chainId", "genesisHash", "rehearsal"], "network");
@@ -278,6 +305,7 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   });
   refuse(wrappedCap > 0n, `reserveCaps must cap "${WRAPPED_REF}"`);
   refuse(wrappedCap <= gateMax, "the WBLCH reserve cap exceeds gate.maxWrappedReserveCap");
+  if (config.openingPrice !== undefined) checkOpeningPrice(config, wrappedCap);
 
   refuse(Array.isArray(config.initialPairs) && config.initialPairs.length <= MAX_INITIAL_PAIRS, `initialPairs must list 0 to ${MAX_INITIAL_PAIRS} pairs`);
   const seen = new Set();

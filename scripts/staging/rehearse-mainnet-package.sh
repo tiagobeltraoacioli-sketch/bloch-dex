@@ -183,6 +183,7 @@ node -e '
 const c = JSON.parse(require("fs").readFileSync("deployments/mainnet/dex-mainnet.config.json", "utf8"));
 const [genesis, revision, deployer, blochInc, token, codeHash] = process.argv.slice(1);
 c.network.genesisHash = genesis; c.source.revision = revision; c.deployer.address = deployer;
+c.openingPrice.quotePerWrapped = "100000000";
 c.blochInc = JSON.parse(require("fs").readFileSync(blochInc, "utf8"));
 Object.assign(c.reserveCaps[1], { token, codeHash });
 console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$REVISION" "$DEPLOYER" "$EV/blochinc.json" "$ASSET" "$ASSET_CODE" > "$EV/dex.config.json"
@@ -255,19 +256,21 @@ done
 must "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 1000000 0 0 "$ISSUER" 99999999999)" 10000000000000000 1000000 > /dev/null
 FEE=$(cast call "$PAIR" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')
 [ "$FEE" != 0 ] || { echo "FAIL: no protocol fee minted to Bloch Inc"; exit 1; }
-log "3 Bloch Inc redeems: 2 of 5 signatures refused, 3 of 5 executed (transfer + burn)"
-TRANSFER=$(cast calldata "transfer(address,uint256)" "$PAIR" "$FEE")
-BURN=$(cast calldata "burn(address)" "$BLOCH_INC")
-for CALL in "$TRANSFER" "$BURN"; do
+log "3 Bloch Inc redeems: 2 of 5 signatures refused, 3 of 5 executed (approve, then router.removeLiquidity)"
+# Never transfer + burn as two Safe transactions: anyone can burn the shares in between.
+APPROVE=$(cast calldata "approve(address,uint256)" "$ROUTER" "$FEE")
+REMOVE=$(cast calldata "removeLiquidity(address,address,uint256,uint256,uint256,address,uint256)" "$ASSET" "$WRAPPED" "$FEE" 1 1 "$BLOCH_INC" 99999999999)
+for STEP in "$PAIR $APPROVE" "$ROUTER $REMOVE"; do
+  TARGET=${STEP%% *}; CALL=${STEP##* }
   NONCE=$(cast call "$BLOCH_INC" "nonce()(uint256)" --rpc-url "$RPC")
   HASH=$(cast call "$BLOCH_INC" "getTransactionHash(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,uint256)(bytes32)" \
-    "$PAIR" 0 "$CALL" 0 0 0 0 "$ZERO" "$ZERO" "$NONCE" --rpc-url "$RPC")
+    "$TARGET" 0 "$CALL" 0 0 0 0 "$ZERO" "$ZERO" "$NONCE" --rpc-url "$RPC")
   SIGS=0x
   for K in $(for i in 0 2 4; do echo "${OWNERS[$i]} ${OWNER_KEYS[$i]}"; done | sort | awk '{print $2}'); do
     SIGS+=$(cast wallet sign --no-hash "$HASH" --private-key "$K" | cut -c3-)
   done
-  must_fail "$ISSUER_KEY" "$BLOCH_INC" "$(cast calldata "$EXEC" "$PAIR" 0 "$CALL" 0 0 0 0 "$ZERO" "$ZERO" "${SIGS:0:262}")" 0 500000
-  must "$ISSUER_KEY" "$BLOCH_INC" "$(cast calldata "$EXEC" "$PAIR" 0 "$CALL" 0 0 0 0 "$ZERO" "$ZERO" "$SIGS")" 0 500000 > /dev/null
+  must_fail "$ISSUER_KEY" "$BLOCH_INC" "$(cast calldata "$EXEC" "$TARGET" 0 "$CALL" 0 0 0 0 "$ZERO" "$ZERO" "${SIGS:0:262}")" 0 500000
+  must "$ISSUER_KEY" "$BLOCH_INC" "$(cast calldata "$EXEC" "$TARGET" 0 "$CALL" 0 0 0 0 "$ZERO" "$ZERO" "$SIGS")" 0 500000 > /dev/null
 done
 USD_OUT=$(cast call "$ASSET" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')
 W_OUT=$(cast call "$WRAPPED" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')
@@ -301,6 +304,11 @@ EXPECT=0x$(cast keccak "0xff${CREATE2:2}${SALT:2}$(cast keccak "$INIT" | cut -c3
 must "$ISSUER_KEY" "$CREATE2" "$SALT${INIT:2}" 0 200000 > /dev/null
 [ "$(cast to-dec "$(cast call "$EXPECT" --rpc-url "$RPC")")" = 42 ] || { echo "FAIL: CREATE2 deployer did not place the contract at $EXPECT"; exit 1; }
 echo "Multicall3 aggregate3 and a CREATE2 deployment at $EXPECT work" | tee -a "$EV/steps.log"
+
+log "3 DEX-09: sync is refused on an empty pair"
+EMPTY=$(must "$ISSUER_KEY" "$FACTORY" "$(cast calldata "createPair(address,address)" "$ASSET" "$MULTICALL")" 0 3000000 > /dev/null; cast call "$FACTORY" "getPair(address,address)(address)" "$ASSET" "$MULTICALL" --rpc-url "$RPC")
+must_fail "$ISSUER_KEY" "$EMPTY" "$(cast calldata "sync()")" 0 150000
+echo "sync refused on the empty pair $EMPTY" | tee -a "$EV/steps.log"
 
 if [ -n "${RENDER_HOOK:-}" ]; then
   if [ "$MODE" = private-l2 ]; then

@@ -174,8 +174,16 @@ const [genesis, revision, deployer, blochInc, token, codeHash] = process.argv.sl
 c.network.genesisHash = genesis; c.source.revision = revision; c.deployer.address = deployer;
 c.blochInc = JSON.parse(require("fs").readFileSync(blochInc, "utf8"));
 Object.assign(c.reserveCaps[1], { token, codeHash });
+// Opening at 25.5 bUSDC per BLCH needs a cap near 10 x that price.
+c.openingPrice.quotePerWrapped = "25500000";
+c.reserveCaps[1].cap = "255000000";
 console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$REVISION" "$DEPLOYER" "$EV/blochinc.json" "$USD" "$USD_CODE" > "$EV/dex.config.json"
 D=(node scripts/staging/deploy-dex.mjs)
+# The committed 1,000 bUSDC cap at this price is refused before any plan exists.
+node -e 'const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));c.reserveCaps[1].cap="1000000000";console.log(JSON.stringify(c))' "$EV/dex.config.json" > "$WORK/dex.highcap.json"
+if "${D[@]}" validate --config "$WORK/dex.highcap.json" 2> "$EV/dex.highcap-refusal.txt"; then die "a cap 4x above the balanced value was accepted"; fi
+grep -q "too high for the opening price" "$EV/dex.highcap-refusal.txt" || die "wrong refusal for the high cap"
+pass "plan: a 1000 bUSDC cap at a price of 25.5 is refused before deployment"
 "${D[@]}" validate --config "$EV/dex.config.json" > "$EV/dex.validate.json"
 "${D[@]}" plan --config "$EV/dex.config.json" --write "$EV/dex.plan.json" > /dev/null
 "${D[@]}" txs --config "$EV/dex.config.json" --plan "$EV/dex.plan.json" --write "$WORK/dex.txs.json" > /dev/null
@@ -185,7 +193,7 @@ scripts/staging/sign-and-publish.sh --txs "$WORK/dex.txs.json" --rpc "$RPC" --co
 ROUTER=$(jsonget "$EV/dex.plan.json" contracts.router.address)
 WRAPPED=$(jsonget "$EV/dex.plan.json" contracts.wrappedNative.address)
 PAIR=$(jsonget "$EV/dex.plan.json" pairs.0.address)
-WRAP_CAP=10000000000000000000; USD_CAP=1000000000
+WRAP_CAP=10000000000000000000; USD_CAP=255000000
 log "safe $SAFE, pair $PAIR, router $ROUTER, bUSDC $USD, wrapped $WRAPPED"
 BAL="balanceOf(address)(uint256)"
 TRANSFER="transfer(address,uint256)"
@@ -207,60 +215,27 @@ expect 1 monitor-expect-seeded monitor --expect-seeded
 
 # ---------------------------------------------------------------- griefing the empty pair
 if [ "$MODE" = anvil ]; then
-  log "2 DEX-09: both reserves synced exactly to their caps with no LP shares bricks the pair"
+  log "2 DEX-09: donations at both caps cannot be synced into an empty pair"
   SNAP=$(snapshot)
   must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" $USD_CAP)" 0 100000 > /dev/null
   must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" $WRAP_CAP)" 0 100000 > /dev/null
-  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000 > /dev/null
-  expect 2 dex09-monitor monitor
-  grep -q DEX-09 "$EV/dex09-monitor.out" || die "the monitor did not name DEX-09"
-  expect 2 dex09-seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  grep -q '"decision": "bricked"' "$EV/dex09-seed-plan.out" || die "seed plan did not report bricked"
-  must_fail "$SEEDER_KEY" "$ROUTER" "$(cast calldata "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$USD" 1000000 0 0 "$SEEDER" $FUTURE)" 1000000000000 1000000
-  must "$SEEDER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 1000000)" 0 100000 > /dev/null
-  must_fail "$SEEDER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$SEEDER")" 0 400000
+  must_fail "$GRIEFER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000
+  [ "$(view "$PAIR" "totalSupply()(uint256)")" = 0 ] || die "the pair should still have no LP shares"
+  expect 1 dex09-monitor monitor
+  expect 1 dex09-seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q '"decision": "skim-first"' "$EV/dex09-seed-plan.out" || die "seed plan did not ask for a skim"
   must "$SEEDER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$SEEDER")" 0 200000 > /dev/null
-  must_fail "$SEEDER_KEY" "$PAIR" "$(cast calldata "swap(uint256,uint256,address,bytes)" 1 0 "$SEEDER" 0x)" 0 300000
-  must_fail "$SEEDER_KEY" "$PAIR" "$(cast calldata "swap(uint256,uint256,address,bytes)" 0 1 "$SEEDER" 0x)" 0 300000
-  must "$SEEDER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000 > /dev/null
-  must_fail "$SEEDER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$SEEDER")" 0 400000
-  pass "dex09: mint, swap in both directions and a retry after sync all revert; griefer forfeited 10 WBLCH + 1000 bUSDC"
+  expect 0 dex09-plan-after-skim node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  pass "dex09: sync refused; the donation stayed outside the reserves; skim cleared it and the seed plan works"
   restore "$SNAP"
 
-  log "3 DEX-04: an unsynced donation is skimmed first"
+  log "3 DEX-04: an unsynced donation is skimmed first, and it cannot be synced"
   SNAP=$(snapshot)
   must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 5000000)" 0 100000 > /dev/null
   expect 1 dex04-monitor-unsynced monitor
   expect 1 dex04-plan-unsynced node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  log "3 DEX-04: a synced donation is compensated by the plan and the pool opens at the target"
-  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" 2000000000000000000)" 0 100000 > /dev/null
-  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000 > /dev/null
-  expect 2 dex04-monitor-synced monitor
-  expect 0 dex04-plan-synced node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  DW=$(jsonget "$EV/dex04-plan-synced.out" depositWrapped); DQ=$(jsonget "$EV/dex04-plan-synced.out" depositQuote)
-  must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$USD" "$DQ" "$DQ" "$DW" "$SEEDER" $FUTURE)" "$DW" 1000000 > /dev/null
-  expect 0 dex04-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE
-  LP=$(view "$PAIR" "$BAL" "$SEEDER"); TS=$(view "$PAIR" "totalSupply()(uint256)")
-  [ "$((TS - LP))" = 1000 ] || die "the first LP should own everything but the 1000 locked shares"
-  pass "dex04: the first LP owns the donation (all but 1000 of $TS shares)"
-  restore "$SNAP"
-
-  log "3 DEX-04: a one-sided donation at the cap is free to take by swap, then the seed works"
-  SNAP=$(snapshot)
-  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" $WRAP_CAP)" 0 100000 > /dev/null
-  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000 > /dev/null
-  expect 2 dex04-plan-capped node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  BEFORE=$(view "$WRAPPED" "$BAL" "$THIEF")
-  # A zero reserve refuses every swap (amountOut < reserve), so first sync 1 base unit in.
-  must "$THIEF_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 1)" 0 100000 > /dev/null
-  must "$THIEF_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000 > /dev/null
-  must "$THIEF_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 1000000)" 0 100000 > /dev/null
-  if [ "$(cast call "$PAIR" "token0()(address)" --rpc-url "$RPC" | tr 'A-F' 'a-f')" = "$USD" ]; then OUTS="0 9990000000000000000"; else OUTS="9990000000000000000 0"; fi
-  must "$THIEF_KEY" "$PAIR" "$(cast calldata "swap(uint256,uint256,address,bytes)" $OUTS "$THIEF" 0x)" 0 300000 > /dev/null
-  AFTER=$(view "$WRAPPED" "$BAL" "$THIEF")
-  echo "one-sided donation: 1.000001 bUSDC took $(node -e 'console.log((BigInt(process.argv[2])-BigInt(process.argv[1])).toString())' "$BEFORE" "$AFTER") WBLCH base units" | tee -a "$EV/steps.log"
-  expect 0 dex04-plan-recovered node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  pass "dex04: a one-sided donation at the cap is not a brick: anyone can swap it out"
+  must_fail "$GRIEFER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000
+  pass "dex04: the synced form is closed; the unsynced form is reported and skimmed"
   restore "$SNAP"
 fi
 

@@ -366,7 +366,13 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     /// @notice Force reserves to match balances. The other escape valve:
     ///         after a negative rebase, reserves overstate holdings and every
     ///         path that trusts them misprices — sync re-anchors them.
+    /// @dev Refused while no LP shares exist. Otherwise donated balances become
+    ///      reserves of an empty pair: synced exactly to both caps they block mint
+    ///      and swap forever (DEX-09), and they set the opening ratio (DEX-04).
+    ///      A donation to an empty pair stays outside the reserves, where skim
+    ///      removes it.
     function sync() external lock {
+        require(totalSupply != 0, "BDEX: EMPTY_POOL");
         _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), reserve0, reserve1);
     }
 }

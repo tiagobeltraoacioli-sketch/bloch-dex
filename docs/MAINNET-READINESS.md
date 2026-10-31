@@ -53,7 +53,7 @@ workstream (the config field is `null` and the tooling refuses it).
 | # | Decision | Implemented as | Still missing |
 |---|---|---|---|
 | 1 | L2 mainnet chain ID **700770** (devnet stays 700771) | `deployments/networks.json` is the single source; `dex-deploy-config.mjs` and the frontend read it; `DeployMainnet.s.sol` mirrors it (a Node test keeps them equal). A non-rehearsal deployment is refused on any other chain | L2 mainnet **genesis hash** (M9): `network.genesisHash` |
-| 2 | Protocol fee **on**, as revenue, to **Bloch Inc** | `UniswapV2Factory(feeTo, capTokens, caps)`: `feeTo` is immutable; `setFeeTo`, `setFeeToSetter`, `acceptFeeToSetter`, `cancelFeeToSetterTransfer`, `feeToSetter`, `pendingFeeToSetter` deleted. Config `fees.feeTo` must be `"blochInc"`. Pair init code hash `0xe41e81db…b248` (changed from `0x2249ef38…b820` by the 2026-10-30 burn cap fix, see AUDIT-SCOPE-DEX.md; pinned by `test/Core.t.sol` and checked on chain by the rehearsal) | **Bloch Inc address and Safe proxy code hash**: `blochInc` |
+| 2 | Protocol fee **on**, as revenue, to **Bloch Inc** | `UniswapV2Factory(feeTo, capTokens, caps)`: `feeTo` is immutable; `setFeeTo`, `setFeeToSetter`, `acceptFeeToSetter`, `cancelFeeToSetterTransfer`, `feeToSetter`, `pendingFeeToSetter` deleted. Config `fees.feeTo` must be `"blochInc"`. Pair init code hash `0x1a88e06e…490f` (changed from `0x2249ef38…b820` by the 2026-10-30 burn cap fix, see AUDIT-SCOPE-DEX.md; pinned by `test/Core.t.sol` and checked on chain by the rehearsal) | **Bloch Inc address and Safe proxy code hash**: `blochInc` |
 | 2b | Bloch Inc is a **multisig**: Safe v1.4.1 (official contracts), 3-of-5 owners on hardware wallets | `blochInc.codeHash` must not be the empty-code hash; `DeployMainnet.s.sol`, `deploy-dex.mjs run` and the gate (at the finalized block) check the contract code | Owners, then the Safe deployment (runbook step 0) |
 | 3 | Treasury = Bloch Inc; deployer = a fresh Bloch Inc key with no role after deployment | Roles reduced to `deployer` and `blochInc`, which must differ; the deployer is never fee recipient, cap token or planned contract | **Deployer address** (fresh key, nonce 0): `deployer.address` |
 | 4 | Initial caps: guarded launch | §3 below; values committed in the config | wGSMH bridge bucket capacity (from the wGSMH bridge deployment) |
@@ -111,8 +111,11 @@ windows depend on the open timestamp decision (F3). Its remaining benefit,
 letting anyone crank redemption so the treasury never signs, is minor for a
 Safe that signs anyway. Directly to Bloch Inc: the Safe receives LP shares of
 each pair (they keep earning swap fees until redeemed) and redeems them with an
-ordinary 3-of-5 `transfer` + `burn` (or `removeLiquidity`). Proven in
-`test/FeeRecipient.t.sol` and on anvil by the rehearsal.
+ordinary 3-of-5 `approve` followed by `router.removeLiquidity`
+([OPS-FEE-REDEMPTION.md](OPS-FEE-REDEMPTION.md)). Never use `transfer` + `burn` as
+two Safe transactions: anyone can burn the shares to themselves in between (the
+same pair-level accounting is what `test/FeeRecipient.t.sol` exercises; it is not
+the procedure). Proven through the real Safe by the package and ops rehearsals.
 
 ## 3. Reserve caps: guarded launch
 
@@ -145,10 +148,17 @@ Rationale:
   token's immutable `bucketCapacity()`), and the gate (reads it again at the
   finalized block). A smaller wGSMH bucket than planned forces a smaller cap.
 - **Bridge failure.** If a bridge is compromised and mints unbacked tokens up
-  to its bucket, the cap stops the dump at `cap − reserve`: with the pool seeded
-  at half its caps, an attacker with unlimited counterfeit bUSDC can take at
-  most half of that pool's WBLCH (≈2.5 BLCH at a 5 BLCH seed) before inflow is
-  blocked.
+  to its bucket, the cap stops the dump at `cap − reserve`. The WBLCH side falls
+  from `R` to `R * Rq / cap`, so "at most half" holds only when the bUSDC cap is
+  near `10 × opening price`. With a 1,000 bUSDC cap it held at a price of 100 or
+  more (50%), but measured at a price of about 25.5 a dump took 5.05 → 0.65 WBLCH,
+  **87% lost** in one transaction (97.5% at a price of 5). The loss stays bounded
+  by the seed. `openingPrice` in the deploy config makes this a pre-deployment
+  check: `validate` and `plan` refuse a bUSDC cap above 125% of `WBLCH cap × price`
+  (or below 75%, unless the bridge bucket rule is what holds it down).
+- **A bUSDC pause stops mints only.** Swaps, transfers, bridge burns, `skim` and LP
+  exits all continue during a pause, so a pause does not freeze the pool
+  ([OPS-DEX-INCIDENTS.md](OPS-DEX-INCIDENTS.md)).
 - **Price band and impact.** Seed each pool at **no more than 50% of the
   tighter cap at the market price** (e.g. bUSDC/WBLCH: `x` BLCH and `x·p`
   bUSDC with `x ≤ 5` and `x·p ≤ 500`). Then the price can move by up to 4×
@@ -179,6 +189,7 @@ deployment record in a separate reviewed change.
 | F5 | No external audit | **Open (decision 6: later).** Required before stage 1 |
 | F6 | The fee recipient is permanent | By design (decision 2). If Bloch Inc's Safe must change, deploy a new factory; the Safe can rotate its own owners without touching the DEX |
 | F7 | A donation above a cap could make `burn` revert with `RESERVE_CAP`, blocking LP exits (DEX-01 in [AUDIT-SCOPE-DEX.md](AUDIT-SCOPE-DEX.md)) | **Fixed** 2026-10-30: burn records at most `max(cap, previous reserve)` and leaves the excess skimmable. Pair init code hash changed |
+| F9 | Donations synced exactly to both caps of an empty pair blocked mint and swap forever (DEX-09) | **Fixed** 2026-10-31: `sync` reverts while `totalSupply == 0`, which also closes the synced form of DEX-04. Pair init code hash changed |
 | F8 | A standing donation above a cap blocks swaps and deposits on that side until someone calls `skim` (DEX-02) | **Accepted residual risk** (owner, 2026-10-30): the griefer forfeits the donation to whoever skims. `BDexLens.pendingExcess` and the mainnet route show it with a skim action |
 
 ## 5. Tooling
@@ -365,7 +376,7 @@ deployer's current nonce, re-plan and re-review.
   - no guard and no module is set;
   - `getThreshold()` and `getOwners()` equal the pin;
   - `VERSION()` is 1.4.1;
-- `factory.INIT_CODE_PAIR_HASH()` equals the plan (`0xe41e81db…b248` at this
+- `factory.INIT_CODE_PAIR_HASH()` equals the plan (`0x1a88e06e…490f` at this
   revision);
 - `factory.feeTo()` is Bloch Inc (the fee is on and goes nowhere else; the
   factory code hash proves there is no setter);

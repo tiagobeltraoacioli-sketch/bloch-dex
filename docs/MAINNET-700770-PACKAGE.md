@@ -129,7 +129,14 @@ in MAINNET-READINESS.md §3). The caps give these guarantees:
 - **Bounded loss while unaudited.** One pilot pair can hold at most 10 BLCH
   plus 1,000 bUSDC.
 - **Bridge failure.** If the bUSDC bridge minted unbacked tokens up to its
-  bucket, the cap stops the dump at `cap − reserve`.
+  bucket, the cap stops the dump at `cap − reserve`. The share of the WBLCH side
+  lost is 50% only when the bUSDC cap is near `10 × opening price`; at 1,000 bUSDC
+  and a price of about 25.5 it measured 87%. Fill `openingPrice.quotePerWrapped`
+  (bUSDC base units per BLCH): `validate` and `plan` refuse a cap outside 75–125%
+  of `WBLCH cap × price`. The low side is waived when the 1/10 bucket rule is what
+  holds the cap down. The cap cannot change after deployment.
+- **bUSDC pause.** It stops mints only. Swaps, transfers, bridge burns, `skim` and
+  LP exits continue.
 - **Exit always fits the bridge.** A full pool side is at most 1/10 of the
   bucket, so it can be withdrawn and bridged out in one undelayed transfer.
 - **Seeding.**
@@ -192,7 +199,7 @@ calls.
   - the immutables, read back from the deployed runtime at solc's
     `immutableReferences`: factory `feeTo`, router `factory` and `WBLCH`, and
     lens `factory`. They are also read through their getters.
-- **Factory state:** `INIT_CODE_PAIR_HASH` (`0xe41e81db…b248` at this
+- **Factory state:** `INIT_CODE_PAIR_HASH` (`0x1a88e06e…490f` at this
   revision), `reserveCap` per token, `allPairsLength`, and `getPair`.
 - **Pairs:** factory, token0/token1, `reserveCaps()`; with `--expect-empty`,
   zero reserves and supply.

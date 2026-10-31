@@ -61,6 +61,7 @@ function config(change = (c) => c) {
       { token: "WBLCH", cap: "1000000000000000000" },
       { symbol: "bUSDC", token: ASSET, codeHash: ASSET_CODE, bridgeBucketCapacity: "100000000", cap: "10000000" },
     ],
+    openingPrice: { symbol: "bUSDC", quotePerWrapped: "10000000" },
     initialPairs: [{ tokenA: "WBLCH", tokenB: "bUSDC" }],
     gate: { maxWrappedReserveCap: "10000000000000000000" },
   };
@@ -108,7 +109,7 @@ test("the committed mainnet configuration records the decisions and refuses what
   // Built revision: contracts with the DEX-01 fix, the Lens pending excess and this package's tooling.
   assert.equal(committed.source.revision, "081b4673673c3ff1f61307cf0eb798f770d9f22a");
   assert.deepEqual(pendingFields(committed), [
-    "deployer.address", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash",
+    "deployer.address", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash", "openingPrice.quotePerWrapped",
   ]);
   // Every pending field is refused, one at a time, until filled.
   const decided = structuredClone(committed);
@@ -117,6 +118,7 @@ test("the committed mainnet configuration records the decisions and refuses what
     [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) }; }],
     [/bUSDC\).token is undecided/, (c) => { c.reserveCaps[1].token = ASSET; }],
     [/bUSDC\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = ASSET_CODE; }],
+    [/openingPrice.quotePerWrapped is undecided/, (c) => { c.openingPrice.quotePerWrapped = "100000000"; }],
   ];
   for (const [pattern, fill] of steps) {
     assert.throws(() => validateDeployConfig(decided), pattern);
@@ -132,6 +134,30 @@ test("the committed mainnet configuration records the decisions and refuses what
   assert.equal(plan.pairs.length, 1);
   assert.equal(plan.feeTo, BLOCH_INC);
   assert.equal(plan.steps.length, 5);
+});
+
+test("the quote cap must balance the WBLCH cap at the opening price", () => {
+  // Fixture: WBLCH cap 1, bUSDC bucket 100, so the bucket allows a cap up to 10.
+  const withCap = (cap, price, bucket = "100000000") => {
+    const c = config();
+    c.reserveCaps[1].cap = cap;
+    c.reserveCaps[1].bridgeBucketCapacity = bucket;
+    c.openingPrice.quotePerWrapped = price;
+    return () => validateDeployConfig(c);
+  };
+  assert.doesNotThrow(withCap("10000000", "10000000"));
+  assert.doesNotThrow(withCap("10000000", "8000000"));
+  // The measured case: cap 40x the balanced value is refused before any plan.
+  assert.throws(withCap("10000000", "255000"), /too high for the opening price: set it near 255000 /);
+  assert.throws(withCap("1000000", "10000000", "100000000"), /too low for the opening price/);
+  // The bucket rule holds the cap below the band at a high price: shallower, not riskier.
+  assert.doesNotThrow(withCap("10000000", "400000000"));
+  const noPrice = config();
+  delete noPrice.openingPrice;
+  assert.throws(() => validateDeployConfig(noPrice), /exactly the fields/);
+  const wrongSymbol = config();
+  wrongSymbol.openingPrice.symbol = "wGSMH";
+  assert.throws(() => validateDeployConfig(wrongSymbol), /not in reserveCaps/);
 });
 
 test("TBD-owner is refused exactly like null", () => {

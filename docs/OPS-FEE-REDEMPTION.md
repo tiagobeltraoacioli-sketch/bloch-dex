@@ -4,7 +4,7 @@ The fee is 1/6 of the growth of `sqrt(k)`, minted as LP shares to the Safe at th
 
 ## Do not use `transfer` + `burn`
 
-`MAINNET-READINESS.md` and the package rehearsal describe a Safe `transfer` to the pair followed by a Safe `burn`. **As two Safe transactions this loses the money.** Between them, anyone can call `burn(<their address>)` and receive the value of the shares. With blocks 12–15 minutes apart the window is wide, and it takes one transaction. Reproduced on anvil: a third party received the value of the Safe's whole fee position, and the monitor's `lp_in_pair` went CRIT in the window.
+A Safe `transfer` to the pair followed by a Safe `burn` **loses the money as two Safe transactions.** Between them, anyone can call `burn(<their address>)` and receive the value of the shares. With blocks 12–15 minutes apart the window is wide, and it takes one transaction. Reproduced on anvil: a third party received the value of the Safe's whole fee position, and the monitor's `lp_in_pair` went CRIT in the window.
 
 Batching with MultiSend would be safe, but it is not deployed. The router needs no new contract, because `removeLiquidity` moves the shares and burns them in one call. Only an allowance remains between the two Safe transactions, and only the Safe itself can use that allowance through the router.
 

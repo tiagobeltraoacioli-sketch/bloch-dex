@@ -41,6 +41,10 @@
       "cap": "1000000000"
     }
   ],
+  "openingPrice": {
+    "symbol": "bUSDC",
+    "quotePerWrapped": "TBD-owner"
+  },
   "initialPairs": [
     {
       "tokenA": "WBLCH",

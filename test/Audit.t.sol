@@ -278,6 +278,46 @@ contract DexAuditTest is TestBase {
     }
 
     // ------------------------------------------------------------------ //
+    // DEX-09: an empty pair cannot be bricked                              //
+    // ------------------------------------------------------------------ //
+
+    /// Regression (finding DEX-09): donations exactly at both caps could be synced
+    /// into the reserves of an empty pair, after which mint and swap reverted forever.
+    function testDonationsAtBothCapsCannotBrickTheEmptyPair() public {
+        token0.mint(address(pair), CAP0);
+        token1.mint(address(pair), CAP1);
+        vm.expectRevert(bytes("BDEX: EMPTY_POOL"));
+        pair.sync();
+        // Above the caps, the unsynced donation blocks the deposit only until skim.
+        token0.mint(address(pair), 1);
+        vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+        pair.mint(address(this));
+        pair.skim(address(0xD0));
+        assertEq(token0.balanceOf(address(0xD0)), CAP0 + 1);
+        assertEq(token1.balanceOf(address(0xD0)), CAP1);
+        assertTrue(_seed(CAP0 / 2, CAP1 / 2) > 0);
+    }
+
+    /// The reserves of a pair with no LP shares stay zero for any donation, and
+    /// the seed works after a skim (this also closes the synced form of DEX-04).
+    function testFuzzEmptyPairReservesStayZero(uint256 donation0, uint256 donation1) public {
+        uint256 d0 = _bound(donation0, 0, CAP0 * 2);
+        uint256 d1 = _bound(donation1, 0, CAP1 * 2);
+        token0.mint(address(pair), d0);
+        token1.mint(address(pair), d1);
+        vm.expectRevert(bytes("BDEX: EMPTY_POOL"));
+        pair.sync();
+        (uint112 r0, uint112 r1,) = pair.getReserves();
+        assertEq(uint256(r0) + r1, 0);
+        pair.skim(address(0xD0));
+        assertEq(token0.balanceOf(address(pair)) + token1.balanceOf(address(pair)), 0);
+        assertTrue(_seed(CAP0 / 2, CAP1 / 2) > 0);
+        (r0, r1,) = pair.getReserves();
+        assertEq(r0, CAP0 / 2);
+        assertEq(r1, CAP1 / 2);
+    }
+
+    // ------------------------------------------------------------------ //
     // First depositor / donation inflation                                //
     // ------------------------------------------------------------------ //
 

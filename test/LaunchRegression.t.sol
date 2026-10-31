@@ -12,9 +12,10 @@ contract LaunchRegressionTest is DexFixture {
         bytes32 s;
     }
 
-    function testFirstDepositSurvivesOneSidedDonationAndSync() public {
+    function testFirstDepositSurvivesOneSidedDonationAndRefusedSync() public {
         UniswapV2Pair pair = UniswapV2Pair(factory.createPair(address(token), address(wrapped)));
         token.transfer(address(pair), 1);
+        vm.expectRevert(bytes("BDEX: EMPTY_POOL"));
         pair.sync();
         (,, uint256 liquidity) = router.addLiquidityBLCH{value: 1 ether}(
             address(token), 1 ether, 1 ether, 1 ether, address(this), block.timestamp
