@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IERC20} from "../interfaces/IERC20.sol";
 import {IUniswapV2Factory} from "../interfaces/IUniswapV2Factory.sol";
 import {IUniswapV2Pair} from "../interfaces/IUniswapV2Pair.sol";
 import {BDexLibrary} from "./BDexLibrary.sol";
@@ -9,7 +10,8 @@ import {Math} from "../libraries/Math.sol";
 /// @title BDexLens
 /// @notice Bounded, read-only pool discovery, LP positions and route comparison.
 /// @dev Quotes use spot reserves in raw token units and report a hop that
-///      would exceed the pair's reserve cap as unavailable. They are not an oracle,
+///      would exceed the pair's reserve cap as unavailable, counting tokens donated
+///      to the pair but not yet in its reserves. They are not an oracle,
 ///      a promise of execution, or quotes for taxed/rebasing tokens. The lens
 ///      never requests approval, holds funds, or executes a trade.
 contract BDexLens {
@@ -35,6 +37,17 @@ contract BDexLens {
         uint256 dilutedSupply;
         uint256 reserveShare0;
         uint256 reserveShare1;
+    }
+
+    /// @notice Tokens held by a pair above its recorded reserves. Anyone can
+    ///         take them with `pair.skim(to)`.
+    struct PendingExcess {
+        uint256 excess0;
+        uint256 excess1;
+        // The balance is above the reserve cap: swaps and deposits that touch
+        // this side revert with BDEX: RESERVE_CAP until someone calls skim.
+        bool blocksInflow0;
+        bool blocksInflow1;
     }
 
     struct RouteQuote {
@@ -107,6 +120,19 @@ contract BDexLens {
         // donations, taxes and rebases can change the realized redemption.
     }
 
+    /// @notice Pending donations of one registered pair (finding DEX-02).
+    function pendingExcess(address pair) external view returns (PendingExcess memory value) {
+        PoolSnapshot memory p = _pool(pair);
+        require(factory.getPair(p.token0, p.token1) == pair, "LENS: NOT_A_PAIR");
+        (uint112 cap0, uint112 cap1) = IUniswapV2Pair(pair).reserveCaps();
+        uint256 balance0 = IERC20(p.token0).balanceOf(pair);
+        uint256 balance1 = IERC20(p.token1).balanceOf(pair);
+        if (balance0 > p.reserve0) value.excess0 = balance0 - p.reserve0;
+        if (balance1 > p.reserve1) value.excess1 = balance1 - p.reserve1;
+        value.blocksInflow0 = value.excess0 != 0 && cap0 != 0 && balance0 > cap0;
+        value.blocksInflow1 = value.excess1 != 0 && cap1 != 0 && balance1 > cap1;
+    }
+
     function quoteExactInput(uint256 amountIn, address[] calldata path, uint256 slippageBps)
         external
         view
@@ -148,6 +174,22 @@ contract BDexLens {
         p.token1 = tokenPair.token1();
         (p.reserve0, p.reserve1, p.reserveTimestamp) = tokenPair.getReserves();
         p.totalSupply = tokenPair.totalSupply();
+    }
+
+    /// @dev The check UniswapV2Pair._update applies to the balance a swap leaves
+    ///      behind, which includes any pending donation (see DEX-06).
+    function _balanceFits(address token, address pair, uint256 added, uint256 removed, uint256 reserve, uint256 cap)
+        private
+        view
+        returns (bool)
+    {
+        if (cap == 0) return true;
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IERC20.balanceOf, (pair)));
+        if (!ok || data.length != 32) return false;
+        uint256 balance = abi.decode(data, (uint256));
+        if (balance + added < removed) return false;
+        balance = balance + added - removed;
+        return balance <= cap || balance <= reserve;
     }
 
     function _validatePath(address[] calldata path) private pure {
@@ -194,6 +236,10 @@ contract BDexLens {
             if (capIn != 0 && rIn + q.amounts[i] > capIn) return q;
             uint256 out = BDexLibrary.getAmountOut(q.amounts[i], rIn, rOut);
             if (out == 0) return q;
+            if (
+                !_balanceFits(path[i], pair, q.amounts[i], 0, rIn, capIn)
+                    || !_balanceFits(path[i + 1], pair, 0, out, rOut, inputIs0 ? cap1 : cap0)
+            ) return q;
             uint256 marginal = BDexLibrary.quote(q.amounts[i], rIn, rOut);
             q.amounts[i + 1] = out;
             q.executionLossBps[i] = (marginal - out) * BPS / marginal;

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Development JSON-RPC shim between Foundry and the Bloch L2 settled RPC.
 
+DEVNET ONLY, kept for the historical devnet4 records. It is not part of the
+mainnet path: the current settled RPC returns these fields itself.
+
 The settled RPC omits two constant post-merge header fields (`sha3Uncles`,
 `nonce`) from block objects, which alloy-based clients (forge, cast) refuse to
 deserialize. This proxy forwards every request unchanged and, in block

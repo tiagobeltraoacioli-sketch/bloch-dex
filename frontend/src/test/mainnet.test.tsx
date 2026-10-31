@@ -26,12 +26,15 @@ import {
   bundledNetwork,
   bundledRecord,
   loadMainnetState,
+  MULTICALL3_CODE_HASH,
   parseNetwork,
   plannedCaps,
   plannedPairs,
   type MainnetNetwork,
 } from '../mainnet/config';
 import { checkRoute, explainBlock, headroom, headroomUse } from '../mainnet/caps';
+import { blocksSwap, compareQuotes } from '../mainnet/quotecheck';
+import { MULTICALL3_ABI, readBalances, skimTransaction } from '../mainnet/reads';
 import networkJson from '../../../deployments/mainnet/frontend.network.json';
 import type { Provider } from '../wallet';
 
@@ -53,7 +56,7 @@ const norm = (value: unknown): unknown =>
 type Json = any;
 
 /** The devnet4 two-pair record re-targeted at chain 700770 (a non-rehearsal plan). */
-function mainnetRecord(): { plan: Json; config: Json; gateReport: Json } {
+function mainnetRecord(): { plan: Json; config: Json; gateReport: Json; infra: Json } {
   const r = structuredClone(committedRecord) as { plan: Json; config: Json; gateReport: Json };
   r.config.network = {
     ...r.config.network,
@@ -64,7 +67,16 @@ function mainnetRecord(): { plan: Json; config: Json; gateReport: Json } {
   r.plan.chain = { ...r.plan.chain, id: 700770, rehearsal: false };
   r.plan.configSha256 = sha256(stringToBytes(stableJson(r.config)));
   r.gateReport.chainId = 700770;
-  return r;
+  return { ...r, infra: infraFor(r.plan.chain.genesisHash) };
+}
+
+const MULTICALL = '0x00000000000000000000000000000000000c0de3' as Address;
+function infraFor(genesisHash: string) {
+  return {
+    domain: 'postern.dex.mainnet-infra-plan.v1',
+    chain: { id: 700770, genesisHash, rehearsal: false },
+    contracts: { multicall3: { address: MULTICALL, codeHash: MULTICALL3_CODE_HASH } },
+  };
 }
 
 let network: MainnetNetwork;
@@ -101,9 +113,19 @@ beforeAll(async () => {
 type ChainState = {
   allowance: bigint;
   quote: { available: boolean; amountOut: bigint; minimumOut: bigint };
+  /** The lens quote at `latest`; defaults to the finalized one. */
+  latestQuote?: { available: boolean; amountOut: bigint; minimumOut: bigint };
+  /** A failing read at `latest`. */
+  latestDown?: boolean;
+  excess?: Record<
+    string,
+    { excess0: bigint; excess1: bigint; blocksInflow0: boolean; blocksInflow1: boolean }
+  >;
   reserves: Record<string, [bigint, bigint, number]>;
   sent: { method: string; params: unknown[] }[];
 };
+
+const fakeState: { current: ChainState | null } = { current: null };
 
 function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainState } {
   const state: ChainState = {
@@ -116,6 +138,7 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
     sent: [],
     ...change,
   };
+  fakeState.current = state;
   const tokens: Record<string, [number, string, bigint]> = {
     [WBLCH]: [18, 'WBLCH', 0n],
     [BUSDC]: [6, 'bUSDC', 25_000_000n],
@@ -146,6 +169,7 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
         return { status: '0x1', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
       case 'eth_call': {
         const { to, data } = params[0] as { to: Address; data: Hex };
+        if (params[1] === 'latest' && state.latestDown) throw new Error('RPC down');
         for (const abi of [ERC20_ABI, PAIR_ABI, LENS_ABI] as Abi[]) {
           let call;
           try {
@@ -160,18 +184,31 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
           if (name === 'allowance') return reply(abi, name, state.allowance);
           if (name === 'getReserves') return reply(abi, name, state.reserves[to]);
           if (name === 'reserveCaps') return reply(abi, name, caps[to]);
+          if (name === 'pendingExcess')
+            return reply(
+              abi,
+              name,
+              state.excess?.[(call.args as [Address])[0].toLowerCase()] ?? {
+                excess0: 0n,
+                excess1: 0n,
+                blocksInflow0: false,
+                blocksInflow1: false,
+              },
+            );
           if (name === 'bestExactInput') {
             const [amountIn, routes] = call.args as [bigint, Address[][]];
+            const latest = params[1] === 'latest';
+            const active = (latest && state.latestQuote) || state.quote;
             const q = (route: Address[]) => ({
-              available: state.quote.available,
-              blockNumber: 440n,
+              available: active.available,
+              blockNumber: latest ? 500n : 440n,
               timestamp: 0n,
-              amountOut: state.quote.amountOut,
-              minimumOut: state.quote.minimumOut,
-              amounts: route.map((_, i) => (i === 0 ? amountIn : state.quote.amountOut)),
+              amountOut: active.amountOut,
+              minimumOut: active.minimumOut,
+              amounts: route.map((_, i) => (i === 0 ? amountIn : active.amountOut)),
               executionLossBps: route.slice(1).map(() => 30n),
             });
-            const best = state.quote.available ? 0n : 2n ** 256n - 1n;
+            const best = active.available ? 0n : 2n ** 256n - 1n;
             return reply(abi, name, [best, routes.map(q)]);
           }
         }
@@ -322,6 +359,9 @@ describe('mainnet deployment record', () => {
     if (live.status === 'live') {
       expect(live.deployment).toMatchObject({ chainId: 700770, router: ROUTER, lens: LENS });
       expect(live.deployment.path).toBe('deployments/mainnet/dex-mainnet.record.json');
+      // The recorded Multicall3 joins the code hashes checked at the finalized block.
+      expect(live.multicall3).toBe(MULTICALL);
+      expect(live.deployment.codeHashes[MULTICALL]).toBe(MULTICALL3_CODE_HASH);
     }
     await expect(loadMainnetState(wrap(committedRecord), network)).rejects.toThrow(
       /not a chain 700770 deployment/,
@@ -332,6 +372,12 @@ describe('mainnet deployment record', () => {
     await expect(
       loadMainnetState({ ...wrap(mainnetRecord()), status: 'maybe' }, network),
     ).rejects.toThrow(/record status/);
+    await expect(
+      loadMainnetState(wrap({ ...mainnetRecord(), infra: undefined }), network),
+    ).rejects.toThrow(/no infra plan/);
+    const badHash = mainnetRecord();
+    badHash.infra.contracts.multicall3.codeHash = `0x${'1'.repeat(64)}`;
+    await expect(loadMainnetState(wrap(badHash), network)).rejects.toThrow(/not canonical/);
     const refused = mainnetRecord();
     refused.gateReport.decision = 'refused';
     await expect(loadMainnetState(wrap(refused), network)).rejects.toThrow(/did not enable/);
@@ -399,9 +445,9 @@ describe('mainnet route', () => {
     );
     const panel = await screen.findByLabelText('Not yet live');
     expect(panel.textContent).toContain('10 WBLCH');
-    expect(panel.textContent).toContain('1 wGSMH');
+    expect(panel.textContent).not.toContain('wGSMH');
     expect(panel.textContent).toContain('1000 bUSDC');
-    expect(panel.textContent).toContain('WBLCH/wGSMH, WBLCH/bUSDC');
+    expect(panel.textContent).toContain('Pools: WBLCH/bUSDC.');
     expect(screen.getByLabelText('Network').textContent).toContain('0xab162');
     expect(screen.getByLabelText('Network').textContent).toContain('placeholder');
     expect(screen.getByLabelText('Bridges').textContent).toMatch(/bUSDC.*not live yet/);
@@ -447,13 +493,24 @@ describe('mainnet route', () => {
     expect(quote.textContent).toMatch(/bUSDC\/WBLCH: 0\.10% of the bUSDC headroom/);
     expect(screen.getByLabelText('Revert conditions').textContent).toContain('RESERVE_CAP');
 
-    // Every read went to the finalized block hash; nothing read `latest`.
+    // Every read went to the finalized block hash, except the one lens quote
+    // used only as the stale-price cross-check.
     const at = JSON.stringify({ blockHash: FINALIZED.hash });
     const reads = state.sent.filter((s) =>
       ['eth_call', 'eth_getBalance', 'eth_getCode'].includes(s.method),
     );
     expect(reads.length).toBeGreaterThan(10);
-    expect(reads.every((s) => JSON.stringify(s.params[1]) === at)).toBe(true);
+    const atLatest = reads.filter((s) => s.params[1] === 'latest');
+    expect(atLatest).toHaveLength(1);
+    const latestData = (atLatest[0].params[0] as { data: Hex }).data;
+    expect(decodeFunctionData({ abi: LENS_ABI, data: latestData }).functionName).toBe(
+      'bestExactInput',
+    );
+    expect(
+      reads
+        .filter((s) => s.params[1] !== 'latest')
+        .every((s) => JSON.stringify(s.params[1]) === at),
+    ).toBe(true);
 
     await user.click(await screen.findByRole('button', { name: /Approve 1 bUSDC/ }));
     await waitFor(() => expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull());
@@ -581,5 +638,226 @@ describe('mainnet route', () => {
       /mainnet: the RPC genesis differs.*No transaction can be sent/,
     );
     expect(screen.queryByRole('table')).toBeNull();
+  });
+
+  describe('stale quote cross-check', () => {
+    const open = async (change: Partial<ChainState>) => {
+      const user = userEvent.setup();
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n, ...change });
+      const { wallet, requests } = fakeWallet(state);
+      render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={rpc}
+          wallet={wallet}
+          planned={PLANNED}
+          now={() => NOW_MS}
+        />,
+      );
+      await screen.findByRole('table');
+      await screen.findByLabelText('Finalized balances');
+      await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+      await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+      await user.type(screen.getByLabelText('Amount'), '1');
+      await user.click(screen.getByRole('button', { name: 'Get quote' }));
+      await screen.findByLabelText('Quote');
+      const sends = () => requests.filter((r) => r.method === 'eth_sendTransaction');
+      return { user, sends };
+    };
+    const worse = { available: true, amountOut: 30_000_000n, minimumOut: 29_850_000n };
+
+    it('blocks the swap when the latest quote is below the minimum, until the user reconfirms at that price', async () => {
+      const { user, sends } = await open({ latestQuote: worse });
+      const warning = await screen.findByLabelText('Stale quote');
+      expect(warning.textContent).toContain('3.22% worse');
+      const swap = screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement;
+      expect(swap.disabled).toBe(true);
+      await user.click(screen.getByRole('button', { name: /Reconfirm at the latest price/ }));
+      expect(screen.getByLabelText('Quote').textContent).toContain(
+        'Latest block 500, not finalized',
+      );
+      expect(screen.queryByLabelText('Stale quote')).toBeNull();
+      expect(swap.disabled).toBe(false);
+      await user.click(swap);
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      const data = (sends()[0].params![0] as { data: Hex }).data;
+      // The reconfirmed minimum, not the finalized one, goes on chain.
+      expect(decodeFunctionData({ abi: ROUTER_ABI, data }).args![1]).toBe(29_850_000n);
+    });
+
+    it('does not warn or ask again while the latest quote stays within the slippage', async () => {
+      const within = { available: true, amountOut: 30_900_000n, minimumOut: 30_745_000n };
+      await open({ latestQuote: within });
+      expect(screen.queryByLabelText('Stale quote')).toBeNull();
+      expect((screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+      expect(screen.getByLabelText('Quote').textContent).toContain('Finalized block 440');
+    });
+
+    it('blocks when no route fills the amount at the latest block', async () => {
+      await open({ latestQuote: { available: false, amountOut: 0n, minimumOut: 0n } });
+      expect((await screen.findByLabelText('Stale quote')).textContent).toContain(
+        'no route can fill',
+      );
+      expect((screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      expect(screen.queryByRole('button', { name: /Reconfirm/ })).toBeNull();
+    });
+
+    it('re-checks when Swap is pressed and stops if the price has moved since the quote', async () => {
+      const { user, sends } = await open({});
+      const state = fakeState.current!;
+      state.latestQuote = worse;
+      await user.click(screen.getByRole('button', { name: 'Swap' }));
+      expect((await screen.findByLabelText('Stale quote')).textContent).toContain('worse');
+      expect(sends()).toHaveLength(0);
+    });
+
+    it('keeps the finalized quote and says so when the latest block cannot be read', async () => {
+      await open({ latestDown: true });
+      expect((await screen.findByLabelText('Stale quote')).textContent).toContain(
+        'not cross-checked',
+      );
+      expect((screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      );
+    });
+
+    it('compares against the minimum output of the active quote', () => {
+      const base = {
+        path: [],
+        amountIn: 1n,
+        amounts: [],
+        executionLossBps: [],
+        blockNumber: 1n,
+      };
+      const active = { ...base, amountOut: 1000n, minimumOut: 995n };
+      expect(compareQuotes(active, { ...active, amountOut: 995n }).status).toBe('ok');
+      expect(compareQuotes(active, { ...active, amountOut: 2000n }).status).toBe('ok');
+      const check = compareQuotes(active, { ...active, amountOut: 994n });
+      expect(check).toMatchObject({ status: 'worse', worseBps: 60n });
+      expect(blocksSwap(check)).toBe(true);
+      expect(blocksSwap(compareQuotes(active, null))).toBe(true);
+      expect(blocksSwap({ status: 'unknown' })).toBe(false);
+      expect(blocksSwap(null)).toBe(false);
+    });
+  });
+
+  describe('pending excess', () => {
+    const excess = {
+      [USD_PAIR]: {
+        excess0: 1_500_000_000n,
+        excess1: 0n,
+        blocksInflow0: true,
+        blocksInflow1: false,
+      },
+    };
+
+    it('shows the donation, says it blocks inflows, and skims to the connected wallet', async () => {
+      const user = userEvent.setup();
+      const { rpc, state } = fakeChain({ excess });
+      const { wallet, requests } = fakeWallet(state);
+      render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={rpc}
+          wallet={wallet}
+          planned={PLANNED}
+        />,
+      );
+      const hint = await screen.findByLabelText('Pending excess');
+      expect(hint.textContent).toContain('1500 bUSDC above the reserves');
+      expect(hint.textContent).toContain('revert until someone calls skim');
+      await user.click(within(hint).getByRole('button', { name: 'Skim to my wallet' }));
+      await waitFor(() =>
+        expect(requests.filter((r) => r.method === 'eth_sendTransaction')).toHaveLength(1),
+      );
+      const tx = requests.find((r) => r.method === 'eth_sendTransaction')!.params![0] as {
+        to: Address;
+        data: Hex;
+      };
+      expect(tx.to).toBe(USD_PAIR);
+      expect(tx.data).toBe(skimTransaction(USD_PAIR, ACCOUNT).data);
+      expect(tx.data.slice(0, 10)).toBe('0xbc25cf77');
+    });
+
+    it('shows no hint without a donation', async () => {
+      const { rpc, state } = fakeChain();
+      const { wallet } = fakeWallet(state);
+      render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={rpc}
+          wallet={wallet}
+          planned={PLANNED}
+        />,
+      );
+      await screen.findByRole('table');
+      expect(screen.queryByLabelText('Pending excess')).toBeNull();
+    });
+
+    it('explains a route blocked by a donation on either side', () => {
+      const t = (address: Address, symbol: string, decimals: number) => ({
+        address,
+        symbol,
+        decimals,
+        cap: 0n,
+        wrapped: false,
+      });
+      const pool: LivePool = {
+        address: USD_PAIR,
+        token0: t(BUSDC, 'bUSDC', 6),
+        token1: t(WBLCH, 'WBLCH', 18),
+        reserve0: 500_000_000n,
+        reserve1: 5n * 10n ** 18n,
+        cap0: 1_000_000_000n,
+        cap1: 10n ** 19n,
+        excess: excess[USD_PAIR],
+      };
+      const into = checkRoute([pool], [BUSDC, WBLCH], 1_000_000n);
+      expect(into.block).toMatchObject({ kind: 'pending-excess', excess: 1_500_000_000n });
+      expect(explainBlock(into.block!)).toMatch(/holds 1500 bUSDC above its reserves.*skim/);
+      const outOf = checkRoute([pool], [WBLCH, BUSDC], 10n ** 16n);
+      expect(outOf.block?.kind).toBe('pending-excess');
+      const small = {
+        ...pool,
+        excess: { excess0: 1n, excess1: 0n, blocksInflow0: false, blocksInflow1: false },
+      };
+      expect(checkRoute([small], [BUSDC, WBLCH], 1_000_000n).block).toBeNull();
+    });
+  });
+
+  it('reads balances in one finalized aggregate3 call through the recorded Multicall3', async () => {
+    const sent: { method: string; params: unknown[] }[] = [];
+    const tokens = [
+      { address: WBLCH, symbol: 'WBLCH', decimals: 18, cap: 0n, wrapped: true },
+      { address: BUSDC, symbol: 'bUSDC', decimals: 6, cap: 0n, wrapped: false },
+    ];
+    const word = (v: bigint) => `0x${v.toString(16).padStart(64, '0')}` as Hex;
+    const rpc: Rpc = async (method, params) => {
+      sent.push({ method, params });
+      return encodeFunctionResult({
+        abi: MULTICALL3_ABI,
+        functionName: 'aggregate3',
+        result: [
+          { success: true, returnData: word(7n) },
+          { success: true, returnData: word(8n) },
+          { success: true, returnData: word(9n) },
+        ],
+      });
+    };
+    const b = await readBalances(rpc, FINALIZED.hash as Hex, ACCOUNT, tokens, MULTICALL);
+    expect(b.native).toBe(7n);
+    expect(b.tokens.get(WBLCH)).toBe(8n);
+    expect(b.tokens.get(BUSDC)).toBe(9n);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].method).toBe('eth_call');
+    expect(sent[0].params[1]).toEqual({ blockHash: FINALIZED.hash });
+    expect((sent[0].params[0] as { to: Address }).to).toBe(MULTICALL);
   });
 });

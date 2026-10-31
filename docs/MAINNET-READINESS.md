@@ -71,7 +71,7 @@ be built), the L2 RPC items in D4/D13/D15 and the timestamp decision (F3).
 | D1 | Chain ID 700771 | Done | Mainnet 700770 from `deployments/networks.json`. 700771 and 31337 are accepted only with `network.rehearsal: true` **and** `--rehearsal`; any other non-mainnet ID and 8400/84001 are refused. The frontend reads the same file and stays in preview on devnet4 until a reviewed mainnet integration |
 | D2 | Genesis hash `0xaec98443…fefa` (devnet4) | Pending input (M9) | `network.genesisHash: null`; the driver and the gate compare it with `eth_getBlockByNumber(0)` |
 | D3 | Devnet4 addresses | Done | Never reused; mainnet addresses come from the plan (CREATE from the pinned deployer/nonce, CREATE2 for pairs) |
-| D4 | `scripts/devnet4/rpc_compat_proxy.py` fills `sha3Uncles`/`nonce` | Resolved on devnet4 (2026-10-16); M9 for mainnet | The devnet4 settled RPC (18945) now returns `sha3Uncles` and `nonce`; forge and cast broadcast against it directly, without the shim ([DEVNET4-MAINNET-PROCEDURE.md](DEVNET4-MAINNET-PROCEDURE.md)). The shim is no longer needed; the mainnet node must ship the same RPC build |
+| D4 | `scripts/devnet4/rpc_compat_proxy.py` fills `sha3Uncles`/`nonce` | Resolved; not in the mainnet path | The settled RPC returns `sha3Uncles`, `nonce` and `pending`; forge and cast use it directly. The shim is a historical devnet4 tool, and no mainnet script or document uses it. The public gateway allows CORS from any origin, so the site reads the RPC directly |
 | D5 | L2 block timestamp = +1 per block | Resolved on devnet4; M9 for mainnet | Devnet4 blocks carry wall-clock timestamps from block 228 on (blocks ≤ 227 kept `timestamp = number`). See F3 |
 | D6 | One dev key was deployer, fee authority and treasury | Done | Two roles left: the fresh deployer (no power after deployment) and the Bloch Inc multisig (fee recipient, fixed) |
 | D7 | Test asset D4TEST | Done | `DeployMainnet` deploys only WBLCH (optional) and the core/periphery; no test assets, liquidity or approvals |
@@ -124,8 +124,10 @@ outflows are never blocked. Values (committed in
 | Token | Cap | Base units | Rule |
 |---|---|---|---|
 | WBLCH | 10 BLCH | `10000000000000000000` (18 dp) | The existing code ceiling (`MAX_WRAPPED_CAP`, gate `maxWrappedReserveCap`) |
-| wGSMH | 1 wGSMH | `100000000` (8 dp) | ≤ 1/10 of the wGSMH bridge bucket. The bridge deploy config (bloch-l2-bridge `feat/pontes-mainnet-deploy`, docs/BRIDGES-MAINNET.md) sizes the pilot at supply 30 GSMH, bucket 10 GSMH/24 h → cap 1 wGSMH; raise both together by redeploy |
 | bUSDC | 1,000 bUSDC | `1000000000` (6 dp) | 1/10 of the 10,000 bUSDC bucket (refill 24 h, supply cap 100,000) |
+
+The launch factory has only the WBLCH/bUSDC pair (owner, 2026-10-30). wGSMH is
+out of it; a capped wGSMH listing needs a new factory once its bridge exists.
 
 Rationale:
 
@@ -177,7 +179,7 @@ deployment record in a separate reviewed change.
 | F5 | No external audit | **Open (decision 6: later).** Required before stage 1 |
 | F6 | The fee recipient is permanent | By design (decision 2). If Bloch Inc's Safe must change, deploy a new factory; the Safe can rotate its own owners without touching the DEX |
 | F7 | A donation above a cap could make `burn` revert with `RESERVE_CAP`, blocking LP exits (DEX-01 in [AUDIT-SCOPE-DEX.md](AUDIT-SCOPE-DEX.md)) | **Fixed** 2026-10-30: burn records at most `max(cap, previous reserve)` and leaves the excess skimmable. Pair init code hash changed |
-| F8 | A standing donation above a cap blocks swaps and deposits on that side until someone calls `skim` (DEX-02) | Residual; the griefer forfeits the donation to whoever skims |
+| F8 | A standing donation above a cap blocks swaps and deposits on that side until someone calls `skim` (DEX-02) | **Accepted residual risk** (owner, 2026-10-30): the griefer forfeits the donation to whoever skims. `BDexLens.pendingExcess` and the mainnet route show it with a skim action |
 
 ## 5. Tooling
 

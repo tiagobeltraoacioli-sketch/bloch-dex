@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.mainnet-infra.v1",
+  "network": {
+    "name": "bloch-l2-mainnet",
+    "chainId": 700770,
+    "genesisHash": "0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468",
+    "rehearsal": false
+  },
+  "deployer": {
+    "address": "TBD-owner",
+    "startNonce": 0
+  }
+}

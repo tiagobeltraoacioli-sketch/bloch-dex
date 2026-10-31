@@ -410,14 +410,14 @@ WalletConnect, `frame-ancestors 'none'`), HSTS, `nosniff`, `no-referrer`,
 `X-Frame-Options: DENY`, a restrictive `Permissions-Policy` and cache rules. It
 is generated from `src/mainnet/headers.ts`; `src/test/hosting.test.ts` fails
 when they diverge, for example after changing the RPC URL. Hosts without
-`_headers` support must send the same headers. The public RPC must answer CORS
-requests from the site's origin (or the host must proxy it same-origin and set
+`_headers` support must send the same headers. The public RPC gateway answers CORS
+requests from any origin (a host could instead proxy it same-origin and set
 `VITE_MAINNET_RPC_URL`).
 
 **Going live** (after the deployment and the finality gate):
 
 ```sh
-node scripts/staging/frontend-record.mjs --config deployments/mainnet/dex-mainnet.config.json --plan deployments/mainnet/dex-mainnet.plan.json --gate-report deployments/mainnet/dex-mainnet.gate-report.json --write deployments/mainnet/dex-mainnet.record.json
+node scripts/staging/frontend-record.mjs --config deployments/mainnet/dex-mainnet.config.json --plan deployments/mainnet/dex-mainnet.plan.json --infra-plan deployments/mainnet/700770/infra.plan.json --gate-report deployments/mainnet/dex-mainnet.gate-report.json --write deployments/mainnet/dex-mainnet.record.json
 ```
 
 Then set `genesisHash`, `rpc.status: "live"` and the explorer and bridge URLs in

@@ -148,15 +148,21 @@ that anyone may then skim. The fix bounds the reserve that burn records (see
 3.1). It is covered by I7 and fails without the fix. It changes the pair init
 code hash (section 1).
 
-### DEX-02 (Low, open): a standing donation above the cap blocks inflows on that side
+### DEX-02 (Low, accepted residual risk): a standing donation above the cap blocks inflows on that side
 
 While a capped side's balance exceeds `max(cap, reserve)`, every swap or mint
 that touches that side reverts with `RESERVE_CAP`, including swaps that take
 that token out, if the donation exceeds the output. Anyone can clear the
 excess with `skim` and keep it, so the griefer loses the donation each time.
-Burn is unaffected after DEX-01. Recommendation: frontends and keepers call
-`skim` when `balance > reserve` on a capped pair; the Lens could report the
-pending excess.
+Burn is unaffected after DEX-01.
+
+**Accepted by the owner on 2026-10-30, with no pair change.** The griefer pays
+the full donation each time and anyone can take it back with one call, so the
+attack has a cost and no profit; the worst outcome is a pause on one pool until
+the next `skim`, with exits open throughout. `BDexLens.pendingExcess(pair)`
+reports the excess per side and whether it blocks inflows, and the mainnet
+route shows it with a skim button (the caller receives the excess). Covered by
+`LensPendingExcessTest` in `test/Lens.t.sol` and by the mainnet rehearsal.
 
 ### DEX-03 (Low, known F4): caps are per pair, not aggregate
 
@@ -184,11 +190,15 @@ closed. Only exact-in swaps have anchored variants, and liquidity operations
 are not anchored; that is by design. Anchoring does not replace
 `amountOutMin`.
 
-### DEX-06 (Informational): the Lens ignores pending donations
+### DEX-06 (Informational, fixed in the Lens): pending donations in quotes
 
-`BDexLens._quote` checks `reserveIn + amountIn <= cap` but not
-`balance − reserve`. With a standing donation (DEX-02), a quote can be
-reported as available and still revert. View-only; no funds at risk.
+`BDexLens._quote` checked `reserveIn + amountIn <= cap` but not
+`balance − reserve`, so with a standing donation (DEX-02) a quote could be
+reported as available and still revert. View-only; no funds were at risk. It
+now applies the check `UniswapV2Pair._update` applies, to the balance a swap
+leaves on each side. `testFuzzQuoteAvailabilityMatchesExecution` requires quote
+availability to equal execution under any two standing donations. The Lens
+runtime hash changed; the pair init code hash did not.
 
 ### DEX-07 (Informational): donations also pay the protocol fee
 

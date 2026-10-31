@@ -11,6 +11,8 @@
 #
 # Steps (every transaction signed offline with `cast mktx` and published with
 # `cast publish`, explicit nonce, gas limit and fees):
+#   infra: Multicall3 and the CREATE2 deployer, ordinary deployments (recorded
+#     addresses, canonical runtime hashes checked);
 #   0 Safe: config -> plan -> preflight -> txs -> sign-and-publish (bootstrap
 #     key: SafeL2 singleton, SafeProxyFactory, CompatibilityFallbackHandler,
 #     3-of-5 proxy) -> verify;
@@ -19,7 +21,11 @@
 #     createPair WBLCH/bUSDC) -> record -> verify-deployment;
 #   2 gate before finality refused; finality; gate passes;
 #   3 guarded launch: 50% seed, over-cap refused, swaps, protocol fee to the
-#     Safe, the Safe redeems it with 3 of 5 signatures after 2 are refused.
+#     Safe, the Safe redeems it with 3 of 5 signatures after 2 are refused;
+#     an over-cap swap reverts and the lens says so; a donation above the cap
+#     is reported by the lens, blocks swaps and is cleared by skim; both
+#     utility contracts work in real calls.
+#   With RENDER_HOOK=scripts/staging/render/render-hook.sh: browser phase.
 #
 #   SAFE_ARTIFACTS=<safe-contracts 1.4.1 build/artifacts> \
 #     scripts/staging/rehearse-mainnet-package.sh anvil <revision> [port] [work]
@@ -45,13 +51,14 @@ log() { echo "== $*" | tee -a "$EV/steps.log"; }
 
 # Throwaway keys, generated for this run only.
 umask 077
-cast wallet new --number 8 --json > "$WORK/keys.json"
+cast wallet new --number 9 --json > "$WORK/keys.json"
 umask 022
 key() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].private_key)' "$WORK/keys.json" "$1"; }
 addr() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].address.toLowerCase())' "$WORK/keys.json" "$1"; }
 BOOT_KEY=$(key 0); BOOT=$(addr 0); DEPLOYER_KEY=$(key 1); DEPLOYER=$(addr 1); ISSUER_KEY=$(key 2); ISSUER=$(addr 2)
 OWNER_KEYS=("$(key 3)" "$(key 4)" "$(key 5)" "$(key 6)" "$(key 7)")
 OWNERS=("$(addr 3)" "$(addr 4)" "$(addr 5)" "$(addr 6)" "$(addr 7)")
+INFRA_KEY=$(key 8); INFRA=$(addr 8)
 
 PIDS=()
 cleanup() {
@@ -68,13 +75,13 @@ case "$MODE" in
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
     for _ in $(seq 50); do cast chain-id --rpc-url "$RPC" > /dev/null 2>&1 && break; sleep 0.2; done
-    for a in "$BOOT" "$DEPLOYER" "$ISSUER"; do cast rpc anvil_setBalance "$a" 0x56bc75e2d63100000 --rpc-url "$RPC" > /dev/null; done
+    for a in "$BOOT" "$DEPLOYER" "$ISSUER" "$INFRA"; do cast rpc anvil_setBalance "$a" 0x56bc75e2d63100000 --rpc-url "$RPC" > /dev/null; done
     ;;
   private-l2)
     : "${PRODUCE_DEV:?}" "${SETTLED_RPC:?}"
     export PRODUCE_DEV SETTLED_RPC
     mkdir -p "$WORK/l2"
-    scripts/staging/private-l2.sh init "$WORK/l2" "$BOOT,$DEPLOYER,$ISSUER" 10000000000 | tee -a "$EV/steps.log"
+    scripts/staging/private-l2.sh init "$WORK/l2" "$BOOT,$DEPLOYER,$ISSUER,$INFRA" 10000000000 | tee -a "$EV/steps.log"
     scripts/staging/private-l2.sh start "$WORK/l2" "$PORT" | tee -a "$EV/steps.log"
     ;;
   *) echo "mode must be anvil or private-l2" >&2; exit 2 ;;
@@ -109,6 +116,31 @@ send() {
 must() { local out; out=$(send "$@"); [ "${out%% *}" = 0x1 ] || { echo "FAIL: transaction reverted" >&2; exit 1; }; echo "$out"; }
 must_fail() { local out; out=$(send "$@"); [ "${out%% *}" = 0x0 ] || { echo "FAIL: transaction succeeded" >&2; exit 1; }; }
 jsonget() { node -e 'const v=process.argv[2].split(".").reduce((o,k)=>o[k],require(require("path").resolve(process.argv[1])));console.log(typeof v==="object"?JSON.stringify(v):v)' "$1" "$2"; }
+
+# ---------------------------------------------------------------- infra
+log "infra: committed config lists what is pending"
+node scripts/staging/deploy-infra.mjs pending --config deployments/mainnet/700770/infra.config.json | tee "$EV/infra.pending.json"
+if node scripts/staging/deploy-infra.mjs validate --config deployments/mainnet/700770/infra.config.json 2> "$EV/infra.refusal.txt"; then
+  echo "FAIL: committed infra config with TBD-owner accepted"; exit 1
+fi
+cat "$EV/infra.refusal.txt"
+node -e '
+const c = JSON.parse(require("fs").readFileSync("deployments/mainnet/700770/infra.config.json", "utf8"));
+const [genesis, key] = process.argv.slice(1);
+c.network.genesisHash = genesis; c.deployer.address = key;
+console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$INFRA" > "$EV/infra.config.json"
+INFRA_CMD=node\ scripts/staging/deploy-infra.mjs
+$INFRA_CMD validate --config "$EV/infra.config.json" | tee "$EV/infra.validate.json"
+INFRA_SHA=$(jsonget "$EV/infra.validate.json" configSha256)
+$INFRA_CMD plan --config "$EV/infra.config.json" --write "$EV/infra.plan.json" > /dev/null
+$INFRA_CMD preflight --config "$EV/infra.config.json" --plan "$EV/infra.plan.json" --rpc "$RPC" | tee "$EV/infra.preflight.json"
+$INFRA_CMD txs --config "$EV/infra.config.json" --plan "$EV/infra.plan.json" --write "$WORK/infra.txs.json" | tee -a "$EV/steps.log"
+log "infra: sign (cast mktx) and publish (cast publish)"
+scripts/staging/sign-and-publish.sh --txs "$WORK/infra.txs.json" --rpc "$RPC" --confirm "$INFRA_SHA" --max-fee-wei $MAXFEE --priority-fee-wei $TIP \
+  --hashes-out "$EV/infra.hashes.txt" -- --private-key "$INFRA_KEY" 2>&1 | tee "$EV/infra.publish.log"
+MULTICALL=$(jsonget "$EV/infra.plan.json" contracts.multicall3.address)
+CREATE2=$(jsonget "$EV/infra.plan.json" contracts.create2Deployer.address)
+log "infra: Multicall3 $MULTICALL, CREATE2 deployer $CREATE2"
 
 # ---------------------------------------------------------------- 0 Safe
 log "0 Safe: committed mainnet config lists what is pending"
@@ -168,8 +200,8 @@ scripts/staging/sign-and-publish.sh --txs "$WORK/dex.txs.json" --rpc "$RPC" --co
   --hashes-out "$EV/dex.hashes.txt" -- --private-key "$DEPLOYER_KEY" 2>&1 | tee "$EV/dex.publish.log"
 $D record --config "$EV/dex.config.json" --plan "$EV/dex.plan.json" --rpc "$RPC" --tx-hashes "$EV/dex.hashes.txt" --write "$EV/gate.json" | tee -a "$EV/steps.log"
 log "1 verify-deployment (latest, pairs empty)"
-node scripts/staging/verify-deployment.mjs --safe-plan "$EV/safe.plan.json" --dex-plan "$EV/dex.plan.json" --rpc "$RPC" \
-  --safe-hashes "$EV/safe.hashes.txt" --dex-hashes "$EV/dex.hashes.txt" --expect-empty > "$EV/verify.latest.json"
+node scripts/staging/verify-deployment.mjs --safe-plan "$EV/safe.plan.json" --dex-plan "$EV/dex.plan.json" --infra-plan "$EV/infra.plan.json" --rpc "$RPC" \
+  --safe-hashes "$EV/safe.hashes.txt" --dex-hashes "$EV/dex.hashes.txt" --infra-hashes "$EV/infra.hashes.txt" --expect-empty > "$EV/verify.latest.json"
 node -e 'const r=require(process.argv[1]);console.log(r.decision, r.checks.length, "checks")' "$EV/verify.latest.json" | tee -a "$EV/steps.log"
 
 # ---------------------------------------------------------------- 2 gate
@@ -198,8 +230,8 @@ else
 fi
 node -e 'const r=require(process.argv[1]);console.log(r.decision, "finalized", r.finalized.number, r.genesisHash)' "$EV/gate-report.json" | tee -a "$EV/steps.log"
 [ "$(jsonget "$EV/gate-report.json" decision)" = liquidity-enabled ] || { echo "FAIL: gate"; exit 1; }
-node scripts/staging/verify-deployment.mjs --safe-plan "$EV/safe.plan.json" --dex-plan "$EV/dex.plan.json" --rpc "$RPC" --at finalized \
-  --safe-hashes "$EV/safe.hashes.txt" --dex-hashes "$EV/dex.hashes.txt" --expect-empty > "$EV/verify.finalized.json"
+node scripts/staging/verify-deployment.mjs --safe-plan "$EV/safe.plan.json" --dex-plan "$EV/dex.plan.json" --infra-plan "$EV/infra.plan.json" --rpc "$RPC" --at finalized \
+  --safe-hashes "$EV/safe.hashes.txt" --dex-hashes "$EV/dex.hashes.txt" --infra-hashes "$EV/infra.hashes.txt" --expect-empty > "$EV/verify.finalized.json"
 node -e 'const r=require(process.argv[1]);console.log("verify at finalized:", r.decision, r.checks.length, "checks")' "$EV/verify.finalized.json" | tee -a "$EV/steps.log"
 
 # ---------------------------------------------------------------- 3 launch
@@ -241,4 +273,42 @@ USD_OUT=$(cast call "$ASSET" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-ur
 W_OUT=$(cast call "$WRAPPED" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')
 [ "$USD_OUT" != 0 ] && [ "$W_OUT" != 0 ] || { echo "FAIL: Bloch Inc could not redeem its fee"; exit 1; }
 echo "Bloch Inc fee: $FEE LP -> $W_OUT WBLCH base units + $USD_OUT bUSDC base units" | tee -a "$EV/steps.log"
+
+LENS=$(jsonget "$EV/dex.plan.json" contracts.lens.address)
+SWAP_IN="swapExactTokensForBLCH(uint256,uint256,address[],address,uint256)"
+QUOTE="quoteExactInput(uint256,address[],uint256)((bool,uint256,uint256,uint256,uint256,uint256[],uint256[]))"
+EXCESS="pendingExcess(address)((uint256,uint256,bool,bool))"
+available() { cast call "$LENS" "$QUOTE" "$1" "[$ASSET,$WRAPPED]" 50 --rpc-url "$RPC" | cut -d, -f1 | tr -d '('; }
+log "3 cap: an over-cap swap is unavailable in the lens and reverts on chain"
+[ "$(available 900000000)" = false ] || { echo "FAIL: the lens quoted an over-cap swap"; exit 1; }
+must_fail "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$SWAP_IN" 900000000 0 "[$ASSET,$WRAPPED]" "$ISSUER" 99999999999)" 0 400000
+echo "over-cap swap refused" | tee -a "$EV/steps.log"
+log "3 DEX-02: a donation above the cap is reported, blocks swaps and is cleared by skim"
+must "$ISSUER_KEY" "$ASSET" "$(cast calldata "transfer(address,uint256)" "$PAIR" 1000000000)" 0 100000 > /dev/null
+cast call "$LENS" "$EXCESS" "$PAIR" --rpc-url "$RPC" | tee -a "$EV/steps.log"
+cast call "$LENS" "$EXCESS" "$PAIR" --rpc-url "$RPC" | grep -q true || { echo "FAIL: the lens does not report the blocking excess"; exit 1; }
+[ "$(available 1000000)" = false ] || { echo "FAIL: the lens quoted through a blocking donation"; exit 1; }
+must_fail "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$SWAP_IN" 1000000 0 "[$ASSET,$WRAPPED]" "$ISSUER" 99999999999)" 0 400000
+must "$ISSUER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$ISSUER")" 0 200000 > /dev/null
+[ "$(available 1000000)" = true ] || { echo "FAIL: the lens stays unavailable after skim"; exit 1; }
+must "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$SWAP_IN" 1000000 0 "[$ASSET,$WRAPPED]" "$ISSUER" 99999999999)" 0 400000 > /dev/null
+echo "donation reported, swap blocked, skim cleared it, swap ok" | tee -a "$EV/steps.log"
+log "3 utility contracts in real calls"
+AGG=$(cast calldata "aggregate3((address,bool,bytes)[])" "[($MULTICALL,false,$(cast calldata "getChainId()")),($MULTICALL,false,$(cast calldata "getEthBalance(address)" "$BLOCH_INC"))]")
+cast call "$MULTICALL" "$AGG" --rpc-url "$RPC" | grep -q "$(printf '%064x' 700770)" || { echo "FAIL: Multicall3 did not aggregate"; exit 1; }
+SALT=0x$(printf '%064x' 1); INIT=0x600a600c600039600a6000f3602a60005260206000f3
+EXPECT=0x$(cast keccak "0xff${CREATE2:2}${SALT:2}$(cast keccak "$INIT" | cut -c3-)" | cut -c27-)
+must "$ISSUER_KEY" "$CREATE2" "$SALT${INIT:2}" 0 200000 > /dev/null
+[ "$(cast to-dec "$(cast call "$EXPECT" --rpc-url "$RPC")")" = 42 ] || { echo "FAIL: CREATE2 deployer did not place the contract at $EXPECT"; exit 1; }
+echo "Multicall3 aggregate3 and a CREATE2 deployment at $EXPECT work" | tee -a "$EV/steps.log"
+
+if [ -n "${RENDER_HOOK:-}" ]; then
+  if [ "$MODE" = private-l2 ]; then
+    FINALIZE_CMD="scripts/staging/private-l2.sh finalize $WORK/l2 $PORT"
+  else
+    FINALIZE_CMD="cast rpc anvil_mine 0x80 --rpc-url $RPC"
+  fi
+  # shellcheck source=/dev/null
+  . "$RENDER_HOOK"
+fi
 echo "REHEARSAL OK ($MODE, $WORK)" | tee -a "$EV/steps.log"

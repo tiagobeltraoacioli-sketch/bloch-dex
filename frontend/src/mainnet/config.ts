@@ -13,7 +13,7 @@
 // The route is "not yet live" (no RPC traffic, no wallet transactions) unless
 // the record passed the finality gate, the public RPC is marked live and the
 // L2 genesis is pinned here, and the record's genesis equals it.
-import type { Hex } from 'viem';
+import type { Address, Hex } from 'viem';
 import networkJson from '@postern/mainnet-network';
 import recordJson from '@postern/mainnet-record';
 import plannedConfig from '../../../deployments/mainnet/dex-mainnet.config.json';
@@ -25,6 +25,10 @@ export const NETWORK_DOMAIN = 'postern.dex.frontend-network.v1';
 export const RECORD_DOMAIN = 'postern.dex.frontend-record.v1';
 export const MAINNET_RECORD_PATH = 'deployments/mainnet/dex-mainnet.record.json';
 export const MAINNET_RECORD_NAME = 'Bloch L2 mainnet DEX';
+const INFRA_PLAN_DOMAIN = 'postern.dex.mainnet-infra-plan.v1';
+/** Canonical Multicall3 runtime (scripts/staging/infra-deploy-config.mjs pins the same hash). */
+export const MULTICALL3_CODE_HASH =
+  '0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891';
 
 /** Slippage: 0.50% by default; the lens and this route accept 0.01% to 5.00%. */
 export const DEFAULT_SLIPPAGE_BPS = 50;
@@ -58,7 +62,7 @@ export type MainnetNetwork = {
 export type PlannedCap = { symbol: string; cap: bigint; decimals: number };
 export type MainnetState =
   | { status: 'not-live'; reasons: string[] }
-  | { status: 'live'; deployment: DevnetDeployment };
+  | { status: 'live'; deployment: DevnetDeployment; multicall3?: Address };
 
 export class MainnetConfigError extends Error {}
 function refuse(condition: unknown, message: string): asserts condition {
@@ -66,6 +70,7 @@ function refuse(condition: unknown, message: string): asserts condition {
 }
 
 const HASH = /^0x[0-9a-f]{64}$/;
+const ADDRESS = /^0x[0-9a-f]{40}$/;
 const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?(\/.*)?$/;
 
 /** https only; plain http only for loopback (a local render check). */
@@ -177,10 +182,31 @@ export async function loadMainnetState(
       genesisHash: network.genesisHash,
     },
   );
-  return { status: 'live', deployment };
+  const infra = r.infra as AnyRecord;
+  refuse(infra && infra.domain === INFRA_PLAN_DOMAIN, 'the record has no infra plan');
+  refuse(
+    infra.chain?.id === network.chainId && infra.chain?.genesisHash === network.genesisHash,
+    'the infra plan is for another chain',
+  );
+  const multicall = infra.contracts?.multicall3 as AnyRecord;
+  refuse(
+    multicall && typeof multicall.address === 'string' && ADDRESS.test(multicall.address),
+    'the infra plan has no Multicall3 address',
+  );
+  refuse(multicall.codeHash === MULTICALL3_CODE_HASH, 'the Multicall3 code hash is not canonical');
+  const multicall3 = multicall.address as Address;
+  // readSnapshot checks every entry of codeHashes against the finalized block.
+  return {
+    status: 'live',
+    deployment: {
+      ...deployment,
+      codeHashes: { ...deployment.codeHashes, [multicall3]: MULTICALL3_CODE_HASH },
+    },
+    multicall3,
+  };
 }
 
-const DECIMALS: Record<string, number> = { WBLCH: 18, wGSMH: 8, bUSDC: 6 };
+const DECIMALS: Record<string, number> = { WBLCH: 18, bUSDC: 6 };
 
 /** The committed, reviewed caps of the planned launch (shown before deployment). */
 export function plannedCaps(config: unknown = plannedConfig): PlannedCap[] {

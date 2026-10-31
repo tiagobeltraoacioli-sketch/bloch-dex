@@ -5,8 +5,8 @@
 // RPC it is given, so run it against a node you operate.
 //
 //   node scripts/staging/verify-deployment.mjs --safe-plan S --dex-plan D --rpc URL
-//        [--at latest|finalized] [--out-dir out] [--safe-hashes F] [--dex-hashes F]
-//        [--expect-empty]
+//        --infra-plan I [--at latest|finalized] [--out-dir out] [--infra-hashes F]
+//        [--safe-hashes F] [--dex-hashes F] [--expect-empty]
 //
 // Checks: chain ID and genesis; runtime code hash of every contract against
 // the plans; the constructor immutables read back from the deployed runtime
@@ -15,7 +15,8 @@
 // each pair's tokens and caps; each bridged token's code and bucket capacity;
 // the Safe proxy's singleton, fallback handler, guard, modules, owners,
 // threshold and VERSION; the proxy factory's proxy creation code; that the
-// DEX plan's fee recipient is exactly the planned Safe; and, with the
+// DEX plan's fee recipient is exactly the planned Safe; Multicall3 and the
+// CREATE2 deployer against the canonical code and in a working call; and, with the
 // transaction hash files, that every transaction came from the planned key
 // with the planned nonce, succeeded and created the planned address.
 
@@ -23,6 +24,7 @@ import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createJsonRpcRequest, verifySafe } from "./finality-gate.mjs";
 import { BRIDGE_BUCKET_DIVISOR, EMPTY_CODE_HASH, loadArtifacts, stableJson } from "./dex-deploy-config.mjs";
+import { verifyInfra } from "./infra-deploy-config.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, parseAbi, encodeFunctionData, decodeFunctionResult } = requireFromFrontend("viem");
@@ -75,7 +77,7 @@ export function readImmutables(runtime, immutableReferences) {
 
 const asWord = (address) => `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
 
-export async function verifyDeployment({ safePlan, dexPlan, artifacts, request, at = "latest", safeHashes, dexHashes, expectEmpty = false }) {
+export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts, request, at = "latest", safeHashes, dexHashes, infraHashes, expectEmpty = false }) {
   const report = { domain: VERIFY_DOMAIN, at, checks: [] };
   const ok = (name, detail) => report.checks.push(detail === undefined ? name : `${name}: ${detail}`);
   let block = at;
@@ -102,13 +104,16 @@ export async function verifyDeployment({ safePlan, dexPlan, artifacts, request, 
 
   const chainId = BigInt(await request("eth_chainId", []));
   const genesis = await request("eth_getBlockByNumber", ["0x0", false]);
-  for (const plan of [safePlan, dexPlan]) {
+  for (const plan of [safePlan, dexPlan, ...(infraPlan ? [infraPlan] : [])]) {
     refuse(chainId === BigInt(plan.chain.id), `RPC chain ID ${chainId} differs from the plan`);
     refuse(genesis?.hash === plan.chain.genesisHash, `RPC genesis ${genesis?.hash} differs from the plan's ${plan.chain.genesisHash}`);
   }
   report.chainId = Number(chainId);
   report.genesisHash = genesis.hash;
   ok("chain", `${chainId} genesis ${genesis.hash}`);
+
+  // Chain utility contracts.
+  if (infraPlan) await verifyInfra(infraPlan, request, block, ok);
 
   // The fee recipient pinned in the DEX plan is exactly the planned Safe.
   refuse(stableJson(dexPlan.roles.blochInc) === stableJson(safePlan.blochInc), "the DEX plan's Bloch Inc pin differs from the Safe plan");
@@ -175,14 +180,18 @@ export async function verifyDeployment({ safePlan, dexPlan, artifacts, request, 
   }
 
   // Keys: nonces consumed exactly as planned; transactions as planned.
-  for (const [name, plan, from] of [["bootstrap", safePlan, safePlan.bootstrap], ["deployer", dexPlan, dexPlan.deployer]]) {
+  const keys = [["bootstrap", safePlan, safePlan.bootstrap], ["deployer", dexPlan, dexPlan.deployer]];
+  if (infraPlan) keys.push(["infra deployer", infraPlan, infraPlan.deployer]);
+  for (const [name, plan, from] of keys) {
     const nonce = BigInt(await request("eth_getTransactionCount", [from, block]));
     refuse(nonce === BigInt(plan.finalNonce), `${name} nonce ${nonce}, plan ends at ${plan.finalNonce}`);
     const balance = BigInt(await request("eth_getBalance", [from, block]));
     report[`${name}Balance`] = balance.toString();
     ok(`${name} nonce`, `${from} ${nonce}`);
   }
-  for (const [name, plan, from, hashes] of [["safe", safePlan, safePlan.bootstrap, safeHashes], ["dex", dexPlan, dexPlan.deployer, dexHashes]]) {
+  const recorded = [["safe", safePlan, safePlan.bootstrap, safeHashes], ["dex", dexPlan, dexPlan.deployer, dexHashes]];
+  if (infraPlan) recorded.push(["infra", infraPlan, infraPlan.deployer, infraHashes]);
+  for (const [name, plan, from, hashes] of recorded) {
     if (!hashes) continue;
     refuse(hashes.length === plan.steps.length, `${name}: ${hashes.length} transaction hashes, plan has ${plan.steps.length}`);
     for (const [i, hash] of hashes.entries()) {
@@ -206,8 +215,8 @@ export async function verifyDeployment({ safePlan, dexPlan, artifacts, request, 
 }
 
 function parse(argv) {
-  const keys = { "--safe-plan": "safePlan", "--dex-plan": "dexPlan", "--rpc": "rpc", "--at": "at", "--out-dir": "outDir",
-    "--safe-hashes": "safeHashes", "--dex-hashes": "dexHashes" };
+  const keys = { "--safe-plan": "safePlan", "--dex-plan": "dexPlan", "--infra-plan": "infraPlan", "--rpc": "rpc", "--at": "at", "--out-dir": "outDir",
+    "--safe-hashes": "safeHashes", "--dex-hashes": "dexHashes", "--infra-hashes": "infraHashes" };
   const options = { at: "latest", outDir: "out", expectEmpty: false };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--expect-empty") { options.expectEmpty = true; continue; }
@@ -215,7 +224,7 @@ function parse(argv) {
     refuse(key && i + 1 < argv.length, `unknown or incomplete argument ${argv[i]}`);
     options[key] = argv[++i];
   }
-  refuse(options.safePlan && options.dexPlan && options.rpc, "--safe-plan, --dex-plan and --rpc are required");
+  refuse(options.safePlan && options.dexPlan && options.infraPlan && options.rpc, "--safe-plan, --dex-plan, --infra-plan and --rpc are required");
   refuse(["latest", "finalized"].includes(options.at), "--at must be latest or finalized");
   return options;
 }
@@ -233,11 +242,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const report = await verifyDeployment({
       safePlan: JSON.parse(await readFile(o.safePlan, "utf8")),
       dexPlan: JSON.parse(await readFile(o.dexPlan, "utf8")),
+      infraPlan: JSON.parse(await readFile(o.infraPlan, "utf8")),
       artifacts: await loadArtifacts(o.outDir),
       request: createJsonRpcRequest(o.rpc),
       at: o.at,
       safeHashes: await readHashes(o.safeHashes),
       dexHashes: await readHashes(o.dexHashes),
+      infraHashes: await readHashes(o.infraHashes),
       expectEmpty: o.expectEmpty,
     });
     console.log(JSON.stringify(report, null, 2));

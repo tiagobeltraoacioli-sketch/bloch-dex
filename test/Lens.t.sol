@@ -202,3 +202,123 @@ contract LensTest is TestBase {
         assertEq(a.balanceOf(factory.getPair(address(a), address(b))), type(uint112).max);
     }
 }
+
+/// Pending donations against the reserve caps (findings DEX-02 and DEX-06).
+contract LensPendingExcessTest is TestBase {
+    uint256 internal constant CAP = 1_000 ether;
+    uint256 internal constant SEED = 500 ether;
+    UniswapV2Factory internal factory;
+    BDexLens internal lens;
+    BDexRouter internal router;
+    TestToken internal a;
+    TestToken internal b;
+    UniswapV2Pair internal pair;
+    address internal t0;
+    address internal t1;
+
+    function setUp() public {
+        vm.warp(1_000);
+        a = new TestToken();
+        b = new TestToken();
+        address[] memory tokens = new address[](2);
+        tokens[0] = address(a);
+        tokens[1] = address(b);
+        uint256[] memory caps = new uint256[](2);
+        caps[0] = CAP;
+        caps[1] = CAP;
+        factory = new UniswapV2Factory(address(0), tokens, caps);
+        lens = new BDexLens(address(factory));
+        router = new BDexRouter(address(factory), address(new TestWrappedNative()));
+        pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
+        a.mint(address(pair), SEED);
+        b.mint(address(pair), SEED);
+        pair.mint(address(this));
+        a.mint(address(this), 10_000 ether);
+        a.approve(address(router), type(uint256).max);
+        (t0, t1) = (pair.token0(), pair.token1());
+    }
+
+    function _bound(uint256 x, uint256 lo, uint256 hi) internal pure returns (uint256) {
+        return lo + (x % (hi - lo + 1));
+    }
+
+    function path() internal view returns (address[] memory p) {
+        p = new address[](2);
+        p[0] = address(a);
+        p[1] = address(b);
+    }
+
+    function excessOf(BDexLens.PendingExcess memory e, address token) internal view returns (uint256, bool) {
+        return token == t0 ? (e.excess0, e.blocksInflow0) : (e.excess1, e.blocksInflow1);
+    }
+
+    function testNoDonationReportsNothing() public view {
+        BDexLens.PendingExcess memory e = lens.pendingExcess(address(pair));
+        assertEq(e.excess0 + e.excess1, 0);
+        assertTrue(!e.blocksInflow0 && !e.blocksInflow1);
+    }
+
+    function testRefusesAnAddressThatIsNotARegisteredPair() public {
+        UniswapV2Factory other = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        TestToken x = new TestToken();
+        TestToken y = new TestToken();
+        address foreign = other.createPair(address(x), address(y));
+        vm.expectRevert(bytes("LENS: NOT_A_PAIR"));
+        lens.pendingExcess(foreign);
+    }
+
+    function testDonationBelowCapIsShownAndDoesNotBlock() public {
+        a.mint(address(pair), 7 ether);
+        (uint256 excess, bool blocks) = excessOf(lens.pendingExcess(address(pair)), address(a));
+        assertEq(excess, 7 ether);
+        assertTrue(!blocks);
+        assertTrue(lens.quoteExactInput(1 ether, path(), 50).available);
+    }
+
+    function testDonationAboveCapIsReportedUntilSkimAndQuoteIsUnavailable() public {
+        a.mint(address(pair), CAP);
+        (uint256 excess, bool blocks) = excessOf(lens.pendingExcess(address(pair)), address(a));
+        assertEq(excess, CAP);
+        assertTrue(blocks);
+        assertTrue(!lens.quoteExactInput(1 ether, path(), 50).available);
+        vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+        router.swapExactTokensForTokens(1 ether, 0, path(), address(this), block.timestamp + 60);
+
+        pair.skim(address(0xD0));
+        assertEq(a.balanceOf(address(0xD0)), CAP);
+        (excess, blocks) = excessOf(lens.pendingExcess(address(pair)), address(a));
+        assertEq(excess, 0);
+        assertTrue(!blocks);
+        BDexLens.RouteQuote memory q = lens.quoteExactInput(1 ether, path(), 50);
+        assertTrue(q.available);
+        uint256[] memory amounts =
+            router.swapExactTokensForTokens(1 ether, q.minimumOut, path(), address(this), block.timestamp + 60);
+        assertEq(amounts[1], q.amountOut);
+    }
+
+    /// A donation that keeps the output side above its cap also blocks the swap.
+    function testDonationOnTheOutputSideIsCounted() public {
+        b.mint(address(pair), CAP);
+        assertTrue(!lens.quoteExactInput(1 ether, path(), 50).available);
+        vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+        router.swapExactTokensForTokens(1 ether, 0, path(), address(this), block.timestamp + 60);
+    }
+
+    /// The quote and the execution agree for any pair of standing donations.
+    function testFuzzQuoteAvailabilityMatchesExecution(uint256 amountIn, uint256 donateIn, uint256 donateOut) public {
+        amountIn = _bound(amountIn, 1 ether, 800 ether);
+        donateIn = _bound(donateIn, 0, 800 ether);
+        donateOut = _bound(donateOut, 0, 800 ether);
+        a.mint(address(pair), donateIn);
+        b.mint(address(pair), donateOut);
+        BDexLens.RouteQuote memory q = lens.quoteExactInput(amountIn, path(), 50);
+        if (q.available) {
+            uint256[] memory amounts =
+                router.swapExactTokensForTokens(amountIn, q.minimumOut, path(), address(this), block.timestamp + 60);
+            assertEq(amounts[1], q.amountOut);
+        } else {
+            vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+            router.swapExactTokensForTokens(amountIn, 0, path(), address(this), block.timestamp + 60);
+        }
+    }
+}

@@ -58,6 +58,32 @@ on anvil and on the private L2:
 | Lens | 1,938,483 | 3,000,000 |
 | createPair | 2,135,685 | 3,300,000 |
 
+## Multicall3 and the CREATE2 deployer
+
+The L2 genesis has neither contract, and the L2 refuses the pre-EIP-155
+transactions that place them at their usual addresses on other chains. They are
+therefore ordinary CREATE deployments, first in the deploy order, from a fresh
+key holding gas only (`deployments/mainnet/700770/infra.config.json`,
+`TBD-owner`):
+
+| Nonce | Contract | Runtime code hash |
+|---|---|---|
+| n | Multicall3 | `0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891` |
+| n+1 | Deterministic CREATE2 deployer | `0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989` |
+
+- The addresses differ from those on other chains. They are recorded in the
+  infra plan, and integrators must take them from there. Tools with built-in
+  defaults must be told: `forge script --create2-deployer <address>`, and a
+  viem chain's `contracts.multicall3.address`.
+- `deployments/mainnet/700770/infra-artifacts.json` holds the runtime read from
+  Ethereum mainnet. Its hash is checked before any plan exists. The init code
+  is a fixed 12-byte constructor that returns that runtime
+  (`wrapRuntime` in `scripts/staging/infra-deploy-config.mjs`).
+- `verify-deployment.mjs --infra-plan` checks the exact code, a real
+  `aggregate3`, and that the deployer predicts the planned CREATE2 address.
+- The frontend record carries the infra plan. The site verifies the Multicall3
+  code at the finalized block and reads balances through it.
+
 ## Bloch Inc Safe on a chain without the singleton factory
 
 The Safe singleton factory (`0x914d7Fec…`) needs a pre-signed deployment for
@@ -121,6 +147,23 @@ launch factory:
   capped at 10 BLCH and the wGSMH side is uncapped (F4).
 - Listing wGSMH with a cap means a new factory deployment once its bridge
   exists.
+
+The frontend's planned pools and caps are read from
+`deployments/mainnet/dex-mainnet.config.json`, so the site and the package
+cannot disagree.
+
+## Quotes and donations in the site
+
+- Balances, allowances, caps and the binding quote are read at the finalized
+  block. The lens quote is also taken at `latest`. If it falls below the active
+  quote's minimum output, the site warns and disables Swap until the user
+  reconfirms at the latest price; the default slippage stays 0.50%. The check
+  runs again when Swap is pressed.
+- A donation above the reserves (accepted residual risk DEX-02) is shown per
+  pool with a `skim` action. The lens reports such a route as unavailable.
+- The site reads the public RPC directly. The gateway allows CORS from any
+  origin, and the CSP's `connect-src` names the RPC origin.
+  `scripts/devnet4/rpc_compat_proxy.py` is not in this path.
 
 ## Post-deployment verification (`verify-deployment.mjs`)
 

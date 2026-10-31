@@ -29,6 +29,8 @@ export const PAIR_ABI = parseAbi([
 export const LENS_ABI = parseAbi([
   'struct RouteQuote { bool available; uint256 blockNumber; uint256 timestamp; uint256 amountOut; uint256 minimumOut; uint256[] amounts; uint256[] executionLossBps; }',
   'function bestExactInput(uint256 amountIn, address[][] routes, uint256 slippageBps) view returns (uint256 bestIndex, RouteQuote[] quotes)',
+  'struct PendingExcess { uint256 excess0; uint256 excess1; bool blocksInflow0; bool blocksInflow1; }',
+  'function pendingExcess(address pair) view returns (PendingExcess value)',
 ]);
 
 export class ChainError extends Error {}
@@ -81,6 +83,8 @@ export type LivePool = {
   reserve1: bigint;
   cap0: bigint;
   cap1: bigint;
+  /** Mainnet route: tokens held above the reserves (`BDexLens.pendingExcess`). */
+  excess?: { excess0: bigint; excess1: bigint; blocksInflow0: boolean; blocksInflow1: boolean };
 };
 export type Snapshot = {
   finalized: { number: bigint; hash: Hex; timestamp: bigint };

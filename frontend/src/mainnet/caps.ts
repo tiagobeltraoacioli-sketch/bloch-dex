@@ -23,7 +23,15 @@ export type HopBlock =
       /** Input this hop can still take: cap − reserve (0 when inflow is paused). */
       maxInput: bigint;
     }
-  | { kind: 'zero-output'; pool: LivePool };
+  | { kind: 'zero-output'; pool: LivePool }
+  | {
+      /** A standing donation would leave the balance above the cap (finding DEX-02). */
+      kind: 'pending-excess';
+      pool: LivePool;
+      token: LiveToken;
+      excess: bigint;
+      cap: bigint;
+    };
 
 export type RouteCheck = { path: Address[]; amounts: bigint[]; block: HopBlock | null };
 
@@ -71,6 +79,26 @@ export function checkRoute(pools: LivePool[], path: Address[], amountIn: bigint)
     }
     const out = amountOut(amount, rIn, rOut);
     if (out === 0n) return { path, amounts, block: { kind: 'zero-output', pool } };
+    const excess0 = pool.excess?.excess0 ?? 0n;
+    const excess1 = pool.excess?.excess1 ?? 0n;
+    const [excessIn, excessOut, capOut, tokenOut] = inputIs0
+      ? [excess0, excess1, pool.cap1, pool.token1]
+      : [excess1, excess0, pool.cap0, pool.token0];
+    if (capIn !== 0n && excessIn > 0n && rIn + excessIn + amount > capIn) {
+      const block = { kind: 'pending-excess', pool, token, excess: excessIn, cap: capIn } as const;
+      return { path, amounts, block };
+    }
+    const leftOut = rOut + excessOut - out;
+    if (capOut !== 0n && excessOut > 0n && leftOut > capOut && leftOut > rOut) {
+      const block = {
+        kind: 'pending-excess',
+        pool,
+        token: tokenOut,
+        excess: excessOut,
+        cap: capOut,
+      } as const;
+      return { path, amounts, block };
+    }
     amounts.push(out);
   }
   return { path, amounts, block: null };
@@ -87,6 +115,15 @@ export function explainBlock(block: HopBlock): string {
       return `The ${pairName(block.pool)} pool has no liquidity yet.`;
     case 'zero-output':
       return `The amount is too small: the ${pairName(block.pool)} pool would return nothing.`;
+    case 'pending-excess': {
+      const d = block.token.decimals;
+      const s = block.token.symbol;
+      return (
+        `The ${pairName(block.pool)} pool holds ${formatAmount(block.excess, d)} ${s} above its ` +
+        `reserves, so its ${s} balance would pass the fixed cap of ${formatAmount(block.cap, d)} ${s} ` +
+        `and the swap would revert with BDEX: RESERVE_CAP. Anyone can clear this by calling skim on the pool.`
+      );
+    }
     case 'reserve-cap': {
       const d = block.token.decimals;
       const s = block.token.symbol;

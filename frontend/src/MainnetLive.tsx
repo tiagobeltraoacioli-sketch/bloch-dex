@@ -4,9 +4,11 @@
 // a pinned L2 genesis are bundled, the route shows "Not yet live" with the
 // planned caps and sends no RPC request and no transaction. Once live, every
 // pool, balance, allowance and quote read is pinned to the finalized L2 block
-// (the snapshot's block hash), and transactions are explicit wallet steps.
+// (the snapshot's block hash), and transactions are explicit wallet steps. The
+// one read at `latest` is a lens quote used only to warn about a stale price
+// (mainnet/quotecheck.ts); a worse price needs an explicit reconfirmation.
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
+import { AlertTriangle, LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
 import {
@@ -22,6 +24,7 @@ import {
   readSnapshot,
   routesFor,
   type LensQuote,
+  type LivePool,
   type LiveToken,
   type Rpc,
   type Snapshot,
@@ -40,7 +43,14 @@ import {
   type PlannedCap,
 } from './mainnet/config';
 import { checkRoute, explainBlock, headroom, headroomUse, type RouteCheck } from './mainnet/caps';
-import { readAllowance, readBalances, type Balances } from './mainnet/reads';
+import { blocksSwap, compareQuotes, type QuoteCheck } from './mainnet/quotecheck';
+import {
+  readAllowance,
+  readBalances,
+  readExcess,
+  skimTransaction,
+  type Balances,
+} from './mainnet/reads';
 
 type Option = { key: string; label: string; token: LiveToken; native: boolean };
 type Step = {
@@ -108,7 +118,8 @@ export default function MainnetLive({
         setState(s);
         if (s.status !== 'live') return;
         const snap = await readSnapshot(rpc, s.deployment, 'mainnet');
-        if (current) setSnapshot(snap);
+        const pools = await readExcess(rpc, snap.finalized.hash, s.deployment.lens, snap.pools);
+        if (current) setSnapshot({ ...snap, pools });
       } catch (error) {
         if (current) setFailure(message(error, 'Unavailable.'));
       }
@@ -129,9 +140,10 @@ export default function MainnetLive({
           </span>
           <h1 id="mainnet-title">Bloch L2 mainnet</h1>
           <p className="muted">
-            Pools, balances and quotes are read only at the finalized L2 block, from a reviewed
-            deployment record. Swaps are sent only from your wallet, one explicit step at a time.
-            Pools have fixed reserve caps; this is a guarded launch.
+            Pools, balances and quotes are read at the finalized L2 block, from a reviewed
+            deployment record; a quote is also compared with the latest block to warn when it has
+            gone stale. Swaps are sent only from your wallet, one explicit step at a time. Pools
+            have fixed reserve caps; this is a guarded launch.
           </p>
         </div>
         {live && (
@@ -159,11 +171,18 @@ export default function MainnetLive({
       ) : (
         <>
           <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
-          <PoolsTable snapshot={snapshot} />
+          <PoolsTable
+            snapshot={snapshot}
+            network={network}
+            rpc={rpc}
+            wallet={wallet}
+            onMined={() => setGeneration((g) => g + 1)}
+          />
           <SwapPanel
             key={snapshot.finalized.hash}
             network={network}
             deployment={state.deployment}
+            multicall3={state.multicall3}
             snapshot={snapshot}
             rpc={rpc}
             wallet={wallet}
@@ -336,7 +355,82 @@ function DeploymentPanel({
   );
 }
 
-function PoolsTable({ snapshot }: { snapshot: Snapshot }) {
+function PendingExcess({
+  pool,
+  network,
+  rpc,
+  wallet,
+  onMined,
+}: {
+  pool: LivePool;
+  network: MainnetNetwork;
+  rpc: Rpc;
+  wallet: Devnet4Wallet;
+  onMined: () => void;
+}) {
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const e = pool.excess;
+  if (!e || (e.excess0 === 0n && e.excess1 === 0n)) return null;
+  const blocked = e.blocksInflow0 || e.blocksInflow1;
+  const parts = [
+    [e.excess0, pool.token0],
+    [e.excess1, pool.token1],
+  ] as const;
+  async function skim() {
+    if (!wallet.provider || !wallet.account) return;
+    setBusy(true);
+    setNote('Confirm in your wallet.');
+    try {
+      await ensureChain(wallet.provider, addChainParameters(network));
+      const to = wallet.account.address.toLowerCase() as Address;
+      const hash = await sendTransaction(wallet.provider, skimTransaction(pool.address, to));
+      const receipt = await waitForReceipt(rpc, hash);
+      setNote(
+        receipt.status === 'success'
+          ? `Skim mined in block ${receipt.blockNumber}. The pool updates once that block is finalized.`
+          : `Skim reverted in block ${receipt.blockNumber}.`,
+      );
+      if (receipt.status === 'success') onMined();
+    } catch (error) {
+      setNote(message(error, 'Rejected.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className={blocked ? 'form-error' : 'microcopy'} aria-label="Pending excess">
+      Pending excess:{' '}
+      {parts
+        .filter(([amount]) => amount > 0n)
+        .map(([amount, t]) => `${formatAmount(amount, t.decimals)} ${t.symbol}`)
+        .join(' and ')}{' '}
+      above the reserves.{' '}
+      {blocked && 'Swaps and deposits on that side revert until someone calls skim. '}
+      Anyone can call <code>skim</code> on this pool; the caller receives the excess.{' '}
+      {wallet.account && (
+        <button className="button secondary" disabled={busy} onClick={() => void skim()}>
+          Skim to my wallet
+        </button>
+      )}
+      {note && <span role="status"> {note}</span>}
+    </div>
+  );
+}
+
+function PoolsTable({
+  snapshot,
+  network,
+  rpc,
+  wallet,
+  onMined,
+}: {
+  snapshot: Snapshot;
+  network: MainnetNetwork;
+  rpc: Rpc;
+  wallet: Devnet4Wallet;
+  onMined: () => void;
+}) {
   const side = (reserve: bigint, cap: bigint, t: LiveToken) => {
     const room = headroom(reserve, cap);
     return (
@@ -376,6 +470,13 @@ function PoolsTable({ snapshot }: { snapshot: Snapshot }) {
                 {formatAmount(p.reserve0, p.token0.decimals)} {p.token0.symbol}
                 <br />
                 {formatAmount(p.reserve1, p.token1.decimals)} {p.token1.symbol}
+                <PendingExcess
+                  pool={p}
+                  network={network}
+                  rpc={rpc}
+                  wallet={wallet}
+                  onMined={onMined}
+                />
               </td>
               <td>
                 {side(p.reserve0, p.cap0, p.token0)}
@@ -393,6 +494,7 @@ function PoolsTable({ snapshot }: { snapshot: Snapshot }) {
 function SwapPanel({
   network,
   deployment: d,
+  multicall3,
   snapshot,
   rpc,
   wallet,
@@ -401,6 +503,7 @@ function SwapPanel({
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
+  multicall3?: Address;
   snapshot: Snapshot;
   rpc: Rpc;
   wallet: Devnet4Wallet;
@@ -424,6 +527,9 @@ function SwapPanel({
   const [quote, setQuote] = useState<LensQuote | null>(null);
   const [blocked, setBlocked] = useState<RouteCheck[]>([]);
   const [quoteNote, setQuoteNote] = useState('');
+  const [check, setCheck] = useState<QuoteCheck | null>(null);
+  // True once the user accepted a latest-block price in place of the finalized one.
+  const [reconfirmed, setReconfirmed] = useState(false);
   const [balances, setBalances] = useState<Balances | null>(null);
   const [allowance, setAllowance] = useState<bigint | null>(null);
   // Allowance this session approved in a mined transaction that the finalized
@@ -448,13 +554,13 @@ function SwapPanel({
     let current = true;
     setBalances(null);
     if (account)
-      void readBalances(rpc, at, account, snapshot.tokens)
+      void readBalances(rpc, at, account, snapshot.tokens, multicall3)
         .then((b) => current && setBalances(b))
         .catch(() => current && setBalances(null));
     return () => {
       current = false;
     };
-  }, [rpc, at, account, snapshot]);
+  }, [rpc, at, account, snapshot, multicall3]);
 
   const refreshAllowance = useCallback(async () => {
     if (account && input && !input.native)
@@ -465,7 +571,41 @@ function SwapPanel({
     void refreshAllowance().catch(() => setAllowance(null));
   }, [refreshAllowance]);
 
-  const clear = () => (setQuote(null), setBlocked([]), setQuoteNote(''));
+  const clear = () => (
+    setQuote(null),
+    setBlocked([]),
+    setQuoteNote(''),
+    setCheck(null),
+    setReconfirmed(false)
+  );
+
+  /** Compare the active quote with the latest block; a failed read never hides the finalized quote. */
+  async function crossCheck(active: LensQuote): Promise<QuoteCheck> {
+    let result: QuoteCheck = { status: 'unknown' };
+    try {
+      const latest = await quoteExactInput(
+        rpc,
+        d,
+        input!.token.address,
+        output!.token.address,
+        active.amountIn,
+        Number(slippageBps),
+        'latest',
+      );
+      result = compareQuotes(active, latest);
+    } catch {
+      // Stays 'unknown'.
+    }
+    setCheck(result);
+    return result;
+  }
+
+  function reconfirm() {
+    if (check?.status !== 'worse') return;
+    setQuote(check.latest);
+    setCheck({ status: 'ok', latest: check.latest });
+    setReconfirmed(true);
+  }
 
   async function getQuote() {
     clear();
@@ -500,6 +640,7 @@ function SwapPanel({
         );
       }
       setQuote(q);
+      await crossCheck(q);
     } catch (error) {
       setQuoteNote(message(error, 'Quote unavailable.'));
     }
@@ -649,8 +790,10 @@ function SwapPanel({
             </dd>
             <dt>Quoted at</dt>
             <dd>
-              Finalized block {quote.blockNumber.toString()} (by the deployed lens, within the
-              reserve caps)
+              {reconfirmed
+                ? `Latest block ${quote.blockNumber.toString()}, not finalized; you reconfirmed this price`
+                : `Finalized block ${quote.blockNumber.toString()}`}{' '}
+              (by the deployed lens, within the reserve caps)
             </dd>
             <dt>Reserve cap headroom used</dt>
             <dd>
@@ -666,6 +809,30 @@ function SwapPanel({
             <dt>Deadline</dt>
             <dd>{deadlineMinutes} minutes after you confirm (wall-clock seconds)</dd>
           </dl>
+          {check?.status === 'worse' && (
+            <div className="form-error" role="alert" aria-label="Stale quote">
+              <AlertTriangle size={16} /> The price moved after the finalized block. At the latest
+              block this swap returns {formatAmount(check.latest.amountOut, output.token.decimals)}{' '}
+              {output.label}, {percent(check.worseBps, 10_000n)}% worse than this quote and below
+              your minimum received, so it would revert. Reconfirm to use the latest price, or
+              change the amount.{' '}
+              <button className="button secondary" onClick={reconfirm}>
+                Reconfirm at the latest price
+              </button>
+            </div>
+          )}
+          {check?.status === 'unavailable' && (
+            <p className="form-error" role="alert" aria-label="Stale quote">
+              At the latest block no route can fill this amount, so the swap would revert. Lower the
+              amount or get a new quote.
+            </p>
+          )}
+          {check?.status === 'unknown' && (
+            <p className="microcopy" role="status" aria-label="Stale quote">
+              The latest block could not be read, so this finalized quote was not cross-checked.
+              Your minimum received still applies on chain.
+            </p>
+          )}
           <div className="notice" aria-label="Revert conditions">
             The swap can still revert, and then only the gas is spent, if before it executes: other
             swaps or deposits fill a pool past its reserve cap (BDEX: RESERVE_CAP); the price moves
@@ -722,20 +889,31 @@ function SwapPanel({
           )}
           <button
             className="button primary"
-            disabled={busy || !quote || needsApproval || shortBalance || !input || !output}
+            disabled={
+              busy ||
+              !quote ||
+              needsApproval ||
+              shortBalance ||
+              !input ||
+              !output ||
+              blocksSwap(check)
+            }
             onClick={() =>
-              void run(`Swap ${amount} ${input!.label} for ${output!.label}`, () =>
-                swapTransaction(
-                  d,
-                  quote!,
-                  { token: input!.token.address, native: input!.native },
-                  { token: output!.token.address, native: output!.native },
-                  account!,
-                  deadlineFrom(now(), deadlineMinutes),
-                ),
-              ).then((ok) => {
+              void (async () => {
+                // The price may have moved while the form was open.
+                if (blocksSwap(await crossCheck(quote!))) return;
+                const ok = await run(`Swap ${amount} ${input!.label} for ${output!.label}`, () =>
+                  swapTransaction(
+                    d,
+                    quote!,
+                    { token: input!.token.address, native: input!.native },
+                    { token: output!.token.address, native: output!.native },
+                    account!,
+                    deadlineFrom(now(), deadlineMinutes),
+                  ),
+                );
                 if (ok) onMined();
-              })
+              })()
             }
           >
             Swap

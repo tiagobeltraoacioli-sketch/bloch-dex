@@ -6,6 +6,12 @@ const GENESIS = `0x${"9".repeat(64)}`;
 const input = () => ({
   config: { network: { chainId: 700770, genesisHash: GENESIS } },
   plan: { domain: "postern.dex.mainnet-plan.v1", chain: { id: 700770, genesisHash: GENESIS, rehearsal: false }, pairs: [] },
+  infra: {
+    domain: "postern.dex.mainnet-infra-plan.v1",
+    chain: { id: 700770, genesisHash: GENESIS, rehearsal: false },
+    contracts: { multicall3: { address: `0x${"a".repeat(40)}`, codeHash: `0x${"b".repeat(64)}` } },
+    steps: [],
+  },
   gateReport: {
     domain: "postern.dex.finality-gate.v1",
     schemaVersion: 2,
@@ -20,6 +26,7 @@ test("wraps a mainnet plan, config and enabling gate report", () => {
   assert.equal(record.domain, RECORD_DOMAIN);
   assert.equal(record.status, "liquidity-enabled");
   assert.deepEqual(record.plan, input().plan);
+  assert.deepEqual(record.infra.contracts, input().infra.contracts);
 });
 
 test("refuses rehearsal plans, refused gates and mismatched chains", () => {
@@ -34,4 +41,6 @@ test("refuses rehearsal plans, refused gates and mismatched chains", () => {
   assert.throws(edit((i) => (i.gateReport.schemaVersion = 1)), /unsupported gate/);
   assert.throws(edit((i) => (i.gateReport.genesisHash = `0x${"1".repeat(64)}`)), /another chain/);
   assert.throws(edit((i) => (i.config.network.genesisHash = null)), /genesis/);
+  assert.throws(edit((i) => (i.infra = undefined)), /infra plan/);
+  assert.throws(edit((i) => (i.infra.chain.genesisHash = `0x${"1".repeat(64)}`)), /infra plan is for another chain/);
 });
