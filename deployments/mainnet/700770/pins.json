@@ -17,13 +17,13 @@
   },
   "l2Release": {
     "version": "v2.1",
-    "status": "settled-rpc-open",
+    "status": "unsigned",
     "release": "bloch-l2-2026-10-30-v21-native-78d4921c",
-    "l2Commit": null,
+    "l2Commit": "a39b04e435b11bd2316dffe94d78df0163153c56",
     "native": "78d4921c",
     "follower": "c18752fd4c6942678bcb45d8d36436bcd644b1ee6e48416d67e4999e7c7cf29a",
     "produceDev": "fb0d531311d4f19a97f0839968146f5737acf57eb313fc93972ec215de950be9",
-    "settledRpc": null
+    "settledRpc": "18be911a47f0ab8975e1f079c860adef08dfc43c4b5062eca7b040e2e6eee83f"
   },
   "safe": {
     "package": "@safe-global/safe-contracts",
