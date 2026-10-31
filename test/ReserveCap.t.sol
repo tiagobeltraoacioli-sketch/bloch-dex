@@ -73,10 +73,10 @@ contract ReserveCapTest is TestBase {
     }
 
     function testSwapThatGrowsCappedReserveAboveCapIsRefused() public {
-        seed(9 ether, 9_000 ether);
+        seed(8 ether, 8_000 ether);
         address[] memory path = new address[](2);
         (path[0], path[1]) = (address(wrapped), address(token));
-        router.swapExactBLCHForTokens{value: 1 ether}(0, path, address(this), block.timestamp);
+        router.swapExactBLCHForTokens{value: 2 ether}(0, path, address(this), block.timestamp);
         vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
         router.swapExactBLCHForTokens{value: 0.01 ether}(0, path, address(this), block.timestamp);
 

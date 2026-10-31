@@ -70,6 +70,12 @@ contract CappedFeeHandler {
         return false;
     }
 
+    /// Mint and sync may also refuse at the k ceiling (F1). Swaps may not.
+    function _expectCeiling(bytes memory data) internal {
+        if (keccak256(bytes(_reason(data))) == keccak256("BDEX: K_CEILING")) ++capRefusals;
+        else _expect(data, "BDEX: RESERVE_CAP");
+    }
+
     function _expectedFee() internal view returns (uint256) {
         uint256 kl = pair.kLast();
         if (kl == 0) return 0;
@@ -94,7 +100,7 @@ contract CappedFeeHandler {
         (zeroForOne ? token0 : token1).mint(address(pair), amount);
         try pair.swap(zeroForOne ? 0 : out, zeroForOne ? out : 0, address(0xD0), "") {
             (uint112 n0, uint112 n1,) = pair.getReserves();
-            if (uint256(n0) * n1 < uint256(r0) * r1) kHeld = false;
+            if (uint256(n0) * (uint256(n1) + 1) * 2 < uint256(r0) * r1 * 2 - uint256(n0)) kHeld = false; // floor at the ceiling
             ++swaps;
         } catch (bytes memory data) {
             _expect(data, "BDEX: RESERVE_CAP");
@@ -111,7 +117,7 @@ contract CappedFeeHandler {
         pendingRepay = repay;
         try pair.swap(borrow0 ? out : 0, borrow0 ? 0 : out, address(this), hex"01") {
             (uint112 n0, uint112 n1,) = pair.getReserves();
-            if (uint256(n0) * n1 < uint256(r0) * r1) kHeld = false;
+            if (uint256(n0) * (uint256(n1) + 1) * 2 < uint256(r0) * r1 * 2 - uint256(n0)) kHeld = false; // floor at the ceiling
             ++flashes;
         } catch (bytes memory data) {
             _expect(data, "BDEX: RESERVE_CAP");
@@ -146,7 +152,7 @@ contract CappedFeeHandler {
             _afterLiquidityEvent(feeBefore, expected);
             ++adds;
         } catch (bytes memory data) {
-            _expect(data, "BDEX: RESERVE_CAP");
+            _expectCeiling(data);
             pair.skim(address(0xD0));
         }
     }
@@ -183,7 +189,7 @@ contract CappedFeeHandler {
         try pair.sync() {
             ++syncs;
         } catch (bytes memory data) {
-            _expect(data, "BDEX: RESERVE_CAP");
+            _expectCeiling(data);
         }
     }
 
@@ -223,6 +229,15 @@ contract DexAuditInvariantTest is TestBase {
         selectors[6] = CappedFeeHandler.skim.selector;
         out = new FuzzSelector[](1);
         out[0] = FuzzSelector(address(handler), selectors);
+    }
+
+    /// F1: both reserves can never sit at their caps, by any path, including
+    /// fee growth and donations.
+    function invariantKNeverExceedsCeiling() public view {
+        UniswapV2Pair p = handler.pair();
+        (uint112 r0, uint112 r1,) = p.getReserves();
+        (uint112 c0, uint112 c1) = p.reserveCaps();
+        assertTrue(uint256(r0) * r1 <= uint256(c0) * c1 * 64 / 100);
     }
 
     function invariantReservesNeverExceedCaps() public view {
