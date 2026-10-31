@@ -387,6 +387,42 @@ describe('mainnet deployment record', () => {
   });
 });
 
+describe('finality age', () => {
+  const at = (nowMs: number) => {
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    return render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => nowMs}
+      />,
+    );
+  };
+  const finalizedMs = Number(FINALIZED.timestamp) * 1000;
+
+  it('states the age of the finalized block in normal operation, with no alert', async () => {
+    const view = at(finalizedMs + 20 * 60_000);
+    await screen.findByRole('table');
+    expect(screen.getByLabelText('Finality age').textContent).toContain('is 20 min old');
+    expect(screen.getByLabelText('Finality age').getAttribute('role')).toBeNull();
+    view.unmount();
+  });
+
+  it('warns past the monitor age during a stall and keeps the pools readable', async () => {
+    const view = at(finalizedMs + (150 * 60 + 1) * 1000);
+    await screen.findByRole('table');
+    const notice = screen.getByLabelText('Finality age');
+    expect(notice.getAttribute('role')).toBe('alert');
+    expect(notice.textContent).toContain('looks stalled');
+    expect(notice.textContent).toContain('2 h 30 min old');
+    view.unmount();
+  });
+});
+
 describe('reserve cap checks', () => {
   const token = (address: Address, symbol: string, decimals: number) => ({
     address,

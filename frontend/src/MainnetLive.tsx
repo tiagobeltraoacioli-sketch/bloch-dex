@@ -38,6 +38,7 @@ import {
   addChainParameters,
   DEFAULT_DEADLINE_MINUTES,
   DEFAULT_SLIPPAGE_BPS,
+  FINALIZED_AGE_WARN_SECONDS,
   MAX_DEADLINE_MINUTES,
   MAX_SLIPPAGE_BPS,
   MIN_DEADLINE_MINUTES,
@@ -186,6 +187,7 @@ export default function MainnetLive({
         </p>
       ) : (
         <>
+          <FinalityAge finalizedAt={snapshot.finalized} now={now} />
           <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
           <PoolsTable
             snapshot={snapshot}
@@ -323,6 +325,44 @@ function NotLive({
       </table>
       <p className="microcopy">Pools: {planned.pairs.map(([a, b]) => `${a}/${b}`).join(', ')}.</p>
     </div>
+  );
+}
+
+/**
+ * How old the finalized block behind every figure on this page is. Past the
+ * monitor's warning age it says so: nothing else on the page changes during a
+ * finality stall, because every read is pinned to that block.
+ */
+function FinalityAge({
+  finalizedAt,
+  now,
+}: {
+  finalizedAt: Snapshot['finalized'];
+  now: () => number;
+}) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((t) => t + 1), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  const seconds = Math.max(0, Math.floor(now() / 1000) - Number(finalizedAt.timestamp));
+  const age =
+    seconds < 3600
+      ? `${Math.floor(seconds / 60)} min`
+      : `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
+  if (seconds < FINALIZED_AGE_WARN_SECONDS)
+    return (
+      <p className="microcopy" aria-label="Finality age">
+        Finalized block {finalizedAt.number.toString()} is {age} old.
+      </p>
+    );
+  return (
+    <p className="form-error" role="alert" aria-label="Finality age">
+      <AlertTriangle size={16} /> L2 finality looks stalled: finalized block{' '}
+      {finalizedAt.number.toString()} is {age} old. Pools, balances, caps and quotes on this page
+      are from that block. A swap executes on the latest state, and anything mined now stays out of
+      these figures until finality resumes.
+    </p>
   );
 }
 
