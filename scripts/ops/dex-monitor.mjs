@@ -25,7 +25,7 @@ import { evaluateFinalityGate, verifySafe } from "../staging/finality-gate.mjs";
 import {
   CRIT, CallReverted, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN,
   blockRef, call, checkIdentity, classifyExcess, codeHash, createRequest, deploymentFromGate, excessFloor,
-  formatUnits, isBricked, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
+  formatUnits, isBricked, isClosed, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
 } from "./dex-ops-lib.mjs";
 
 export const THRESHOLDS = Object.freeze({
@@ -183,6 +183,14 @@ async function checkPair({ pair, deployment, latest, finalized, add, facts, opti
     } else {
       add(`preseed[${tag}]`, options.expectSeeded ? WARN : OK, options.expectSeeded ? "the pair was expected to be seeded and is empty" : "empty, untouched, ready for the seed");
     }
+  }
+
+  // LP shares in a run that expects none: someone minted before the planned seed.
+  if (head.totalSupply !== 0n && !options.expectSeeded) {
+    add(`preseed[${tag}]`, WARN, `LP shares exist (${head.totalSupply}) but the seed has not been announced: a first mint nobody planned? Plan with dex-seed-plan.mjs`);
+  }
+  if (isClosed(head)) {
+    add(`closed[${tag}]`, CRIT, "both reserves are at their caps with LP shares: swaps and deposits revert in both directions until an LP burns (F1)");
   }
 
   // Reserves against caps, at latest: a dump into a side must alert now, not

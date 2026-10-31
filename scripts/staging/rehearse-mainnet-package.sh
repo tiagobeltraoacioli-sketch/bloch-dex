@@ -197,8 +197,25 @@ tail -n 6 "$EV/dex.dry-run.log"
 [ "$(cast nonce "$DEPLOYER" --rpc-url "$RPC")" = 0 ] || { echo "FAIL: the dry run changed the chain"; exit 1; }
 $D txs --config "$EV/dex.config.json" --plan "$EV/dex.plan.json" --write "$WORK/dex.txs.json" | tee -a "$EV/steps.log"
 log "1 DEX: sign (cast mktx) and publish (cast publish)"
+if [ "${FRONT_RUN_PAIR:-0}" = 1 ]; then
+  # F2: a third party creates the planned pair as soon as the factory has code.
+  PLAN_FACTORY=$(jsonget "$EV/dex.plan.json" contracts.factory.address)
+  PLAN_STEP=$(node -e 'const p=require(process.argv[1]);const s=p.steps.find(x=>x.action==="createPair");console.log(s.tokenA,s.tokenB)' "$(realpath "$EV/dex.plan.json")")
+  (
+    until [ "$(cast code "$PLAN_FACTORY" --rpc-url "$RPC")" != 0x ]; do sleep 1; done
+    set -- $PLAN_STEP
+    send "$ISSUER_KEY" "$PLAN_FACTORY" "$(cast calldata "createPair(address,address)" "$1" "$2")" 0 3300000 > "$EV/frontrun.status"
+  ) &
+  FRONT_PID=$!
+fi
 scripts/staging/sign-and-publish.sh --txs "$WORK/dex.txs.json" --rpc "$RPC" --confirm "$DEX_SHA" --max-fee-wei $MAXFEE --priority-fee-wei $TIP \
-  --hashes-out "$EV/dex.hashes.txt" -- --private-key "$DEPLOYER_KEY" 2>&1 | tee "$EV/dex.publish.log"
+  --plan "$EV/dex.plan.json" --hashes-out "$EV/dex.hashes.txt" -- --private-key "$DEPLOYER_KEY" 2>&1 | tee "$EV/dex.publish.log"
+if [ "${FRONT_RUN_PAIR:-0}" = 1 ]; then
+  wait "$FRONT_PID"
+  grep -q '^0x1' "$EV/frontrun.status" || { echo "FAIL: the front-run did not land first"; cat "$EV/frontrun.status"; exit 1; }
+  grep -q 'the identical pair already exists' "$EV/dex.publish.log" || { echo "FAIL: createPair was not front-run"; exit 1; }
+  log "F2: createPair was front-run; the deployer's reverted step was accepted because the pair is identical"
+fi
 $D record --config "$EV/dex.config.json" --plan "$EV/dex.plan.json" --rpc "$RPC" --tx-hashes "$EV/dex.hashes.txt" --write "$EV/gate.json" | tee -a "$EV/steps.log"
 log "1 verify-deployment (latest, pairs empty)"
 node scripts/staging/verify-deployment.mjs --safe-plan "$EV/safe.plan.json" --dex-plan "$EV/dex.plan.json" --infra-plan "$EV/infra.plan.json" --rpc "$RPC" \

@@ -17,17 +17,19 @@ It is an internal review, not an audit.
 | Pair init code hash | `0x1a88e06e32bd3402d34e0e10bd6aa7ab3df2123c3057289409ee89b807e0490f` (`0xe41e81db…b248` before fix DEX-09, `0x2249ef38…b820` before fix DEX-01) |
 | Target chain | Bloch L2 mainnet, chain ID 700770. Nothing is deployed there yet |
 
-### Open review findings at this revision
+### Review findings at this revision
 
-An independent review at `258fdd2` reported these. None is fixed here, and the review's failing tests are not on this branch (`codex/dex-review-r3-20261031` @ `3f6722c`).
+An independent review at `258fdd2` reported these.
 
-| ID | Severity | Summary | Fix touches |
+| ID | Severity | Summary | State on this branch |
 |---|---|---|---|
-| F1 | High (liveness) | A mint to both caps closes the pair to swaps and mints, before or after the seed, and the capital can be recovered. Same end state as DEX-09, by a route that fix leaves open | Pair, if the contract fix is chosen. That changes the init code hash and this scope |
-| F2 | Medium-High (launch) | A front-run `createPair` strands the deployment tooling | Tooling |
-| F3 | Medium (user funds) | After a favourable move, the signed minimum stays tied to the older finalized quote | Frontend |
-| F4 | Medium (user funds) | One failed receipt poll shows a pending swap as failed and re-enables Swap | Frontend |
-| F5 | Low-Medium (user funds) | A quote that arrives after an edit sends the old amount | Frontend |
+| F1 | High (liveness) | A mint to both caps closes the pair to swaps and mints, before or after the seed, and the capital can be recovered. Same end state as DEX-09, by a route that fix leaves open | **OPEN in the contracts.** `testFAIL51_F1a` and `F1b` in `test/Review51.t.sol` fail on purpose. Owner decision: see `OPS-OPENING-KIT.md`. The pair and its init hash above may still change, so **this audit scope can move** |
+| F2 | Medium-High (launch) | A front-run `createPair` strands the deployment tooling | Fixed in the tooling |
+| F3 | Medium (user funds) | After a favourable move, the signed minimum stays tied to the older finalized quote | Fixed in the frontend |
+| F4 | Medium (user funds) | One failed receipt poll shows a pending swap as failed and re-enables Swap | Fixed in the frontend |
+| F5 | Low-Medium (user funds) | A quote that arrives after an edit sends the old amount | Fixed in the frontend |
+
+A mint ceiling at 80% of the caps was tried and reverted (`e9b18cc`, `b404458`): wash trading and recorded donations still reach both caps.
 
 ## 2. Scope
 

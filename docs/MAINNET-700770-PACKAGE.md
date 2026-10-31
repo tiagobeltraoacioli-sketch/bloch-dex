@@ -10,7 +10,7 @@ never settled a block, and its head is still the genesis `0x632e45ae…f468`.
 
 | File | Role |
 |---|---|
-| `deployments/mainnet/700770/pins.json` | Chain ID 700770; L2 genesis `0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468` (state root `0x2ad7e807…c05d`); rules domain and genesis time; L1 timing and network pin; provisional v2.1 release binary hashes; Safe v1.4.1 npm integrity and runtime code hashes |
+| `deployments/mainnet/700770/pins.json` | Chain ID 700770; L2 genesis `0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468` (state root `0x2ad7e807…c05d`); rules domain and genesis time; L1 timing and network pin; v2.1 release binary hashes (unsigned); Safe v1.4.1 npm integrity and runtime code hashes |
 | `deployments/mainnet/700770/safe.config.json` | Bloch Inc Safe: SafeL2 v1.4.1, 3 of 5, salt nonce 0. `bootstrap.address` and the five owners are `TBD-owner` |
 | `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision` is `f1ad6f2`, the commit with the DEX-09 fix; later commits change no contract (check with `git diff f1ad6f2 -- contracts foundry.toml`). `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
 | `scripts/staging/deploy-safe.mjs` (+ `safe-deploy-config.mjs`) | `validate`, `pending`, `plan`, `preflight`, `txs`, `blochinc` |
@@ -175,9 +175,8 @@ cannot disagree.
 ## L2 binaries
 
 `deployments/mainnet/700770/pins.json` records the v2.1 release
-`bloch-l2-2026-10-30-v21-native-78d4921c` with `status: provisional`: the hashes
-are not closed and the release is unsigned. Replace them and the status from the
-closed v2.1 hash list. No tool reads `l2Release` to select a binary; an operator
+`bloch-l2-2026-10-30-v21-native-78d4921c` with `status: unsigned`: the release
+awaits the owner's signature. No tool reads `l2Release` to select a binary; an operator
 compares the hashes with `sha256sum`.
 
 ## Post-deployment verification (`verify-deployment.mjs`)
@@ -296,3 +295,28 @@ The sequence:
 
 Stop at any refusal. If a broadcast lands only partly, do not finish it by
 hand: re-plan from the current nonce.
+
+### If a third party calls `createPair` first (F2)
+
+`createPair` is permissionless, so the deployer's planned step can revert with
+`PAIR_EXISTS`. The pair is then the planned one, whoever created it, and the
+deployment goes on:
+
+- `sign-and-publish.sh --plan <plan>` runs `deploy-dex.mjs check-pair`. It accepts
+  the revert only if the factory registers the planned address and the init code
+  hash, runtime code, tokens and caps match the plan. It records the reverted hash.
+- `record` repeats that check, and lists the hash in the gate file as
+  `existingPairTransactions`.
+- The gate allows a revert only for a listed hash that called the factory, and
+  checks the pair at the finalized block as usual.
+- `verify-deployment` repeats the check. `--expect-empty` still refuses a pair
+  that holds a deposit.
+
+Check the pair by hand at any time:
+
+```
+node scripts/staging/deploy-dex.mjs check-pair --plan deployments/mainnet/700770/dex.plan.json --rpc http://127.0.0.1:18955
+```
+
+The check prints the reserves and shares. If they are not zero, someone also
+deposited: run `dex-seed-plan.mjs plan` before seeding.

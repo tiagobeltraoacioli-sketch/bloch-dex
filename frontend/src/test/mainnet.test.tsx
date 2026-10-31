@@ -118,6 +118,8 @@ type ChainState = {
   latestQuote?: { available: boolean; amountOut: bigint; minimumOut: bigint };
   /** A failing read at `latest`. */
   latestDown?: boolean;
+  /** The settled RPC's answer when its follower status is lost or invalid. */
+  finalityDown?: boolean;
   excess?: Record<
     string,
     { excess0: bigint; excess1: bigint; blocksInflow0: boolean; blocksInflow1: boolean }
@@ -157,6 +159,8 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
       case 'eth_chainId':
         return '0xab162';
       case 'eth_getBlockByNumber':
+        if (params[0] === 'finalized' && state.finalityDown)
+          throw Object.assign(new Error('finality unavailable'), { code: -32001 });
         return params[0] === '0x0'
           ? { number: '0x0', hash: deployment.genesisHash }
           : params[0] === 'finalized'
@@ -384,6 +388,42 @@ describe('mainnet deployment record', () => {
     await expect(loadMainnetState(wrap(refused), network)).rejects.toThrow(/did not enable/);
     // The devnet4 route still accepts only its rehearsal record.
     await expect(verifyDeploymentRecord(mainnetRecord())).rejects.toThrow(/devnet4 rehearsal/);
+  });
+});
+
+describe('finality age', () => {
+  const at = (nowMs: number) => {
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    return render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => nowMs}
+      />,
+    );
+  };
+  const finalizedMs = Number(FINALIZED.timestamp) * 1000;
+
+  it('states the age of the finalized block in normal operation, with no alert', async () => {
+    const view = at(finalizedMs + 20 * 60_000);
+    await screen.findByRole('table');
+    expect(screen.getByLabelText('Finality age').textContent).toContain('is 20 min old');
+    expect(screen.getByLabelText('Finality age').getAttribute('role')).toBeNull();
+    view.unmount();
+  });
+
+  it('warns past the monitor age during a stall and keeps the pools readable', async () => {
+    const view = at(finalizedMs + (150 * 60 + 1) * 1000);
+    await screen.findByRole('table');
+    const notice = screen.getByLabelText('Finality age');
+    expect(notice.getAttribute('role')).toBe('alert');
+    expect(notice.textContent).toContain('looks stalled');
+    expect(notice.textContent).toContain('2 h 30 min old');
+    view.unmount();
   });
 });
 
@@ -664,7 +704,7 @@ describe('mainnet route', () => {
       await user.click(screen.getByRole('button', { name: 'Get quote' }));
       await screen.findByLabelText('Quote');
       const sends = () => requests.filter((r) => r.method === 'eth_sendTransaction');
-      return { user, sends };
+      return { user, sends, chain: state };
     };
     const worse = { available: true, amountOut: 30_000_000n, minimumOut: 29_850_000n };
 
@@ -714,6 +754,34 @@ describe('mainnet route', () => {
       state.latestQuote = worse;
       await user.click(screen.getByRole('button', { name: 'Swap' }));
       expect((await screen.findByLabelText('Stale quote')).textContent).toContain('worse');
+      expect(sends()).toHaveLength(0);
+    });
+
+    it('shows no trading while the RPC answers finalized with -32001', async () => {
+      const { state, rpc } = fakeChain({ finalityDown: true });
+      const { wallet } = fakeWallet(state);
+      render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={rpc}
+          wallet={wallet}
+          planned={PLANNED}
+          now={() => NOW_MS}
+        />,
+      );
+      expect((await screen.findByRole('alert')).textContent).toContain(
+        'Mainnet reads are unavailable',
+      );
+      expect(screen.queryByRole('button', { name: 'Get quote' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Swap' })).toBeNull();
+    });
+
+    it('sends nothing when finality goes away after the page was read', async () => {
+      const { user, sends, chain } = await open({});
+      chain.finalityDown = true;
+      await user.click(await screen.findByRole('button', { name: 'Swap' }));
+      await screen.findByText(/L2 finality is unavailable, so nothing was sent/);
       expect(sends()).toHaveLength(0);
     });
 

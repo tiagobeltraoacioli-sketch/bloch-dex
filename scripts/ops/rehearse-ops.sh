@@ -237,6 +237,46 @@ if [ "$MODE" = anvil ]; then
   must_fail "$GRIEFER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 150000
   pass "dex04: the synced form is closed; the unsynced form is reported and skimmed"
   restore "$SNAP"
+
+  log "3a F1: a small first mint nobody planned, at a bad price, is seen and recovered"
+  SNAP=$(snapshot)
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "deposit()")" 2000000000000000 100000 > /dev/null
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" 1000000000000000)" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 1000000)" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$GRIEFER")" 0 300000 > /dev/null
+  expect 1 f1-monitor-foreign-lp monitor
+  grep -q 'LP shares exist' "$EV/f1-monitor-foreign-lp.out" || die "the monitor did not name the foreign LP shares"
+  expect 1 f1-plan-correct node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q '"decision": "correct-price"' "$EV/f1-plan-correct.out" || die "the planner did not ask for a correcting swap"
+  for i in 0 1; do
+    STEP_TO=$(jsonget "$EV/f1-plan-correct.out" steps.$i.to 2>/dev/null) || break
+    [ -n "$STEP_TO" ] && [ "$STEP_TO" != undefined ] || break
+    must "$SEEDER_KEY" "$STEP_TO" "$(jsonget "$EV/f1-plan-correct.out" steps.$i.data)" "$(jsonget "$EV/f1-plan-correct.out" steps.$i.value)" 400000 > /dev/null
+  done
+  expect 0 f1-plan-top-up node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q '"decision": "top-up"' "$EV/f1-plan-top-up.out" || die "the planner did not offer a top-up"
+  must "$SEEDER_KEY" "$(jsonget "$EV/f1-plan-top-up.out" steps.0.to)" "$(jsonget "$EV/f1-plan-top-up.out" steps.0.data)" 0 200000 > /dev/null
+  must "$SEEDER_KEY" "$(jsonget "$EV/f1-plan-top-up.out" steps.1.to)" "$(jsonget "$EV/f1-plan-top-up.out" steps.1.data)" "$(jsonget "$EV/f1-plan-top-up.out" steps.1.value)" 1000000 > /dev/null
+  expect 0 f1-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE
+  pass "f1: foreign first mint reported; correcting swap and top-up reached the planned price"
+  restore "$SNAP"
+
+  log "3b F1: a mint to both caps closes the pair; the monitor says so; a burn reopens it. THIS IS THE OPEN FINDING"
+  SNAP=$(snapshot)
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "deposit()")" $WRAP_CAP 100000 > /dev/null
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" $WRAP_CAP)" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" $USD_CAP)" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$GRIEFER")" 0 300000 > /dev/null
+  expect 2 f1-monitor-closed monitor
+  grep -q 'closed' "$EV/f1-monitor-closed.out" || die "the monitor did not report the closed pair"
+  expect 2 f1-plan-closed node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q '"decision": "closed"' "$EV/f1-plan-closed.out" || die "the planner did not report the closed pair"
+  must_fail "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" 9999999999)" 1000000000000000 300000
+  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "$TRANSFER" "$PAIR" 1000000000000)" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "burn(address)" "$GRIEFER")" 0 300000 > /dev/null
+  must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" 9999999999)" 1000000000000000 300000 > /dev/null
+  pass "f1: closed pair reproduced on anvil: swap reverts, monitor CRIT, planner closed; the attacker burn reopens it"
+  restore "$SNAP"
 fi
 
 # ---------------------------------------------------------------- seed

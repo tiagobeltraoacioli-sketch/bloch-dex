@@ -84,6 +84,8 @@ export const ABI = parseAbi([
   "function approve(address spender, uint256 value) returns (bool)",
   "function removeLiquidity(address tokenA, address tokenB, uint256 liquidity, uint256 amountAMin, uint256 amountBMin, address to, uint256 deadline) returns (uint256, uint256)",
   "function addLiquidityBLCH(address token, uint256 amountTokenDesired, uint256 amountTokenMin, uint256 amountBLCHMin, address to, uint256 deadline) payable returns (uint256, uint256, uint256)",
+  "function swapExactBLCHForTokens(uint256 amountOutMin, address[] path, address to, uint256 deadline) payable returns (uint256[])",
+  "function swapExactTokensForBLCH(uint256 amountIn, uint256 amountOutMin, address[] path, address to, uint256 deadline) returns (uint256[])",
   "function nonce() view returns (uint256)",
   "function getThreshold() view returns (uint256)",
   "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 nonce) view returns (bytes32)",
@@ -202,6 +204,12 @@ export function classifyExcess(side, floorBps = DEFAULT_EXCESS_FLOOR_BPS) {
 /// docs/OPS-INITIAL-LIQUIDITY.md).
 export function isBricked(state) {
   return state.totalSupply === 0n && state.sides.every((s) => s.cap !== 0n && s.reserve >= s.cap);
+}
+
+/// LP shares exist and both reserves are within 0.1% of their caps: no swap of a
+/// useful size passes in either direction (review finding F1).
+export function isClosed(state) {
+  return state.totalSupply !== 0n && state.sides.every((s) => s.cap !== 0n && s.reserve * 1000n >= s.cap * 999n);
 }
 
 /// Parse a decimal string into base units. Refuses precision it would lose.

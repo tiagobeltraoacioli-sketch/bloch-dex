@@ -1,6 +1,6 @@
 # Opening kit: price, bUSDC cap and owner inputs
 
-Status: nothing is deployed. Every value here is a proposal for the owner. **Finding F1 below is open and can change the pair init code hash.** Read it before choosing.
+Status: nothing is deployed. Every value here is a proposal for the owner. **Finding F1 below is open. Two of its three options change the pair init code hash.** Read it before choosing.
 
 ## 1. How the choice works
 
@@ -20,7 +20,7 @@ Measured with a scratch forge test on the real Pair and Factory at `f1ad6f2`, wi
 
 - **Dump loss:** share of the WBLCH side taken by a dump of unbacked bUSDC up to the cap.
 - **Price range:** pool price when each side reaches its cap, from one swap. Beyond it, swaps in that direction revert until the price returns.
-- **Capital to close the pair (F1):** the other side of both caps, valued at `P`. Arithmetic from the seed, not run at each row. Agent 51 ran it at `P = 100`.
+- **Capital to close the pair (F1):** the other side of both caps, valued at `P`, after the seed. Arithmetic from the seed, not run at each row. Agent 51 ran it at `P = 100`. It applies to option B below.
 
 | P | Cap C | Validator | Seed | Seed value (bUSDC) | Dump loss | Price range | Capital to close the pair (bUSDC) |
 |---|---|---|---|---|---|---|---|
@@ -61,12 +61,57 @@ What the table implies:
 
 Recommendation: `C = min(1000, 10 * P)`. The price is the owner's decision.
 
-## 3. Findings that affect the opening
+## 3. F1: the owner's choice
 
-From `agents/51-dex-review.md`, at `258fdd2`, all open:
+A mint to both caps closes the pair to swaps and deposits (`OPS-INITIAL-LIQUIDITY.md`). The contracts on this branch do not prevent it.
 
-- **F1:** a mint to both caps closes the pair to swaps and mints, while the capital can be recovered. It works before the seed and after it. The proposed contract fix changes the pair init code hash, so it needs a new plan, new rehearsals and a new audit scope.
-- **F2:** a front-run `createPair` strands the deployment tooling.
+What the caps protect, from `MAINNET-READINESS.md` section 3:
+
+- **Loss ceiling while unaudited:** everything a pair can ever hold is at most its two caps.
+- **Bridge failure:** a dump of unbacked bUSDC stops at the cap, and takes about half the WBLCH side when the cap is near `10 * P`.
+
+| | B: accept F1 | A: cap only bUSDC, first depositor | C: k ceiling, first depositor |
+|---|---|---|---|
+| Branch | this one | `codex/dex-f1-candidate-r3-20261031` | `codex/dex-f1-kceiling-depositor-r3-20261031` |
+| Pair init hash | `0x1a88e06e…490f` | `0xed140137…81c1` | `0x16bd5cad…6683` |
+| Both caps kept | Yes | **No: the WBLCH cap is gone** | Yes |
+| Swaps closed by an attacker | **Yes** | No | No |
+| Seed blocked by an attacker | **Yes** | No | No |
+| Top-ups after the seed blocked by a filled pool | Yes | Yes | Yes |
+| Contract change | None | First depositor, plus a factory argument | Both of those, plus `_applyCeiling` |
+| New trust root | None | One first-depositor key, set once | The same |
+| LP fees | Unchanged | Unchanged | None while at the ceiling: fees stay outside the reserves, and anyone can skim them |
+| Audit scope | Stays at `f1ad6f2` | Moves | Moves |
+| Config, gate, plan, rehearsals | Done here | Not done | Not done |
+
+Measured with a BLCH dump, seed at 50% of the tighter cap, real Pair and Factory, `TestToken`, forge only:
+
+| P | Cap | bUSDC taken, WBLCH capped | Uncapped, 100 BLCH dump | Uncapped, 1,000 BLCH dump |
+|---|---|---|---|---|
+| 25 | 250 | 49.9% (62.4 bUSDC) | 95.2% (119.0) | 99.5% (124.4) |
+| 50 | 500 | 49.9% (124.8) | 95.2% (238.1) | 99.5% (248.8) |
+| 80 | 1,000 | 49.9% (199.7) | 95.2% (380.9) | 99.5% (398.0) |
+| 100 | 1,000 | 49.9% (249.6) | 95.2% (476.1) | 99.5% (497.5) |
+| 200 | 1,000 | 74.9% (374.7) | 97.5% (487.8) | 99.7% (498.7) |
+| 400 | 1,000 | 87.4% (437.3) | 98.8% (493.8) | 99.9% (499.4) |
+
+BLCH that a bUSDC dump can take, after the market has sold BLCH into the pool:
+
+| P | Cap | WBLCH capped, at most | Uncapped, 100 BLCH sold first | Uncapped, 1,000 BLCH sold first |
+|---|---|---|---|---|
+| 25 | 250 | 7.49 | 102.5 | 1,002.5 |
+| 100 | 1,000 | 7.49 | 102.5 | 1,002.5 |
+| 400 | 1,000 | 9.37 | 100.6 | 1,000.6 |
+
+**A does not hold the protection.** The WBLCH held by a pair, and the WBLCH a bUSDC dump can take, no longer have a limit. Other WBLCH pairs anyone creates lose their ceiling too.
+
+**Recommendation: C**, after an independent attack on it. It keeps both caps. If only A and B are on the table, B: F1 costs liveness and redeployment, and no funds. A gives up the loss ceiling.
+
+Limits of the evidence for C: it ran against agent 61's suite adapted to a pair that refuses (`sync` wrapped in `try`, `skim` between wash swaps). Agent 61 has not attacked it. Its config, gate and plan are not written. An account with LP capital can still fill the pool to the ceiling and block further deposits, though not swaps.
+
+The first depositor is checked against `msg.sender` or `tx.origin`, so it works through the router from an EOA. A Safe would need a direct call, or a contract that transfers and mints atomically. If that key is lost before the seed, the factory must be redeployed.
+
+Under B, F1 costs at `P = 100`: about $2,000 of recoverable capital before the seed, about $1,000 after, net about $1. Each recovery is a new deployment and at least one more finality wait.
 
 ## 4. What the owner must provide
 

@@ -7,7 +7,7 @@
 # RPC's `pending` view or on gas estimation.
 #
 #   scripts/staging/sign-and-publish.sh --txs T --rpc URL --confirm <configSha256>
-#       --max-fee-wei N --priority-fee-wei N --hashes-out H [--timeout SECONDS]
+#       --max-fee-wei N --priority-fee-wei N --hashes-out H [--timeout SECONDS] [--plan P]
 #       -- <cast signer arguments, e.g. --ledger or --private-key ...>
 #
 # Refuses unless: the confirmation equals the file's configSha256; the RPC's
@@ -16,9 +16,14 @@
 # transaction its latest nonce equals the transaction's nonce and a planned
 # creation address is still empty. After each receipt: status 1 and, for a
 # creation, the planned address. Hashes are appended to H in nonce order.
+#
+# With --plan, a createPair that reverts is accepted only if `deploy-dex.mjs
+# check-pair` finds the identical planned pair already there (front-run). Its
+# reverted hash is still recorded, because the nonce is used and `record` expects
+# one transaction per step.
 set -euo pipefail
 
-TXS= RPC= CONFIRM= MAXFEE= TIP= OUT= TIMEOUT=3600
+TXS= RPC= CONFIRM= MAXFEE= TIP= OUT= TIMEOUT=3600 PLAN=
 while [ $# -gt 0 ]; do
   case "$1" in
     --txs) TXS=$2; shift 2 ;;
@@ -28,6 +33,7 @@ while [ $# -gt 0 ]; do
     --priority-fee-wei) TIP=$2; shift 2 ;;
     --hashes-out) OUT=$2; shift 2 ;;
     --timeout) TIMEOUT=$2; shift 2 ;;
+    --plan) PLAN=$2; shift 2 ;;
     --) shift; break ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
@@ -75,7 +81,13 @@ for i in $(seq 0 $((COUNT - 1))); do
   BLOCK=$(node -e 'console.log(BigInt(JSON.parse(process.argv[1]).blockNumber).toString())' "$RECEIPT")
   until [ "$(cast block-number --rpc-url "$RPC")" -ge "$BLOCK" ]; do sleep 1; done
   STATUS=$(node -e 'console.log(JSON.parse(process.argv[1]).status)' "$RECEIPT")
-  [ "$STATUS" = 0x1 ] || { echo "$LABEL: reverted ($HASH)" >&2; exit 1; }
+  if [ "$STATUS" != 0x1 ]; then
+    [ "$LABEL" = createPair ] && [ -n "$PLAN" ] || { echo "$LABEL: reverted ($HASH)" >&2; exit 1; }
+    CHECK=$(node "$(dirname "$0")/deploy-dex.mjs" check-pair --plan "$PLAN" --rpc "$RPC") || { echo "$LABEL: reverted ($HASH) and the existing pair is not the planned one" >&2; exit 1; }
+    echo "$LABEL: reverted ($HASH): the identical pair already exists. $CHECK" >&2
+    echo "$HASH" >> "$OUT"
+    continue
+  fi
   if [ "$TO" = null ]; then
     CREATED=$(node -e 'console.log(String(JSON.parse(process.argv[1]).contractAddress).toLowerCase())' "$RECEIPT")
     [ "$CREATED" = "$EXPECT" ] || { echo "$LABEL: created $CREATED, planned $EXPECT" >&2; exit 1; }

@@ -39,6 +39,8 @@ export const MAX_SLIPPAGE_BPS = 500;
  */
 export const DEFAULT_DEADLINE_MINUTES = 60;
 export const MIN_DEADLINE_MINUTES = 10;
+/** The page warns at the same finalized age as scripts/ops/dex-monitor.mjs (finalizedAgeWarn). */
+export const FINALIZED_AGE_WARN_SECONDS = 150 * 60;
 export const MAX_DEADLINE_MINUTES = 180;
 
 export type BridgeLink = {

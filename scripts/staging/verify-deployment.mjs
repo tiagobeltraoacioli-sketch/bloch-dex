@@ -20,6 +20,7 @@
 // transaction hash files, that every transaction came from the planned key
 // with the planned nonce, succeeded and created the planned address.
 
+import { verifyExistingPair } from "./deploy-dex.mjs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createJsonRpcRequest, verifySafe } from "./finality-gate.mjs";
@@ -198,7 +199,12 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
       const step = plan.steps[i];
       const tx = await request("eth_getTransactionByHash", [hash]);
       const receipt = await request("eth_getTransactionReceipt", [hash]);
-      refuse(tx && receipt && receipt.status === "0x1", `${name} transaction ${hash} is missing or reverted`);
+      refuse(tx && receipt, `${name} transaction ${hash} is missing`);
+      // A reverted createPair is fine only if the identical pair already exists.
+      if (receipt.status !== "0x1") {
+        refuse(name === "dex" && step.action === "createPair", `${name} transaction ${hash} reverted`);
+        ok("createPair front-run, pair identical", JSON.stringify(await verifyExistingPair(dexPlan, step, request)));
+      }
       refuse(lower(tx.from) === from && BigInt(tx.nonce) === BigInt(step.nonce), `${name} transaction ${hash} sender or nonce differs`);
       if (tx.to === null || tx.to === undefined) {
         refuse(keccak256(tx.input) === step.initCodeHash, `${name} ${step.action} init code differs`);

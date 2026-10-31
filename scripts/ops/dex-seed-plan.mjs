@@ -17,18 +17,58 @@
 import { pathToFileURL } from "node:url";
 import {
   CRIT, OK, RpcError, UNKNOWN, WARN,
-  blockRef, call, checkIdentity, createRequest, deploymentFromGate, encode, formatUnits, isBricked, isqrt,
+  blockRef, call, checkIdentity, createRequest, deploymentFromGate, encode, formatUnits, isBricked, isClosed, isqrt,
   parseArgs, parseUnits, readBlock, readGate, readPair, stringify,
 } from "./dex-ops-lib.mjs";
 
 const WAD = 10n ** 18n;
 const MINIMUM_LIQUIDITY = 1000n;
+const PRICE_TOLERANCE_BPS = 100n;
+
+/// LP shares already exist: our own seed, or a first mint nobody planned (F1). The
+/// price comes first: a swap sets it, then a pro-rata deposit reaches the target.
+function planWithShares({ wrapped, quote, totalSupply, price, fractionBps }) {
+  if (isClosed({ totalSupply, sides: [wrapped, quote] })) {
+    return { decision: "closed", reason: "both reserves are at their caps. No swap or deposit passes until an LP burns; see the runbook (F1)." };
+  }
+  if ([wrapped, quote].some((s) => s.balance !== s.reserve)) {
+    return { decision: "skim-first", reason: "an unsynced donation is in the pair. Run skim, then plan again." };
+  }
+  const pool = (quote.reserve * WAD) / wrapped.reserve;
+  const gap = ((pool > price ? pool - price : price - pool) * 10_000n) / price;
+  if (gap > PRICE_TOLERANCE_BPS) {
+    const k = wrapped.reserve * quote.reserve;
+    const nextWrapped = isqrt((k * WAD) / price);
+    const nextQuote = (nextWrapped * price) / WAD;
+    const sellWrapped = nextWrapped > wrapped.reserve;
+    const [rIn, rOut, next, cap] = sellWrapped
+      ? [wrapped.reserve, quote.reserve, nextWrapped, wrapped.cap]
+      : [quote.reserve, wrapped.reserve, nextQuote, quote.cap];
+    const amountIn = ((next - rIn) * 1000n) / 997n + 1n;
+    if (rIn + amountIn > cap) return { decision: "refuse", reason: "the correcting swap would pass this side's cap. The pool cannot reach this price; see the runbook (F1)." };
+    const out = (amountIn * 997n * rOut) / (rIn * 1000n + amountIn * 997n);
+    return { decision: "correct-price", sellWrapped, amountIn, amountOutMin: (out * 99n) / 100n, gapBps: gap, reason: "LP shares exist at another price. Swap to the target price, then plan again." };
+  }
+  let targetWrapped = (wrapped.cap * fractionBps) / 10_000n;
+  let targetQuote = (targetWrapped * price) / WAD;
+  const quoteLimit = (quote.cap * fractionBps) / 10_000n;
+  if (targetQuote > quoteLimit) {
+    targetQuote = quoteLimit;
+    targetWrapped = (targetQuote * WAD) / price;
+  }
+  if (wrapped.reserve >= targetWrapped || quote.reserve >= targetQuote) {
+    return { decision: "refuse", reason: "the pool is already at or above the opening target; this is not an opening deposit" };
+  }
+  const depositWrapped = targetWrapped - wrapped.reserve;
+  const depositQuote = (depositWrapped * quote.reserve) / wrapped.reserve + 1n;
+  return { decision: "top-up", depositWrapped, depositQuote, poolWrapped: targetWrapped, poolQuote: quote.reserve + depositQuote, donated: null };
+}
 
 /// The pure part of `plan`. `wrapped` and `quote` are pair sides; `price` is in
 /// quote base units per 1e18 wrapped base units.
 export function planOpening({ wrapped, quote, totalSupply, price, fractionBps }) {
-  if (totalSupply !== 0n) return { decision: "refuse", reason: "the pair already has LP shares; this is not an opening deposit" };
   if (price <= 0n) return { decision: "refuse", reason: "the price must be positive" };
+  if (totalSupply !== 0n) return planWithShares({ wrapped, quote, totalSupply, price, fractionBps });
   const excess = [wrapped, quote].filter((s) => s.balance !== s.reserve);
   if (excess.length) {
     return { decision: "skim-first", reason: "an unsynced donation is in the pair: anyone may sync it into the reserves between this plan and the seed. Run skim, then plan again." };
@@ -121,14 +161,28 @@ async function main() {
     console.log(stringify({ ...plan, pair: pair.address, excess: { wrapped: wrapped.balance - wrapped.reserve, quote: quote.balance - quote.reserve } }));
     return WARN;
   }
-  if (plan.decision !== "proceed") {
+  if (plan.decision === "correct-price") {
+    if (!args.to) throw new Error("--to <recipient of the swap output> is required");
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * Number(args["deadline-min"] ?? 60));
+    const steps = plan.sellWrapped
+      ? [{ description: "sell BLCH to the target price", to: deployment.router.address, value: plan.amountIn, data: encode("swapExactBLCHForTokens", [plan.amountOutMin, [wrapped.token, quote.token], args.to, deadline]), deadline }]
+      : [
+          { description: "approve the router for the quote token", to: quote.token, value: "0", data: encode("approve", [deployment.router.address, plan.amountIn]) },
+          { description: "sell the quote token to the target price", to: deployment.router.address, value: "0", data: encode("swapExactTokensForBLCH", [plan.amountIn, plan.amountOutMin, [quote.token, wrapped.token], args.to, deadline]), deadline },
+        ];
+    console.log(stringify({ ...plan, pair: pair.address, block: latest.number, targetPrice: args.price, steps }));
+    return WARN;
+  }
+  if (plan.decision !== "proceed" && plan.decision !== "top-up") {
     console.log(stringify({ ...plan, pair: pair.address, reserves: { wrapped: wrapped.reserve, quote: quote.reserve }, caps: { wrapped: wrapped.cap, quote: quote.cap } }));
     return CRIT;
   }
   if (!args.to) throw new Error("--to <LP recipient> is required");
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * Number(args["deadline-min"] ?? 60));
-  const seedCall = encode("addLiquidityBLCH", [quote.token, plan.depositQuote, plan.depositQuote, plan.depositWrapped, args.to, deadline]);
-  const liquidity = isqrt(plan.depositWrapped * plan.depositQuote) - MINIMUM_LIQUIDITY;
+  // On a fresh pair the minimums equal the deposit. A top-up follows the pool's ratio.
+  const topUp = plan.decision === "top-up";
+  const seedCall = encode("addLiquidityBLCH", [quote.token, plan.depositQuote, topUp ? (plan.depositQuote * 99n) / 100n : plan.depositQuote, topUp ? (plan.depositWrapped * 99n) / 100n : plan.depositWrapped, args.to, deadline]);
+  const liquidity = topUp ? (plan.depositWrapped * state.totalSupply) / wrapped.reserve : isqrt(plan.depositWrapped * plan.depositQuote) - MINIMUM_LIQUIDITY;
   console.log(stringify({
     ...plan,
     pair: pair.address,
