@@ -178,7 +178,7 @@ deploy)
   GENESIS=$(cast block 0 --field hash --rpc-url "$RPC")
   log "chain $(cast chain-id --rpc-url "$RPC") genesis $GENESIS (private stack, real settlement)"
   forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
-  if [ ! -e "$WORK/safe.txs.json" ]; then
+  if [ ! -e "$WORK/infra.txs.json" ]; then
   # infra
   node scripts/staging/deploy-infra.mjs pending --config deployments/mainnet/700770/infra.config.json > "$EV/infra.pending.json"
   node -e '
@@ -192,6 +192,8 @@ console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$INFRA" > "$EV/infra.confi
   $I plan --config "$EV/infra.config.json" --write "$EV/infra.plan.json" > /dev/null
   $I preflight --config "$EV/infra.config.json" --plan "$EV/infra.plan.json" --rpc "$RPC" > "$EV/infra.preflight.json"
   $I txs --config "$EV/infra.config.json" --plan "$EV/infra.plan.json" --write "$WORK/infra.txs.json" >> "$EV/steps.log"
+  fi
+  if [ ! -e "$WORK/safe.txs.json" ]; then
   # Safe
   OWNERS_JSON=$(printf '"%s",' "${OWNERS[@]}"); OWNERS_JSON="[${OWNERS_JSON%,}]"
   node -e '
@@ -545,6 +547,22 @@ reopened)
   flush
   note "Safe bUSDC $(cast call "$ASSET" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC") WBLCH $(cast call "$WRAPPED" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC")"
   mon_note reopened --expect-seeded
+  ;;
+failed-approve)
+  # Report 61 and the kit: a failed approve spends the depositor's nonce 0. Planner and gate must refuse,
+  # and the operator must be told what to do. Records the exact words.
+  state_load
+  log "failed approve: depositor sends an approve with a gas limit that runs out"
+  q "$DEPOSITOR_KEY" "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" 500000000)" 0 25000 0x0
+  flush
+  note "depositor nonce now $(cast nonce "$DEPOSITOR" --rpc-url "$RPC")"
+  set +e
+  node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/failed-approve.plan.txt" 2>&1; note "seed plan exit $?"
+  head -c 1200 "$EV/failed-approve.plan.txt" | tee -a "$EV/steps.log"; echo
+  $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" > "$EV/failed-approve.gate.txt" 2>&1; note "gate exit $?"
+  head -c 800 "$EV/failed-approve.gate.txt" | tee -a "$EV/steps.log"; echo
+  node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" --json > "$EV/failed-approve.monitor.json" 2>&1; note "monitor exit $?"
+  set -e
   ;;
 wait-last-final)
   wait_final "$(cat "$WORK/last-block")"
