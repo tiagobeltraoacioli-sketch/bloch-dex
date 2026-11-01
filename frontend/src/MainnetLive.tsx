@@ -46,7 +46,14 @@ import {
   type MainnetState,
   type PlannedCap,
 } from './mainnet/config';
-import { checkRoute, explainBlock, headroom, headroomUse, type RouteCheck } from './mainnet/caps';
+import {
+  atKCeiling,
+  checkRoute,
+  explainBlock,
+  headroom,
+  headroomUse,
+  type RouteCheck,
+} from './mainnet/caps';
 import { usePendingSwap } from './mainnet/pendingswap';
 import { blocksSwap, compareQuotes, signedQuote, type QuoteCheck } from './mainnet/quotecheck';
 import {
@@ -478,7 +485,9 @@ function PendingExcess({
         .map(([amount, t]) => `${formatAmount(amount, t.decimals)} ${t.symbol}`)
         .join(' and ')}{' '}
       above the reserves.{' '}
-      {blocked && 'Swaps and deposits on that side revert until someone calls skim. '}
+      {e.blocksInflow0 && e.blocksInflow1
+        ? 'This pool is closed: swaps in both directions and deposits revert until someone calls skim. '
+        : blocked && 'Swaps and deposits on that side revert until someone calls skim. '}
       Anyone can call <code>skim</code> on this pool; the caller receives the excess.{' '}
       {wallet.account && (
         <button className="button secondary" disabled={busy} onClick={() => void skim()}>
@@ -549,6 +558,12 @@ function PoolsTable({
                   wallet={wallet}
                   onMined={onMined}
                 />
+                {atKCeiling(p) && (
+                  <div className="microcopy" aria-label="K ceiling">
+                    At the pool&apos;s k ceiling: deposits revert with BDEX: K_CEILING. Swaps still
+                    run, and their fee stays outside the reserves as excess.
+                  </div>
+                )}
               </td>
               <td>
                 {side(p.reserve0, p.cap0, p.token0)}

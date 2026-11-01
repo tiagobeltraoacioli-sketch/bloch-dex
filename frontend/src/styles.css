@@ -2301,3 +2301,19 @@
     overflow-wrap: anywhere;
   }
 }
+
+/* Phone width: the caps column of the mainnet pool table must stay readable. */
+@media (max-width: 640px) {
+  .mainnet-page .devnet4-pools thead {
+    display: none;
+  }
+  .mainnet-page .devnet4-pools tr,
+  .mainnet-page .devnet4-pools th,
+  .mainnet-page .devnet4-pools td {
+    display: block;
+    width: 100%;
+  }
+  .mainnet-page .devnet4-pools td {
+    overflow-wrap: anywhere;
+  }
+}

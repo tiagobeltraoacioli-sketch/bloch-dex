@@ -6,6 +6,11 @@
 // or below its constructor-fixed cap (0 = uncapped); outflows are never
 // blocked. A swap that would lift the input reserve above the cap reverts with
 // "BDEX: RESERVE_CAP", and the lens reports such a route as unavailable.
+//
+// K ceiling (UniswapV2Pair._applyCeiling): on a pair capped on both sides,
+// reserve0 * reserve1 stays at or below 64% of cap0 * cap1. Mint and sync revert
+// with "BDEX: K_CEILING"; a swap or burn still runs and records less, so its fee
+// stays outside the reserves as excess. It changes neither output nor cap checks.
 import type { Address } from 'viem';
 import { amountOut, formatAmount } from '../amm';
 import type { LivePool, LiveToken } from '../devnet4/chain';
@@ -47,6 +52,20 @@ export function findPool(pools: LivePool[], a: Address, b: Address): LivePool | 
 export function headroom(reserve: bigint, cap: bigint): bigint | null {
   if (cap === 0n) return null;
   return cap > reserve ? cap - reserve : 0n;
+}
+
+/** UniswapV2Pair.K_CEILING_BPS. */
+const K_CEILING_BPS = 6_400n;
+
+/** True when the pool's reserves are at its k ceiling: deposits revert, swaps still run. */
+export function atKCeiling(
+  pool: Pick<LivePool, 'reserve0' | 'reserve1' | 'cap0' | 'cap1'>,
+): boolean {
+  if (pool.cap0 === 0n || pool.cap1 === 0n) return false;
+  const ceiling = (pool.cap0 * pool.cap1 * K_CEILING_BPS) / 10_000n;
+  // A swap records floor(ceiling / other reserve), so k lands up to one reserve below it.
+  const margin = pool.reserve0 > pool.reserve1 ? pool.reserve0 : pool.reserve1;
+  return pool.reserve0 * pool.reserve1 + margin > ceiling;
 }
 
 /** Walk a route hop by hop on finalized reserves, stopping at the first hop that would revert. */
@@ -112,7 +131,7 @@ export function explainBlock(block: HopBlock): string {
     case 'no-pool':
       return 'No pool exists for one hop of this route.';
     case 'no-liquidity':
-      return `The ${pairName(block.pool)} pool has no liquidity yet.`;
+      return `The ${pairName(block.pool)} pool has no liquidity yet. Only the deployment's first depositor can make its first deposit.`;
     case 'zero-output':
       return `The amount is too small: the ${pairName(block.pool)} pool would return nothing.`;
     case 'pending-excess': {
