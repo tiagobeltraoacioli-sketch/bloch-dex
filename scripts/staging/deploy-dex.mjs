@@ -114,6 +114,9 @@ export async function preflight(plan, request) {
   const latest = BigInt(await request("eth_getTransactionCount", [plan.deployer, "latest"]));
   const pending = BigInt(await request("eth_getTransactionCount", [plan.deployer, "pending"]));
   refuse(latest === BigInt(plan.startNonce) && pending === latest, `deployer nonce is ${latest}/${pending}, plan needs ${plan.startNonce}`);
+  refuse(plan.firstDepositor && !/^0x0{40}$/.test(plan.firstDepositor), "the plan has no first depositor");
+  refuse((await request("eth_getCode", [plan.firstDepositor, "latest"])) === "0x", "the first depositor must be an EOA");
+  refuse(BigInt(await request("eth_getTransactionCount", [plan.firstDepositor, "latest"])) === 0n, "the first depositor has already sent a transaction; use a fresh key");
   const created = Object.entries(plan.contracts).filter(([key]) => key !== "wrappedNative" || plan.deployWrapped);
   for (const [key, { address }] of [...created, ...plan.pairs.map((p, i) => [`pair ${i}`, p])]) {
     refuse((await request("eth_getCode", [address, "latest"])) === "0x", `${key} address ${address} is already occupied`);
@@ -164,6 +167,7 @@ export async function verifyExistingPair(plan, step, request) {
   refuse(initCode === plan.pairInitCodeHash, "the factory's pair init code hash differs from the plan");
   const code = await request("eth_getCode", [step.address, "latest"]);
   refuse(typeof code === "string" && code.length > 2 && keccak256(code) === plan.pairCodeHash, "the pair's runtime code differs from the plan");
+  refuse(lastAddress(await call(factory, "firstDepositor()")) === plan.firstDepositor, "the factory's first depositor differs from the plan");
   refuse(lastAddress(await call(step.address, "factory()")) === factory, "the pair belongs to another factory");
   refuse(lastAddress(await call(step.address, "token0()")) === token0, "the pair's token0 differs from the plan");
   refuse(lastAddress(await call(step.address, "token1()")) === token1, "the pair's token1 differs from the plan");

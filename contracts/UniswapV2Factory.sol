@@ -23,6 +23,11 @@ contract UniswapV2Factory is IUniswapV2Factory {
     /// @notice Protocol fee recipient, or address(0) when the fee is off.
     address public immutable feeTo;
 
+    /// @notice The only account that may make a pair's first deposit, or
+    ///         address(0) to leave first deposits open. Fixed like the caps, so a
+    ///         third party cannot fill an empty pair before the planned seed.
+    address public immutable firstDepositor;
+
     mapping(address => mapping(address => address)) public getPair;
     address[] public allPairs;
 
@@ -30,9 +35,10 @@ contract UniswapV2Factory is IUniswapV2Factory {
     /// @dev Written only by the constructor; pairs copy it at creation.
     mapping(address => uint256) public reserveCap;
 
-    constructor(address _feeTo, address[] memory capTokens, uint256[] memory caps) {
+    constructor(address _feeTo, address _firstDepositor, address[] memory capTokens, uint256[] memory caps) {
         require(capTokens.length == caps.length, "BDEX: CAP_LENGTH");
         feeTo = _feeTo;
+        firstDepositor = _firstDepositor;
         emit FeeToFixed(_feeTo);
         for (uint256 i; i < capTokens.length; ++i) {
             address token = capTokens[i];

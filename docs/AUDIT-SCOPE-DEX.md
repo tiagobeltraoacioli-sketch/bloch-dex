@@ -10,12 +10,26 @@ It is an internal review, not an audit.
 | Item | Value |
 |---|---|
 | Branch | `codex/dex-mainnet-rc-20261030` |
-| Contracts commit | `f1ad6f25ddd8082f17124f5dc0dbcf88a167617f`, the `source.revision` of `deployments/mainnet/dex-mainnet.config.json`. Contains fix DEX-09 |
-| Audit commit | The tip of `codex/dex-mainnet-rc-20261030` that contains this file. `git diff f1ad6f2 <tip> -- contracts foundry.toml` must be empty |
+| Contracts commit | `d18ab04f1db68350427362128829f88dba8bac9b`, the `source.revision` of `deployments/mainnet/dex-mainnet.config.json`. Contains fixes DEX-09 and F1. **The scope moved from `f1ad6f2`: see "Change of scope" below** |
+| Audit commit | The tip of `codex/dex-mainnet-rc-20261030` that contains this file. `git diff d18ab04 <tip> -- contracts foundry.toml` must be empty |
 | Internal review base | The review below began on `codex/dex-audit-20261030` (from `feat/dex-safe-frontend-20261016` @ `4dfb32d`). The pair and the Lens changed after it, so an external audit uses the commits above |
 | Compiler | solc 0.8.24, `evmVersion = paris`, optimizer 200 runs, `bytecode_hash = none` (`foundry.toml`) |
-| Pair init code hash | `0x1a88e06e32bd3402d34e0e10bd6aa7ab3df2123c3057289409ee89b807e0490f` (`0xe41e81db…b248` before fix DEX-09, `0x2249ef38…b820` before fix DEX-01) |
+| Pair init code hash | `0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683` (`0x1a88e06e…490f` before fix F1, `0xe41e81db…b248` before fix DEX-09, `0x2249ef38…b820` before fix DEX-01) |
 | Target chain | Bloch L2 mainnet, chain ID 700770. Nothing is deployed there yet |
+
+### Change of scope: fix F1
+
+**The audit scope moved.** An external audit must cover these additions, which no earlier review in this file saw except the attack review noted below.
+
+| File | Change |
+|---|---|
+| `contracts/UniswapV2Pair.sol` | `K_CEILING_BPS` and `_applyCeiling`: `reserve0 * reserve1` stays at or below 64% of `cap0 * cap1` on a pair capped on both sides. Mint and sync revert with `BDEX: K_CEILING`. Swap and burn record less and leave the rest outside the reserves. The first mint requires `msg.sender` or `tx.origin` to be `factory.firstDepositor()`, or reverts with `BDEX: FIRST_DEPOSITOR` |
+| `contracts/UniswapV2Factory.sol` | New immutable `firstDepositor`, a new constructor argument |
+| `contracts/interfaces/IUniswapV2Factory.sol` | `firstDepositor()` |
+
+Invariant to audit: **both reserves can never sit at their caps, by any path, including fee growth and donations.** Each side alone can still reach its cap through a swap, so the dump bound does not change (agent 61 measured identical dump figures before and after).
+
+Accepted limits, by owner decision for the guarded launch, are in `OPS-OPENING-KIT.md` section 3. `tx.origin` is used on purpose: see that section. `address(0)` turns the rule off in the factory, and every mainnet tool refuses it.
 
 ### Review findings at this revision
 
@@ -23,7 +37,7 @@ An independent review at `258fdd2` reported these.
 
 | ID | Severity | Summary | State on this branch |
 |---|---|---|---|
-| F1 | High (liveness) | A mint to both caps closes the pair to swaps and mints, before or after the seed, and the capital can be recovered. Same end state as DEX-09, by a route that fix leaves open | **OPEN in the contracts.** `testFAIL51_F1a` and `F1b` in `test/Review51.t.sol` fail on purpose. Owner decision: see `OPS-OPENING-KIT.md`. The pair and its init hash above may still change, so **this audit scope can move** |
+| F1 | High (liveness) | A mint to both caps closes the pair to swaps and mints, before or after the seed, and the capital can be recovered. Same end state as DEX-09, by a route that fix leaves open | Fixed in the contracts, with accepted limits. Attacked by an independent review at `d18ab04`: "holds with listed limits" |
 | F2 | Medium-High (launch) | A front-run `createPair` strands the deployment tooling | Fixed in the tooling |
 | F3 | Medium (user funds) | After a favourable move, the signed minimum stays tied to the older finalized quote | Fixed in the frontend |
 | F4 | Medium (user funds) | One failed receipt poll shows a pending swap as failed and re-enables Swap | Fixed in the frontend |

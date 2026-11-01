@@ -136,7 +136,8 @@ async function main() {
     console.error("usage: dex-seed-plan.mjs plan|verify --config <gate.json> --rpc <url> --price <quote per wrapped> [--to <LP recipient>] [--fraction-bps 5000] [--tolerance-bps 100]");
     return UNKNOWN;
   }
-  const { deployment, pair, state, wrapped, quote, decimals, latest, price } = await load(args, createRequest(args.rpc));
+  const request = createRequest(args.rpc);
+  const { deployment, pair, state, wrapped, quote, decimals, latest, price } = await load(args, request);
 
   if (command === "verify") {
     const tolerance = BigInt(args["tolerance-bps"] ?? 100);
@@ -156,6 +157,15 @@ async function main() {
     return pass ? OK : CRIT;
   }
 
+  // F1, limit L1: before the seed the depositor's key must be untouched and an EOA.
+  if (state.totalSupply === 0n) {
+    const used = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
+    const depositorCode = await request("eth_getCode", [deployment.firstDepositor, "latest"]);
+    if (used !== 0n || depositorCode !== "0x") {
+      console.log(stringify({ decision: "refuse", firstDepositor: deployment.firstDepositor, nonce: used, reason: "the first depositor must be a fresh EOA with nonce 0 before the seed. Its key may be spent; see OPS-OPENING-KIT.md" }));
+      return CRIT;
+    }
+  }
   const plan = planOpening({ wrapped, quote, totalSupply: state.totalSupply, price, fractionBps: BigInt(args["fraction-bps"] ?? 5000) });
   if (plan.decision === "skim-first") {
     console.log(stringify({ ...plan, pair: pair.address, excess: { wrapped: wrapped.balance - wrapped.reserve, quote: quote.balance - quote.reserve } }));
@@ -195,6 +205,7 @@ async function main() {
       poolQuote: formatUnits(plan.poolQuote, decimals),
     },
     expectedLiquidity: liquidity,
+    from: state.totalSupply === 0n ? deployment.firstDepositor : undefined,
     steps: [
       { description: "approve the router for the quote token", to: quote.token, value: "0", data: encode("approve", [deployment.router.address, plan.depositQuote]) },
       { description: "seed (the minimums equal the deposit; on a fresh pair they do not protect the ratio, verify does)", to: deployment.router.address, value: plan.depositWrapped, data: seedCall, deadline },

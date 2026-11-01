@@ -23,7 +23,7 @@ contract PairSupportTest is TestBase {
     CreatePair.Config config;
 
     function setUp() public {
-        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         lens = new BDexLens(address(factory));
         script = new CreatePair();
         a = new BlochAsset("Asset A", "A", 6, 1_000_000 * 1e6, address(this));

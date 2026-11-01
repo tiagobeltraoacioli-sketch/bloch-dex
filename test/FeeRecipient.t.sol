@@ -25,7 +25,7 @@ contract FeeRecipientTest is TestBase {
         address[] memory owners = new address[](3);
         (owners[0], owners[1], owners[2]) = (OWNER_A, OWNER_B, OWNER_C);
         blochInc = new RehearsalMultisig(owners, 2);
-        factory = new UniswapV2Factory(address(blochInc), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(blochInc), address(0), new address[](0), new uint256[](0));
         TestToken a = new TestToken();
         TestToken b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));

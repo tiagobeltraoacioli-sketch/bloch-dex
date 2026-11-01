@@ -98,7 +98,7 @@ contract DeployMainnetTest is TestBase {
         hevm.prank(DEPLOYER);
         WBLCH w = new WBLCH();
         hevm.prank(DEPLOYER);
-        UniswapV2Factory f = new UniswapV2Factory(BLOCH_INC, capTokens, caps);
+        UniswapV2Factory f = new UniswapV2Factory(BLOCH_INC, address(0xF1D), capTokens, caps);
         hevm.prank(DEPLOYER);
         BDexRouter r = new BDexRouter(address(f), address(w));
         hevm.prank(DEPLOYER);
@@ -128,6 +128,7 @@ contract DeployMainnetTest is TestBase {
         s.deployer = DEPLOYER;
         s.startNonce = hevm.getNonce(DEPLOYER);
         s.deployWrapped = true;
+        s.firstDepositor = address(0xF1D);
         (s.blochInc, s.blochIncCodeHash) = (BLOCH_INC, keccak256(BLOCH_INC_CODE));
         (s.capTokens, s.caps) = _caps(e.wrapped);
         s.pairTokensA = new address[](1);
@@ -170,6 +171,7 @@ contract DeployMainnetTest is TestBase {
         hevm.setEnv("DEX_START_NONCE", hevm.toString(uint256(hevm.getNonce(DEPLOYER))));
         hevm.setEnv("DEX_DEPLOY_WRAPPED", "true");
         hevm.setEnv("DEX_BLOCH_INC", hevm.toString(BLOCH_INC));
+        hevm.setEnv("DEX_FIRST_DEPOSITOR", hevm.toString(address(0xF1D)));
         hevm.setEnv("DEX_BLOCH_INC_CODEHASH", hevm.toString(keccak256(BLOCH_INC_CODE)));
         hevm.setEnv("DEX_CAP_TOKENS", string.concat(hevm.toString(e.wrapped), ",", hevm.toString(asset)));
         hevm.setEnv("DEX_CAP_AMOUNTS", "1000000000000000000,10000000");
@@ -222,6 +224,18 @@ contract DeployMainnetTest is TestBase {
         hevm.etch(e.router, hex"00");
         hevm.expectRevert(bytes("MAINNET: ADDRESS_OCCUPIED"));
         script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+    }
+
+    /// address(0) would turn the first-deposit rule off with no error.
+    function testRefusesNoFirstDepositorOrASharedRole() public {
+        hevm.chainId(MAINNET_LIKE_CHAIN);
+        address[3] memory bad = [address(0), DEPLOYER, BLOCH_INC];
+        for (uint256 i; i < bad.length; ++i) {
+            (DeployMainnet.Settings memory s, DeployMainnet.Planned memory p) = _inputs(_expected());
+            s.firstDepositor = bad[i];
+            hevm.expectRevert(bytes("MAINNET: FIRST_DEPOSITOR"));
+            script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+        }
     }
 
     function testRefusesRuntimeCodeOtherThanPlanned() public {

@@ -22,6 +22,8 @@ const SELECTORS = Object.freeze({
   token1: "0xd21220a7",
   getPair: "0xe6a43905",
   feeTo: toFunctionSelector("feeTo()"),
+  firstDepositor: toFunctionSelector("firstDepositor()"),
+  totalSupply: toFunctionSelector("totalSupply()"),
   bucketCapacity: toFunctionSelector("bucketCapacity()"),
   initCodePairHash: toFunctionSelector("INIT_CODE_PAIR_HASH()"),
   factory: toFunctionSelector("factory()"),
@@ -320,7 +322,7 @@ function validateGateConfigV2(config) {
   exactKeys(
     deployment,
     [
-      "deployer", "contracts", "pairInitCodeHash", "feeTo", "roles", "reserveCaps", "tokens", "pairs", "transactions",
+      "deployer", "firstDepositor", "contracts", "pairInitCodeHash", "feeTo", "roles", "reserveCaps", "tokens", "pairs", "transactions",
       ...(Object.hasOwn(deployment, "existingPairTransactions") ? ["existingPairTransactions"] : []),
     ],
     "deployment",
@@ -331,6 +333,8 @@ function validateGateConfigV2(config) {
     for (const hash of listed) refuse(deployment.transactions?.includes(hash), "deployment.existingPairTransactions names an unplanned transaction");
   }
   lowerAddress(deployment.deployer, "deployment.deployer");
+  lowerAddress(deployment.firstDepositor, "deployment.firstDepositor");
+  refuse(deployment.firstDepositor !== ZERO_ADDRESS, "deployment.firstDepositor must not be zero");
   exactKeys(deployment.contracts, CONTRACT_KEYS, "deployment.contracts");
   for (const key of CONTRACT_KEYS) {
     exactKeys(deployment.contracts[key], ["address", "codeHash"], `deployment.contracts.${key}`);
@@ -465,6 +469,9 @@ async function evaluateFinalityGateV2(config, request) {
   const feeTo = await addressAt(factory, SELECTORS.feeTo, "feeTo");
   refuse(feeTo !== ZERO_ADDRESS, "the protocol fee is off");
   refuse(feeTo === deployment.feeTo, "the protocol fee recipient is not Bloch Inc");
+  const depositor = await addressAt(factory, SELECTORS.firstDepositor, "firstDepositor");
+  refuse(depositor !== ZERO_ADDRESS, "the first-deposit rule is off");
+  refuse(depositor === deployment.firstDepositor, "the factory's first depositor differs from the plan");
   const capOf = new Map();
   for (const { token, cap } of deployment.reserveCaps) {
     const observed = word(await call(factory, SELECTORS.reserveCap + encodeAddress(token), "reserveCap"), 0, "reserveCap");
@@ -494,6 +501,13 @@ async function evaluateFinalityGateV2(config, request) {
       word(caps, 0, "reserveCaps") === (capOf.get(token0) ?? 0n) && word(caps, 1, "reserveCaps") === (capOf.get(token1) ?? 0n),
       `pair ${pair} caps differ from the factory's`,
     );
+    // Before the seed the depositor must be untouched: one call to a hostile contract
+    // can spend the first-deposit rule through tx.origin.
+    if (word(await call(pair, SELECTORS.totalSupply, "totalSupply"), 0, "totalSupply") === 0n) {
+      const used = BigInt(await request("eth_getTransactionCount", [depositor, at]));
+      refuse(used === 0n, `the first depositor ${depositor} has sent ${used} transaction(s) before the seed: its key is not single-purpose`);
+      refuse((await request("eth_getCode", [depositor, at])) === "0x", "the first depositor must be an EOA");
+    }
     pairs.push(Object.freeze({ address: pair, token0, token1 }));
   }
 

@@ -168,10 +168,10 @@ mint_usd "$GRIEFER" 900000000
 mint_usd "$GRIEFER" 900000000
 mint_usd "$THIEF" 5000000
 
-node -e '
+FIRST_DEPOSITOR=$SEEDER node -e '
 const c = JSON.parse(require("fs").readFileSync("deployments/mainnet/dex-mainnet.config.json", "utf8"));
 const [genesis, revision, deployer, blochInc, token, codeHash] = process.argv.slice(1);
-c.network.genesisHash = genesis; c.source.revision = revision; c.deployer.address = deployer;
+c.network.genesisHash = genesis; c.source.revision = revision; c.deployer.address = deployer; c.firstDepositor = process.env.FIRST_DEPOSITOR;
 c.blochInc = JSON.parse(require("fs").readFileSync(blochInc, "utf8"));
 Object.assign(c.reserveCaps[1], { token, codeHash });
 // Opening at 25.5 bUSDC per BLCH needs a cap near 10 x that price.
@@ -199,7 +199,6 @@ BAL="balanceOf(address)(uint256)"
 TRANSFER="transfer(address,uint256)"
 
 must "$GRIEFER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 100000000000)" 0 100000 > /dev/null
-must "$SEEDER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 100000000000)" 0 100000 > /dev/null
 must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "deposit()")" 40000000000000000000 100000 > /dev/null
 must "$THIEF_KEY" "$WRAPPED" "$(cast calldata "deposit()")" 1000000000000000000 100000 > /dev/null
 SWAP_USD_IN="swapExactTokensForBLCH(uint256,uint256,address[],address,uint256)"
@@ -224,7 +223,7 @@ if [ "$MODE" = anvil ]; then
   expect 1 dex09-monitor monitor
   expect 1 dex09-seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
   grep -q '"decision": "skim-first"' "$EV/dex09-seed-plan.out" || die "seed plan did not ask for a skim"
-  must "$SEEDER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$SEEDER")" 0 200000 > /dev/null
+  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$GRIEFER")" 0 200000 > /dev/null
   expect 0 dex09-plan-after-skim node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
   pass "dex09: sync refused; the donation stayed outside the reserves; skim cleared it and the seed plan works"
   restore "$SNAP"
@@ -238,52 +237,38 @@ if [ "$MODE" = anvil ]; then
   pass "dex04: the synced form is closed; the unsynced form is reported and skimmed"
   restore "$SNAP"
 
-  log "3a F1: a small first mint nobody planned, at a bad price, is seen and recovered"
+  log "3a F1: nobody but the first depositor can make the first deposit"
   SNAP=$(snapshot)
-  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "deposit()")" 2000000000000000 100000 > /dev/null
   must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" 1000000000000000)" 0 100000 > /dev/null
   must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 1000000)" 0 100000 > /dev/null
-  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$GRIEFER")" 0 300000 > /dev/null
-  expect 1 f1-monitor-foreign-lp monitor
-  grep -q 'LP shares exist' "$EV/f1-monitor-foreign-lp.out" || die "the monitor did not name the foreign LP shares"
-  expect 1 f1-plan-correct node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  grep -q '"decision": "correct-price"' "$EV/f1-plan-correct.out" || die "the planner did not ask for a correcting swap"
-  for i in 0 1; do
-    STEP_TO=$(jsonget "$EV/f1-plan-correct.out" steps.$i.to 2>/dev/null) || break
-    [ -n "$STEP_TO" ] && [ "$STEP_TO" != undefined ] || break
-    must "$SEEDER_KEY" "$STEP_TO" "$(jsonget "$EV/f1-plan-correct.out" steps.$i.data)" "$(jsonget "$EV/f1-plan-correct.out" steps.$i.value)" 400000 > /dev/null
-  done
-  expect 0 f1-plan-top-up node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  grep -q '"decision": "top-up"' "$EV/f1-plan-top-up.out" || die "the planner did not offer a top-up"
-  must "$SEEDER_KEY" "$(jsonget "$EV/f1-plan-top-up.out" steps.0.to)" "$(jsonget "$EV/f1-plan-top-up.out" steps.0.data)" 0 200000 > /dev/null
-  must "$SEEDER_KEY" "$(jsonget "$EV/f1-plan-top-up.out" steps.1.to)" "$(jsonget "$EV/f1-plan-top-up.out" steps.1.data)" "$(jsonget "$EV/f1-plan-top-up.out" steps.1.value)" 1000000 > /dev/null
-  expect 0 f1-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE
-  pass "f1: foreign first mint reported; correcting swap and top-up reached the planned price"
+  must_fail "$GRIEFER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$GRIEFER")" 0 300000
+  must_fail "$GRIEFER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$SEEDER")" 0 300000
+  must_fail "$GRIEFER_KEY" "$ROUTER" "$(cast calldata "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$USD" 1000000 0 0 "$SEEDER" 9999999999)" 10000000000000000 1000000
+  pass "f1: a third party's first deposit is refused, also with the shares sent to the depositor"
   restore "$SNAP"
 
-  log "3b F1: a mint to both caps closes the pair; the monitor says so; a burn reopens it. THIS IS THE OPEN FINDING"
+  log "3b L1: a depositor key that has been used is refused before the seed"
   SNAP=$(snapshot)
-  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "deposit()")" $WRAP_CAP 100000 > /dev/null
-  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" $WRAP_CAP)" 0 100000 > /dev/null
-  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" $USD_CAP)" 0 100000 > /dev/null
-  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$GRIEFER")" 0 300000 > /dev/null
-  expect 2 f1-monitor-closed monitor
-  grep -q 'closed' "$EV/f1-monitor-closed.out" || die "the monitor did not report the closed pair"
-  expect 2 f1-plan-closed node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-  grep -q '"decision": "closed"' "$EV/f1-plan-closed.out" || die "the planner did not report the closed pair"
-  must_fail "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" 9999999999)" 1000000000000000 300000
-  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "$TRANSFER" "$PAIR" 1000000000000)" 0 100000 > /dev/null
-  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "burn(address)" "$GRIEFER")" 0 300000 > /dev/null
-  must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" 9999999999)" 1000000000000000 300000 > /dev/null
-  pass "f1: closed pair reproduced on anvil: swap reverts, monitor CRIT, planner closed; the attacker burn reopens it"
+  must "$SEEDER_KEY" "$SEEDER" 0x 0 30000 > /dev/null
+  expect 2 l1-seed-plan-refused node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q 'nonce 0 before the seed' "$EV/l1-seed-plan-refused.out" || die "the planner did not name the used key"
+  settle
+  expect 2 l1-gate-refused monitor
+  grep -q 'not single-purpose' "$EV/l1-gate-refused.out" || die "the gate did not name the used key"
+  pass "l1: a used depositor key is refused by the planner and by the gate"
   restore "$SNAP"
 fi
 
 # ---------------------------------------------------------------- seed
 log "4 seed from the plan: 50% of the tighter cap at $PRICE bUSDC per BLCH"
 expect 0 seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+[ "$(cast nonce "$SEEDER" --rpc-url "$RPC")" = 0 ] || die "the first depositor is not fresh"
+must "$SEEDER_KEY" "$(jsonget "$EV/seed-plan.out" steps.0.to)" "$(jsonget "$EV/seed-plan.out" steps.0.data)" 0 100000 > /dev/null
 SEED_TO=$(jsonget "$EV/seed-plan.out" steps.1.to); SEED_VALUE=$(jsonget "$EV/seed-plan.out" steps.1.value); SEED_DATA=$(jsonget "$EV/seed-plan.out" steps.1.data)
 must "$SEEDER_KEY" "$SEED_TO" "$SEED_DATA" "$SEED_VALUE" 1000000 > /dev/null
+[ "$(cast nonce "$SEEDER" --rpc-url "$RPC")" = 2 ] || die "the first depositor must send exactly two transactions"
+pass "the first depositor sent the approve and the seed, and nothing else"
+must "$SEEDER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 100000000000)" 0 100000 > /dev/null
 expect 0 seed-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE
 expect 2 seed-verify-wrong-price node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price 30
 expect 2 seed-plan-refused node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
@@ -367,6 +352,37 @@ if [ "$MODE" = anvil ]; then
   [ "$(cast nonce "$KEEPER" --rpc-url "$RPC")" = "$N" ] || die "the keeper sent during backoff"
   must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$GRIEFER")" 0 200000 > /dev/null
   pass "griefing: a front-run costs the keeper one skim and then it waits"
+
+  log "5 L3: unrecorded balance fills both caps; a griefer races the keeper, and the keeper does not back off"
+  fill_both() {
+    must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" $((USD_CAP - $(view "$USD" "$BAL" "$PAIR"))))" 0 100000 > /dev/null
+    local need; need=$(node -e 'console.log(String(BigInt(process.argv[1])-BigInt(process.argv[2])))' $WRAP_CAP "$(view "$WRAPPED" "$BAL" "$PAIR")")
+    must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" "$need")" 0 100000 > /dev/null
+  }
+  fill_both
+  must_fail "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000
+  must_fail "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" $FUTURE)" 100000000000000000 400000
+  pass "l3: both directions revert while the excess stands"
+  expect 1 l3-monitor monitor --expect-seeded
+  grep -q 'closed_by_excess' "$EV/l3-monitor.out" || die "the monitor did not report closed_by_excess"
+  node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));if(s.consecutiveWasted<1)process.exit(1);s.nextAllowedAt=Math.floor(Date.now()/1000)+21600;fs.writeFileSync(p,JSON.stringify(s));' "$STATE"
+  cast rpc evm_setAutomine false --rpc-url "$RPC" > /dev/null
+  expect 0 l3-keeper-race keeper_run --state "$STATE" --cooldown-s 60 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"sent"' "$EV/l3-keeper-race.out" || { cat "$EV/l3-keeper-race.out"; die "the keeper did not send during backoff with a closed pair"; }
+  GN=$(cast nonce "$GRIEFER" --rpc-url "$RPC")
+  cast publish --async --rpc-url "$RPC" "$(cast mktx --chain 700770 --nonce "$GN" --gas-limit 200000 --gas-price 50000000000 --priority-gas-price 20000000000 --private-key "$GRIEFER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$GRIEFER")")" > /dev/null
+  cast rpc evm_mine --rpc-url "$RPC" > /dev/null
+  cast rpc evm_setAutomine true --rpc-url "$RPC" > /dev/null
+  must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000 > /dev/null
+  pass "l3: the griefer won the race and took its donation back, which reopened the pair; its only cost was gas"
+  fill_both
+  SAFE_USD=$(view "$USD" "$BAL" "$SAFE")
+  expect 0 l3-keeper-wins keeper_run --state "$STATE" --cooldown-s 60 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"sent"' "$EV/l3-keeper-wins.out" || { cat "$EV/l3-keeper-wins.out"; die "the keeper did not clear the closed pair"; }
+  [ "$(view "$USD" "$BAL" "$SAFE")" != "$SAFE_USD" ] || die "the donation did not reach the Safe"
+  must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000 > /dev/null
+  must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" $FUTURE)" 100000000000000000 400000 > /dev/null
+  pass "l3: the keeper cleared a closed pair during its backoff; the donation went to the Safe; both directions work"
 fi
 
 # ---------------------------------------------------------------- anchored swaps (DEX-05)

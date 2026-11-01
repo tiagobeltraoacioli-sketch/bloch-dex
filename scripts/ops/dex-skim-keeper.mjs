@@ -35,7 +35,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
-  blockRef, checkIdentity, classifyExcess, codeHash, createRequest, deploymentFromGate, encode, keccak256,
+  blockRef, checkIdentity, classifyExcess, codeHash, isClosedByExcess, createRequest, deploymentFromGate, encode, keccak256,
   parseArgs, readBlock, readGate, readPair, recoverTransactionAddress, stringify,
 } from "./dex-ops-lib.mjs";
 
@@ -148,6 +148,7 @@ export async function runKeeper(gate, options, state, deps) {
     }
 
     let target = null;
+    let closedPair = null;
     const seen = [];
     for (const pair of deployment.pairs) {
       const observed = await codeHash(request, pair.address, at);
@@ -156,14 +157,21 @@ export async function runKeeper(gate, options, state, deps) {
       const kinds = pairState.sides.map((side) => classifyExcess(side, options.floorBps));
       seen.push({ pair: pair.address, kinds, excess: pairState.sides.map((s) => s.balance - s.reserve) });
       if (kinds.includes("negative")) throw new IdentityError(`pair ${pair.address} holds less than its reserves`);
-      if (!target && kinds.some((k) => k === "material" || k === "blocking")) target = pair;
+      const closing = isClosedByExcess(pairState);
+      if (closing && !closedPair) closedPair = pair;
+      if (!target && (closing || kinds.some((k) => k === "material" || k === "blocking"))) target = pair;
     }
+    // Both directions closed outranks the first pair with an ordinary excess.
+    if (closedPair) target = closedPair;
     if (!target) return result(OK, "nothing-to-do", { seen });
 
     const blocked = (action, detail) => result(WARN, action, { pair: target.address, seen, ...detail });
-    if (now < state.nextAllowedAt) return blocked("backoff", { until: state.nextAllowedAt, consecutiveWasted: state.consecutiveWasted });
+    // A griefer that wins its own skim could use the backoff to hold a pair closed,
+    // so a closed pair skips the backoff and the cooldown. The budget and the
+    // transaction count still apply.
+    if (!closedPair && now < state.nextAllowedAt) return blocked("backoff", { until: state.nextAllowedAt, consecutiveWasted: state.consecutiveWasted });
     const last = windowTxs(state, now).at(-1);
-    if (last && now - last.at < options.cooldownSeconds) return result(OK, "cooldown", { pair: target.address, seen, until: last.at + options.cooldownSeconds });
+    if (!closedPair && last && now - last.at < options.cooldownSeconds) return result(OK, "cooldown", { pair: target.address, seen, until: last.at + options.cooldownSeconds });
     if (windowTxs(state, now).length >= options.maxTx) return blocked("tx-count-exhausted", { maxTx: options.maxTx });
 
     // The recipient is fixed: donations go to the Bloch Inc Safe, never to the

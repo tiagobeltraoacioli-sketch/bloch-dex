@@ -77,6 +77,14 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     uint112 private reserveCap0;
     uint112 private reserveCap1;
 
+    // F1: on a pair capped on both sides, reserve0 * reserve1 never exceeds this
+    // share of cap0 * cap1 (6400 = both sides at 80%). Both reserves can then
+    // never sit at their caps, the one state where no swap passes in either
+    // direction. Each side alone can still reach its cap through a swap, so the
+    // caps' bound on a dump is unchanged. At the ceiling a swap still runs: its
+    // fee, like any donation, stays outside the reserves, where skim removes it.
+    uint256 private constant K_CEILING_BPS = 6400;
+
     modifier lock() {
         require(unlocked == 1, "BDEX: LOCKED");
         unlocked = 0;
@@ -155,7 +163,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///           observations modularly and the difference stays correct.
     ///      Checked equivalents would brick every pool at the first wrap.
     ///      Timestamp rollover is exercised in test/Treasury.t.sol.
-    function _update(uint256 balance0, uint256 balance1, uint112 _reserve0, uint112 _reserve1) private {
+    function _update(uint256 balance0, uint256 balance1, uint112 _reserve0, uint112 _reserve1, bool strict) private {
         require(balance0 <= type(uint112).max && balance1 <= type(uint112).max, "BDEX: OVERFLOW");
         (uint112 cap0, uint112 cap1) = (reserveCap0, reserveCap1);
         require(
@@ -163,6 +171,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
                 && (cap1 == 0 || balance1 <= cap1 || balance1 <= _reserve1),
             "BDEX: RESERVE_CAP"
         );
+        (balance0, balance1) = _applyCeiling(balance0, balance1, _reserve0, _reserve1, strict);
         unchecked {
             uint32 blockTimestamp = uint32(block.timestamp % 2 ** 32);
             uint32 timeElapsed = blockTimestamp - blockTimestampLast; // wraps by design (2)
@@ -182,6 +191,32 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         // forge-lint: disable-next-line(unsafe-typecast)
         reserve1 = uint112(balance1);
         emit Sync(reserve0, reserve1);
+    }
+
+    /// @dev The reserves to record for these balances. Below the ceiling they are
+    ///      the balances. Above it, mint and sync revert (strict); swap and burn
+    ///      must still work, so they record less on a side that grew and leave
+    ///      that amount outside the reserves. A recorded reserve is never below
+    ///      the previous reserve of a side that grew, so the excess is always new
+    ///      tokens, never the LPs'. Reserves already above the ceiling cannot
+    ///      occur; the max() only keeps the arithmetic safe.
+    function _applyCeiling(uint256 balance0, uint256 balance1, uint112 _reserve0, uint112 _reserve1, bool strict)
+        private
+        view
+        returns (uint256, uint256)
+    {
+        (uint256 cap0, uint256 cap1) = (reserveCap0, reserveCap1);
+        if (cap0 == 0 || cap1 == 0) return (balance0, balance1);
+        uint256 ceiling = (cap0 * cap1 * K_CEILING_BPS) / 10_000;
+        uint256 k = uint256(_reserve0) * _reserve1;
+        if (k > ceiling) ceiling = k;
+        if (balance0 * balance1 <= ceiling) return (balance0, balance1);
+        require(!strict, "BDEX: K_CEILING");
+        if (balance0 <= _reserve0) return (balance0, ceiling / balance0);
+        if (balance1 <= _reserve1) return (ceiling / balance1, balance1);
+        // Both sides grew, which takes a donation.
+        if (uint256(_reserve0) * balance1 > ceiling) return (_reserve0, ceiling / _reserve0);
+        return (ceiling / balance1, balance1);
     }
 
     /// @dev The largest reserve burn may record for a side: the balance, but
@@ -249,6 +284,13 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         bool feeOn = _mintFee(_reserve0, _reserve1);
         uint256 _totalSupply = totalSupply; // must be AFTER _mintFee's dilution
         if (_totalSupply == 0) {
+            // tx.origin lets the depositor seed atomically through the router; a
+            // separate transfer and mint could be skimmed in between. Any first
+            // mint opens the pair, so `to` alone would not protect it.
+            address depositor = IUniswapV2Factory(factory).firstDepositor();
+            require(
+                depositor == address(0) || msg.sender == depositor || tx.origin == depositor, "BDEX: FIRST_DEPOSITOR"
+            );
             liquidity = Math.sqrt(amount0 * amount1) - MINIMUM_LIQUIDITY;
             _mint(address(0), MINIMUM_LIQUIDITY); // permanently locked
         } else {
@@ -257,7 +299,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         require(liquidity > 0, "BDEX: INSUFFICIENT_LIQUIDITY_MINTED");
         _mint(to, liquidity);
 
-        _update(balance0, balance1, _reserve0, _reserve1);
+        _update(balance0, balance1, _reserve0, _reserve1, true);
         if (feeOn) kLast = uint256(reserve0) * reserve1; // reserve0/1 are up to date
         emit Mint(msg.sender, amount0, amount1);
     }
@@ -289,7 +331,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
         balance0 = _exitBound(IERC20(_token0).balanceOf(address(this)), reserveCap0, _reserve0);
         balance1 = _exitBound(IERC20(_token1).balanceOf(address(this)), reserveCap1, _reserve1);
 
-        _update(balance0, balance1, _reserve0, _reserve1);
+        _update(balance0, balance1, _reserve0, _reserve1, false);
         if (feeOn) kLast = uint256(reserve0) * reserve1; // reserve0/1 are up to date
         emit Burn(msg.sender, amount0, amount1, to);
     }
@@ -346,7 +388,7 @@ contract UniswapV2Pair is UniswapV2ERC20 {
             require(balance0Adjusted * balance1Adjusted >= uint256(_reserve0) * _reserve1 * (1000 ** 2), "BDEX: K");
         }
 
-        _update(balance0, balance1, _reserve0, _reserve1);
+        _update(balance0, balance1, _reserve0, _reserve1, false);
         emit Swap(msg.sender, amount0In, amount1In, amount0Out, amount1Out, to);
     }
 
@@ -373,6 +415,8 @@ contract UniswapV2Pair is UniswapV2ERC20 {
     ///      removes it.
     function sync() external lock {
         require(totalSupply != 0, "BDEX: EMPTY_POOL");
-        _update(IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), reserve0, reserve1);
+        _update(
+            IERC20(token0).balanceOf(address(this)), IERC20(token1).balanceOf(address(this)), reserve0, reserve1, true
+        );
     }
 }

@@ -25,7 +25,7 @@ import { evaluateFinalityGate, verifySafe } from "../staging/finality-gate.mjs";
 import {
   CRIT, CallReverted, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN,
   blockRef, call, checkIdentity, classifyExcess, codeHash, createRequest, deploymentFromGate, excessFloor,
-  formatUnits, isBricked, isClosed, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
+  formatUnits, isBricked, isClosed, isClosedByExcess, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
 } from "./dex-ops-lib.mjs";
 
 export const THRESHOLDS = Object.freeze({
@@ -213,6 +213,9 @@ async function checkPair({ pair, deployment, latest, finalized, add, facts, opti
   const excessLevel = { none: [OK, OK], dust: [OK, OK], material: [OK, WARN], blocking: [WARN, CRIT], negative: [CRIT, CRIT] };
   const views = settled ? [["latest", head, 0], ["finalized", settled, 1]] : [["latest", head, 0]];
   for (const [view, state, index] of views) {
+    if (isClosedByExcess(state)) {
+      add(`closed_by_excess[${tag}:${view}]`, index ? CRIT : WARN, "unrecorded balance fills both caps: no swap passes in either direction until someone calls skim. The keeper should clear it");
+    }
     state.sides.forEach((side) => {
       const kind = classifyExcess(side, THRESHOLDS.excessFloorBps);
       const excess = side.balance - side.reserve;

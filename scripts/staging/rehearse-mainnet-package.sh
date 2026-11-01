@@ -51,7 +51,7 @@ log() { echo "== $*" | tee -a "$EV/steps.log"; }
 
 # Throwaway keys, generated for this run only.
 umask 077
-cast wallet new --number 9 --json > "$WORK/keys.json"
+cast wallet new --number 10 --json > "$WORK/keys.json"
 umask 022
 key() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].private_key)' "$WORK/keys.json" "$1"; }
 addr() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].address.toLowerCase())' "$WORK/keys.json" "$1"; }
@@ -59,6 +59,7 @@ BOOT_KEY=$(key 0); BOOT=$(addr 0); DEPLOYER_KEY=$(key 1); DEPLOYER=$(addr 1); IS
 OWNER_KEYS=("$(key 3)" "$(key 4)" "$(key 5)" "$(key 6)" "$(key 7)")
 OWNERS=("$(addr 3)" "$(addr 4)" "$(addr 5)" "$(addr 6)" "$(addr 7)")
 INFRA_KEY=$(key 8); INFRA=$(addr 8)
+DEPOSITOR_KEY=$(key 9); DEPOSITOR=$(addr 9)
 
 PIDS=()
 cleanup() {
@@ -75,13 +76,13 @@ case "$MODE" in
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
     for _ in $(seq 50); do cast chain-id --rpc-url "$RPC" > /dev/null 2>&1 && break; sleep 0.2; done
-    for a in "$BOOT" "$DEPLOYER" "$ISSUER" "$INFRA"; do cast rpc anvil_setBalance "$a" 0x56bc75e2d63100000 --rpc-url "$RPC" > /dev/null; done
+    for a in "$BOOT" "$DEPLOYER" "$ISSUER" "$INFRA" "$DEPOSITOR"; do cast rpc anvil_setBalance "$a" 0x56bc75e2d63100000 --rpc-url "$RPC" > /dev/null; done
     ;;
   private-l2)
     : "${PRODUCE_DEV:?}" "${SETTLED_RPC:?}"
     export PRODUCE_DEV SETTLED_RPC
     mkdir -p "$WORK/l2"
-    scripts/staging/private-l2.sh init "$WORK/l2" "$BOOT,$DEPLOYER,$ISSUER,$INFRA" 10000000000 | tee -a "$EV/steps.log"
+    scripts/staging/private-l2.sh init "$WORK/l2" "$BOOT,$DEPLOYER,$ISSUER,$INFRA,$DEPOSITOR" 10000000000 | tee -a "$EV/steps.log"
     scripts/staging/private-l2.sh start "$WORK/l2" "$PORT" | tee -a "$EV/steps.log"
     ;;
   *) echo "mode must be anvil or private-l2" >&2; exit 2 ;;
@@ -179,11 +180,12 @@ ASSET=$(must "$ISSUER_KEY" create "$TOKEN_INIT" 0 3000000 | awk '{print tolower(
 ASSET_CODE=$(cast keccak "$(cast code "$ASSET" --rpc-url "$RPC")")
 log "1 DEX: committed mainnet config lists what is pending"
 node scripts/staging/deploy-dex.mjs pending --config deployments/mainnet/dex-mainnet.config.json | tee "$EV/dex.pending.json"
-node -e '
+FIRST_DEPOSITOR=$DEPOSITOR node -e '
 const c = JSON.parse(require("fs").readFileSync("deployments/mainnet/dex-mainnet.config.json", "utf8"));
 const [genesis, revision, deployer, blochInc, token, codeHash] = process.argv.slice(1);
 c.network.genesisHash = genesis; c.source.revision = revision; c.deployer.address = deployer;
 c.openingPrice.quotePerWrapped = "100000000";
+c.firstDepositor = process.env.FIRST_DEPOSITOR;
 c.blochInc = JSON.parse(require("fs").readFileSync(blochInc, "utf8"));
 Object.assign(c.reserveCaps[1], { token, codeHash });
 console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$REVISION" "$DEPLOYER" "$EV/blochinc.json" "$ASSET" "$ASSET_CODE" > "$EV/dex.config.json"
@@ -262,7 +264,13 @@ must_fail "$DEPLOYER_KEY" "$FACTORY" "$(cast calldata "setFeeTo(address)" "$DEPL
 log "3 guarded launch: seed 50% of each cap (5 WBLCH + 500 bUSDC), then an over-cap deposit reverts"
 must "$ISSUER_KEY" "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" 1000000000000)" 0 100000 > /dev/null
 ADD="addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)"
-must "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 500000000 0 0 "$ISSUER" 99999999999)" 5000000000000000000 1000000 > /dev/null
+must_fail "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 1000000 0 0 "$ISSUER" 99999999999)" 10000000000000000 1000000
+echo "a first deposit by anyone but the first depositor is refused" | tee -a "$EV/steps.log"
+must "$ISSUER_KEY" "$ASSET" "$(cast calldata "transfer(address,uint256)" "$DEPOSITOR" 500000000)" 0 100000 > /dev/null
+[ "$(cast nonce "$DEPOSITOR" --rpc-url "$RPC")" = 0 ] || { echo "FAIL: the first depositor is not fresh"; exit 1; }
+must "$DEPOSITOR_KEY" "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" 500000000)" 0 100000 > /dev/null
+must "$DEPOSITOR_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 500000000 0 0 "$ISSUER" 99999999999)" 5000000000000000000 1000000 > /dev/null
+[ "$(cast nonce "$DEPOSITOR" --rpc-url "$RPC")" = 2 ] || { echo "FAIL: the first depositor must send exactly two transactions"; exit 1; }
 must_fail "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 600000000 0 0 "$ISSUER" 99999999999)" 6000000000000000000 1000000
 echo "over-cap deposit refused" | tee -a "$EV/steps.log"
 log "3 swaps accrue the protocol fee to Bloch Inc"

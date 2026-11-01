@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  ABI, CRIT, CallReverted, OK, RpcError, UNKNOWN, WARN, classifyExcess, createRequest, excessFloor, isBricked, keccak256, parseUnits, formatUnits, worst,
+  ABI, CRIT, CallReverted, OK, RpcError, UNKNOWN, WARN, classifyExcess, createRequest, excessFloor, isBricked, isClosedByExcess, keccak256, parseUnits, formatUnits, worst,
 } from "./dex-ops-lib.mjs";
 import { runMonitor } from "./dex-monitor.mjs";
 import { DEFAULTS, runKeeper } from "./dex-skim-keeper.mjs";
@@ -550,4 +550,10 @@ test("F1: a correcting swap reaches the target price", () => {
   const out = (plan.amountIn * 997n * 100_000_000n) / (WAD * 1000n + plan.amountIn * 997n);
   const after = ((100_000_000n - out) * WAD) / (WAD + plan.amountIn);
   assert.ok(after > (price * 99n) / 100n && after < (price * 101n) / 100n, String(after));
+});
+
+test("L3: unrecorded balance on both caps is reported, and the keeper's target outranks backoff", async () => {
+  assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 8n, balance: 10n }, { cap: 20n, reserve: 16n, balance: 20n }] }), true);
+  assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 8n, balance: 10n }, { cap: 20n, reserve: 16n, balance: 19n }] }), false);
+  assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 10n, balance: 10n }, { cap: 20n, reserve: 20n, balance: 20n }] }), false);
 });

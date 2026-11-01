@@ -10,8 +10,13 @@ import {WBLCH} from "../contracts/assets/WBLCH.sol";
 /// Agent 51 adversarial review of the DEX RC at the committed mainnet caps.
 /// `testFAIL51_*` state the property a user or the launch needs; they fail on
 /// the RC. `testEVIDENCE51_*` pass and log the measured attack economics.
+interface Review51Vm {
+    function startPrank(address sender, address origin) external;
+}
+
 contract Review51Test is TestBase {
     event log_named_uint(string key, uint256 val);
+    event log_string(string val);
 
     uint256 internal constant CAP_W = 10 ether;
     uint256 internal constant CAP_Q = 1_000e6;
@@ -34,7 +39,7 @@ contract Review51Test is TestBase {
         uint256[] memory caps = new uint256[](2);
         (tokens[0], caps[0]) = (address(wblch), CAP_W);
         (tokens[1], caps[1]) = (address(busdc), CAP_Q);
-        factory = new UniswapV2Factory(SAFE, tokens, caps);
+        factory = new UniswapV2Factory(SAFE, tx.origin, tokens, caps);
         router = new BDexRouter(address(factory), address(wblch));
         vm.deal(address(this), 100 ether);
         vm.deal(ATTACKER, 100 ether);
@@ -59,11 +64,13 @@ contract Review51Test is TestBase {
         (p[0], p[1]) = (a, b);
     }
 
-    /// Raw mint the way an attacker would: both sides brought exactly to the caps.
-    function fillToCaps(UniswapV2Pair pair) internal returns (uint256 shares, uint256 paidW, uint256 paidQ) {
+    /// Raw mint the way an attacker would: both sides brought to 80% of their
+    /// caps, the most the k ceiling allows evenly. The original filled to the caps,
+    /// which now reverts.
+    function fillToCeiling(UniswapV2Pair pair) internal returns (uint256 shares, uint256 paidW, uint256 paidQ) {
         (uint256 rW, uint256 rQ) = reservesWQ(pair);
-        paidW = CAP_W - rW;
-        paidQ = CAP_Q - rQ;
+        paidW = CAP_W * 8 / 10 - rW;
+        paidQ = CAP_Q * 8 / 10 - rQ;
         vm.startPrank(ATTACKER);
         wblch.deposit{value: paidW}();
         wblch.transfer(address(pair), paidW);
@@ -97,61 +104,54 @@ contract Review51Test is TestBase {
 
     // ---------------------------------------------------------------- F1 ----
 
-    /// A hostile first mint at both caps must not stop the planned seed.
+    /// Restated. The original filled to both caps by a mint and then required the
+    /// seed to pass. A third party's first mint is now refused, so the seed passes.
     function testFAIL51_F1a_seedMustSurviveHostileFirstMintAtBothCaps() public {
-        fillToCaps(pairOf());
-        bool ok;
-        try router.addLiquidityBLCH{value: 5 ether}(address(busdc), 500e6, 0, 0, address(this), block.timestamp) {
-            ok = true;
-        } catch {}
-        require(ok, "F1a: seed reverts, the pair is closed until the attacker burns");
+        UniswapV2Pair pair = pairOf();
+        Review51Vm(address(vm)).startPrank(ATTACKER, ATTACKER);
+        wblch.deposit{value: CAP_W}();
+        wblch.transfer(address(pair), CAP_W);
+        busdc.transfer(address(pair), CAP_Q);
+        vm.expectRevert(bytes("BDEX: FIRST_DEPOSITOR"));
+        pair.mint(ATTACKER);
+        pair.skim(ATTACKER);
+        vm.stopPrank();
+        seed(5 ether, 500e6);
+        require(trySellQuote(1e6), "F1a: selling 1 bUSDC reverts after the seed");
+        require(trySellNative(0.001 ether), "F1a: selling 0.001 BLCH reverts after the seed");
     }
 
-    /// DEX-09 removed the sync route to this state. The mint route gives the
-    /// same result: no swap of any size in either direction.
     function testFAIL51_F1b_swapsMustSurviveLpFillAfterSeed() public {
         seed(5 ether, 500e6);
-        fillToCaps(pairOf());
+        fillToCeiling(pairOf());
         require(trySellQuote(1e6), "F1b: selling 1 bUSDC reverts after the LP fill");
         require(trySellNative(0.001 ether), "F1b: selling 0.001 BLCH reverts after the LP fill");
     }
 
-    /// Passes: what the freeze costs, and how little a defender gains by exiting.
+    /// Passes: donating both sides to the caps and recording through a swap or a
+    /// burn leaves the reserves at or below the ceiling, and skim reopens swaps.
     function testEVIDENCE51_F1c_freezeCostAndRefill() public {
         UniswapV2Pair pair = pairOf();
         seed(5 ether, 500e6);
-        (uint256 shares, uint256 paidW, uint256 paidQ) = fillToCaps(pair);
-        emit log_named_uint("attacker capital WBLCH wei", paidW);
-        emit log_named_uint("attacker capital bUSDC units", paidQ);
-        for (uint256 q = 1; q <= CAP_Q; q *= 10) {
-            assertTrue(!trySellQuote(q));
-        }
-        for (uint256 w = 1e9; w <= CAP_W; w *= 10) {
-            assertTrue(!trySellNative(w));
-        }
-
-        // The seeder withdraws 10% to reopen the pool; a refill closes it again.
-        uint256 seederShares = pair.balanceOf(address(this)) / 10;
-        pair.approve(address(router), seederShares);
-        router.removeLiquidity(address(wblch), address(busdc), seederShares, 0, 0, address(this), block.timestamp);
-        assertTrue(trySellQuote(1e6));
-        (uint256 refill, uint256 refillW, uint256 refillQ) = fillToCaps(pair);
-        assertTrue(refill > 0);
-        assertTrue(!trySellQuote(1e6));
-
-        // Round trip: with no swaps the attacker gets the capital back.
-        uint256 beforeW = wblch.balanceOf(ATTACKER);
-        uint256 beforeQ = busdc.balanceOf(ATTACKER);
-        uint256 all = pair.balanceOf(ATTACKER);
+        fillToCeiling(pair);
+        (uint256 rW, uint256 rQ) = reservesWQ(pair);
         vm.startPrank(ATTACKER);
-        pair.transfer(address(pair), all);
+        wblch.deposit{value: CAP_W}();
+        wblch.transfer(address(pair), CAP_W - rW);
+        busdc.transfer(address(pair), CAP_Q - rQ);
+        vm.expectRevert(bytes("BDEX: K_CEILING"));
+        pair.sync();
+        bool wFirst = pair.token0() == address(wblch);
+        pair.swap(wFirst ? 1 : 0, wFirst ? 0 : 1, ATTACKER, "");
+        pair.transfer(address(pair), 1e9);
         pair.burn(ATTACKER);
         vm.stopPrank();
-        emit log_named_uint("first fill shares", shares);
-        emit log_named_uint("refill WBLCH wei", refillW);
-        emit log_named_uint("refill bUSDC units", refillQ);
-        emit log_named_uint("WBLCH recovered wei", wblch.balanceOf(ATTACKER) - beforeW);
-        emit log_named_uint("bUSDC recovered units", busdc.balanceOf(ATTACKER) - beforeQ);
+        (rW, rQ) = reservesWQ(pair);
+        emit log_named_uint("reserve WBLCH wei", rW);
+        emit log_named_uint("reserve bUSDC units", rQ);
+        assertTrue(rW * rQ <= CAP_W * CAP_Q * 64 / 100);
+        pair.skim(address(0xD0));
+        assertTrue(trySellQuote(1e6) && trySellNative(0.001 ether));
     }
 
     // ---------------------------------------------------------------- F2 ----

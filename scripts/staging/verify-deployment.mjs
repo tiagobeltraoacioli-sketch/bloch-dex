@@ -32,6 +32,7 @@ const { keccak256, parseAbi, encodeFunctionData, decodeFunctionResult } = requir
 
 const ABI = parseAbi([
   "function feeTo() view returns (address)",
+  "function firstDepositor() view returns (address)",
   "function factory() view returns (address)",
   "function WBLCH() view returns (address)",
   "function INIT_CODE_PAIR_HASH() view returns (bytes32)",
@@ -134,7 +135,7 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
   const { contracts } = dexPlan;
   for (const key of ["wrappedNative", "factory", "router", "lens"]) await expectCode(key, contracts[key]);
   const immutables = {
-    factory: [dexPlan.feeTo],
+    factory: [dexPlan.feeTo, dexPlan.firstDepositor],
     router: [contracts.factory.address, contracts.wrappedNative.address],
     lens: [contracts.factory.address],
   };
@@ -145,6 +146,10 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
   }
   const factory = contracts.factory.address;
   refuse(lower(await call(factory, "feeTo")) === dexPlan.feeTo, "factory.feeTo() is not Bloch Inc");
+  const firstDepositor = lower(await call(factory, "firstDepositor"));
+  refuse(!/^0x0{40}$/.test(firstDepositor), "factory.firstDepositor() is zero: the first-deposit rule is off");
+  refuse(firstDepositor === dexPlan.firstDepositor, "factory.firstDepositor() differs from the plan");
+  ok("firstDepositor", firstDepositor);
   refuse(lower(await call(contracts.router.address, "factory")) === factory, "router.factory() differs");
   refuse(lower(await call(contracts.router.address, "WBLCH")) === contracts.wrappedNative.address, "router.WBLCH() differs");
   refuse(lower(await call(contracts.lens.address, "factory")) === factory, "lens.factory() differs");

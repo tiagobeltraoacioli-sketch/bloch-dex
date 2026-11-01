@@ -130,6 +130,7 @@ const requireFromFrontend = createRequire(new URL("../../frontend/package.json",
 const { keccak256, toFunctionSelector } = requireFromFrontend("viem");
 
 const V2 = {
+  depositor: `0x${"f1d0".repeat(10)}`,
   deployer: addr("d"),
   wrapped: addr("1"),
   asset: addr("2"),
@@ -173,6 +174,7 @@ function configV2(change = () => {}) {
     chain: { id: 700770, genesisHash: hash("9") },
     deployment: {
       deployer: V2.deployer,
+      firstDepositor: V2.depositor,
       contracts: {
         wrappedNative: contract(V2.wrapped),
         factory: contract(V2.factory),
@@ -223,6 +225,9 @@ function rpcV2(change = {}) {
     code: { ...CODE },
     initHash: INIT_HASH,
     feeTo: V2.blochInc,
+    firstDepositor: V2.depositor,
+    totalSupply: 0n,
+    depositorNonce: "0x0",
     caps: { [V2.wrapped]: CAP, [V2.asset]: BUSDC_CAP, [V2.gsmh]: GSMH_CAP },
     buckets: { [V2.asset]: BUSDC_BUCKET, [V2.gsmh]: GSMH_BUCKET },
     routerFactory: V2.factory,
@@ -254,6 +259,10 @@ function rpcV2(change = {}) {
         return { finalized: state.finalized };
       case "eth_getTransactionReceipt":
         return params[0] === TX ? state.receipt : null;
+      case "eth_getTransactionCount":
+        assert.equal(params[0], state.firstDepositor);
+        assert.deepEqual(params[1], { blockHash: state.finalized.hash, requireCanonical: true });
+        return state.depositorNonce;
       case "eth_getCode":
         assert.deepEqual(params[1], { blockHash: state.finalized.hash, requireCanonical: true });
         return state.code[params[0]] ?? "0x";
@@ -286,6 +295,9 @@ function rpcV2(change = {}) {
         const reply = {
           [`${V2.factory}${sel("INIT_CODE_PAIR_HASH()")}`]: `0x${state.initHash.slice(2)}`,
           [`${V2.factory}${sel("feeTo()")}`]: `0x${pad(state.feeTo)}`,
+          [`${V2.factory}${sel("firstDepositor()")}`]: `0x${pad(state.firstDepositor)}`,
+          [`${V2.pair}${sel("totalSupply()")}`]: `0x${word(state.totalSupply)}`,
+          [`${V2.gsmhPair}${sel("totalSupply()")}`]: `0x${word(state.totalSupply)}`,
           [`${V2.factory}0xbb75fd60${pad(V2.wrapped)}`]: `0x${word(state.caps[V2.wrapped])}`,
           [`${V2.factory}0xbb75fd60${pad(V2.asset)}`]: `0x${word(state.caps[V2.asset])}`,
           [`${V2.factory}0xbb75fd60${pad(V2.gsmh)}`]: `0x${word(state.caps[V2.gsmh])}`,
@@ -342,6 +354,11 @@ test("schema 2 pins the Bloch Inc Safe at the finalized block", async () => {
   }
 });
 
+test("schema 2 allows a used depositor key once the pair is seeded", async () => {
+  const report = await evaluateFinalityGate(configV2(), rpcV2({ totalSupply: 5n, depositorNonce: "0x2" }));
+  assert.equal(report.decision, "liquidity-enabled");
+});
+
 test("schema 2 requires the Safe pin on the mainnet only", async () => {
   let calls = 0;
   const request = async () => {
@@ -384,6 +401,9 @@ test("schema 2 refuses drift in code, fee recipient, bridges, bindings, caps, pa
     [{ code: { ...CODE, [V2.blochInc]: "0x" } }, /Bloch Inc multisig runtime code/],
     [{ code: { ...CODE, [V2.blochInc]: "0x0c" } }, /Bloch Inc multisig runtime code/],
     [{ initHash: hash("2") }, /init-code hash/],
+    [{ firstDepositor: addr("0") }, /first-deposit rule is off/],
+    [{ firstDepositor: addr("8") }, /first depositor differs/],
+    [{ depositorNonce: "0x1" }, /not single-purpose/],
     [{ feeTo: addr("0") }, /protocol fee is off/],
     [{ feeTo: addr("8") }, /not Bloch Inc/],
     [{ buckets: { [V2.asset]: BUSDC_BUCKET - 1n, [V2.gsmh]: GSMH_BUCKET } }, /bUSDC bridge bucket capacity differs/],
@@ -412,6 +432,8 @@ test("schema 2 configuration is validated before any RPC request", async () => {
     (c) => { c.deployment.contracts.lens.codeHash = keccak256("0x"); },
     (c) => { c.deployment.contracts.collector = c.deployment.contracts.lens; },
     (c) => { delete c.deployment.contracts.router; },
+    (c) => { c.deployment.firstDepositor = addr("0"); },
+    (c) => { delete c.deployment.firstDepositor; },
     (c) => { c.deployment.feeTo = addr("8"); },
     (c) => { c.deployment.roles.blochInc.codeHash = keccak256("0x"); },
     (c) => { c.deployment.roles = { feeToSetter: addr("8"), treasury: V2.blochInc }; },

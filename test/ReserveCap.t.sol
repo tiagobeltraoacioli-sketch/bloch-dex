@@ -31,7 +31,7 @@ contract ReserveCapTest is TestBase {
         uint256[] memory caps = new uint256[](2);
         (capTokens[0], caps[0]) = (address(wrapped), NATIVE_CAP);
         (capTokens[1], caps[1]) = (address(token), TOKEN_CAP);
-        factory = new UniswapV2Factory(address(0), capTokens, caps);
+        factory = new UniswapV2Factory(address(0), address(0), capTokens, caps);
         router = new BDexRouter(address(factory), address(wrapped));
         token.mint(address(this), 1_000_000 ether);
         other.mint(address(this), 1_000_000 ether);
@@ -73,10 +73,10 @@ contract ReserveCapTest is TestBase {
     }
 
     function testSwapThatGrowsCappedReserveAboveCapIsRefused() public {
-        seed(9 ether, 9_000 ether);
+        seed(8 ether, 8_000 ether);
         address[] memory path = new address[](2);
         (path[0], path[1]) = (address(wrapped), address(token));
-        router.swapExactBLCHForTokens{value: 1 ether}(0, path, address(this), block.timestamp);
+        router.swapExactBLCHForTokens{value: 2 ether}(0, path, address(this), block.timestamp);
         vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
         router.swapExactBLCHForTokens{value: 0.01 ether}(0, path, address(this), block.timestamp);
 
@@ -122,25 +122,25 @@ contract ReserveCapTest is TestBase {
         uint256[] memory none = new uint256[](0);
         one[0] = address(token);
         vm.expectRevert(bytes("BDEX: CAP_LENGTH"));
-        new UniswapV2Factory(address(0), one, none);
+        new UniswapV2Factory(address(0), address(0), one, none);
 
         uint256[] memory amount = new uint256[](1);
         vm.expectRevert(bytes("BDEX: CAP_RANGE"));
-        new UniswapV2Factory(address(0), one, amount);
+        new UniswapV2Factory(address(0), address(0), one, amount);
         amount[0] = uint256(type(uint112).max) + 1;
         vm.expectRevert(bytes("BDEX: CAP_RANGE"));
-        new UniswapV2Factory(address(0), one, amount);
+        new UniswapV2Factory(address(0), address(0), one, amount);
 
         one[0] = address(0);
         amount[0] = 1;
         vm.expectRevert(bytes("BDEX: ZERO_ADDRESS"));
-        new UniswapV2Factory(address(0), one, amount);
+        new UniswapV2Factory(address(0), address(0), one, amount);
 
         address[] memory twice = new address[](2);
         uint256[] memory amounts = new uint256[](2);
         (twice[0], twice[1], amounts[0], amounts[1]) = (address(token), address(token), 1, 2);
         vm.expectRevert(bytes("BDEX: CAP_DUPLICATE"));
-        new UniswapV2Factory(address(0), twice, amounts);
+        new UniswapV2Factory(address(0), address(0), twice, amounts);
     }
 
     function testCapsHaveNoSetter() public {

@@ -125,6 +125,7 @@ export function deploymentFromGate(gate) {
     wrapped: d.contracts.wrappedNative,
     pairInitCodeHash: d.pairInitCodeHash,
     feeTo: d.feeTo,
+    firstDepositor: d.firstDepositor,
     safe: d.roles.blochInc,
     tokens: d.tokens,
     pairs: d.pairs,
@@ -210,6 +211,12 @@ export function isBricked(state) {
 /// useful size passes in either direction (review finding F1).
 export function isClosed(state) {
   return state.totalSupply !== 0n && state.sides.every((s) => s.cap !== 0n && s.reserve * 1000n >= s.cap * 999n);
+}
+
+/// Unrecorded balance fills the room on both capped sides, so no swap passes in
+/// either direction until someone skims (limit L3 of the k ceiling).
+export function isClosedByExcess(state) {
+  return state.sides.every((s) => s.cap !== 0n && s.balance >= s.cap) && state.sides.some((s) => s.balance > s.reserve);
 }
 
 /// Parse a decimal string into base units. Refuses precision it would lose.

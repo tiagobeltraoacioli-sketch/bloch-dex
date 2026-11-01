@@ -107,7 +107,7 @@ contract AssetTest is TestBase {
     }
 
     function testAssetLiquiditySwapAndRedemption() public {
-        UniswapV2Factory factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        UniswapV2Factory factory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         TestWrappedNative wrapped = new TestWrappedNative();
         BDexRouter router = new BDexRouter(address(factory), address(wrapped));
         vm.deal(HOLDER, 10 ether);

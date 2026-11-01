@@ -39,7 +39,7 @@ contract CoreTest is TestBase {
 
     function setUp() public {
         vm.warp(1_000);
-        factory = new UniswapV2Factory(address(0), new address[](0), new uint256[](0));
+        factory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         a = new TestToken();
         b = new TestToken();
         pair = UniswapV2Pair(factory.createPair(address(a), address(b)));
@@ -65,9 +65,9 @@ contract CoreTest is TestBase {
     /// factory's fee recipient: the fixed-recipient factory reads it through
     /// the same `feeTo()` selector as the canonical storage getter.
     function testPairInitCodeHashIsPinnedAndIndependentOfFeeRecipient() public {
-        bytes32 pinned = 0x1a88e06e32bd3402d34e0e10bd6aa7ab3df2123c3057289409ee89b807e0490f;
+        bytes32 pinned = 0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683;
         assertEq(factory.INIT_CODE_PAIR_HASH(), pinned);
-        UniswapV2Factory feeOn = new UniswapV2Factory(address(0xFEE), new address[](0), new uint256[](0));
+        UniswapV2Factory feeOn = new UniswapV2Factory(address(0xFEE), address(0), new address[](0), new uint256[](0));
         assertEq(feeOn.INIT_CODE_PAIR_HASH(), pinned);
         assertEq(feeOn.feeTo(), address(0xFEE));
     }
@@ -75,7 +75,7 @@ contract CoreTest is TestBase {
     /// The fee recipient is fixed once: no setter or authority surface exists,
     /// for anyone, including the deployer and the recipient itself.
     function testFeeRecipientHasNoAdminSurface() public {
-        UniswapV2Factory feeOn = new UniswapV2Factory(address(0xFEE), new address[](0), new uint256[](0));
+        UniswapV2Factory feeOn = new UniswapV2Factory(address(0xFEE), address(0), new address[](0), new uint256[](0));
         bytes[] memory calls = new bytes[](6);
         calls[0] = abi.encodeWithSignature("setFeeTo(address)", address(this));
         calls[1] = abi.encodeWithSignature("setFeeToSetter(address)", address(this));
