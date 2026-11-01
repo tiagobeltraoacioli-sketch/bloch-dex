@@ -31,7 +31,7 @@ const cast = (...a) => execFileSync("cast", a, { encoding: "utf8" }).trim();
 await context.exposeFunction("__e2eWallet", async (method, params) => {
   if (method === "eth_sendTransaction") {
     const tx = params[0];
-    const nonce = cast("nonce", tx.from, "--block", "latest", "--rpc-url", GW);
+    const nonce = cast("nonce", tx.from, "--block", "pending", "--rpc-url", GW);
     const raw = cast("mktx", "--chain", "700770", "--nonce", nonce, "--gas-limit", String(BigInt(tx.gas ?? "0x7a120")),
       "--gas-price", "5000000000", "--priority-gas-price", "1000000000", "--value", String(BigInt(tx.value ?? "0x0")),
       "--private-key", USER_KEY, tx.to, tx.data ?? "0x");

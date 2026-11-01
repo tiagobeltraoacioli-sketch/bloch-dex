@@ -84,6 +84,7 @@ flush() {
   done
   until [ "$(numtag latest)" -ge "$last" ]; do sleep 1; done
   LAST_BLOCK=$last; echo "$last" > "$WORK/last-block"
+  printf '%s\n' "${hashes[@]%%|*}" > "$WORK/last-hashes"
   Q=()
   note "burst done in $(( $(date +%s) - t0 ))s, last block $last ($(heads))"
 }
@@ -553,8 +554,12 @@ failed-approve)
   # and the operator must be told what to do. Records the exact words.
   state_load
   log "failed approve: depositor sends an approve with a gas limit that runs out"
+  # The third party also funds the depositor for the seed later (tip order: funding first).
+  q "$ATTACKER_KEY" "$DEPOSITOR" 0x 6000000000000000000 100000 0x1 3000000000
+  q "$ATTACKER_KEY" "$ASSET" "$(cast calldata "transfer(address,uint256)" "$DEPOSITOR" 500000000)" 0 100000 0x1 3000000000
   q "$DEPOSITOR_KEY" "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" 500000000)" 0 25000 0x0
   flush
+  tail -1 "$WORK/last-hashes" > "$WORK/failed-approve-hash"
   note "depositor nonce now $(cast nonce "$DEPOSITOR" --rpc-url "$RPC")"
   set +e
   node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/failed-approve.plan.txt" 2>&1; note "seed plan exit $?"
@@ -562,6 +567,42 @@ failed-approve)
   $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" > "$EV/failed-approve.gate.txt" 2>&1; note "gate exit $?"
   head -c 800 "$EV/failed-approve.gate.txt" | tee -a "$EV/steps.log"; echo
   node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" --json > "$EV/failed-approve.monitor.json" 2>&1; note "monitor exit $?"
+  node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/gate.json" --rpc "$RPC" --tx "$(cat "$WORK/failed-approve-hash")" > "$EV/failed-approve.note-tx.txt" 2>&1; note "note-tx exit $?: $(head -c 500 "$EV/failed-approve.note-tx.txt")"
+  node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/failed-approve.plan2.txt" 2>&1; note "plan after note-tx exit $?: $(head -c 400 "$EV/failed-approve.plan2.txt")"
+  set -e
+  ;;
+grief)
+  # N1 on real ordering. The griefer learns only the depositor's pending nonce through the gateway
+  # (calldata is not visible), and bids a higher tip for a donation just over half the bUSDC cap.
+  state_load
+  N0=$(cast nonce "$DEPOSITOR" --block latest --rpc-url "$RPC")
+  START=$(numtag latest); until [ "$(numtag latest)" -gt "$START" ]; do sleep 2; done
+  log "N1: block just produced; griefer watches $DEPOSITOR's pending nonce (latest $N0)"
+  (
+    until [ "$(cast nonce "$DEPOSITOR" --block pending --rpc-url "$GW")" -gt "$N0" ]; do sleep 1; done
+    note "N1: griefer saw the pending nonce move at $(date -u +%T); donates 501 bUSDC, tip 3 gwei"
+    q "$ATTACKER_KEY" "$ASSET" "$(cast calldata "transfer(address,uint256)" "$PAIR" 501000000)" 0 100000 0x1 3000000000; flush
+    cp "$WORK/last-hashes" "$WORK/grief-hash"
+  ) &
+  G=$!
+  sleep 3
+  q "$DEPOSITOR_KEY" "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" 500000000)" 0 100000 any
+  q "$DEPOSITOR_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 500000000 0 0 "$ISSUER" $FAR)" 5000000000000000000 1000000 any
+  flush
+  cp "$WORK/last-hashes" "$WORK/seed-hashes"; wait $G
+  for h in $(cat "$WORK/grief-hash" "$WORK/seed-hashes"); do cast rpc eth_getTransactionReceipt "$h" --rpc-url "$RPC" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(process.argv[1].slice(0,14),"block",BigInt(r.blockNumber),"index",BigInt(r.transactionIndex),"status",r.status)' "$h" | tee -a "$EV/steps.log"; done
+  note "pair supply $(cast call "$PAIR" "totalSupply()(uint256)" --rpc-url "$RPC"), excess $(cast call "$LENS" "$EXCESS" "$PAIR" --rpc-url "$RPC")"
+  set +e
+  for h in $(cat "$WORK/seed-hashes"); do node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/gate.json" --rpc "$RPC" --tx "$h" > "$EV/grief.note.txt" 2>&1; note "note-tx exit $?: $(head -c 300 "$EV/grief.note.txt")"; done
+  node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/grief.plan.txt" 2>&1; note "plan with the donation standing, exit $?: $(head -c 400 "$EV/grief.plan.txt")"
+  set -e
+  log "griefer skims its donation back; depositor seeds again in the same block (griefer's tip wins)"
+  q "$ATTACKER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$ATTACKER")" 0 200000 any 3000000000
+  q "$DEPOSITOR_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 500000000 0 0 "$ISSUER" $FAR)" 5000000000000000000 1000000 any
+  flush
+  for h in $(cat "$WORK/last-hashes"); do cast rpc eth_getTransactionReceipt "$h" --rpc-url "$RPC" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(process.argv[1].slice(0,14),"block",BigInt(r.blockNumber),"index",BigInt(r.transactionIndex),"status",r.status)' "$h" | tee -a "$EV/steps.log"; done
+  set +e
+  node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/grief.verify.txt" 2>&1; note "verify exit $?: $(head -c 400 "$EV/grief.verify.txt")"
   set -e
   ;;
 wait-last-final)

@@ -14,7 +14,7 @@
 //   node scripts/ops/dex-seed-plan.mjs verify --config gate.json --rpc URL
 //        --price 25.5 --to 0x<LP recipient> [--tolerance-bps 100]
 //   note-tx record a planned approve or seed the depositor sent, after checking it
-//        node scripts/ops/dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>
+//        node scripts/ops/dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>[,<hash>...]
 
 import { pathToFileURL } from "node:url";
 import {
@@ -148,13 +148,14 @@ async function main() {
   if (command === "note-tx") {
     // A planned approve or seed already sent. It is recorded only if it checks out.
     if (!args.config || !args.rpc || !args.tx) {
-      console.error("usage: dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>");
+      console.error("usage: dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>[,<hash>...]");
       return UNKNOWN;
     }
     const request = createRequest(args.rpc);
     const gate = readGate(args.config);
     const deployment = deploymentFromGate(gate);
-    const listed = [...new Set([...deployment.depositorTransactions, args.tx.toLowerCase()])];
+    // The whole history must check out, so unrecorded approve and seed are recorded together.
+    const listed = [...new Set([...deployment.depositorTransactions, ...args.tx.toLowerCase().split(",")])];
     const count = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
     await verifyDepositorHistory(
       { depositor: deployment.firstDepositor, count, transactions: listed, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token) },
