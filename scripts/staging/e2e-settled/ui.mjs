@@ -16,7 +16,7 @@ const { BROWSER_EXE, OUT, GW, LIVE, COMMITTED, USER_ADDR, USER_KEY } = process.e
 const [scene, device, ...args] = process.argv.slice(2);
 mkdirSync(OUT, { recursive: true });
 const result = { scene, device, start: new Date().toISOString(), checks: [], notes: {} };
-const name = `${scene}-${device}`;
+const name = `${scene}-${device}${scene === "observe" && args[0] ? `-${args[0]}` : ""}`;
 const check = (ok, what) => {
   result.checks.push({ ok: !!ok, what });
   console.log(`${ok ? "PASS" : "FAIL"} ${what}`);
@@ -57,6 +57,9 @@ async function open(url, wallet) {
   });
   page.on("requestfailed", (r) => log.failed.push(`${r.url()} ${r.failure()?.errorText}`));
   page.on("response", (r) => { if (r.url().startsWith(GW) && r.status() >= 400) log.failed.push(`${r.status()} ${r.url()}`); });
+  // Labelled in the report: moves the page's clock only, to reach the 150 minute notice in a short stall.
+  if (process.env.UI_CLOCK_SKEW_MIN)
+    await page.addInitScript((m) => { const n = Date.now.bind(Date); Date.now = () => n() + m * 60000; }, Number(process.env.UI_CLOCK_SKEW_MIN));
   await page.addInitScript(() => {
     window.__csp = [];
     document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
@@ -165,6 +168,13 @@ const scenes = {
     check(/worse than this quote/.test(result.notes.warning), "stale quote warning shown");
     check(await page.getByRole("button", { name: "Swap", exact: true }).isDisabled(), "Swap disabled before reconfirmation");
     await shot(page, "stale-warning");
+    if (args[1] === "nosend") {
+      await page.getByRole("button", { name: /Reconfirm at the latest price/ }).click();
+      result.notes.reconfirmedQuote = await page.getByLabel("Quote", { exact: true }).innerText();
+      check(/Latest block \d+, not finalized/.test(result.notes.reconfirmedQuote), "reconfirmed quote is labelled latest");
+      await shot(page, "reconfirmed");
+      return;
+    }
     const approve = page.getByRole("button", { name: new RegExp(`Approve ${amount} bUSDC`) });
     if (await approve.count()) {
       await approve.click();
@@ -218,7 +228,6 @@ const scenes = {
   },
   // State capture for stalls and backend failures: load, connect, quote, screenshot, record the words.
   async observe() {
-    const label = args[0] ?? "observe";
     const page = await open(`${LIVE}/#/mainnet`, true);
     const failed = page.getByRole("alert");
     await Promise.race([liveReady(page), failed.first().waitFor({ timeout: 90000 })]).catch(() => {});
@@ -226,13 +235,13 @@ const scenes = {
     result.notes.heads = await heads().catch((e) => String(e));
     result.notes.main = (await text(page)).slice(0, 2500);
     result.notes.alerts = await failed.allInnerTexts();
-    await shot(page, `${label}-load`);
+    await shot(page, "load");
     if (await page.getByRole("button", { name: /Connect E2E test wallet/ }).count()) {
       await connect(page).catch((e) => { result.notes.connectError = String(e).slice(0, 200); });
       await quoteForm(page, "1").catch(() => {});
       await page.waitForTimeout(8000);
       result.notes.afterQuote = (await page.locator(".devnet4-swap").innerText().catch(() => "")).slice(0, 1800);
-      await shot(page, `${label}-quote`);
+      await shot(page, "quote");
     }
     result.notes.failed = log.failed.slice(0, 20);
   },
