@@ -8,7 +8,7 @@ Both read the schema-2 gate file written by `deploy-dex.mjs record`, so they hav
 Read-only: it holds no key and its RPC client refuses any method outside a read list. Run it against your own settled RPC.
 
 ```
-node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --rpc http://127.0.0.1:18955 --expect-seeded
+node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --rpc http://127.0.0.1:18955 --expect-seeded --lp-recipient TBD-owner
 ```
 
 Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means the node did not answer; it says nothing about the chain. `--json` prints the same checks for a pipeline. The monitor does not send alerts: use `OnFailure=` on the unit (WARN is a success status in the example unit, CRIT and UNKNOWN fail it) or feed `--json` to your alerting.

@@ -324,6 +324,7 @@ function validateGateConfigV2(config) {
     [
       "deployer", "firstDepositor", "contracts", "pairInitCodeHash", "feeTo", "roles", "reserveCaps", "tokens", "pairs", "transactions",
       ...(Object.hasOwn(deployment, "existingPairTransactions") ? ["existingPairTransactions"] : []),
+      ...(Object.hasOwn(deployment, "depositorTransactions") ? ["depositorTransactions"] : []),
     ],
     "deployment",
   );
@@ -331,6 +332,9 @@ function validateGateConfigV2(config) {
     const listed = deployment.existingPairTransactions;
     refuse(Array.isArray(listed) && listed.length > 0 && listed.length <= deployment.pairs?.length, "deployment.existingPairTransactions is invalid");
     for (const hash of listed) refuse(deployment.transactions?.includes(hash), "deployment.existingPairTransactions names an unplanned transaction");
+  }
+  if (Object.hasOwn(deployment, "depositorTransactions")) {
+    refuse(Array.isArray(deployment.depositorTransactions) && deployment.depositorTransactions.every((h) => /^0x[0-9a-f]{64}$/.test(h)), "deployment.depositorTransactions is invalid");
   }
   lowerAddress(deployment.deployer, "deployment.deployer");
   lowerAddress(deployment.firstDepositor, "deployment.firstDepositor");
@@ -402,6 +406,40 @@ function validateGateConfigV2(config) {
   );
   const wrappedCap = BigInt(deployment.reserveCaps.find((c) => c.token === wrapped).cap);
   refuse(wrappedCap <= BigInt(config.limits.maxWrappedReserveCap), "the configured wrapped native cap exceeds the ceiling");
+}
+
+const APPROVE_SELECTOR = toFunctionSelector("approve(address,uint256)");
+const SEED_SELECTOR = toFunctionSelector("addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)");
+
+/// A griefer can make a planned seed revert for gas, which moves the depositor's
+/// nonce with the first-deposit rule unspent (N1). So a nonzero nonce is acceptable
+/// only if each of its `count` transactions is, from the chain's own data, an approve of
+/// the router on a planned token or a router seed of a planned token. Hashes come from
+/// the operator and prove nothing by themselves. A nonce gap, another sender, another
+/// target or calldata refuses. A signed transaction that is not yet mined cannot be seen.
+export async function verifyDepositorHistory({ depositor, count, transactions, router, tokens }, request) {
+  const byNonce = new Map();
+  for (const hash of transactions ?? []) {
+    const tx = await request("eth_getTransactionByHash", [hash]);
+    refuse(tx && (await request("eth_getTransactionReceipt", [hash])), `depositor transaction ${hash} is not mined`);
+    refuse(String(tx.from).toLowerCase() === depositor, `transaction ${hash} was not sent by the first depositor`);
+    byNonce.set(BigInt(tx.nonce), tx);
+  }
+  const words = (input) => input.slice(10).match(/.{64}/g) ?? [];
+  const addressWord = (word) => `0x${word.slice(24)}`.toLowerCase();
+  for (let nonce = 0n; nonce < count; nonce += 1n) {
+    const tx = byNonce.get(nonce);
+    refuse(tx, `the first depositor's transaction at nonce ${nonce} is not listed: its key is not single-purpose`);
+    const to = String(tx.to).toLowerCase();
+    const input = String(tx.input).toLowerCase();
+    const [first] = words(input);
+    const planned =
+      first !== undefined &&
+      ((tokens.includes(to) && input.startsWith(APPROVE_SELECTOR) && addressWord(first) === router) ||
+        (to === router && input.startsWith(SEED_SELECTOR) && tokens.includes(addressWord(first))));
+    refuse(planned, `the first depositor's transaction at nonce ${nonce} is not a planned approve or seed: its key is not single-purpose`);
+  }
+  return Number(count);
 }
 
 async function evaluateFinalityGateV2(config, request) {
@@ -505,7 +543,13 @@ async function evaluateFinalityGateV2(config, request) {
     // can spend the first-deposit rule through tx.origin.
     if (word(await call(pair, SELECTORS.totalSupply, "totalSupply"), 0, "totalSupply") === 0n) {
       const used = BigInt(await request("eth_getTransactionCount", [depositor, at]));
-      refuse(used === 0n, `the first depositor ${depositor} has sent ${used} transaction(s) before the seed: its key is not single-purpose`);
+      if (used !== 0n) {
+        refuse(deployment.depositorTransactions, `the first depositor ${depositor} has sent ${used} transaction(s) before the seed: its key is not single-purpose`);
+        await verifyDepositorHistory(
+          { depositor, count: used, transactions: deployment.depositorTransactions, router, tokens: deployment.tokens.map((t) => t.token) },
+          request,
+        );
+      }
       refuse((await request("eth_getCode", [depositor, at])) === "0x", "the first depositor must be an EOA");
     }
     pairs.push(Object.freeze({ address: pair, token0, token1 }));

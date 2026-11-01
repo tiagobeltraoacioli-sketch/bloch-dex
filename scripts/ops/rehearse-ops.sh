@@ -127,7 +127,7 @@ settle() {
   if [ "$MODE" = anvil ]; then cast rpc anvil_mine 0x60 --rpc-url "$RPC" > /dev/null
   else scripts/staging/private-l2.sh finalize "$WORK/l2" "$PORT" >> "$EV/steps.log"; fi
 }
-monitor() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" "${GATE_FLAGS[@]}" "$@"; }
+monitor() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --lp-recipient "$SEEDER" "${GATE_FLAGS[@]}" "$@"; }
 keeper_run() { node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --keeper "$KEEPER" "$@"; }
 
 # ---------------------------------------------------------------- deployment
@@ -257,6 +257,97 @@ if [ "$MODE" = anvil ]; then
   grep -q 'not single-purpose' "$EV/l1-gate-refused.out" || die "the gate did not name the used key"
   pass "l1: a used depositor key is refused by the planner and by the gate"
   restore "$SNAP"
+
+  # send_hash KEY TO DATA VALUE GAS: publish and wait; prints the hash and the status.
+  send_hash() {
+    local k=$1 to=$2 data=$3 value=$4 gas=$5 from nonce raw hash
+    from=$(cast wallet address --private-key "$k")
+    nonce=$(cast nonce "$from" --block latest --rpc-url "$RPC")
+    raw=$(cast mktx --chain 700770 --nonce "$nonce" --gas-limit "$gas" --gas-price $MAXFEE --priority-gas-price $TIP --value "$value" --private-key "$k" "$to" "$data")
+    hash=$(cast keccak "$raw")
+    cast publish --rpc-url "$RPC" "$raw" > /dev/null
+    echo "$hash $(cast receipt "$hash" status --rpc-url "$RPC" --confirmations 1)"
+  }
+  note_tx() { node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/gate.json" --rpc "$OPS_RPC" --tx "$1"; }
+
+  log "3c N1: a griefer makes the seed revert, twice; the seed resent after a checked history lands"
+  SNAP=$(snapshot)
+  cp "$EV/gate.json" "$WORK/gate.before-n1.json"
+  expect 0 n1-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  N1_DEPOSIT=$(jsonget "$EV/n1-plan.out" depositQuote)
+  N1_VALUE=$(jsonget "$EV/n1-plan.out" steps.1.value)
+  OVER=$((USD_CAP - N1_DEPOSIT + 1))
+  griefer_usd_0=$(view "$USD" "$BAL" "$GRIEFER")
+  set -- $(send_hash "$SEEDER_KEY" "$USD" "$(jsonget "$EV/n1-plan.out" steps.0.data)" 0 100000); APPROVE=$1; [ "$2" != 0x0 ] || die "approve failed"
+  for round in 1 2; do
+    must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" "$OVER")" 0 100000 > /dev/null
+    expect 1 "n1-plan-skim-first-$round" node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+    set -- $(send_hash "$SEEDER_KEY" "$(jsonget "$EV/n1-plan.out" steps.1.to)" "$(jsonget "$EV/n1-plan.out" steps.1.data)" "$N1_VALUE" 1000000); SEED_FAILED=$1
+    [ "$2" = 0 ] || [ "$2" = 0x0 ] || [ "$2" = "0 (failed)" ] || [ "$(cast rpc eth_getTransactionReceipt "$SEED_FAILED" --rpc-url "$RPC" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).status))')" = 0x0 ] || die "the griefed seed should revert"
+    must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$GRIEFER")" 0 200000 > /dev/null
+    expect 2 "n1-plan-refused-$round" node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+    [ "$round" = 1 ] && expect 0 n1-note-approve note_tx "$APPROVE"
+    expect 0 "n1-note-seed-$round" note_tx "$SEED_FAILED"
+    expect 0 "n1-plan-after-$round" node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+    [ "$(jsonget "$EV/n1-plan-after-$round.out" steps.0.skip)" = true ] || die "the retry should not approve again"
+    settle
+    expect 0 "n1-gate-$round" monitor
+  done
+  [ "$(view "$USD" "$BAL" "$GRIEFER")" = "$griefer_usd_0" ] || die "the griefer should have its donation back"
+  pass "n1: griefed twice for gas; the depositor's history checks out, so planner and gate continue at supply 0"
+  must "$SEEDER_KEY" "$(jsonget "$EV/n1-plan-after-2.out" steps.1.to)" "$(jsonget "$EV/n1-plan-after-2.out" steps.1.data)" "$N1_VALUE" 1000000 > /dev/null
+  expect 0 n1-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  pass "n1: the resent seed landed and verifies"
+  restore "$SNAP"
+  cp "$WORK/gate.before-n1.json" "$EV/gate.json"
+
+  log "3d N1: any other transaction in the depositor's history stays refused"
+  SNAP=$(snapshot)
+  set -- $(send_hash "$SEEDER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$GRIEFER" 1)" 0 100000); WRONG=$1
+  expect 2 n1-note-wrong-spender note_tx "$WRONG"
+  grep -q 'not a planned approve or seed' "$EV/n1-note-wrong-spender.out" || die "the wrong spender was not named"
+  expect 2 n1-plan-wrong-spender node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  cmp -s "$EV/gate.json" "$WORK/gate.before-n1.json" || die "a refused history must not change the gate file"
+  pass "n1: an approve of another spender is refused and not recorded"
+  restore "$SNAP"
+
+  log "3e spent rule: a dust first mint at a bad price; correcting swap, top-up and verify"
+  SNAP=$(snapshot)
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" 1000000000000000)" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 1000000)" 0 100000 > /dev/null
+  # Stands in for a hostile contract reaching the pair through the depositor's tx.origin.
+  must "$SEEDER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$GRIEFER")" 0 300000 > /dev/null
+  expect 1 spent-monitor monitor
+  grep -q 'LP shares exist' "$EV/spent-monitor.out" || die "the monitor did not name the foreign LP shares"
+  expect 2 spent-verify-early node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q 'seed-not-ours' "$EV/spent-verify-early.out" || die "verify did not see that the shares are not ours"
+  expect 1 spent-plan-correct node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q '"decision": "correct-price"' "$EV/spent-plan-correct.out" || die "the planner did not ask for a correcting swap"
+  for i in 0 1; do
+    STEP_TO=$(jsonget "$EV/spent-plan-correct.out" steps.$i.to 2>/dev/null) || break
+    [ -n "$STEP_TO" ] && [ "$STEP_TO" != undefined ] || break
+    must "$SEEDER_KEY" "$STEP_TO" "$(jsonget "$EV/spent-plan-correct.out" steps.$i.data)" "$(jsonget "$EV/spent-plan-correct.out" steps.$i.value)" 400000 > /dev/null
+  done
+  expect 0 spent-plan-top-up node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q '"decision": "top-up"' "$EV/spent-plan-top-up.out" || die "the planner did not offer a top-up"
+  must "$SEEDER_KEY" "$(jsonget "$EV/spent-plan-top-up.out" steps.0.to)" "$(jsonget "$EV/spent-plan-top-up.out" steps.0.data)" 0 200000 > /dev/null
+  must "$SEEDER_KEY" "$(jsonget "$EV/spent-plan-top-up.out" steps.1.to)" "$(jsonget "$EV/spent-plan-top-up.out" steps.1.data)" "$(jsonget "$EV/spent-plan-top-up.out" steps.1.value)" 1000000 > /dev/null
+  expect 0 spent-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  pass "spent rule: foreign dust reported; correcting swap and top-up reached the price, and the recipient holds the pool"
+  restore "$SNAP"
+
+  log "3f N2: a spent rule and a hostile fill at the planned price are not our seed"
+  SNAP=$(snapshot)
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" 1000000000000000)" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 25500)" 0 100000 > /dev/null
+  must "$SEEDER_KEY" "$PAIR" "$(cast calldata "mint(address)" "$GRIEFER")" 0 300000 > /dev/null
+  must "$GRIEFER_KEY" "$ROUTER" "$(cast calldata "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$USD" 180000000 0 0 "$GRIEFER" 9999999999)" 7000000000000000000 1000000 > /dev/null
+  expect 2 n2-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  grep -q 'seed-not-ours' "$EV/n2-verify.out" || die "verify accepted an attacker's pool"
+  expect 2 n2-monitor monitor --expect-seeded
+  grep -q 'lp_recipient' "$EV/n2-monitor.out" || die "the monitor accepted an attacker's pool"
+  pass "n2: verify and monitor refuse a pool at the right price that holds none of our seed"
+  restore "$SNAP"
 fi
 
 # ---------------------------------------------------------------- seed
@@ -269,8 +360,8 @@ must "$SEEDER_KEY" "$SEED_TO" "$SEED_DATA" "$SEED_VALUE" 1000000 > /dev/null
 [ "$(cast nonce "$SEEDER" --rpc-url "$RPC")" = 2 ] || die "the first depositor must send exactly two transactions"
 pass "the first depositor sent the approve and the seed, and nothing else"
 must "$SEEDER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 100000000000)" 0 100000 > /dev/null
-expect 0 seed-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE
-expect 2 seed-verify-wrong-price node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price 30
+expect 0 seed-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+expect 2 seed-verify-wrong-price node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price 30 --to "$SEEDER"
 expect 2 seed-plan-refused node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
 for _ in 1 2 3; do
   must "$GRIEFER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 5000000 0 "$PATH_U_W" "$GRIEFER" $FUTURE)" 0 400000 > /dev/null

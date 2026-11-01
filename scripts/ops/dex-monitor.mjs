@@ -17,6 +17,7 @@
 //
 //   node scripts/ops/dex-monitor.mjs --config finality-gate.mainnet.json
 //        --safe-plan safe.plan.json --rpc http://127.0.0.1:18955 [--expect-seeded]
+//        [--lp-recipient 0x… [--lp-min-bps 5000], required with --expect-seeded]
 //        [--rehearsal] [--ref-price 25.5] [--json]
 
 import { readFileSync } from "node:fs";
@@ -185,6 +186,16 @@ async function checkPair({ pair, deployment, latest, finalized, add, facts, opti
     }
   }
 
+  // Who holds the shares: a price that looks right proves nothing if our seed never
+  // landed (N2). Half the pool is the line: later LPs dilute the seed, but a hostile
+  // fill holds most of it. An LP who exits on purpose changes --lp-min-bps.
+  if (options.expectSeeded && options.lpRecipient && head.totalSupply !== 0n) {
+    const held = await call(request, pair.address, "balanceOf", [options.lpRecipient], blockRef(latest));
+    const minBps = BigInt(options.lpMinBps ?? 5000);
+    const ok = held * 10_000n >= head.totalSupply * minBps;
+    add(`lp_recipient[${tag}]`, ok ? OK : CRIT, ok ? `${options.lpRecipient} holds ${held} of ${head.totalSupply} shares` : `${options.lpRecipient} holds only ${held} of ${head.totalSupply} shares: the seed may not have landed, or someone else filled the pool`);
+  }
+
   // LP shares in a run that expects none: someone minted before the planned seed.
   if (head.totalSupply !== 0n && !options.expectSeeded) {
     add(`preseed[${tag}]`, WARN, `LP shares exist (${head.totalSupply}) but the seed has not been announced: a first mint nobody planned? Plan with dex-seed-plan.mjs`);
@@ -273,14 +284,14 @@ async function gateFor(args) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ["rehearsal", "json", "expect-seeded"] });
-    if (!args.config || !args.rpc || (!args.rehearsal && !args["safe-plan"])) {
-      console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --rpc <url> [--expect-seeded] [--ref-price P] [--rehearsal] [--json]");
+    if (!args.config || !args.rpc || (!args.rehearsal && !args["safe-plan"]) || (args["expect-seeded"] && !args["lp-recipient"])) {
+      console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --rpc <url> [--expect-seeded --lp-recipient 0x<address> [--lp-min-bps 5000]] [--ref-price P] [--rehearsal] [--json]");
       process.exit(UNKNOWN);
     }
     const request = createRequest(args.rpc);
     const result = await runMonitor(
       readGate(args.config),
-      { expectSeeded: Boolean(args["expect-seeded"]), refPrice: args["ref-price"] },
+      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], refPrice: args["ref-price"] },
       request,
       { evaluateGate: await gateFor(args) },
     );

@@ -128,40 +128,55 @@ contract Review51Test is TestBase {
         require(trySellNative(0.001 ether), "F1b: selling 0.001 BLCH reverts after the LP fill");
     }
 
-    /// Passes: donating both sides to the caps and recording through a swap or a
-    /// burn leaves the reserves at or below the ceiling, and skim reopens swaps.
+    /// Passes: what closing the pair costs now, from a fill to the ceiling. Unrecorded
+    /// balance fills both rooms, so swaps stop until a skim. The griefer gets the capital
+    /// back only by winning its own skim, and a refill costs the same again.
     function testEVIDENCE51_F1c_freezeCostAndRefill() public {
         UniswapV2Pair pair = pairOf();
         seed(5 ether, 500e6);
         fillToCeiling(pair);
         (uint256 rW, uint256 rQ) = reservesWQ(pair);
-        vm.startPrank(ATTACKER);
-        wblch.deposit{value: CAP_W}();
-        wblch.transfer(address(pair), CAP_W - rW);
-        busdc.transfer(address(pair), CAP_Q - rQ);
+        vm.prank(ATTACKER);
+        wblch.deposit{value: 2 * CAP_W}();
+        uint256 startW = wblch.balanceOf(ATTACKER);
+        uint256 startQ = busdc.balanceOf(ATTACKER);
+        emit log_named_uint("freeze capital WBLCH wei", CAP_W - rW);
+        emit log_named_uint("freeze capital bUSDC units", CAP_Q - rQ);
+        donateRooms(pair, CAP_W - rW, CAP_Q - rQ);
+        assertTrue(!trySellQuote(1e6) && !trySellNative(0.001 ether));
         vm.expectRevert(bytes("BDEX: K_CEILING"));
         pair.sync();
-        bool wFirst = pair.token0() == address(wblch);
-        pair.swap(wFirst ? 1 : 0, wFirst ? 0 : 1, ATTACKER, "");
-        pair.transfer(address(pair), 1e9);
-        pair.burn(ATTACKER);
-        vm.stopPrank();
+        vm.prank(ATTACKER);
+        pair.skim(ATTACKER);
+        assertTrue(trySellQuote(1e6) && trySellNative(0.001 ether));
+        emit log_named_uint("griefer net WBLCH wei after its own skim", startW - wblch.balanceOf(ATTACKER));
+        emit log_named_uint("griefer net bUSDC units after its own skim", startQ - busdc.balanceOf(ATTACKER));
+
+        // The refill closes it again. A third party's skim now keeps the capital.
         (rW, rQ) = reservesWQ(pair);
-        emit log_named_uint("reserve WBLCH wei", rW);
-        emit log_named_uint("reserve bUSDC units", rQ);
-        assertTrue(rW * rQ <= CAP_W * CAP_Q * 64 / 100);
+        donateRooms(pair, CAP_W - rW, CAP_Q - rQ);
+        assertTrue(!trySellQuote(1e6) && !trySellNative(0.001 ether));
         pair.skim(address(0xD0));
         assertTrue(trySellQuote(1e6) && trySellNative(0.001 ether));
+        emit log_named_uint("refill lost to the skimmer, WBLCH wei", wblch.balanceOf(address(0xD0)));
+        emit log_named_uint("refill lost to the skimmer, bUSDC units", busdc.balanceOf(address(0xD0)));
+        (rW, rQ) = reservesWQ(pair);
+        assertTrue(rW * rQ <= CAP_W * CAP_Q * 64 / 100);
+    }
+
+    function donateRooms(UniswapV2Pair pair, uint256 w, uint256 q) internal {
+        vm.startPrank(ATTACKER);
+        wblch.transfer(address(pair), w);
+        busdc.transfer(address(pair), q);
+        vm.stopPrank();
     }
 
     // ---------------------------------------------------------------- F2 ----
 
-    /// Anyone can create the planned pair once the factory exists. The factory
-    /// still refuses a second creation. The fix is in the tooling, which accepts
-    /// the existing pair; this test states what that relies on: same address as
-    /// predicted, same caps, whoever created it. Restated from the original, which
-    /// required a contract change the tooling fix does not make.
-    function testFAIL51_F2_plannedCreatePairMustSurviveFrontRun() public {
+    /// Not F2 coverage: this also passes without the fix. F2 is carried by the node tests
+    /// (`review51 F2`) and the front-run rehearsal. This checks only what the tooling
+    /// relies on: same address as predicted and same caps, whoever creates the pair.
+    function testF2Precondition_ThirdPartyPairMatchesThePlan() public {
         (address a, address b) =
             address(wblch) < address(busdc) ? (address(wblch), address(busdc)) : (address(busdc), address(wblch));
         address planned = address(
@@ -223,7 +238,7 @@ contract Review51Test is TestBase {
             0, path(address(wblch), address(busdc)), ATTACKER, block.timestamp
         );
         vm.prank(USER);
-        vm.expectRevert();
+        vm.expectRevert(bytes("BDEX: INSUFFICIENT_OUTPUT_AMOUNT"));
         router.swapExactBLCHForTokens{value: amountIn}(
             minimum, path(address(wblch), address(busdc)), USER, block.timestamp
         );
