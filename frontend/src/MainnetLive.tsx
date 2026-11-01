@@ -558,7 +558,7 @@ function PoolsTable({
                   wallet={wallet}
                   onMined={onMined}
                 />
-                {atKCeiling(p) && (
+                {atKCeiling(p) && !(p.excess?.blocksInflow0 && p.excess?.blocksInflow1) && (
                   <div className="microcopy" aria-label="K ceiling">
                     At the pool&apos;s k ceiling: deposits revert with BDEX: K_CEILING. Swaps still
                     run, and their fee stays outside the reserves as excess.
