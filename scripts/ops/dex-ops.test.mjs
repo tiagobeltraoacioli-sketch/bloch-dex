@@ -7,7 +7,7 @@ import {
 } from "./dex-ops-lib.mjs";
 import { runMonitor } from "./dex-monitor.mjs";
 import { DEFAULTS, runKeeper } from "./dex-skim-keeper.mjs";
-import { planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { holdsSeed, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
 import { createRequire } from "node:module";
 
@@ -556,4 +556,12 @@ test("L3: unrecorded balance on both caps is reported, and the keeper's target o
   assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 8n, balance: 10n }, { cap: 20n, reserve: 16n, balance: 20n }] }), true);
   assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 8n, balance: 10n }, { cap: 20n, reserve: 16n, balance: 19n }] }), false);
   assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 10n, balance: 10n }, { cap: 20n, reserve: 20n, balance: 20n }] }), false);
+});
+
+test("N2: the seed is ours only if the recipient holds nearly all the shares", () => {
+  assert.equal(holdsSeed({ held: 9_000n, totalSupply: 10_000n }), true);
+  assert.equal(holdsSeed({ held: 8_000n, totalSupply: 10_000n }), false);
+  assert.equal(holdsSeed({ held: 0n, totalSupply: 10n ** 18n }), false);
+  assert.equal(holdsSeed({ held: 0n, totalSupply: 0n }), false);
+  assert.equal(holdsSeed({ held: 0n, totalSupply: 1000n }), false);
 });

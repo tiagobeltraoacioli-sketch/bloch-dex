@@ -5,7 +5,7 @@ The DEX has no admin: nobody can pause it, move funds or change a cap. An incide
 First step, always:
 
 ```
-node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --rpc http://127.0.0.1:18955 --expect-seeded
+node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --rpc http://127.0.0.1:18955 --expect-seeded --lp-recipient TBD-owner
 ```
 
 If it exits 3, your node is the problem. Try the other backend before concluding anything about the chain.

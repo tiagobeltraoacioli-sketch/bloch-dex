@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateFinalityGate, GATE_DOMAIN } from "./finality-gate.mjs";
+import {
+  verifyDepositorHistory, evaluateFinalityGate, GATE_DOMAIN } from "./finality-gate.mjs";
 
 const hex = (n) => `0x${n.toString(16)}`;
 const hash = (c) => `0x${c.repeat(64)}`;
@@ -453,4 +454,42 @@ test("schema 2 configuration is validated before any RPC request", async () => {
     await assert.rejects(evaluateFinalityGate(configV2(change), request), /finality gate/, String(change));
   }
   assert.equal(calls, 0);
+});
+
+test("N1: a depositor history passes only with every nonce a planned approve or seed", async () => {
+  const depositor = V2.depositor;
+  const router = V2.router;
+  const token = V2.asset;
+  const approve = (spender) => `${sel("approve(address,uint256)")}${pad(spender)}${"0".repeat(63)}1`;
+  const seed = (t) => `${sel("addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)")}${pad(t)}${"0".repeat(320)}`;
+  const check = (txs, count = BigInt(txs.length)) =>
+    verifyDepositorHistory({ depositor, count, transactions: txs.map((_, i) => hash(String(i + 1))), router, tokens: [token] }, async (method, [h]) => {
+      const tx = txs[Number(h.slice(-1)) - 1];
+      return method === "eth_getTransactionByHash" ? tx : tx.mined === false ? null : { status: "0x0" };
+    });
+  const tx = (nonce, to, input, from = depositor) => ({ nonce: `0x${nonce.toString(16)}`, to, input, from });
+  assert.equal(await check([tx(0, token, approve(router)), tx(1, router, seed(token)), tx(2, router, seed(token))]), 3);
+  await assert.rejects(check([tx(0, token, approve(addr("8")))]), /not a planned approve or seed/);
+  await assert.rejects(check([tx(0, addr("8"), approve(router))]), /not a planned approve or seed/);
+  await assert.rejects(check([tx(0, router, seed(addr("8")))]), /not a planned approve or seed/);
+  await assert.rejects(check([tx(0, router, "0x12345678")]), /not a planned approve or seed/);
+  await assert.rejects(check([tx(0, token, approve(router), addr("8"))]), /not sent by the first depositor/);
+  await assert.rejects(check([{ ...tx(0, token, approve(router)), mined: false }]), /not mined/);
+  await assert.rejects(check([tx(0, token, approve(router))], 2n), /nonce 1 is not listed/);
+  await assert.rejects(check([tx(1, router, seed(token))], 2n), /nonce 0 is not listed/);
+});
+
+test("N1: the gate accepts a used key only with a checked history", async () => {
+  const seedInput = `${sel("addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)")}${pad(V2.asset)}`;
+  const H = hash("7");
+  const inner = rpcV2({ depositorNonce: "0x1" });
+  const wrap = (input) => async (method, params) => {
+    if (method === "eth_getTransactionByHash") return { from: V2.depositor, nonce: "0x0", to: V2.router, input };
+    if (method === "eth_getTransactionReceipt" && params[0] === H) return { status: "0x0", transactionHash: H };
+    return inner(method, params);
+  };
+  await assert.rejects(evaluateFinalityGate(configV2(), inner), /not single-purpose/);
+  const listed = configV2((c) => { c.deployment.depositorTransactions = [H]; });
+  assert.equal((await evaluateFinalityGate(listed, wrap(seedInput))).decision, "liquidity-enabled");
+  await assert.rejects(evaluateFinalityGate(listed, wrap("0x12345678")), /not a planned approve or seed/);
 });

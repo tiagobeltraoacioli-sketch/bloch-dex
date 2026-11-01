@@ -12,7 +12,9 @@
 //   node scripts/ops/dex-seed-plan.mjs plan --config gate.json --rpc URL
 //        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000] [--deadline-min 60]
 //   node scripts/ops/dex-seed-plan.mjs verify --config gate.json --rpc URL
-//        --price 25.5 [--tolerance-bps 100]
+//        --price 25.5 --to 0x<LP recipient> [--tolerance-bps 100]
+//   note-tx record a planned approve or seed the depositor sent, after checking it
+//        node scripts/ops/dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>
 
 import { pathToFileURL } from "node:url";
 import {
@@ -20,10 +22,13 @@ import {
   blockRef, call, checkIdentity, createRequest, deploymentFromGate, encode, formatUnits, isBricked, isClosed, isqrt,
   parseArgs, parseUnits, readBlock, readGate, readPair, stringify,
 } from "./dex-ops-lib.mjs";
+import { renameSync, writeFileSync } from "node:fs";
+import { verifyDepositorHistory } from "../staging/finality-gate.mjs";
 
 const WAD = 10n ** 18n;
 const MINIMUM_LIQUIDITY = 1000n;
 const PRICE_TOLERANCE_BPS = 100n;
+const SEED_SHARE_BPS = 9_900n;
 
 /// LP shares already exist: our own seed, or a first mint nobody planned (F1). The
 /// price comes first: a swap sets it, then a pro-rata deposit reaches the target.
@@ -62,6 +67,14 @@ function planWithShares({ wrapped, quote, totalSupply, price, fractionBps }) {
   const depositWrapped = targetWrapped - wrapped.reserve;
   const depositQuote = (depositWrapped * quote.reserve) / wrapped.reserve + 1n;
   return { decision: "top-up", depositWrapped, depositQuote, poolWrapped: targetWrapped, poolQuote: quote.reserve + depositQuote, donated: null };
+}
+
+/// Whether `to` holds the seed: nearly every share, apart from the 1000 locked ones.
+/// A first mint nobody planned (spent rule) or a fill leaves a price that can look
+/// right, so the price alone proves nothing (N2).
+export function holdsSeed({ held, totalSupply, minBps = SEED_SHARE_BPS }) {
+  if (totalSupply <= MINIMUM_LIQUIDITY) return false;
+  return held * 10_000n >= (totalSupply - MINIMUM_LIQUIDITY) * minBps;
 }
 
 /// The pure part of `plan`. `wrapped` and `quote` are pair sides; `price` is in
@@ -132,19 +145,46 @@ async function load(args, request) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const [command] = args._;
+  if (command === "note-tx") {
+    // A planned approve or seed already sent. It is recorded only if it checks out.
+    if (!args.config || !args.rpc || !args.tx) {
+      console.error("usage: dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>");
+      return UNKNOWN;
+    }
+    const request = createRequest(args.rpc);
+    const gate = readGate(args.config);
+    const deployment = deploymentFromGate(gate);
+    const listed = [...new Set([...deployment.depositorTransactions, args.tx.toLowerCase()])];
+    const count = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
+    await verifyDepositorHistory(
+      { depositor: deployment.firstDepositor, count, transactions: listed, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token) },
+      request,
+    );
+    gate.deployment.depositorTransactions = listed;
+    const temp = `${args.config}.tmp`;
+    writeFileSync(temp, `${JSON.stringify(gate, null, 2)}\n`);
+    renameSync(temp, args.config);
+    console.log(stringify({ decision: "depositor-history-verified", nonce: count, depositorTransactions: listed }));
+    return OK;
+  }
   if (!["plan", "verify"].includes(command) || !args.config || !args.rpc || !args.price) {
-    console.error("usage: dex-seed-plan.mjs plan|verify --config <gate.json> --rpc <url> --price <quote per wrapped> [--to <LP recipient>] [--fraction-bps 5000] [--tolerance-bps 100]");
+    console.error("usage: dex-seed-plan.mjs plan|verify --config <gate.json> --rpc <url> --price <quote per wrapped> [--to <LP recipient, required by verify>] [--fraction-bps 5000] [--tolerance-bps 100]");
     return UNKNOWN;
   }
   const request = createRequest(args.rpc);
   const { deployment, pair, state, wrapped, quote, decimals, latest, price } = await load(args, request);
 
   if (command === "verify") {
+    if (!args.to) throw new Error("--to <LP recipient> is required: verify checks who holds the shares");
     const tolerance = BigInt(args["tolerance-bps"] ?? 100);
     const gap = priceGapBps({ wrapped, quote, price });
-    const pass = state.totalSupply !== 0n && gap !== null && gap <= tolerance;
+    const held = await call(request, pair.address, "balanceOf", [args.to], blockRef(latest));
+    const ours = holdsSeed({ held, totalSupply: state.totalSupply });
+    const pass = state.totalSupply !== 0n && gap !== null && gap <= tolerance && ours;
     console.log(stringify({
-      decision: pass ? "seed-verified" : "seed-off-target",
+      decision: pass ? "seed-verified" : ours ? "seed-off-target" : "seed-not-ours",
+      recipient: args.to,
+      recipientShares: held,
       pair: pair.address,
       block: latest.number,
       poolPrice: wrapped.reserve === 0n ? null : formatUnits((quote.reserve * WAD) / wrapped.reserve, decimals),
@@ -161,8 +201,20 @@ async function main() {
   if (state.totalSupply === 0n) {
     const used = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
     const depositorCode = await request("eth_getCode", [deployment.firstDepositor, "latest"]);
-    if (used !== 0n || depositorCode !== "0x") {
-      console.log(stringify({ decision: "refuse", firstDepositor: deployment.firstDepositor, nonce: used, reason: "the first depositor must be a fresh EOA with nonce 0 before the seed. Its key may be spent; see OPS-OPENING-KIT.md" }));
+    let historyProblem = depositorCode === "0x" ? null : "the first depositor has code";
+    if (!historyProblem && used !== 0n) {
+      try {
+        await verifyDepositorHistory(
+          { depositor: deployment.firstDepositor, count: used, transactions: deployment.depositorTransactions, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token) },
+          request,
+        );
+      } catch (error) {
+        if (error instanceof RpcError) throw error;
+        historyProblem = error.message;
+      }
+    }
+    if (historyProblem) {
+      console.log(stringify({ decision: "refuse", firstDepositor: deployment.firstDepositor, nonce: used, detail: historyProblem, reason: "the first depositor must be a fresh EOA with nonce 0 before the seed, or its history must be only planned approves and seeds (note-tx). Its key may be spent; see OPS-INITIAL-LIQUIDITY.md" }));
       return CRIT;
     }
   }
@@ -189,6 +241,9 @@ async function main() {
   }
   if (!args.to) throw new Error("--to <LP recipient> is required");
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * Number(args["deadline-min"] ?? 60));
+  const seeding = state.totalSupply === 0n;
+  const allowance = seeding ? await call(request, quote.token, "allowance", [deployment.firstDepositor, deployment.router.address], blockRef(latest)) : 0n;
+  const enoughAllowance = seeding && allowance >= plan.depositQuote;
   // On a fresh pair the minimums equal the deposit. A top-up follows the pool's ratio.
   const topUp = plan.decision === "top-up";
   const seedCall = encode("addLiquidityBLCH", [quote.token, plan.depositQuote, topUp ? (plan.depositQuote * 99n) / 100n : plan.depositQuote, topUp ? (plan.depositWrapped * 99n) / 100n : plan.depositWrapped, args.to, deadline]);
@@ -207,7 +262,13 @@ async function main() {
     expectedLiquidity: liquidity,
     from: state.totalSupply === 0n ? deployment.firstDepositor : undefined,
     steps: [
-      { description: "approve the router for the quote token", to: quote.token, value: "0", data: encode("approve", [deployment.router.address, plan.depositQuote]) },
+      {
+        description: enoughAllowance ? "skipped: the router's allowance from the earlier approve is enough (a harmless repeat would use the key again)" : "approve the router for the quote token",
+        ...(enoughAllowance ? { skip: true } : {}),
+        to: quote.token,
+        value: "0",
+        data: encode("approve", [deployment.router.address, plan.depositQuote]),
+      },
       { description: "seed (the minimums equal the deposit; on a fresh pair they do not protect the ratio, verify does)", to: deployment.router.address, value: plan.depositWrapped, data: seedCall, deadline },
     ],
   }));

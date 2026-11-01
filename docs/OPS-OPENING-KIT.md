@@ -105,6 +105,7 @@ Provide public addresses only. Keys stay with the owner and are never put in a r
 | 8 | DEX deployer address | `dex-mainnet.config.json` `deployer.address` | Gas only. `startNonce` 0 |
 | 8a | First depositor address | `dex-mainnet.config.json` `firstDepositor` | **New EOA for this only.** Sends the approve and the seed, nothing else. Nonce 0 before the seed. Never zero |
 | 9 | LP recipient address | `dex-seed-plan.mjs --to` | Recommended: not the Safe |
+| 10 | LP recipient, for the monitor | `DEX_LP_RECIPIENT` | Same as item 9 |
 | 11 | Keeper address | `DEX_KEEPER` | Hot key, gas only |
 | 12 | Keeper keystore path and password file path | `DEX_KEEPER_KEYSTORE`, `DEX_KEEPER_PASSWORD_FILE` | Paths on the keeper host only |
 

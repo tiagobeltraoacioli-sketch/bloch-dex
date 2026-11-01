@@ -19,7 +19,8 @@ Only `factory.firstDepositor()` can make a pair's first deposit. Use **a fresh E
 - **Checks.** `dex-seed-plan.mjs` and the finality gate refuse while the pair has no shares and the key has a nonzero nonce or has code. `preflight` and the deployment script refuse too.
 - **Other uses.** Do not fund it from a contract you do not trust, connect it to a site, or sign anything else with it. Receiving funds does not change its nonce.
 - **If the key is lost or used before the seed,** deploy a new factory with a new key. The rule covers every pair on the factory, so no other pair can open either.
-- **If the approve or the seed fails,** the nonce is no longer 0 and the planner and gate refuse. That needs the same new deployment, because the tools cannot tell a failed seed from a used key. Check the gas and the deadline before you send.
+- **If the seed fails, do not deploy again.** A griefer can make it revert for gas, by donating just over the room after the approve. The nonce is no longer 0, so the planner and gate refuse until you record what the key sent. Run `note-tx` once for each transaction the depositor has sent (below), then plan again. The tools continue only if every nonce is a planned approve of the router or a router seed, read from the chain. Any other transaction stays refused, and that does need a new deployment. A griefer can repeat this: each round costs a retry and gas, and its donation is at risk if someone else skims first. Do not approve again: the plan marks that step `skip`.
+- **What the check cannot see:** a transaction signed but not mined, or a stolen key.
 - **The Safe as depositor is not supported.** It cannot use the router (`GS013`). The direct path through `MultiSendCallOnly` (transfer, transfer, mint) worked in agent 61's test, but `MultiSendCallOnly` is not deployed here, the planner does not produce it, and no tool exists.
 
 ## The caps limit the protection at some prices
@@ -58,13 +59,19 @@ node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-ga
 
 Send the plan's `to`, `value` and `data` from the first depositor (`from` in the plan), without changing them. Send them as soon as you have the plan: the plan is good only for the state it read.
 
+Record a sent approve or seed if you need to plan again: after the approve, or after a failed seed. It writes `deployment.depositorTransactions` in the gate file, only if the whole history checks out:
+
+```
+node scripts/ops/dex-seed-plan.mjs note-tx --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --tx TBD-hash
+```
+
 Verify, right after inclusion:
 
 ```
-node scripts/ops/dex-seed-plan.mjs verify --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --price TBD-owner
+node scripts/ops/dex-seed-plan.mjs verify --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --price TBD-owner --to TBD-owner
 ```
 
-Exit 0 is `seed-verified`, within 1% by default. Announce the pool only after this and after the seed is finalized.
+Exit 0 is `seed-verified`: the price is within 1% by default and the recipient holds at least 99% of the shares other than the locked ones. `seed-not-ours` means someone else's liquidity is at that price, so do not announce. Announce the pool only after this and after the seed is finalized.
 
 ## DEX-04: a donation sets the opening ratio
 
@@ -95,6 +102,6 @@ The Safe and the Multicall3 and CREATE2 deployments are kept. This procedure has
 
 ## After the seed
 
-- Run the monitor with `--expect-seeded`.
+- Run the monitor with `--expect-seeded --lp-recipient <LP recipient>`. Below half the shares it reports `lp_recipient` CRIT. If the recipient exits on purpose, lower `--lp-min-bps`.
 - Start the keeper.
 - Add liquidity only pro rata through the router. A deposit reverts if a reserve would pass its cap (`RESERVE_CAP`) or if `k` would pass the ceiling (`K_CEILING`). Both a filled pool and a side at its cap close deposits, and no swap reopens a filled one.

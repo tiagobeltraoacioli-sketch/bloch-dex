@@ -29,7 +29,7 @@ jsonget() { node -e 'const v=process.argv[2].split(".").reduce((o,k)=>o[k],requi
 key() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].private_key)' "$WORK/keys.json" "$1"; }
 addr() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].address.toLowerCase())' "$WORK/keys.json" "$1"; }
 if [ -f "$WORK/keys.json" ]; then
-  BOOT_KEY=$(key 0); BOOT=$(addr 0); DEPLOYER_KEY=$(key 1); DEPLOYER=$(addr 1); ISSUER_KEY=$(key 2); ISSUER=$(addr 2)
+  BOOT_KEY=$(key 0); BOOT=$(addr 0); DEPLOYER_KEY=$(key 1); DEPLOYER=$(addr 1); ISSUER_KEY=$(key 2); ISSUER=$(addr 2); LP_RECIPIENT=$ISSUER
   OWNER_KEYS=("$(key 3)" "$(key 4)" "$(key 5)" "$(key 6)" "$(key 7)")
   OWNERS=("$(addr 3)" "$(addr 4)" "$(addr 5)" "$(addr 6)" "$(addr 7)")
   INFRA_KEY=$(key 8); INFRA=$(addr 8); USER_KEY=$(key 9); USER_ADDR=$(addr 9)
@@ -132,7 +132,7 @@ EXCESS="pendingExcess(address)((uint256,uint256,bool,bool))"
 FAR=99999999999
 mon_note() { # label [flags] -> stores the JSON and logs level and non-OK checks
   local label=$1; shift
-  set +e; node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "${MON_RPC:-$RPC}" "$@" --json > "$EV/monitor.$label.json"; local c=$?; set -e
+  set +e; node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "${MON_RPC:-$RPC}" --lp-recipient "$LP_RECIPIENT" "$@" --json > "$EV/monitor.$label.json"; local c=$?; set -e
   note "monitor[$label] exit $c: $(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log((r.checks||[]).filter(c=>c.level!==0&&c.status!=="OK"&&c.level!=="OK").map(c=>c.name+":"+(c.message||c.detail||"")).join("; ")||"all OK")' "$EV/monitor.$label.json" 2>/dev/null || echo unparsable)"
 }
 
@@ -316,7 +316,7 @@ seed)
   flush
   note "protocol fee to the Safe: $(cast call "$PAIR" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC") LP"
   [ -z "${DEPOSITOR:-}" ] || { [ "$(cast nonce "$DEPOSITOR" --rpc-url "$RPC")" = 2 ] || { echo "FAIL: the first depositor must send exactly two transactions"; exit 1; }; note "first depositor sent exactly 2 transactions"; }
-  node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$RPC" --price 100 > "$EV/seed-verify.json" || note "seed verify exit $?"
+  node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$LP_RECIPIENT" > "$EV/seed-verify.json" || note "seed verify exit $?"
   note "seed verify: $(cat "$EV/seed-verify.json" | head -c 300)"
   ;;
 swaps)
