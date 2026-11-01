@@ -266,7 +266,7 @@ if [ "$MODE" = anvil ]; then
     raw=$(cast mktx --chain 700770 --nonce "$nonce" --gas-limit "$gas" --gas-price $MAXFEE --priority-gas-price $TIP --value "$value" --private-key "$k" "$to" "$data")
     hash=$(cast keccak "$raw")
     cast publish --rpc-url "$RPC" "$raw" > /dev/null
-    echo "$hash $(cast receipt "$hash" status --rpc-url "$RPC" --confirmations 1)"
+    echo "$hash $(cast rpc eth_getTransactionReceipt "$hash" --rpc-url "$RPC" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).status))')"
   }
   note_tx() { node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/gate.json" --rpc "$OPS_RPC" --tx "$1"; }
 
@@ -278,15 +278,16 @@ if [ "$MODE" = anvil ]; then
   N1_VALUE=$(jsonget "$EV/n1-plan.out" steps.1.value)
   OVER=$((USD_CAP - N1_DEPOSIT + 1))
   griefer_usd_0=$(view "$USD" "$BAL" "$GRIEFER")
-  set -- $(send_hash "$SEEDER_KEY" "$USD" "$(jsonget "$EV/n1-plan.out" steps.0.data)" 0 100000); APPROVE=$1; [ "$2" != 0x0 ] || die "approve failed"
+  set -- $(send_hash "$SEEDER_KEY" "$USD" "$(jsonget "$EV/n1-plan.out" steps.0.data)" 0 100000); [ "$2" = 0x1 ] || die "approve failed"
+  expect 2 n1-plan-after-approve node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+  expect 0 n1-note-approve note_tx "$1"
   for round in 1 2; do
     must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" "$OVER")" 0 100000 > /dev/null
     expect 1 "n1-plan-skim-first-$round" node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
     set -- $(send_hash "$SEEDER_KEY" "$(jsonget "$EV/n1-plan.out" steps.1.to)" "$(jsonget "$EV/n1-plan.out" steps.1.data)" "$N1_VALUE" 1000000); SEED_FAILED=$1
-    [ "$2" = 0 ] || [ "$2" = 0x0 ] || [ "$2" = "0 (failed)" ] || [ "$(cast rpc eth_getTransactionReceipt "$SEED_FAILED" --rpc-url "$RPC" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).status))')" = 0x0 ] || die "the griefed seed should revert"
+    [ "$2" = 0x0 ] || die "the griefed seed should revert"
     must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$GRIEFER")" 0 200000 > /dev/null
     expect 2 "n1-plan-refused-$round" node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-    [ "$round" = 1 ] && expect 0 n1-note-approve note_tx "$APPROVE"
     expect 0 "n1-note-seed-$round" note_tx "$SEED_FAILED"
     expect 0 "n1-plan-after-$round" node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
     [ "$(jsonget "$EV/n1-plan-after-$round.out" steps.0.skip)" = true ] || die "the retry should not approve again"

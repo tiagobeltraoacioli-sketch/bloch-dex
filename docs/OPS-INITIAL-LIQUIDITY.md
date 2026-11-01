@@ -59,7 +59,7 @@ node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-ga
 
 Send the plan's `to`, `value` and `data` from the first depositor (`from` in the plan), without changing them. Send them as soon as you have the plan: the plan is good only for the state it read.
 
-Record a sent approve or seed, after a failed seed. It writes `deployment.depositorTransactions` in the gate file, only if the whole history checks out:
+Record a sent approve or seed if you need to plan again: after the approve, or after a failed seed. It writes `deployment.depositorTransactions` in the gate file, only if the whole history checks out:
 
 ```
 node scripts/ops/dex-seed-plan.mjs note-tx --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --tx TBD-hash
