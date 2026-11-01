@@ -104,3 +104,11 @@ The state file is the budget. If it is damaged the keeper refuses to run; it doe
 ### Crash behaviour
 
 State is written before publishing. A crash after that leaves a `pending` entry; the next run reconciles it by receipt, then by nonce, then by timeout. A transaction whose fate is unknown keeps its reservation until it leaves the 24 h window. The keeper also waits for `latest` to reach a receipt's block, since the settled RPC can serve a receipt first.
+
+## Both directions closed by excess
+
+Unrecorded balance can fill the room on both capped sides. No swap then passes until someone calls `skim`. It takes about 2 WBLCH + 200 bUSDC from a pool at the ceiling, which go to whoever skims.
+
+- The monitor reports `closed_by_excess`: WARN at latest, CRIT once finalized.
+- The keeper treats this pair first, and skips its backoff and cooldown. It keeps the budget, the transaction count, the fee ceiling and the simulation.
+- **A griefer can race the keeper.** If its own skim lands first, it gets the donation back and the pair reopens, and the keeper pays for one wasted skim. Repeating this spends the griefer's gas and the keeper's budget, at most `--max-tx` transactions per 24 h. When the budget is gone the keeper stops (`budget-exhausted`, exit 1), and the pair stays closed until anyone skims. Rehearsed on anvil only, with one race; ordering on the L2 is not tested.

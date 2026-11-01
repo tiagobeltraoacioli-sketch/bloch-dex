@@ -12,6 +12,7 @@ const { keccak256, stringToHex } = createRequire(new URL("../../frontend/package
 const FACTORY = `0x${"f".repeat(40)}`;
 const DEPLOYER = `0x${"d".repeat(40)}`;
 const PAIR = `0x${"a".repeat(40)}`;
+const DEPOSITOR = `0x${"9".repeat(40)}`;
 const T0 = `0x${"1".repeat(40)}`;
 const T1 = `0x${"2".repeat(40)}`;
 const HASH = `0x${"1".repeat(64)}`;
@@ -20,6 +21,7 @@ const CODE = "0x6001";
 const CODE_HASH = keccak256(CODE);
 const plan = {
   deployer: DEPLOYER,
+  firstDepositor: DEPOSITOR,
   contracts: { factory: { address: FACTORY } },
   pairInitCodeHash: INIT,
   pairCodeHash: CODE_HASH,
@@ -33,6 +35,7 @@ const chain = (over = {}) => {
   const values = {
     [sig("getPair(address,address)")]: `0x${word(PAIR)}`,
     [sig("INIT_CODE_PAIR_HASH()")]: INIT,
+    [sig("firstDepositor()")]: `0x${word(DEPOSITOR)}`,
     [sig("factory()")]: `0x${word(FACTORY)}`,
     [sig("token0()")]: `0x${word(T0)}`,
     [sig("token1()")]: `0x${word(T1)}`,
@@ -63,6 +66,7 @@ test("F2: a reverted createPair is refused unless the existing pair is identical
     [{ [sig("getPair(address,address)")]: `0x${word(`0x${"e".repeat(40)}`)}` }, /registers/],
     [{ [sig("INIT_CODE_PAIR_HASH()")]: `0x${"d".repeat(64)}` }, /init code hash/],
     [{ code: "0x6002" }, /runtime code/],
+    [{ [sig("firstDepositor()")]: `0x${word(0)}` }, /first depositor/],
     [{ [sig("factory()")]: `0x${word(`0x${"e".repeat(40)}`)}` }, /another factory/],
     [{ [sig("token0()")]: `0x${word(`0x${"e".repeat(40)}`)}` }, /token0/],
     [{ [sig("reserveCaps()")]: `0x${word(11)}${word(20)}` }, /caps differ/],

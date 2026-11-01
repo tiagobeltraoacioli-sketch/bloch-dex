@@ -29,6 +29,7 @@ const { keccak256, getContractAddress } = requireFromFrontend("viem");
 const hash = (c) => `0x${c.repeat(64)}`;
 const addr = (c) => `0x${c.repeat(40)}`;
 const DEPLOYER = addr("d");
+const FIRST_DEPOSITOR = addr("9");
 const ASSET = addr("a");
 const ASSET_CODE = hash("c");
 const GSMH = addr("b");
@@ -54,6 +55,7 @@ function config(change = (c) => c) {
       compiler: { solc: "0.8.24", evmVersion: "paris", optimizer: true, optimizerRuns: 200, bytecodeHash: "none" },
     },
     deployer: { address: DEPLOYER, startNonce: 0 },
+    firstDepositor: FIRST_DEPOSITOR,
     blochInc: { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) },
     wrappedNative: { deploy: true },
     fees: { feeTo: "blochInc" },
@@ -80,7 +82,7 @@ function artifacts() {
   });
   return {
     wrappedNative: runtime("01", []),
-    factory: runtime("02", [3]),
+    factory: runtime("02", [3, 4]),
     router: runtime("03", [11, 7]),
     lens: runtime("04", [5]),
     pair: runtime("06", []),
@@ -107,14 +109,15 @@ test("the committed mainnet configuration records the decisions and refuses what
   assert.deepEqual(committed.reserveCaps.map((c) => c.cap), ["10000000000000000000", "1000000000"]);
   assert.equal(committed.reserveCaps[1].bridgeBucketCapacity, "10000000000");
   // Built revision: contracts with the DEX-01 fix, the Lens pending excess, the DEX-09 fix and this package's tooling.
-  assert.equal(committed.source.revision, "f1ad6f25ddd8082f17124f5dc0dbcf88a167617f");
+  assert.equal(committed.source.revision, "d18ab04f1db68350427362128829f88dba8bac9b");
   assert.deepEqual(pendingFields(committed), [
-    "deployer.address", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash", "openingPrice.quotePerWrapped",
+    "deployer.address", "firstDepositor", "blochInc", "reserveCaps[1].token", "reserveCaps[1].codeHash", "openingPrice.quotePerWrapped",
   ]);
   // Every pending field is refused, one at a time, until filled.
   const decided = structuredClone(committed);
   const steps = [
     [/deployer.address is undecided/, (c) => { c.deployer.address = DEPLOYER; }],
+    [/firstDepositor is undecided/, (c) => { c.firstDepositor = FIRST_DEPOSITOR; }],
     [/blochInc is undecided/, (c) => { c.blochInc = { address: BLOCH_INC, codeHash: BLOCH_INC_CODE, safe: structuredClone(SAFE_PIN) }; }],
     [/bUSDC\).token is undecided/, (c) => { c.reserveCaps[1].token = ASSET; }],
     [/bUSDC\).codeHash is undecided/, (c) => { c.reserveCaps[1].codeHash = ASSET_CODE; }],
@@ -253,6 +256,11 @@ test("refuses every unsafe or incomplete configuration", () => {
     [(c) => { c.deployer.startNonce = -1; }, /startNonce/],
     [(c) => { c.wrappedNative = { deploy: false }; }, /wrappedNative/],
     [(c) => { c.wrappedNative = { deploy: true, address: addr("1") }; }, /wrappedNative/],
+    [(c) => { c.firstDepositor = addr("0"); }, /firstDepositor must be a nonzero/],
+    [(c) => { c.firstDepositor = PENDING; }, /firstDepositor is undecided/],
+    [(c) => { delete c.firstDepositor; }, /exactly the fields/],
+    [(c) => { c.firstDepositor = DEPLOYER; }, /first depositor and the deployer/],
+    [(c) => { c.firstDepositor = BLOCH_INC; }, /not Bloch Inc/],
     [(c) => { c.fees.feeTo = null; }, /fees.feeTo must be "blochInc"/],
     [(c) => { c.fees.feeTo = BLOCH_INC; }, /fees.feeTo must be "blochInc"/],
     [(c) => { c.fees = { feeTo: "blochInc", feeToSetter: addr("6") }; }, /exactly the fields feeTo/],
@@ -344,11 +352,16 @@ test("the plan is deterministic and matches CREATE/CREATE2 derivation", () => {
   const factoryArtifact = artifacts().factory;
   const runtime = factoryArtifact.deployedBytecode.slice(2).split("");
   runtime.splice(4, 64, ...BLOCH_INC.slice(2).padStart(64, "0"));
+  runtime.splice(68, 64, ...FIRST_DEPOSITOR.slice(2).padStart(64, "0"));
   assert.equal(a.contracts.factory.codeHash, keccak256(`0x${runtime.join("")}`));
   const otherRecipient = planDeployment(config((c) => { c.blochInc.address = addr("6"); }), artifacts());
   assert.notEqual(otherRecipient.steps[1].initCodeHash, a.steps[1].initCodeHash);
   assert.notEqual(otherRecipient.contracts.factory.codeHash, a.contracts.factory.codeHash);
   assert.equal(otherRecipient.pairInitCodeHash, a.pairInitCodeHash);
+
+  const otherDepositor = planDeployment(config((c) => { c.firstDepositor = addr("7"); }), artifacts());
+  assert.notEqual(otherDepositor.steps[1].initCodeHash, a.steps[1].initCodeHash);
+  assert.notEqual(otherDepositor.contracts.factory.codeHash, a.contracts.factory.codeHash);
 
   const shifted = planDeployment(config((c) => { c.deployer.startNonce = 3; }), artifacts());
   assert.equal(shifted.contracts.factory.address, at(4));

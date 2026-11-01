@@ -102,6 +102,7 @@ cat > "$CONFIG" <<JSON
   "network": { "name": "$NAME", "chainId": $CHAIN_ID, "genesisHash": "$GENESIS", "rehearsal": $REHEARSAL },
   "source": { "revision": "$REVISION", "compiler": { "solc": "0.8.24", "evmVersion": "paris", "optimizer": true, "optimizerRuns": 200, "bytecodeHash": "none" } },
   "deployer": { "address": "$DEPLOYER", "startNonce": 0 },
+  "firstDepositor": "${FIRST_DEPOSITOR:-0x000000000000000000000000000000000000f1d0}",
   "blochInc": $BLOCH_INC_JSON,
   "wrappedNative": { "deploy": true },
   "fees": { "feeTo": "blochInc" },

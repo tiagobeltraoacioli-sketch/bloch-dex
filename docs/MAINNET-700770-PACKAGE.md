@@ -12,7 +12,7 @@ never settled a block, and its head is still the genesis `0x632e45ae…f468`.
 |---|---|
 | `deployments/mainnet/700770/pins.json` | Chain ID 700770; L2 genesis `0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468` (state root `0x2ad7e807…c05d`); rules domain and genesis time; L1 timing and network pin; v2.1 release binary hashes (unsigned); Safe v1.4.1 npm integrity and runtime code hashes |
 | `deployments/mainnet/700770/safe.config.json` | Bloch Inc Safe: SafeL2 v1.4.1, 3 of 5, salt nonce 0. `bootstrap.address` and the five owners are `TBD-owner` |
-| `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision` is `f1ad6f2`, the commit with the DEX-09 fix; later commits change no contract (check with `git diff f1ad6f2 -- contracts foundry.toml`). `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
+| `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision` is `d18ab04`, the commit with the F1 fix; later commits change no contract (check with `git diff d18ab04 -- contracts foundry.toml`). `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
 | `scripts/staging/deploy-safe.mjs` (+ `safe-deploy-config.mjs`) | `validate`, `pending`, `plan`, `preflight`, `txs`, `blochinc` |
 | `scripts/staging/deploy-dex.mjs` | Existing `validate`/`plan`/`run`/`record`, plus `pending`, `preflight`, `txs` and `record --tx-hashes` |
 | `scripts/staging/sign-and-publish.sh` | Signs each planned transaction offline with `cast mktx` (explicit nonce, gas limit and fees; `--ledger` or any cast signer), publishes it with `cast publish`, and waits for the receipt |
@@ -200,7 +200,7 @@ calls.
   - the immutables, read back from the deployed runtime at solc's
     `immutableReferences`: factory `feeTo`, router `factory` and `WBLCH`, and
     lens `factory`. They are also read through their getters.
-- **Factory state:** `INIT_CODE_PAIR_HASH` (`0x1a88e06e…490f` at this
+- **Factory state:** `INIT_CODE_PAIR_HASH` (`0x16bd5cad…6683` at this
   revision), `reserveCap` per token, `allPairsLength`, and `getPair`.
 - **Pairs:** factory, token0/token1, `reserveCaps()`; with `--expect-empty`,
   zero reserves and supply.

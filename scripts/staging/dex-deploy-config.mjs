@@ -179,7 +179,7 @@ function checkOpeningPrice(config, wrappedCap) {
 export function validateDeployConfig(config, { rehearsal = false } = {}) {
   refuse(typeof rehearsal === "boolean", "rehearsal flag must be a boolean");
   // openingPrice is required on the mainnet and absent from rehearsal records.
-  const topKeys = ["schemaVersion", "domain", "network", "source", "deployer", "blochInc", "wrappedNative", "fees", "reserveCaps", "initialPairs", "gate"];
+  const topKeys = ["schemaVersion", "domain", "network", "source", "deployer", "firstDepositor", "blochInc", "wrappedNative", "fees", "reserveCaps", "initialPairs", "gate"];
   if (config?.network?.rehearsal === false || Object.hasOwn(config ?? {}, "openingPrice")) topKeys.push("openingPrice");
   exactKeys(config, topKeys, "configuration");
   refuse(config.schemaVersion === 1 && config.domain === DEPLOY_DOMAIN, "configuration schema is not supported");
@@ -215,6 +215,12 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   exactKeys(config.deployer, ["address", "startNonce"], "deployer");
   refuse(!isPending(config.deployer.address), "deployer.address is undecided (fresh Bloch Inc deployer key)");
   address(config.deployer.address, "deployer.address");
+  // F1: the only account that may make a pair's first deposit. A fresh key that
+  // sends the approve and the seed and nothing else (docs/OPS-OPENING-KIT.md).
+  // Zero would turn the rule off, so `address` refuses it.
+  refuse(!isPending(config.firstDepositor), "firstDepositor is undecided (a fresh single-purpose EOA)");
+  address(config.firstDepositor, "firstDepositor");
+  refuse(config.firstDepositor !== config.deployer.address, "the first depositor and the deployer must be distinct accounts");
   refuse(Number.isSafeInteger(config.deployer.startNonce) && config.deployer.startNonce >= 0, "deployer.startNonce is invalid");
 
   refuse(!isPending(config.blochInc), "blochInc is undecided (Bloch Inc multisig address and runtime code hash)");
@@ -242,6 +248,7 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
     );
     refuse(network.rehearsal || safe.threshold >= 2, "a mainnet Bloch Inc Safe needs a threshold of at least 2");
   }
+  refuse(config.firstDepositor !== config.blochInc.address, "the first depositor must be a fresh EOA, not Bloch Inc");
   const roles = [config.deployer.address, config.blochInc.address];
 
   const wrapped = config.wrappedNative;
@@ -415,9 +422,12 @@ export function planDeployment(config, artifacts, { rehearsal = false } = {}) {
   }
   const factory = deploy(
     "factory",
-    encodeAbiParameters([{ type: "address" }, { type: "address[]" }, { type: "uint256[]" }], [blochInc.address, capTokens, caps]),
+    encodeAbiParameters(
+      [{ type: "address" }, { type: "address" }, { type: "address[]" }, { type: "uint256[]" }],
+      [blochInc.address, config.firstDepositor, capTokens, caps],
+    ),
   );
-  contracts.factory = { address: factory, codeHash: keccak256(linkImmutables(artifacts.factory, [blochInc.address], "factory")) };
+  contracts.factory = { address: factory, codeHash: keccak256(linkImmutables(artifacts.factory, [blochInc.address, config.firstDepositor], "factory")) };
   const router = deploy("router", encodeAbiParameters([{ type: "address" }, { type: "address" }], [factory, wrapped]));
   contracts.router = { address: router, codeHash: keccak256(linkImmutables(artifacts.router, [factory, wrapped], "router")) };
   const lens = deploy("lens", encodeAbiParameters([{ type: "address" }], [factory]));
@@ -459,6 +469,7 @@ export function planDeployment(config, artifacts, { rehearsal = false } = {}) {
     chain: { id: config.network.chainId, genesisHash: config.network.genesisHash, rehearsal: config.network.rehearsal },
     source: config.source,
     deployer,
+    firstDepositor: config.firstDepositor,
     startNonce: config.deployer.startNonce,
     finalNonce: nonce,
     deployWrapped,
@@ -489,6 +500,7 @@ export function forgeEnvironment(plan) {
     DEX_DEPLOYER: plan.deployer,
     DEX_START_NONCE: String(plan.startNonce),
     DEX_DEPLOY_WRAPPED: String(plan.deployWrapped),
+    DEX_FIRST_DEPOSITOR: plan.firstDepositor,
     DEX_BLOCH_INC: plan.roles.blochInc.address,
     DEX_BLOCH_INC_CODEHASH: plan.roles.blochInc.codeHash,
     DEX_CAP_TOKENS: plan.reserveCaps.map((c) => c.token).join(","),
@@ -521,6 +533,7 @@ export function gateConfigFromPlan(plan, transactions, gateDomain, existingPairT
     chain: { id: plan.chain.id, genesisHash: plan.chain.genesisHash },
     deployment: {
       deployer: plan.deployer,
+      firstDepositor: plan.firstDepositor,
       contracts: plan.contracts,
       pairInitCodeHash: plan.pairInitCodeHash,
       feeTo: plan.feeTo,
@@ -569,8 +582,8 @@ export function dexTransactions(config, artifacts, plan) {
   const args = {
     wrappedNative: "0x",
     factory: encodeAbiParameters(
-      [{ type: "address" }, { type: "address[]" }, { type: "uint256[]" }],
-      [plan.feeTo, plan.reserveCaps.map((c) => c.token), plan.reserveCaps.map((c) => BigInt(c.cap))],
+      [{ type: "address" }, { type: "address" }, { type: "address[]" }, { type: "uint256[]" }],
+      [plan.feeTo, plan.firstDepositor, plan.reserveCaps.map((c) => c.token), plan.reserveCaps.map((c) => BigInt(c.cap))],
     ),
     router: encodeAbiParameters([{ type: "address" }, { type: "address" }], [contracts.factory.address, wrapped]),
     lens: encodeAbiParameters([{ type: "address" }], [contracts.factory.address]),

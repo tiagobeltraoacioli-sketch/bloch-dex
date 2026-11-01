@@ -259,6 +259,7 @@ step_config() {
   "network": { "name": "bloch-l2-devnet4-rehearsal", "chainId": $CHAIN_ID, "genesisHash": "$GENESIS", "rehearsal": true },
   "source": { "revision": "$REVISION", "compiler": { "solc": "0.8.24", "evmVersion": "paris", "optimizer": true, "optimizerRuns": 200, "bytecodeHash": "none" } },
   "deployer": { "address": "$(addr deployer)", "startNonce": 0 },
+  "firstDepositor": "${FIRST_DEPOSITOR:-0x000000000000000000000000000000000000f1d0}",
   "blochInc": $blochinc,
   "wrappedNative": { "deploy": true },
   "fees": { "feeTo": "blochInc" },

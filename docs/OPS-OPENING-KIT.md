@@ -1,6 +1,6 @@
 # Opening kit: price, bUSDC cap and owner inputs
 
-Status: nothing is deployed. Every value here is a proposal for the owner. **Finding F1 below is open. Two of its three options change the pair init code hash.** Read it before choosing.
+Status: nothing is deployed. Every value here is a proposal for the owner, except the F1 design, which the owner chose.
 
 ## 1. How the choice works
 
@@ -20,24 +20,23 @@ Measured with a scratch forge test on the real Pair and Factory at `f1ad6f2`, wi
 
 - **Dump loss:** share of the WBLCH side taken by a dump of unbacked bUSDC up to the cap.
 - **Price range:** pool price when each side reaches its cap, from one swap. Beyond it, swaps in that direction revert until the price returns.
-- **Capital to close the pair (F1):** the other side of both caps, valued at `P`, after the seed. Arithmetic from the seed, not run at each row. Agent 51 ran it at `P = 100`. It applies to option B below.
 
-| P | Cap C | Validator | Seed | Seed value (bUSDC) | Dump loss | Price range | Capital to close the pair (bUSDC) |
-|---|---|---|---|---|---|---|---|
-| 10 | 100 | accept | 5 WBLCH + 50 | 100 | 49.9% | 2.50 to 39.9 | 100 |
-| 25 | 250 | accept | 5 WBLCH + 125 | 250 | 49.9% | 6.26 to 99.8 | 250 |
-| 25.5 | 255 | accept | 5 WBLCH + 127.5 | 255 | 49.9% | 6.38 to 101.8 | 255 |
-| 50 | 500 | accept | 5 WBLCH + 250 | 500 | 49.9% | 12.5 to 199.7 | 500 |
-| 64 | 500 | accept | 3.91 WBLCH + 250 | 500 | 49.9% | 9.78 to 255.6 | 640 |
-| 64 | 800 | accept | 5 WBLCH + 320 | 640 | 59.9% | 16.0 to 399.3 | 800 |
-| 80 | 800 | accept | 5 WBLCH + 400 | 800 | 49.9% | 20.0 to 319.5 | 800 |
-| 80 | 1,000 | accept, lowest price for this cap | 5 WBLCH + 400 | 800 | 59.9% | 20.0 to 499.1 | 1,000 |
-| 100 | 800 | accept | 4 WBLCH + 400 | 800 | 49.9% | 16.0 to 399.4 | 1,000 |
-| 100 | 1,000 | accept, both caps balance | 5 WBLCH + 500 | 1,000 | 49.9% | 25.0 to 399.4 | 1,000 |
-| 133 | 1,000 | accept | 3.76 WBLCH + 500 | 1,000 | 49.9% | 18.8 to 531.2 | 1,330 |
-| 200 | 1,000 | accept, bucket rule | 2.5 WBLCH + 500 | 1,000 | 49.9% | 12.5 to 798.8 | 2,000 |
-| 400 | 1,000 | accept, bucket rule | 1.25 WBLCH + 500 | 1,000 | 49.9% | 6.27 to 1,597.6 | 4,000 |
-| 1,000 | 1,000 | accept, bucket rule | 0.5 WBLCH + 500 | 1,000 | 49.9% | 2.51 to 3,994 | 10,000 |
+| P | Cap C | Validator | Seed | Seed value (bUSDC) | Dump loss | Price range |
+|---|---|---|---|---|---|---|
+| 10 | 100 | accept | 5 WBLCH + 50 | 100 | 49.9% | 2.50 to 39.9 |
+| 25 | 250 | accept | 5 WBLCH + 125 | 250 | 49.9% | 6.26 to 99.8 |
+| 25.5 | 255 | accept | 5 WBLCH + 127.5 | 255 | 49.9% | 6.38 to 101.8 |
+| 50 | 500 | accept | 5 WBLCH + 250 | 500 | 49.9% | 12.5 to 199.7 |
+| 64 | 500 | accept | 3.91 WBLCH + 250 | 500 | 49.9% | 9.78 to 255.6 |
+| 64 | 800 | accept | 5 WBLCH + 320 | 640 | 59.9% | 16.0 to 399.3 |
+| 80 | 800 | accept | 5 WBLCH + 400 | 800 | 49.9% | 20.0 to 319.5 |
+| 80 | 1,000 | accept, lowest price for this cap | 5 WBLCH + 400 | 800 | 59.9% | 20.0 to 499.1 |
+| 100 | 800 | accept | 4 WBLCH + 400 | 800 | 49.9% | 16.0 to 399.4 |
+| 100 | 1,000 | accept, both caps balance | 5 WBLCH + 500 | 1,000 | 49.9% | 25.0 to 399.4 |
+| 133 | 1,000 | accept | 3.76 WBLCH + 500 | 1,000 | 49.9% | 18.8 to 531.2 |
+| 200 | 1,000 | accept, bucket rule | 2.5 WBLCH + 500 | 1,000 | 49.9% | 12.5 to 798.8 |
+| 400 | 1,000 | accept, bucket rule | 1.25 WBLCH + 500 | 1,000 | 49.9% | 6.27 to 1,597.6 |
+| 1,000 | 1,000 | accept, bucket rule | 0.5 WBLCH + 500 | 1,000 | 49.9% | 2.51 to 3,994 |
 
 Refused, with what the dump would have cost:
 
@@ -56,62 +55,43 @@ What the table implies:
 
 - **`P >= 100`: keep 1,000.** The dump bound is about 50%. The seed's bUSDC stays at 500, so the WBLCH side and the pool's depth in BLCH shrink as `P` rises.
 - **`80 <= P < 100`: 1,000 passes, but the bound is weaker,** down to 59.9% at 80. `C = 10 * P` restores about 50%.
-- **`P < 80`: the cap must be lowered, to about `10 * P`,** and the committed config changed before deployment. The pool is then smaller, and so is the capital needed to close it.
+- **`P < 80`: the cap must be lowered, to about `10 * P`,** and the committed config changed before deployment. The pool is then smaller.
 - A lower cap changes no contract code. `scripts/staging/dex-deploy-config.test.mjs` pins the committed cap, so update that assertion with the value.
 
 Recommendation: `C = min(1000, 10 * P)`. The price is the owner's decision.
 
-## 3. F1: the owner's choice
+## 3. F1 fix: what it costs
 
-A mint to both caps closes the pair to swaps and deposits (`OPS-INITIAL-LIQUIDITY.md`). The contracts on this branch do not prevent it.
+The owner chose the k ceiling with a first depositor, and accepted limit L2 for the guarded launch. Pair init hash `0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683`. Both caps stay, and the dump bounds above do not change.
 
-What the caps protect, from `MAINNET-READINESS.md` section 3:
+Figures are agent 61's, at `P = 100` with the committed caps, from forge and anvil with `TestToken`. No race or ordering on the L2 was tested.
 
-- **Loss ceiling while unaudited:** everything a pair can ever hold is at most its two caps.
-- **Bridge failure:** a dump of unbacked bUSDC stops at the cap, and takes about half the WBLCH side when the cap is near `10 * P`.
+### L2: at the ceiling, LPs and the Safe earn nothing
 
-| | B: accept F1 | A: cap only bUSDC, first depositor | C: k ceiling, first depositor |
-|---|---|---|---|
-| Branch | this one | `codex/dex-f1-candidate-r3-20261031` | `codex/dex-f1-kceiling-depositor-r3-20261031` |
-| Pair init hash | `0x1a88e06e…490f` | `0xed140137…81c1` | `0x16bd5cad…6683` |
-| Both caps kept | Yes | **No: the WBLCH cap is gone** | Yes |
-| Swaps closed by an attacker | **Yes** | No | No |
-| Seed blocked by an attacker | **Yes** | No | No |
-| Top-ups after the seed blocked by a filled pool | Yes | Yes | Yes |
-| Contract change | None | First depositor, plus a factory argument | Both of those, plus `_applyCeiling` |
-| New trust root | None | One first-depositor key, set once | The same |
-| LP fees | Unchanged | Unchanged | None while at the ceiling: fees stay outside the reserves, and anyone can skim them |
-| Audit scope | Stays at `f1ad6f2` | Moves | Moves |
-| Config, gate, plan, rehearsals | Done here | Not done | Not done |
+**This is the largest cost of the design.** At the ceiling, swap fees stay outside the reserves, and anyone can take them by calling `skim`.
 
-Measured with a BLCH dump, seed at 50% of the tighter cap, real Pair and Factory, `TestToken`, forge only:
+- **LPs earn nothing, and the Bloch Inc Safe gets no protocol fee.** On $4,000 of volume at the ceiling, LP gain was 0, protocol shares were 0, and a skimmer took $79.60.
+- **Anyone can force it after the seed.** Filling a 50% seed at the pool's ratio takes about 3 WBLCH + 300 bUSDC ($600). That capital is recoverable, at a net cost of 62,500 wei + 1 unit.
+- **The fee is optional at the ceiling.** A swap and a `skim` in one transaction refund it. Arbitrageurs can trade against LPs with no fee.
+- **Ordinary trading gets there too:** about $204,000 of volume on a $1,000 pool (4,079 round trips of 0.25 BLCH + 25 bUSDC).
+- An LP burn lowers `k` and restores fees until someone refills.
+- A standing excess fills the next trade with the reserves unmoved, so whoever skims keeps that trade's input. The trader still gets the quote. A trader who could order around others made about $3 on $50; ordering on this L2 was not tested.
 
-| P | Cap | bUSDC taken, WBLCH capped | Uncapped, 100 BLCH dump | Uncapped, 1,000 BLCH dump |
-|---|---|---|---|---|
-| 25 | 250 | 49.9% (62.4 bUSDC) | 95.2% (119.0) | 99.5% (124.4) |
-| 50 | 500 | 49.9% (124.8) | 95.2% (238.1) | 99.5% (248.8) |
-| 80 | 1,000 | 49.9% (199.7) | 95.2% (380.9) | 99.5% (398.0) |
-| 100 | 1,000 | 49.9% (249.6) | 95.2% (476.1) | 99.5% (497.5) |
-| 200 | 1,000 | 74.9% (374.7) | 97.5% (487.8) | 99.7% (498.7) |
-| 400 | 1,000 | 87.4% (437.3) | 98.8% (493.8) | 99.9% (499.4) |
+No fix is designed.
 
-BLCH that a bUSDC dump can take, after the market has sold BLCH into the pool:
+### L1: the depositor key
 
-| P | Cap | WBLCH capped, at most | Uncapped, 100 BLCH sold first | Uncapped, 1,000 BLCH sold first |
-|---|---|---|---|---|
-| 25 | 250 | 7.49 | 102.5 | 1,002.5 |
-| 100 | 1,000 | 7.49 | 102.5 | 1,002.5 |
-| 400 | 1,000 | 9.37 | 100.6 | 1,000.6 |
+One call from the depositor's key to a hostile contract spends the first-deposit rule, through `tx.origin`. An attacker can then fill the pool and block the seed, though not swaps. The default is a fresh EOA that sends only the approve and the seed. The planner, the gate, `preflight` and the deployment script check its nonce. See `OPS-INITIAL-LIQUIDITY.md`. A Safe depositor is unsupported, because the tool for it does not exist.
 
-**A does not hold the protection.** The WBLCH held by a pair, and the WBLCH a bUSDC dump can take, no longer have a limit. Other WBLCH pairs anyone creates lose their ceiling too.
+### Other limits
 
-**Recommendation: C**, after an independent attack on it. It keeps both caps. If only A and B are on the table, B: F1 costs liveness and redeployment, and no funds. A gives up the loss ceiling.
-
-Limits of the evidence for C: it ran against agent 61's suite adapted to a pair that refuses (`sync` wrapped in `try`, `skim` between wash swaps). Agent 61 has not attacked it. Its config, gate and plan are not written. An account with LP capital can still fill the pool to the ceiling and block further deposits, though not swaps.
-
-The first depositor is checked against `msg.sender` or `tx.origin`, so it works through the router from an EOA. A Safe would need a direct call, or a contract that transfers and mints atomically. If that key is lost before the seed, the factory must be redeployed.
-
-Under B, F1 costs at `P = 100`: about $2,000 of recoverable capital before the seed, about $1,000 after, net about $1. Each recovery is a new deployment and at least one more finality wait.
+| Limit | Effect |
+|---|---|
+| L3 | Unrecorded balance past both rooms closes both directions until anyone skims: about $400, paid to the skimmer unless the griefer wins its own skim. Depends on `skim` being called. The keeper does it |
+| L4 | A pre-seed donation above half a cap reverts the seed until a skim. About $500 a round, or $50 at `P = 10` (arithmetic). The skimmer keeps it |
+| L5 | A filled pool takes no top-ups, and no swap reopens them |
+| L6 | A fill narrows the one-swap price range from about 25-399 to about 64-156 |
+| L8 | `firstDepositor` covers every pair on the factory. No third party can open another pair, and a lost key means no new pair opens |
 
 ## 4. What the owner must provide
 
@@ -123,8 +103,8 @@ Provide public addresses only. Keys stay with the owner and are never put in a r
 | 6 | Safe bootstrap address | `safe.config.json` `bootstrap.address` | Gas only. No role afterwards. `startNonce` 0 |
 | 7 | Infra deployer address | `infra.config.json` `deployer.address` | New key, gas only. `startNonce` 0 |
 | 8 | DEX deployer address | `dex-mainnet.config.json` `deployer.address` | Gas only. `startNonce` 0 |
+| 8a | First depositor address | `dex-mainnet.config.json` `firstDepositor` | **New EOA for this only.** Sends the approve and the seed, nothing else. Nonce 0 before the seed. Never zero |
 | 9 | LP recipient address | `dex-seed-plan.mjs --to` | Recommended: not the Safe |
-| 10 | Seeder address | Signs the plan's `steps` | Holds the seed plus gas |
 | 11 | Keeper address | `DEX_KEEPER` | Hot key, gas only |
 | 12 | Keeper keystore path and password file path | `DEX_KEEPER_KEYSTORE`, `DEX_KEEPER_PASSWORD_FILE` | Paths on the keeper host only |
 
@@ -155,4 +135,4 @@ Derived by the tools, not chosen: `blochInc` (from `deploy-safe.mjs blochinc`) a
 
 Order: Safe, then the bUSDC bridge, then items 16 to 18, then the DEX plan. Infra comes first of all.
 
-Funds: BLCH on the L2 for gas on keys 6, 7, 8, 10 and 11; the seed in BLCH and bridged bUSDC on key 10.
+Funds: BLCH on the L2 for gas on keys 6, 7, 8, 8a and 11; the seed in BLCH and bridged bUSDC on key 8a.

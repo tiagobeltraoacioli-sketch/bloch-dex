@@ -8,7 +8,7 @@
     "rehearsal": false
   },
   "source": {
-    "revision": "f1ad6f25ddd8082f17124f5dc0dbcf88a167617f",
+    "revision": "d18ab04f1db68350427362128829f88dba8bac9b",
     "compiler": {
       "solc": "0.8.24",
       "evmVersion": "paris",
@@ -21,6 +21,7 @@
     "address": "TBD-owner",
     "startNonce": 0
   },
+  "firstDepositor": "TBD-owner",
   "blochInc": "TBD-owner",
   "wrappedNative": {
     "deploy": true

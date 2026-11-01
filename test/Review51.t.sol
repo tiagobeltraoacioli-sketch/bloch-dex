@@ -10,6 +10,10 @@ import {WBLCH} from "../contracts/assets/WBLCH.sol";
 /// Agent 51 adversarial review of the DEX RC at the committed mainnet caps.
 /// `testFAIL51_*` state the property a user or the launch needs; they fail on
 /// the RC. `testEVIDENCE51_*` pass and log the measured attack economics.
+interface Review51Vm {
+    function startPrank(address sender, address origin) external;
+}
+
 contract Review51Test is TestBase {
     event log_named_uint(string key, uint256 val);
     event log_string(string val);
@@ -35,7 +39,7 @@ contract Review51Test is TestBase {
         uint256[] memory caps = new uint256[](2);
         (tokens[0], caps[0]) = (address(wblch), CAP_W);
         (tokens[1], caps[1]) = (address(busdc), CAP_Q);
-        factory = new UniswapV2Factory(SAFE, address(0), tokens, caps);
+        factory = new UniswapV2Factory(SAFE, tx.origin, tokens, caps);
         router = new BDexRouter(address(factory), address(wblch));
         vm.deal(address(this), 100 ether);
         vm.deal(ATTACKER, 100 ether);
@@ -100,23 +104,21 @@ contract Review51Test is TestBase {
 
     // ---------------------------------------------------------------- F1 ----
 
-    /// Fix F1: a mint to both caps is refused, and the largest even first mint
-    /// leaves swaps open both ways. Further deposits stay blocked while that capital
-    /// stays in. The original test required the seed itself to pass, which no bound
-    /// on the pool's size can give. See testATK_E1 in F1Attack.t.sol.
+    /// Restated. The original filled to both caps by a mint and then required the
+    /// seed to pass. A third party's first mint is now refused, so the seed passes.
     function testFAIL51_F1a_seedMustSurviveHostileFirstMintAtBothCaps() public {
         UniswapV2Pair pair = pairOf();
-        vm.startPrank(ATTACKER);
+        Review51Vm(address(vm)).startPrank(ATTACKER, ATTACKER);
         wblch.deposit{value: CAP_W}();
         wblch.transfer(address(pair), CAP_W);
         busdc.transfer(address(pair), CAP_Q);
-        vm.expectRevert(bytes("BDEX: K_CEILING"));
+        vm.expectRevert(bytes("BDEX: FIRST_DEPOSITOR"));
         pair.mint(ATTACKER);
         pair.skim(ATTACKER);
         vm.stopPrank();
-        fillToCeiling(pair);
-        require(trySellQuote(1e6), "F1a: selling 1 bUSDC reverts after the hostile first mint");
-        require(trySellNative(0.001 ether), "F1a: selling 0.001 BLCH reverts after the hostile first mint");
+        seed(5 ether, 500e6);
+        require(trySellQuote(1e6), "F1a: selling 1 bUSDC reverts after the seed");
+        require(trySellNative(0.001 ether), "F1a: selling 0.001 BLCH reverts after the seed");
     }
 
     function testFAIL51_F1b_swapsMustSurviveLpFillAfterSeed() public {

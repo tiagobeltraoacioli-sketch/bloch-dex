@@ -67,6 +67,7 @@ contract DeployMainnet {
     struct Settings {
         bytes32 configSha256;
         address deployer;
+        address firstDepositor;
         uint256 startNonce;
         bool deployWrapped;
         address blochInc;
@@ -105,7 +106,7 @@ contract DeployMainnet {
 
         vm.startBroadcast(s.deployer);
         if (s.deployWrapped) require(address(new WBLCH()) == p.wrapped, "MAINNET: WRAPPED_ADDRESS");
-        UniswapV2Factory factory = new UniswapV2Factory(s.blochInc, address(0), s.capTokens, s.caps);
+        UniswapV2Factory factory = new UniswapV2Factory(s.blochInc, s.firstDepositor, s.capTokens, s.caps);
         BDexRouter router = new BDexRouter(address(factory), p.wrapped);
         BDexLens lens = new BDexLens(address(factory));
         for (uint256 i; i < s.pairs.length; ++i) {
@@ -143,6 +144,7 @@ contract DeployMainnet {
     function _settings() private returns (Settings memory s) {
         s.configSha256 = vm.envBytes32("DEX_CONFIG_SHA256");
         s.deployer = vm.envAddress("DEX_DEPLOYER");
+        s.firstDepositor = vm.envAddress("DEX_FIRST_DEPOSITOR");
         s.startNonce = vm.envUint("DEX_START_NONCE");
         s.deployWrapped = vm.envBool("DEX_DEPLOY_WRAPPED");
         s.blochInc = vm.envAddress("DEX_BLOCH_INC");
@@ -157,6 +159,11 @@ contract DeployMainnet {
     function _checkSettings(Settings memory s) private pure {
         require(s.configSha256 != bytes32(0) && s.deployer != address(0), "MAINNET: SETTINGS");
         require(s.blochInc != address(0) && s.blochInc != s.deployer, "MAINNET: ROLES");
+        // address(0) would turn the first-deposit rule off with no error.
+        require(
+            s.firstDepositor != address(0) && s.firstDepositor != s.deployer && s.firstDepositor != s.blochInc,
+            "MAINNET: FIRST_DEPOSITOR"
+        );
         require(s.capTokens.length == s.caps.length && s.capTokens.length > 0, "MAINNET: CAPS");
         require(
             s.pairTokensA.length == s.pairs.length && s.pairTokensB.length == s.pairs.length, "MAINNET: PAIR_LENGTH"
@@ -181,6 +188,9 @@ contract DeployMainnet {
     ///      permanent, so it must not hinge on one key), and the wrapper cap
     ///      must be present and inside the technical ceiling.
     function _checkPreconditions(Settings memory s, Planned memory p) private view {
+        require(
+            s.firstDepositor.code.length == 0 && vm.getNonce(s.firstDepositor) == 0, "MAINNET: FIRST_DEPOSITOR_USED"
+        );
         require(
             s.blochIncCodeHash != EMPTY_CODE_HASH && s.blochInc.code.length > 0
                 && s.blochInc.codehash == s.blochIncCodeHash,
@@ -218,6 +228,7 @@ contract DeployMainnet {
         require(address(lens).codehash == p.lensCodeHash, "MAINNET: LENS_CODEHASH");
         require(factory.INIT_CODE_PAIR_HASH() == p.pairInitCodeHash, "MAINNET: INIT_CODE_HASH");
         require(factory.feeTo() == s.blochInc, "MAINNET: FEE_STATE");
+        require(factory.firstDepositor() == s.firstDepositor, "MAINNET: FIRST_DEPOSITOR_STATE");
         for (uint256 i; i < s.capTokens.length; ++i) {
             require(factory.reserveCap(s.capTokens[i]) == s.caps[i], "MAINNET: CAP_MISMATCH");
         }

@@ -452,7 +452,8 @@ contract RouterSurfaceTest is TestBase {
     }
 
     function testTokenSyncCallbacksFailClosedAtInputAndRemainLockedAtOutput() public {
-        UniswapV2Factory callbackFactory = new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
+        UniswapV2Factory callbackFactory =
+            new UniswapV2Factory(address(0), address(0), new address[](0), new uint256[](0));
         BDexRouter callbackRouter = new BDexRouter(address(callbackFactory), address(wrapped));
         SyncCallbackToken callbackToken = new SyncCallbackToken();
         TestToken ordinaryToken = new TestToken();
