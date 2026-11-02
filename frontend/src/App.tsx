@@ -32,6 +32,12 @@ const loadDevnet4Record = () => verifyDeploymentRecord();
 const MAINNET_NETWORK = bundledNetwork();
 const MAINNET_RPC = httpRpc(import.meta.env.VITE_MAINNET_RPC_URL ?? MAINNET_NETWORK.rpcUrl);
 const MAINNET_PLANNED = { caps: plannedCaps(), pairs: plannedPairs() };
+// bUSDC hold status: the Ethereum RPC of the network file's bridge status, or
+// VITE_BRIDGE_ETH_RPC_URL (a same-origin proxy for a local render check).
+const MAINNET_HOLD_URL =
+  import.meta.env.VITE_BRIDGE_ETH_RPC_URL ??
+  MAINNET_NETWORK.bridges.find((b) => b.status)?.status?.ethRpcUrl;
+const MAINNET_ETH_RPC = MAINNET_HOLD_URL ? httpRpc(MAINNET_HOLD_URL) : undefined;
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
@@ -605,6 +611,7 @@ function MainnetApplication() {
           rpc={MAINNET_RPC}
           wallet={wallet}
           planned={MAINNET_PLANNED}
+          ethRpc={MAINNET_ETH_RPC}
         />
       </main>
       <footer className="footer">

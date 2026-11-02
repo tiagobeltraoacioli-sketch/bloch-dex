@@ -36,6 +36,8 @@ import { checkRoute, explainBlock, headroom, headroomUse } from '../mainnet/caps
 import { parsePendingSwap, pendingSwapKey, pollPendingSwap } from '../mainnet/pendingswap';
 import { blocksSwap, compareQuotes, signedQuote } from '../mainnet/quotecheck';
 import { MULTICALL3_ABI, readBalances, skimTransaction } from '../mainnet/reads';
+import { HOLD_TOKEN_ABI, HOLD_VAULT_ABI, readBridgeHold } from '../mainnet/bridgehold';
+import { contentSecurityPolicy } from '../mainnet/headers';
 import networkJson from '../../../deployments/mainnet/frontend.network.json';
 import type { Provider } from '../wallet';
 
@@ -1532,5 +1534,270 @@ describe('swap panel safety fixes', () => {
       );
       expect(sends()).toHaveLength(0);
     });
+  });
+});
+
+describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
+  const VAULT = '0x00000000000000000000000000000000000ba017' as Address;
+  const head = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as Hex;
+  type Bridge = {
+    mintCount: bigint;
+    mintHead: Hex;
+    latestCount?: bigint;
+    latestHead?: Hex;
+    deposits: bigint;
+    latestDeposits?: bigint;
+    paused: boolean;
+    releasesEnabled: boolean;
+    mode: number;
+    ethDown?: boolean;
+  };
+  const clean: Bridge = {
+    mintCount: 3n,
+    mintHead: head(3),
+    deposits: 3n,
+    paused: false,
+    releasesEnabled: true,
+    mode: 1,
+  };
+  const withStatus = (): MainnetNetwork => ({
+    ...network,
+    bridges: network.bridges.map((b) => ({
+      ...b,
+      withdrawUrl: 'https://bridge.example.invalid/bridge',
+      status: {
+        ethRpcUrl: 'https://eth.example.invalid',
+        vault: VAULT,
+        token: BUSDC,
+        vaultCodeHash: null,
+      },
+    })),
+  });
+  const chains = (b: Bridge) => {
+    const { rpc: l2Base, state } = fakeChain();
+    const reply = (abi: Abi, functionName: string, result: unknown) =>
+      encodeFunctionResult({ abi, functionName, result } as never);
+    const l2: Rpc = async (method, params) => {
+      if (method === 'eth_call') {
+        const { to, data } = params[0] as { to: Address; data: Hex };
+        if (to.toLowerCase() === BUSDC) {
+          try {
+            const call = decodeFunctionData({ abi: HOLD_TOKEN_ABI as Abi, data });
+            const latest = params[1] === 'latest';
+            if (call.functionName === 'mintCount')
+              return reply(
+                HOLD_TOKEN_ABI as Abi,
+                'mintCount',
+                latest ? (b.latestCount ?? b.mintCount) : b.mintCount,
+              );
+            return reply(
+              HOLD_TOKEN_ABI as Abi,
+              'mintHead',
+              latest ? (b.latestHead ?? b.mintHead) : b.mintHead,
+            );
+          } catch {
+            /* not a hold read */
+          }
+        }
+      }
+      return l2Base(method, params);
+    };
+    const eth: Rpc = async (method, params) => {
+      if (b.ethDown) throw new Error('Ethereum RPC down');
+      if (method === 'eth_getBlockByNumber') return { number: '0x64', hash: `0x${'e'.repeat(64)}` };
+      const { functionName, args } = decodeFunctionData({
+        abi: HOLD_VAULT_ABI as Abi,
+        data: (params[0] as { data: Hex }).data,
+      });
+      const values: Record<string, unknown> = {
+        provenanceMode: b.mode,
+        depositCount: params[1] === 'latest' ? (b.latestDeposits ?? b.deposits) : b.deposits,
+        paused: b.paused,
+        pausedUntil: 1_792_300_000n,
+        releasesEnabled: b.releasesEnabled,
+        chainHeadAt: functionName === 'chainHeadAt' ? head(Number((args as [bigint])[0])) : null,
+      };
+      return reply(HOLD_VAULT_ABI as Abi, functionName, values[functionName]);
+    };
+    return { l2, eth, state };
+  };
+  const mount = async (b: Bridge) => {
+    const { l2, eth, state } = chains(b);
+    const { wallet } = fakeWallet(state);
+    render(
+      <MainnetLive
+        network={withStatus()}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={l2}
+        ethRpc={eth}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => NOW_MS}
+      />,
+    );
+    await screen.findByRole('table');
+    await screen.findByLabelText('Finalized balances');
+  };
+  const quoteInto = async (
+    user: ReturnType<typeof userEvent.setup>,
+    pay: string,
+    receive: string,
+  ) => {
+    await user.selectOptions(screen.getByLabelText('You pay'), pay);
+    await user.selectOptions(screen.getByLabelText('You receive'), receive);
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+  };
+  const swapButton = () => screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement;
+
+  it('normal: no banner, no LP notice, a swap into bUSDC needs no acknowledgement', async () => {
+    const user = userEvent.setup();
+    await mount(clean);
+    await quoteInto(user, 'BLCH', 'bUSDC');
+    await waitFor(() => expect(swapButton().disabled).toBe(false));
+    expect(screen.queryByLabelText('Bridge exit status')).toBeNull();
+    expect(screen.queryByLabelText('Held exit LP notice')).toBeNull();
+    expect(screen.queryByLabelText('bUSDC exit notice')).toBeNull();
+  });
+
+  it('held: page banner, LP notice on the bUSDC pool only, and a swap into bUSDC waits for an explicit acknowledgement', async () => {
+    const user = userEvent.setup();
+    await mount({ ...clean, mintHead: head(99) });
+    const banner = await screen.findByLabelText('Bridge exit status');
+    expect(banner.getAttribute('role')).toBe('alert');
+    expect(banner.textContent).toContain('bUSDC exits to Ethereum are held.');
+    expect(banner.textContent).toContain('take out of a pool');
+    expect(within(banner).getByRole('link', { name: 'Bridge status' }).getAttribute('href')).toBe(
+      'https://bridge.example.invalid/bridge',
+    );
+    const notices = screen.getAllByLabelText('Held exit LP notice');
+    expect(notices).toHaveLength(1);
+    expect(notices[0].closest('tr')!.textContent).toContain('bUSDC/WBLCH');
+    await quoteInto(user, 'BLCH', 'bUSDC');
+    const notice = screen.getByLabelText('bUSDC exit notice');
+    expect(notice.textContent).toContain(
+      'You are buying bUSDC while its exits to Ethereum are held',
+    );
+    expect(swapButton().disabled).toBe(true);
+    await user.click(within(notice).getByRole('checkbox'));
+    await waitFor(() => expect(swapButton().disabled).toBe(false));
+  });
+
+  it('a finalized credit beyond every vault deposit is held and final', async () => {
+    await mount({
+      ...clean,
+      mintCount: 4n,
+      mintHead: head(97),
+      latestCount: 4n,
+      latestHead: head(97),
+    });
+    const text = (await screen.findByLabelText('Bridge exit status')).textContent;
+    expect(text).toContain('bUSDC exits to Ethereum are held.');
+    expect(text).not.toContain('not final yet');
+  });
+
+  it('held at latest only (a forged credit not final yet) is already held', async () => {
+    await mount({ ...clean, latestCount: 4n, latestHead: head(98) });
+    expect((await screen.findByLabelText('Bridge exit status')).textContent).toContain(
+      'not final yet',
+    );
+  });
+
+  it('held: selling bUSDC shows no buy notice', async () => {
+    const user = userEvent.setup();
+    await mount({ ...clean, mintHead: head(99) });
+    await screen.findByLabelText('Bridge exit status');
+    await quoteInto(user, 'bUSDC', 'wGSMH');
+    expect(screen.queryByLabelText('bUSDC exit notice')).toBeNull();
+  });
+
+  it('paused: banner with the pause end, and the same acknowledgement before buying bUSDC', async () => {
+    const user = userEvent.setup();
+    await mount({ ...clean, paused: true });
+    const banner = await screen.findByLabelText('Bridge exit status');
+    expect(banner.textContent).toContain('bUSDC exits to Ethereum are paused.');
+    expect(banner.textContent).toMatch(
+      /paused the Ethereum vault until 2026-\d\d-\d\d \d\d:\d\d:\d\d UTC/,
+    );
+    expect(screen.getAllByLabelText('Held exit LP notice')).toHaveLength(1);
+    await quoteInto(user, 'BLCH', 'bUSDC');
+    expect(swapButton().disabled).toBe(true);
+  });
+
+  it('an unreadable bridge is "could not be checked", never normal, and blocks nothing', async () => {
+    const user = userEvent.setup();
+    await mount({ ...clean, ethDown: true });
+    const banner = await screen.findByLabelText('Bridge exit status');
+    expect(banner.getAttribute('role')).toBe('status');
+    expect(banner.textContent).toContain('could not be checked');
+    expect(screen.queryByLabelText('Held exit LP notice')).toBeNull();
+    await quoteInto(user, 'BLCH', 'bUSDC');
+    expect(screen.getByLabelText('bUSDC exit notice').textContent).toContain('could not check');
+    await waitFor(() => expect(swapButton().disabled).toBe(false));
+  });
+
+  it('readBridgeHold: lagging finality is not a hold; a vault outside mint-chain mode is unknown; no config is unchecked', async () => {
+    const cfg = {
+      ethRpcUrl: 'https://eth.example.invalid',
+      vault: VAULT,
+      token: BUSDC,
+      vaultCodeHash: null,
+    };
+    const lag = chains({
+      ...clean,
+      mintCount: 3n,
+      deposits: 2n,
+      latestDeposits: 3n,
+    });
+    expect(await readBridgeHold(lag.eth, lag.l2, cfg, FINALIZED.hash as Hex)).toMatchObject({
+      state: 'normal',
+    });
+    const off = chains({ ...clean, mode: 0 });
+    expect(await readBridgeHold(off.eth, off.l2, cfg, FINALIZED.hash as Hex)).toMatchObject({
+      state: 'unknown',
+      reason: 'the vault is not in mint-chain mode',
+    });
+    const relOff = chains({ ...clean, releasesEnabled: false });
+    expect(await readBridgeHold(relOff.eth, relOff.l2, cfg, FINALIZED.hash as Hex)).toMatchObject({
+      state: 'paused',
+      pausedUntil: null,
+    });
+    expect((await readBridgeHold(lag.eth, lag.l2, null, FINALIZED.hash as Hex)).state).toBe(
+      'unchecked',
+    );
+    const pinned = chains(clean);
+    const wrongCode = { ...cfg, vaultCodeHash: keccak256('0x6001') };
+    const eth: Rpc = (m, p) => (m === 'eth_getCode' ? Promise.resolve('0x6002') : pinned.eth(m, p));
+    expect((await readBridgeHold(eth, pinned.l2, wrongCode, FINALIZED.hash as Hex)).state).toBe(
+      'unknown',
+    );
+  });
+
+  it('the network file takes an optional bridge status, and the CSP then admits its Ethereum RPC', () => {
+    const json = JSON.parse(JSON.stringify(networkJson));
+    json.bridges[0].status = {
+      ethRpcUrl: 'https://eth.example.invalid/rpc',
+      vault: VAULT,
+      token: BUSDC,
+    };
+    const parsed = parseNetwork(json);
+    expect(parsed.bridges[0].status).toMatchObject({
+      vault: VAULT,
+      token: BUSDC,
+      vaultCodeHash: null,
+    });
+    expect(contentSecurityPolicy(parsed)).toContain(
+      "connect-src 'self' https://l2rpc.blochl1.com https://eth.example.invalid ",
+    );
+    json.bridges[0].status.ethRpcUrl = 'http://eth.example.invalid';
+    expect(() => parseNetwork(json)).toThrow(/ethRpcUrl/);
+    json.bridges[0].status = {
+      ethRpcUrl: 'https://eth.example.invalid',
+      vault: 'nope',
+      token: BUSDC,
+    };
+    expect(() => parseNetwork(json)).toThrow(/vault/);
+    expect(bundledNetwork().bridges[0].status).toBeNull();
   });
 });

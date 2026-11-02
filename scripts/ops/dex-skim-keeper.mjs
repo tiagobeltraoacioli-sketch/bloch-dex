@@ -45,7 +45,7 @@ import { promisify } from "node:util";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
   blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, keccak256,
-  parseArgs, readBlock, readGate, readPair, recoverTransactionAddress, stringify,
+  parseArgs, readBlock, readBridgeExit, readGate, readPair, recoverTransactionAddress, stringify,
 } from "./dex-ops-lib.mjs";
 
 const DAY = 86_400;
@@ -267,6 +267,23 @@ export async function runKeeper(gate, options, state, deps) {
 }
 
 /// Sign offline with `cast mktx`, like scripts/staging/sign-and-publish.sh, so
+/// bUSDC exit status for the keeper's log (agent 139 finding 1). It never changes what the keeper does: a skim moves
+/// excess to the Safe on the L2 whether or not exits to Ethereum are held. Held or paused raise the outcome to WARN so the
+/// operator knows skimmed bUSDC in the Safe cannot leave to Ethereum either.
+export async function withBridgeExit(outcome, ethRequest, request, cfg, deployment) {
+  try {
+    const token = deployment.tokens.find((t) => (cfg.token ? t.token.toLowerCase() === cfg.token.toLowerCase() : t.symbol === "bUSDC"));
+    if (!token) throw new Error("no bUSDC token in the deployment");
+    const finalized = await readBlock(request, "finalized");
+    if (!finalized) throw new Error("no finalized L2 block");
+    const x = await readBridgeExit(ethRequest, request, { vault: cfg.vault, token: token.token, vaultCodeHash: cfg.vaultCodeHash }, finalized);
+    const level = x.state === "normal" ? outcome.level : Math.max(outcome.level, WARN);
+    return { ...outcome, level, bridgeExit: x.state };
+  } catch (error) {
+    return { ...outcome, bridgeExit: `unknown: ${error.message}` };
+  }
+}
+
 /// any cast signer works (keystore, hardware wallet). The kit never sees a key.
 function castSigner(signerArgs) {
   const run = promisify(execFile);
@@ -316,9 +333,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       save: (state) => saveState(args.state, state),
       now,
     });
-    console.log(stringify(outcome));
+    const final = args["eth-rpc"] && args["bridge-vault"]
+      ? await withBridgeExit(outcome, createRequest(args["eth-rpc"]), createRequest(args.rpc), { vault: args["bridge-vault"], vaultCodeHash: args["bridge-vault-code-hash"], token: args["bridge-token"] }, deploymentFromGate(readGate(args.config)))
+      : outcome;
+    console.log(stringify(final));
     release();
-    process.exit(outcome.level);
+    process.exit(final.level);
   } catch (error) {
     release();
     console.error(`keeper: ${error.message}`);

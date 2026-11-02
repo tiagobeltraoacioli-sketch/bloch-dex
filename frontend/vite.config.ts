@@ -24,6 +24,12 @@ const devnet4Proxy = {
     changeOrigin: true,
     rewrite: () => '/',
   },
+  // Local render check of the bUSDC hold status: VITE_BRIDGE_ETH_RPC_URL=/eth-rpc.
+  '/eth-rpc': {
+    target: env.BRIDGE_ETH_RPC_TARGET ?? 'http://127.0.0.1:18572',
+    changeOrigin: true,
+    rewrite: () => '/',
+  },
   '/devnet4-rpc': {
     target: env.DEVNET4_RPC_TARGET ?? 'http://127.0.0.1:18945',
     changeOrigin: true,

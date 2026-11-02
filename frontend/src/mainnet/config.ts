@@ -20,6 +20,7 @@ import plannedConfig from '../../../deployments/mainnet/dex-mainnet.config.json'
 import { DEX_MAINNET_CHAIN_ID } from '../network-identity';
 import { verifyDeploymentRecord, type DevnetDeployment } from '../devnet4/record';
 import type { AddChainParameters } from '../devnet4/swap';
+import type { BridgeStatusConfig } from './bridgehold';
 
 export const NETWORK_DOMAIN = 'postern.dex.frontend-network.v1';
 export const RECORD_DOMAIN = 'postern.dex.frontend-record.v1';
@@ -49,6 +50,8 @@ export type BridgeLink = {
   depositUrl: string | null;
   withdrawUrl: string | null;
   docsUrl: string | null;
+  /** Where the page reads whether exits of this token are held (bUSDC on the V3 bridge). */
+  status: BridgeStatusConfig | null;
 };
 export type MainnetNetwork = {
   chainId: number;
@@ -130,6 +133,7 @@ export function parseNetwork(input: unknown): MainnetNetwork {
       depositUrl: safeUrl(b.depositUrl, `bridges[${i}].depositUrl`),
       withdrawUrl: safeUrl(b.withdrawUrl, `bridges[${i}].withdrawUrl`),
       docsUrl: safeUrl(b.docsUrl, `bridges[${i}].docsUrl`),
+      status: parseBridgeStatus(b.status ?? null, `bridges[${i}].status`),
     };
   });
   return {
@@ -142,6 +146,23 @@ export function parseNetwork(input: unknown): MainnetNetwork {
     rpcLive: n.rpc.status === 'live',
     explorerUrl: safeUrl(n.explorer?.url ?? null, 'explorer.url'),
     bridges,
+  };
+}
+
+function parseBridgeStatus(value: unknown, field: string): BridgeStatusConfig | null {
+  if (value === null) return null;
+  const v = value as AnyRecord;
+  const ethRpcUrl = safeUrl(v.ethRpcUrl, `${field}.ethRpcUrl`);
+  refuse(ethRpcUrl, `${field}.ethRpcUrl is required`);
+  refuse(typeof v.vault === 'string' && ADDRESS.test(v.vault), `${field}.vault`);
+  refuse(typeof v.token === 'string' && ADDRESS.test(v.token), `${field}.token`);
+  const hash = v.vaultCodeHash ?? null;
+  refuse(hash === null || (typeof hash === 'string' && HASH.test(hash)), `${field}.vaultCodeHash`);
+  return {
+    ethRpcUrl,
+    vault: v.vault as Address,
+    token: v.token as Address,
+    vaultCodeHash: hash as Hex | null,
   };
 }
 

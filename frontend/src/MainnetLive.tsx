@@ -57,6 +57,8 @@ import {
   type RouteCheck,
 } from './mainnet/caps';
 import { usePendingSwap } from './mainnet/pendingswap';
+import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
+import { httpRpc } from './devnet4/chain';
 import { loadHistory, recordFinished, type FinishedTx } from './mainnet/txhistory';
 import { blocksSwap, compareQuotes, signedQuote, type QuoteCheck } from './mainnet/quotecheck';
 import {
@@ -111,6 +113,7 @@ export default function MainnetLive({
   planned,
   now = () => Date.now(),
   receiptPollMs,
+  ethRpc,
 }: {
   network: MainnetNetwork;
   load: () => Promise<MainnetState>;
@@ -119,8 +122,16 @@ export default function MainnetLive({
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
   now?: () => number;
   receiptPollMs?: number;
+  /** Ethereum RPC for the bUSDC hold status; defaults to the network file's status.ethRpcUrl. */
+  ethRpc?: Rpc;
 }) {
   const [state, setState] = useState<MainnetState | null>(null);
+  const [hold, setHold] = useState<BridgeHold | null>(null);
+  const holdSource = network.bridges.find((b) => b.status)?.status ?? null;
+  const eth = useMemo(
+    () => ethRpc ?? (holdSource ? httpRpc(holdSource.ethRpcUrl) : null),
+    [ethRpc, holdSource],
+  );
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [failure, setFailure] = useState('');
   const [generation, setGeneration] = useState(0);
@@ -137,6 +148,17 @@ export default function MainnetLive({
         const snap = await readSnapshot(rpc, s.deployment, 'mainnet');
         const pools = await readExcess(rpc, snap.finalized.hash, s.deployment.lens, snap.pools);
         if (current) setSnapshot({ ...snap, pools });
+        const known = snap.tokens.some(
+          (t) => t.address.toLowerCase() === holdSource?.token.toLowerCase(),
+        );
+        const h =
+          holdSource && !known
+            ? ({
+                state: 'unknown',
+                reason: 'the configured bUSDC token is not a token of this deployment',
+              } as const)
+            : await readBridgeHold(eth!, rpc, holdSource, snap.finalized.hash);
+        if (current) setHold(h);
       } catch (error) {
         if (current) setFailure(message(error, 'Unavailable.'));
       }
@@ -144,6 +166,7 @@ export default function MainnetLive({
     return () => {
       current = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, rpc, generation]);
 
   const live = state?.status === 'live';
@@ -198,6 +221,7 @@ export default function MainnetLive({
       ) : (
         <>
           <FinalityAge finalizedAt={snapshot.finalized} now={now} />
+          <BridgeHoldBanner hold={hold} network={network} />
           <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
           <PoolsTable
             snapshot={snapshot}
@@ -205,6 +229,7 @@ export default function MainnetLive({
             rpc={rpc}
             wallet={wallet}
             onMined={() => setGeneration((g) => g + 1)}
+            heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
           />
           <SwapPanel
             key={snapshot.finalized.hash}
@@ -216,6 +241,8 @@ export default function MainnetLive({
             wallet={wallet}
             now={now}
             pendingSwap={pendingSwap}
+            hold={hold}
+            holdToken={holdSource?.token}
           />
         </>
       )}
@@ -518,12 +545,15 @@ function PoolsTable({
   rpc,
   wallet,
   onMined,
+  heldToken,
 }: {
   snapshot: Snapshot;
   network: MainnetNetwork;
   rpc: Rpc;
   wallet: Devnet4Wallet;
   onMined: () => void;
+  /** The bUSDC token while its exits to Ethereum are held or paused. */
+  heldToken?: Address;
 }) {
   const side = (reserve: bigint, excess: bigint, cap: bigint, t: LiveToken, closed: boolean) => {
     // Excess is in the balance, and the cap check reads the balance.
@@ -574,6 +604,16 @@ function PoolsTable({
                   wallet={wallet}
                   onMined={onMined}
                 />
+                {heldToken &&
+                  [p.token0, p.token1].some(
+                    (t) => t.address.toLowerCase() === heldToken.toLowerCase(),
+                  ) && (
+                    <div className="form-error" role="alert" aria-label="Held exit LP notice">
+                      <AlertTriangle size={14} /> Removing liquidity from this pool pays you bUSDC
+                      that cannot leave to Ethereum right now (see the bridge notice above). Your
+                      pool share is not affected; only the exit of the bUSDC is.
+                    </div>
+                  )}
                 {atKCeiling(p) && !closedByExcess(p) && (
                   <div className="microcopy" aria-label="K ceiling">
                     At the pool&apos;s k ceiling: deposits revert with BDEX: K_CEILING. Swaps still
@@ -604,6 +644,8 @@ function SwapPanel({
   wallet,
   now,
   pendingSwap,
+  hold = null,
+  holdToken,
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
@@ -613,7 +655,10 @@ function SwapPanel({
   wallet: Devnet4Wallet;
   now: () => number;
   pendingSwap: ReturnType<typeof usePendingSwap>;
+  hold?: BridgeHold | null;
+  holdToken?: Address;
 }) {
+  const [holdAccepted, setHoldAccepted] = useState(false);
   const options = useMemo<Option[]>(
     () =>
       snapshot.tokens.map((token) =>
@@ -913,6 +958,9 @@ function SwapPanel({
   const signed = quote ? signedQuote(quote, check) : null;
   const tightened = !!quote && !!signed && signed.minimumOut > quote.minimumOut;
   const staleForm = !!quote && quote.amountIn !== amountIn;
+  const buysHeld =
+    !!output && !!holdToken && output.token.address.toLowerCase() === holdToken.toLowerCase();
+  const holdBlocksSend = buysHeld && exitsBlocked(hold) && !holdAccepted;
   const uses = signed ? headroomUse(snapshot.pools, signed.path, signed.amounts) : [];
   const symbolOf = (a: Address) => options.find((o) => o.token.address === a)?.label ?? short(a);
 
@@ -1075,6 +1123,9 @@ function SwapPanel({
             {uses.some((u) => u.bps >= 8_000n) &&
               ' This swap uses most of the remaining cap headroom, so a revert is more likely.'}
           </div>
+          {buysHeld && (
+            <HoldSwapNotice hold={hold} accepted={holdAccepted} onAccept={setHoldAccepted} />
+          )}
           {shortBalance && (
             <p className="form-error" role="alert">
               Your finalized {input.label} balance ({formatAmount(balanceIn!, input.token.decimals)}
@@ -1132,6 +1183,7 @@ function SwapPanel({
               !output ||
               blocksSwap(check) ||
               staleForm ||
+              holdBlocksSend ||
               pendingSwap.open
             }
             onClick={() => void swap(quote!)}
@@ -1212,6 +1264,82 @@ function BridgePanel({ network }: { network: MainnetNetwork }) {
         Bridged tokens carry the bridge's own risk. Each pool's cap on a bridged token is at most a
         tenth of that bridge's rate-limit bucket.
       </p>
+    </div>
+  );
+}
+
+const holdWhat = (h: BridgeHold) =>
+  h.state === 'held'
+    ? `a credited bUSDC mint has no Ethereum deposit behind it${h.final ? '' : ' (seen at the latest blocks, not final yet)'}, so the Ethereum vault refuses every bUSDC burn made from now on`
+    : h.state === 'paused'
+      ? h.pausedUntil !== null
+        ? `a bridge guardian paused the Ethereum vault until ${new Date(Number(h.pausedUntil) * 1000).toISOString().replace('.000Z', ' UTC').replace('T', ' ')}, so releases to Ethereum wait`
+        : 'releases are switched off at the Ethereum vault, so releases to Ethereum wait'
+      : '';
+
+/** Page-wide notice when bUSDC exits to Ethereum are held or paused (agent 139 finding 1). */
+function BridgeHoldBanner({ hold, network }: { hold: BridgeHold | null; network: MainnetNetwork }) {
+  if (!hold || hold.state === 'normal' || hold.state === 'unchecked') return null;
+  const link = network.bridges.find((b) => b.status)?.withdrawUrl;
+  if (hold.state === 'unknown')
+    return (
+      <p className="notice" role="status" aria-label="Bridge exit status">
+        Whether bUSDC can leave to Ethereum could not be checked ({hold.reason}). Check the bridge
+        page before you buy bUSDC or remove liquidity from a bUSDC pool.
+      </p>
+    );
+  return (
+    <div className="form-error mainnet-hold" role="alert" aria-label="Bridge exit status">
+      <AlertTriangle size={16} />{' '}
+      <strong>
+        {hold.state === 'held'
+          ? 'bUSDC exits to Ethereum are held.'
+          : 'bUSDC exits to Ethereum are paused.'}
+      </strong>{' '}
+      The bridge reports that {holdWhat(hold)}. This includes bUSDC you buy here or take out of a
+      pool.{' '}
+      {hold.state === 'held'
+        ? 'Nothing is lost on the L2, but such bUSDC waits for the bridge owner’s settlement, with no set date.'
+        : 'It can be sent once the pause ends.'}{' '}
+      Swaps and pools on this page keep working.
+      {link && (
+        <>
+          {' '}
+          <a href={link} target="_blank" rel="noopener noreferrer">
+            Bridge status
+          </a>
+        </>
+      )}
+    </div>
+  );
+}
+
+function HoldSwapNotice({
+  hold,
+  accepted,
+  onAccept,
+}: {
+  hold: BridgeHold | null;
+  accepted: boolean;
+  onAccept: (v: boolean) => void;
+}) {
+  if (!hold || hold.state === 'normal') return null;
+  if (hold.state === 'unknown' || hold.state === 'unchecked')
+    return (
+      <p className="microcopy" role="status" aria-label="bUSDC exit notice">
+        This page could not check whether bUSDC can leave to Ethereum now. Check the bridge before
+        you rely on withdrawing it.
+      </p>
+    );
+  return (
+    <div className="form-error" role="alert" aria-label="bUSDC exit notice">
+      <AlertTriangle size={16} /> You are buying bUSDC while its exits to Ethereum are {hold.state}:{' '}
+      {holdWhat(hold)}. You can hold and trade it on the L2, but not withdraw it to Ethereum until
+      the bridge clears this.
+      <label className="checkbox-label">
+        <input type="checkbox" checked={accepted} onChange={(e) => onAccept(e.target.checked)} /> I
+        understand; swap anyway
+      </label>
     </div>
   );
 }

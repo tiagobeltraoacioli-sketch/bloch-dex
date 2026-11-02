@@ -10,9 +10,15 @@
 #               scenes that need no snapshots, to prove the kit against the RPC it
 #               will really talk to. ANCHOR_EXPIRY=1 adds the 256-block window test.
 #
-# The token is the real BridgedStablecoinV2 from the bridge audit candidate.
+# The token is the real bridge token: BridgedStablecoinV3 (the launch token, bridge
+# codex/bridge-v3-r7-20261102) or BridgedStablecoinV2, told apart by its ABI. With V3 the
+# token has the mainnet shape: T = 0 (every mint queues for MINT_DELAY_S, default the
+# mainnet 43200 s on anvil and 30 s on the private L2), slots by deposit nonce, a 2-of-3
+# committee with a 3-signature unpause and switch, and 3 guardians (cancel quorum 2).
+# Section 10 (anvil) covers the V3 incidents: held, cancelled and paused mints, the
+# provenance chain on burns, a forged credit and the one-way verifier switch.
 #
-#   SAFE_ARTIFACTS=<safe 1.4.1 build/artifacts> BUSDC_ARTIFACT=<BridgedStablecoinV2.json> \
+#   SAFE_ARTIFACTS=<safe 1.4.1 build/artifacts> BUSDC_ARTIFACT=<BridgedStablecoinV3.json|V2.json> \
 #     [PRODUCE_DEV=… SETTLED_RPC=…] scripts/ops/rehearse-ops.sh anvil|private-l2 [port] [work]
 set -euo pipefail
 
@@ -37,7 +43,7 @@ pass() { PASSES=$((PASSES + 1)); echo "PASS $*" | tee -a "$EV/steps.log"; }
 die() { echo "FAIL $*" | tee -a "$EV/steps.log" >&2; exit 1; }
 
 umask 077
-cast wallet new --number 13 --json > "$WORK/keys.json"
+cast wallet new --number 18 --json > "$WORK/keys.json"
 umask 022
 key() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].private_key)' "$WORK/keys.json" "$1"; }
 addr() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])].address.toLowerCase())' "$WORK/keys.json" "$1"; }
@@ -47,7 +53,17 @@ KEEPER_KEY=$(key 4); KEEPER=$(addr 4); THIEF_KEY=$(key 5); THIEF=$(addr 5)
 SIGNER_KEY=$(key 6); SIGNER=$(addr 6); GUARDIAN_KEY=$(key 7); GUARDIAN=$(addr 7)
 OWNER_KEYS=("$(key 8)" "$(key 9)" "$(key 10)" "$(key 11)" "$(key 12)")
 OWNERS=("$(addr 8)" "$(addr 9)" "$(addr 10)" "$(addr 11)" "$(addr 12)")
-FUNDED=("$BOOT" "$DEPLOYER" "$SEEDER" "$GRIEFER" "$KEEPER" "$THIEF" "$SIGNER" "$GUARDIAN")
+SIGNER_KEYS=("$SIGNER_KEY" "$(key 13)" "$(key 14)"); SIGNERS=("$SIGNER" "$(addr 13)" "$(addr 14)")
+GUARDIAN_KEYS=("$GUARDIAN_KEY" "$(key 15)" "$(key 16)"); GUARDIANS=("$GUARDIAN" "$(addr 15)" "$(addr 16)")
+RELAYER_KEY=$(key 17); RELAYER=$(addr 17)
+FUNDED=("$BOOT" "$DEPLOYER" "$SEEDER" "$GRIEFER" "$KEEPER" "$THIEF" "$SIGNER" "$GUARDIAN" "${SIGNERS[1]}" "${SIGNERS[2]}" "${GUARDIANS[1]}" "${GUARDIANS[2]}" "$RELAYER")
+IS_V3=$(node -e 'const a=require(require("path").resolve(process.argv[1]));console.log(a.abi.some((f)=>f.name==="slotFor")?1:0)' "$BUSDC_ARTIFACT")
+TOKEN_KIND=$([ "$IS_V3" = 1 ] && echo BridgedStablecoinV3 || echo BridgedStablecoinV2)
+if [ "$MODE" = anvil ]; then MINT_DELAY_S=${MINT_DELAY_S:-43200}; else MINT_DELAY_S=${MINT_DELAY_S:-30}; fi
+# The planners' deadlines are wall-clock times, so a V3 anvil starts one mint delay (plus 10 min) in the past: after
+# the first mints' delay passes, the chain clock is back near the wall clock.
+ANVIL_TS=()
+[ "$IS_V3" = 1 ] && ANVIL_TS=(--timestamp $(( $(date +%s) - MINT_DELAY_S - 600 )))
 
 PIDS=()
 cleanup() {
@@ -60,7 +76,7 @@ trap 'exit 143' TERM INT
 forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
 case "$MODE" in
   anvil)
-    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 --silent > "$WORK/anvil.log" 2>&1 &
+    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 "${ANVIL_TS[@]}" --silent > "$WORK/anvil.log" 2>&1 &
     PIDS+=($!)
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
@@ -96,6 +112,7 @@ send() {
     raw=$(cast mktx --chain 700770 --nonce "$nonce" --gas-limit "$gas" --gas-price $MAXFEE --priority-gas-price $TIP --value "$value" --private-key "$k" "$to" "$data")
   fi
   hash=$(cast keccak "$raw")
+  echo "$hash" > "$WORK/last.hash"
   cast publish --rpc-url "$RPC" "$raw" > /dev/null
   for _ in $(seq 300); do
     receipt=$(cast rpc eth_getTransactionReceipt "$hash" --rpc-url "$RPC")
@@ -120,7 +137,15 @@ expect() {
   pass "$name (exit $got)"
 }
 num() { awk '{print $1}'; }
+# expect_revert ERROR TO DATA [FROM]: an eth_call at latest reverts with exactly this custom error.
+expect_revert() {
+  local want got from=${4:-$RELAYER}
+  want=$(cast sig "$1()")
+  got=$(cast rpc eth_call "{\"from\":\"$from\",\"to\":\"$2\",\"data\":\"$3\"}" latest --rpc-url "$RPC" 2>&1 || true)
+  echo "$got" | grep -qi "${want#0x}" || die "expected revert $1 ($want), got: $(echo "$got" | tail -1 | cut -c1-200)"
+}
 view() { cast call "$@" --rpc-url "$RPC" | num; }
+BAL="balanceOf(address)(uint256)"
 snapshot() { cast rpc evm_snapshot --rpc-url "$RPC" | tr -d '"'; }
 restore() { cast rpc evm_revert "$1" --rpc-url "$RPC" > /dev/null; }
 settle() {
@@ -131,7 +156,7 @@ monitor() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OP
 keeper_run() { node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --keeper "$KEEPER" "$@"; }
 
 # ---------------------------------------------------------------- deployment
-log "deploy: Safe, real BridgedStablecoinV2, DEX, gate file, with the deployment package's own tools"
+log "deploy: Safe, real $TOKEN_KIND ($(cast keccak "$(node -e 'console.log(require(require("path").resolve(process.argv[1])).bytecode.object)' "$BUSDC_ARTIFACT")") creation), DEX, gate file, with the deployment package's own tools"
 OWNERS_JSON=$(printf '"%s",' "${OWNERS[@]}"); OWNERS_JSON="[${OWNERS_JSON%,}]"
 node -e '
 const c = JSON.parse(require("fs").readFileSync("deployments/mainnet/700770/safe.config.json", "utf8"));
@@ -148,25 +173,83 @@ scripts/staging/sign-and-publish.sh --txs "$WORK/safe.txs.json" --rpc "$RPC" --c
 SAFE=$(jsonget "$EV/blochinc.json" address)
 
 USD_BUCKET=10000000000
-CTOR=$(cast abi-encode "c(string,string,uint256,address,bytes32,address[],uint256,(uint256,uint256,uint256,uint256,uint256,uint256),(address[],uint256,uint256))" \
-  "Bridged USDC" bUSDC 1 0x00000000000000000000000000000000000000aa 0x00000000000000000000000000000000000000000000000000000000000000bb \
-  "[$SIGNER]" 1 "(100000000000,$USD_BUCKET,115740,1000000000,43200,1000000)" "([$GUARDIAN],259200,259200)" | cut -c3-)
+if [ "$IS_V3" = 1 ]; then
+  SORTED_SIGNERS=$(printf '%s\n' "${SIGNERS[@]}" | sort | paste -sd, -)
+  SORTED_GUARDIANS=$(printf '%s\n' "${GUARDIANS[@]}" | sort | paste -sd, -)
+  CTOR=$(cast abi-encode "c(string,string,uint256,address,bytes32,address[],uint256,(uint256,uint256,uint256,uint256,uint256,uint256),(address[],uint256,uint256),(uint256,uint64))" \
+    "Bridged USDC" bUSDC 1 0x00000000000000000000000000000000000000aa 0x00000000000000000000000000000000000000000000000000000000000000bb \
+    "[$SORTED_SIGNERS]" 2 "(100000000000,$USD_BUCKET,115740,0,$MINT_DELAY_S,1000000)" "([$SORTED_GUARDIANS],259200,259200)" "(3,1209600)" | cut -c3-)
+  CREATE_GAS=5000000
+else
+  CTOR=$(cast abi-encode "c(string,string,uint256,address,bytes32,address[],uint256,(uint256,uint256,uint256,uint256,uint256,uint256),(address[],uint256,uint256))" \
+    "Bridged USDC" bUSDC 1 0x00000000000000000000000000000000000000aa 0x00000000000000000000000000000000000000000000000000000000000000bb \
+    "[$SIGNER]" 1 "(100000000000,$USD_BUCKET,115740,1000000000,43200,1000000)" "([$GUARDIAN],259200,259200)" | cut -c3-)
+  CREATE_GAS=4000000
+fi
 INIT=$(node -e 'console.log(require(require("path").resolve(process.argv[1])).bytecode.object)' "$BUSDC_ARTIFACT")$CTOR
-USD=$(must "$SIGNER_KEY" create "$INIT" 0 4000000 | awk '{print tolower($2)}')
+USD_CREATE=$(must "$SIGNER_KEY" create "$INIT" 0 $CREATE_GAS)
+USD=$(echo "$USD_CREATE" | awk '{print tolower($2)}')
+echo "$TOKEN_KIND at $USD, creation gas $(echo "$USD_CREATE" | awk '{print $3}')" | tee -a "$EV/steps.log"
 USD_CODE=$(cast keccak "$(cast code "$USD" --rpc-url "$RPC")")
-DEP_NONCE=0
-mint_usd() { # RECIPIENT AMOUNT: signed by the throwaway bridge signer
-  DEP_NONCE=$((DEP_NONCE + 1))
-  local id digest sig
-  id=$(cast keccak "deposit-$DEP_NONCE")
-  digest=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$id" "$DEP_NONCE" "$2" "$1" --rpc-url "$RPC")
-  sig=$(cast wallet sign --no-hash "$digest" --private-key "$SIGNER_KEY")
-  must "$SIGNER_KEY" "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$id" "$DEP_NONCE" "$2" "$1" "$sig")" 0 400000 > /dev/null
+# sigs DIGEST K: K committee signatures in ascending signer order (the token's rule).
+sigs() {
+  local out=0x k
+  for k in $(for i in 0 1 2; do echo "${SIGNERS[$i]} ${SIGNER_KEYS[$i]}"; done | sort | head -n "$2" | awk '{print $2}'); do
+    out+=$(cast wallet sign --no-hash "$1" --private-key "$k" | cut -c3-)
+  done
+  echo "$out"
 }
-mint_usd "$SEEDER" 900000000
-mint_usd "$GRIEFER" 900000000
-mint_usd "$GRIEFER" 900000000
-mint_usd "$THIEF" 5000000
+# V3 deposit id: the deposit nonce in the top 8 bytes, as ProvenanceSourceVault makes it.
+dep_id() { printf '0x%016x%s' "$1" "$(cast keccak "deposit-$1" | cut -c19-)"; }
+time_passes() { # SECONDS: let the chain clock pass the mint delay
+  if [ "$MODE" = anvil ]; then
+    cast rpc evm_increaseTime "$1" --rpc-url "$RPC" > /dev/null; cast rpc evm_mine --rpc-url "$RPC" > /dev/null
+  else
+    local until=$(( $(cast block latest --field timestamp --rpc-url "$RPC") + $1 ))
+    while [ "$(cast block latest --field timestamp --rpc-url "$RPC")" -le "$until" ]; do must "$RELAYER_KEY" "$RELAYER" 0x 0 30000 > /dev/null; sleep 5; done
+  fi
+}
+pending_amount() { cast call "$USD" "pendingMints(bytes32)(address,uint64,uint64)" "$1" --rpc-url "$RPC" | sed -n 2p | num; }
+DEP_NONCE=$([ "$IS_V3" = 1 ] && echo -1 || echo 0)
+QUEUED=()
+queue_usd() { # RECIPIENT AMOUNT: signed by the throwaway committee; V3 queues it (T = 0)
+  # V3: the next slot is read from the chain, since a snapshot restore rewinds it.
+  if [ "$IS_V3" = 1 ]; then DEP_NONCE=$(view "$USD" "nextSlot()(uint64)"); else DEP_NONCE=$((DEP_NONCE + 1)); fi
+  local id digest
+  if [ "$IS_V3" = 1 ]; then id=$(dep_id "$DEP_NONCE"); else id=$(cast keccak "deposit-$DEP_NONCE"); fi
+  digest=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$id" "$DEP_NONCE" "$2" "$1" --rpc-url "$RPC")
+  if [ "$IS_V3" = 1 ]; then
+    must "$RELAYER_KEY" "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$id" "$DEP_NONCE" "$2" "$1" "$(sigs "$digest" 2)")" 0 400000 > /dev/null
+    QUEUED+=("$id")
+  else
+    must "$SIGNER_KEY" "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$id" "$DEP_NONCE" "$2" "$1" "$(cast wallet sign --no-hash "$digest" --private-key "$SIGNER_KEY")")" 0 400000 > /dev/null
+  fi
+  LAST_ID=$id
+}
+release_usd() { # after the delay, execute every queued mint still pending, in slot order
+  [ "$IS_V3" = 1 ] && [ "${#QUEUED[@]}" -gt 0 ] || return 0
+  time_passes "$MINT_DELAY_S"
+  local id
+  for id in "${QUEUED[@]}"; do
+    [ "$(pending_amount "$id")" = 0 ] || must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$id")" 0 1500000 > /dev/null
+  done
+  QUEUED=()
+}
+mint_usd() { queue_usd "$@"; release_usd; }
+queue_usd "$SEEDER" 900000000
+queue_usd "$GRIEFER" 900000000
+queue_usd "$GRIEFER" 900000000
+queue_usd "$THIEF" 5000000
+if [ "$IS_V3" = 1 ]; then
+  [ "$(view "$USD" "$BAL" "$SEEDER")" = 0 ] || die "a V3 mint at T = 0 credited at once"
+  pass "v3: four committee mints queued (T = 0); nothing credited before the delay"
+fi
+release_usd
+[ "$(view "$USD" "$BAL" "$SEEDER")" = 900000000 ] || die "the seeder's bUSDC did not arrive"
+if [ "$IS_V3" = 1 ]; then
+  [ "$(view "$USD" "mintCount()(uint64)")" = 4 ] || die "mintCount should be 4"
+  pass "v3: the four mints credited in slot order after the delay (mintCount 4, pendingSupply $(view "$USD" "pendingSupply()(uint256)"))"
+fi
 
 FIRST_DEPOSITOR=$SEEDER node -e '
 const c = JSON.parse(require("fs").readFileSync("deployments/mainnet/dex-mainnet.config.json", "utf8"));
@@ -609,10 +692,16 @@ if [ "$MODE" = anvil ]; then
   LP=$(view "$PAIR" "$BAL" "$SEEDER")
   must "$SEEDER_KEY" "$PAIR" "$(cast calldata "approve(address,uint256)" "$ROUTER" "$LP")" 0 100000 > /dev/null
   must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "removeLiquidity(address,address,uint256,uint256,uint256,address,uint256)" "$USD" "$WRAPPED" $((LP / 10)) 0 0 "$SEEDER" $FUTURE)" 0 500000 > /dev/null
-  ID=$(cast keccak "deposit-paused")
-  DIGEST=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$ID" 999 1000000 "$SEEDER" --rpc-url "$RPC")
-  SIG=$(cast wallet sign --no-hash "$DIGEST" --private-key "$SIGNER_KEY")
-  must_fail "$SIGNER_KEY" "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$ID" 999 1000000 "$SEEDER" "$SIG")" 0 400000
+  if [ "$IS_V3" = 1 ]; then
+    N3=$(view "$USD" "nextSlot()(uint64)"); ID=$(dep_id "$N3")
+    DIGEST=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$ID" "$N3" 1000000 "$SEEDER" --rpc-url "$RPC")
+    expect_revert IsPaused "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$ID" "$N3" 1000000 "$SEEDER" "$(sigs "$DIGEST" 2)")"
+  else
+    ID=$(cast keccak "deposit-paused")
+    DIGEST=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$ID" 999 1000000 "$SEEDER" --rpc-url "$RPC")
+    SIG=$(cast wallet sign --no-hash "$DIGEST" --private-key "$SIGNER_KEY")
+    must_fail "$SIGNER_KEY" "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$ID" 999 1000000 "$SEEDER" "$SIG")" 0 400000
+  fi
   pass "pause: mint refused; swap, transfer, burn and LP exit all succeeded"
   restore "$SNAP"
 
@@ -632,6 +721,203 @@ if [ "$MODE" = anvil ]; then
   must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "removeLiquidity(address,address,uint256,uint256,uint256,address,uint256)" "$USD" "$WRAPPED" "$LP" 0 0 "$SEEDER" $FUTURE)" 0 500000 > /dev/null
   pass "depeg: the dump stops at the cap and the LP exits in full at the capped pool"
   restore "$SNAP"
+fi
+
+if [ "$IS_V3" = 1 ]; then
+  # -------------------------------------------------------------- BridgedStablecoinV3 incidents
+  # 10a-10d run on both chains: on anvil each scene is undone by a snapshot, on the private L2 they run in sequence,
+  # in real time (MINT_DELAY_S). 10e and 10f need weeks of chain time and run on anvil only.
+  scene_start() { if [ "$MODE" = anvil ]; then SNAP=$(snapshot); fi; }
+  scene_end() { if [ "$MODE" = anvil ]; then restore "$SNAP"; fi; }
+  # burn_rx AMOUNT: the seeder burns; prints the receipt JSON.
+  burn_rx() {
+    send "$SEEDER_KEY" "$USD" "$(cast calldata "burn(uint64,address)" "$1" "$SEEDER")" 0 200000 > /dev/null
+    cast rpc eth_getTransactionReceipt "$(cat "$WORK/last.hash")" --rpc-url "$RPC"
+  }
+  SWAP_IN_OK() { must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000 > /dev/null; }
+  SWAP_OUT_OK() { must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" $FUTURE)" 10000000000000000 400000 > /dev/null; }
+  LP_EXIT_OK() { # FRACTION_DIVISOR
+    local lp; lp=$(view "$PAIR" "$BAL" "$SEEDER")
+    must "$SEEDER_KEY" "$PAIR" "$(cast calldata "approve(address,uint256)" "$ROUTER" "$lp")" 0 100000 > /dev/null
+    must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "removeLiquidity(address,address,uint256,uint256,uint256,address,uint256)" "$USD" "$WRAPPED" $((lp / $1)) 0 0 "$SEEDER" $FUTURE)" 0 500000 > /dev/null
+  }
+  reserve_usd() { cast call "$PAIR" "getReserves()(uint112,uint112,uint32)" --rpc-url "$RPC" | sed -n "$(node -e 'console.log(BigInt(process.argv[1])<BigInt(process.argv[2])?1:2)' "$USD" "$WRAPPED")p" | num; }
+  k_ok() { # the k ceiling holds: reserve0 * reserve1 <= 64% of cap0 * cap1
+    local r; r=$(cast call "$PAIR" "getReserves()(uint112,uint112,uint32)" --rpc-url "$RPC" | num | head -2 | paste -sd' ' -)
+    node -e 'const [a,b]=process.argv[1].split(" ").map(BigInt);const k=a*b,c=BigInt(process.argv[2])*BigInt(process.argv[3])*64n/100n;if(k>c){console.error("k",k,"ceiling",c);process.exit(1)}' "$r" $WRAP_CAP $USD_CAP || die "k above the ceiling"
+  }
+  chain_state() { echo "$(view "$USD" "mintCount()(uint64)") $(view "$USD" "mintedTotal()(uint64)") $(cast call "$USD" "mintHead()(bytes32)" --rpc-url "$RPC")"; }
+  vote_cancel() { # ID GUARDIAN_INDEX
+    local p r a t
+    p=$(cast call "$USD" "pendingMints(bytes32)(address,uint64,uint64)" "$1" --rpc-url "$RPC")
+    r=$(echo "$p" | sed -n 1p); a=$(echo "$p" | sed -n 2p | num); t=$(echo "$p" | sed -n 3p | num)
+    must "${GUARDIAN_KEYS[$2]}" "$USD" "$(cast calldata "voteCancelMint(bytes32,address,uint64,uint64)" "$1" "$r" "$a" "$t")" 0 200000 > /dev/null
+  }
+
+  log "10a V3 held mint: a mint queued to the pair adds nothing until it credits; then it is excess the keeper sends to the Safe"
+  scene_start
+  R_USD=$(view "$USD" "$BAL" "$PAIR")
+  queue_usd "$PAIR" 3000000; HELD=$LAST_ID
+  [ "$(view "$USD" "$BAL" "$PAIR")" = "$R_USD" ] || die "a queued mint moved the pair's balance"
+  settle
+  expect 0 v3-held-monitor monitor --expect-seeded
+  grep -q '1 deposit slot(s) opened and not credited, 3000000 pending' "$EV/v3-held-monitor.out" || die "the monitor did not report the queued mint"
+  SWAP_IN_OK; SWAP_OUT_OK; k_ok
+  expect_revert NotReady "$USD" "$(cast calldata "executeMint(bytes32)" "$HELD")"
+  release_usd
+  EXCESS=$(( $(view "$USD" "$BAL" "$PAIR") - $(reserve_usd) ))
+  [ "$EXCESS" = 3000000 ] || die "the credited mint should be excess of 3000000, got $EXCESS"
+  settle
+  expect 1 v3-held-excess-monitor monitor --expect-seeded
+  grep -q 'material: 3000000 above the reserve' "$EV/v3-held-excess-monitor.out" || die "the monitor did not see the credited mint as excess"
+  SAFE_USD=$(view "$USD" "$BAL" "$SAFE")
+  expect 0 v3-held-keeper keeper_run --state "$WORK/keeper/v3.json" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"sent"' "$EV/v3-held-keeper.out" || die "the keeper did not skim the credited mint"
+  sleep 1
+  [ $(( $(view "$USD" "$BAL" "$SAFE") - SAFE_USD )) -ge 3000000 ] || die "the credited mint did not reach the Safe"
+  SWAP_IN_OK; k_ok
+  pass "v3 held mint: queued to the pair, no effect; credited after the delay, it was excess and the keeper skimmed it to the Safe; swaps and k unaffected"
+  scene_end
+
+  log "10b V3 cancelled mint: guardians cancel a mint to the pair; later mints wait for the slot; a remint fills it"
+  scene_start
+  R_USD=$(view "$USD" "$BAL" "$PAIR")
+  queue_usd "$PAIR" 4000000; CANCELLED=$LAST_ID; CANCELLED_NONCE=$DEP_NONCE
+  queue_usd "$SEEDER" 2000000; BEHIND=$LAST_ID
+  QUEUED=()
+  vote_cancel "$CANCELLED" 0
+  [ "$(pending_amount "$CANCELLED")" = 4000000 ] || die "one vote cancelled the mint"
+  vote_cancel "$CANCELLED" 1
+  [ "$(pending_amount "$CANCELLED")" = 0 ] || die "the cancel quorum did not cancel"
+  [ "$(view "$USD" "contested(uint64)(bool)" "$CANCELLED_NONCE")" = true ] || die "the slot should be contested"
+  time_passes "$MINT_DELAY_S"
+  expect_revert NotPending "$USD" "$(cast calldata "executeMint(bytes32)" "$CANCELLED")"
+  expect_revert NotReady "$USD" "$(cast calldata "executeMint(bytes32)" "$BEHIND")"
+  [ "$(view "$USD" "$BAL" "$PAIR")" = "$R_USD" ] || die "a cancel moved the pair's balance"
+  SWAP_IN_OK; SWAP_OUT_OK; LP_EXIT_OK 20; k_ok
+  settle
+  expect 0 v3-cancel-monitor monitor --expect-seeded
+  SEEDER_USD=$(view "$USD" "$BAL" "$SEEDER")
+  RDIGEST=$(cast call "$USD" "remintDigest(bytes32,uint64,uint64,address,bool)(bytes32)" "$CANCELLED" "$CANCELLED_NONCE" 4000000 "$SEEDER" false --rpc-url "$RPC")
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "remint(bytes32,uint64,uint64,address,bool,bytes)" "$CANCELLED" "$CANCELLED_NONCE" 4000000 "$SEEDER" false "$(sigs "$RDIGEST" 2)")" 0 500000 > /dev/null
+  time_passes "$MINT_DELAY_S"
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$CANCELLED")" 0 1500000 > /dev/null
+  [ "$(pending_amount "$BEHIND")" = 0 ] || die "the waiting mint did not drain behind the remint"
+  [ $(( $(view "$USD" "$BAL" "$SEEDER") - SEEDER_USD )) = 6000000 ] || die "remint and waiting mint did not both credit"
+  [ "$(view "$USD" "$BAL" "$PAIR")" = "$(reserve_usd)" ] || die "the pair holds an excess after the remint went to the seeder"
+  SWAP_IN_OK; k_ok
+  pass "v3 cancel: the mint to the pair never reached it; the next slot waited (NotReady) while swaps and LP exits worked; the remint credited and drained the waiting mint"
+  scene_end
+
+  log "10c V3 pause with a mint due: execution stops, the DEX does not; the unpause needs 3 signatures"
+  scene_start
+  queue_usd "$SEEDER" 2000000; DUE=$LAST_ID; QUEUED=()
+  time_passes "$MINT_DELAY_S"
+  must "${GUARDIAN_KEYS[2]}" "$USD" "$(cast calldata "pause()")" 0 200000 > /dev/null
+  expect_revert IsPaused "$USD" "$(cast calldata "executeMint(bytes32)" "$DUE")"
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "drain()")" 0 300000 > /dev/null
+  [ "$(pending_amount "$DUE")" = 2000000 ] || die "drain credited during a pause"
+  SWAP_IN_OK; SWAP_OUT_OK; LP_EXIT_OK 20; k_ok
+  must "$SEEDER_KEY" "$USD" "$(cast calldata "burn(uint64,address)" 1000000 "$SEEDER")" 0 200000 > /dev/null
+  settle
+  expect 1 v3-pause-monitor monitor --expect-seeded
+  grep -q 'WARN    bridge_token' "$EV/v3-pause-monitor.out" || die "pause not flagged"
+  expect 0 v3-pause-keeper keeper_run --state "$WORK/keeper/v3p.json" --cooldown-s 1
+  UD=$(cast call "$USD" "unpauseDigest()(bytes32)" --rpc-url "$RPC")
+  expect_revert BadSignatureCount "$USD" "$(cast calldata "unpause(bytes)" "$(sigs "$UD" 2)")"
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "unpause(bytes)" "$(sigs "$UD" 3)")" 0 300000 > /dev/null
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$DUE")" 0 1500000 > /dev/null
+  pass "v3 pause: due mint and drain held; swaps, LP exit, burn, monitor and keeper unaffected; 2 signatures cannot unpause, 3 can, then the mint credits"
+  scene_end
+
+  log "10d V3 provenance: DEX activity never moves the mint chain; a burn of LP proceeds states the chain the vault checks"
+  scene_start
+  CHAIN0=$(chain_state)
+  SWAP_IN_OK; SWAP_OUT_OK
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 5000000)" 0 100000 > /dev/null
+  must "$THIEF_KEY" "$PAIR" "$(cast calldata "skim(address)" "$THIEF")" 0 200000 > /dev/null
+  LP_EXIT_OK 4
+  [ "$(chain_state)" = "$CHAIN0" ] || die "DEX activity moved the mint chain"
+  BURN_RX=$(burn_rx 10000000)
+  node -e '
+const rx=JSON.parse(process.argv[1]), [count,total,head]=process.argv[2].split(" ");
+const topic=process.argv[3].toLowerCase();
+const log=rx.logs.find((l)=>l.topics[0].toLowerCase()===topic); if(!log) process.exit(2);
+const w=log.data.slice(2).match(/.{64}/g);
+const ok=BigInt("0x"+w[2])===BigInt(count)&&BigInt("0x"+w[3])===BigInt(total)&&("0x"+w[4])===head.toLowerCase();
+console.log("burn states mintCount",BigInt("0x"+w[2]),"mintedTotal",BigInt("0x"+w[3]),"mintHead 0x"+w[4]); process.exit(ok?0:1);' \
+    "$BURN_RX" "$CHAIN0" "$(cast keccak "Burned(bytes32,uint64,address,uint64,address,uint64,uint64,bytes32)")" | tee -a "$EV/steps.log" || die "the burn does not state the token's chain"
+  # The vault's side of the chain, recomputed from the credits in slot order: it is what a real-deposit chain gives.
+  GEN=$(cast keccak "$(cast abi-encode "f(bytes32,uint256,address,bytes32)" "$(cast format-bytes32-string BLOCH-USDT-MINT-CHAIN-v1)" 1 0x00000000000000000000000000000000000000aa 0x00000000000000000000000000000000000000000000000000000000000000bb)")
+  H=$GEN
+  while read -r key recip amt; do H=$(cast keccak "$(cast abi-encode "f(bytes32,bytes32,uint256,address)" "$H" "$key" "$amt" "$recip")"); done < <(
+    cast logs --from-block 0 --to-block latest --address "$USD" "MintExecuted(bytes32,address,uint64)" --json --rpc-url "$RPC" |
+      node -e 'for (const l of JSON.parse(require("fs").readFileSync(0,"utf8"))) console.log(l.topics[1], "0x"+l.topics[2].slice(26), BigInt(l.data).toString())')
+  [ "$H" = "$(echo "$CHAIN0" | awk '{print $3}')" ] || die "the recomputed deposit chain $H differs from the token's"
+  pass "v3 provenance: swaps, donation, skim and LP exit left the chain unchanged; the LP's burn states it, and it equals the chain recomputed from the credits"
+  scene_end
+
+  if [ "$MODE" = anvil ]; then
+  log "10e V3 forged credit (committee keys misused, guardians absent): exits after it are held; the pool loses at most its cap"
+  scene_start
+  HONEST=$(chain_state)
+  queue_usd "$GRIEFER" 900000000; release_usd
+  [ "$(chain_state)" != "$HONEST" ] || die "the forged credit did not extend the chain"
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 100000000000)" 0 100000 > /dev/null
+  W_BEFORE=$(view "$WRAPPED" "$BAL" "$PAIR")
+  ROOM=$((USD_CAP - $(view "$USD" "$BAL" "$PAIR")))
+  must "$GRIEFER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" "$ROOM" 0 "$PATH_U_W" "$GRIEFER" $FUTURE)" 0 400000 > /dev/null
+  must_fail "$GRIEFER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$GRIEFER" $FUTURE)" 0 400000
+  W_AFTER=$(view "$WRAPPED" "$BAL" "$PAIR")
+  echo "forged dump: WBLCH reserve $W_BEFORE -> $W_AFTER; bUSDC at its cap $USD_CAP" | tee -a "$EV/steps.log"
+  k_ok
+  LP_EXIT_OK 1
+  BURN_RX=$(burn_rx 10000000)
+  STATED=$(node -e 'const rx=JSON.parse(process.argv[1]);const l=rx.logs.find((l)=>l.topics[0].toLowerCase()===process.argv[2].toLowerCase());console.log("0x"+l.data.slice(2).match(/.{64}/g)[4])' "$BURN_RX" "$(cast keccak "Burned(bytes32,uint64,address,uint64,address,uint64,uint64,bytes32)")")
+  [ "$STATED" != "$(echo "$HONEST" | awk '{print $3}')" ] || die "the burn states the honest chain"
+  pass "v3 forged credit: the LP left the pool in full, but its burn states head $STATED, which no real-deposit chain matches, so ProvenanceSourceVault holds it (agent 109); the dump stopped at the bUSDC cap"
+  scene_end
+
+  log "10f V3 one-way switch: committee retired; a queued mint and the proof path still credit; a pause then runs its full term"
+  scene_start
+  queue_usd "$SEEDER" 2000000; PRE=$LAST_ID; QUEUED=()
+  SEL=$(cast sig "verifyMint(address,bytes32,bytes)" | cut -c3-)
+  VERIFIER=$(must "$RELAYER_KEY" create "0x6010600c60003960106000f363${SEL}60e01b60005260206000f3" 0 200000 | awk '{print tolower($2)}')
+  VALID=$(( $(cast block latest --field timestamp --rpc-url "$RPC") + 86400 ))
+  SDIGEST=$(cast call "$USD" "mintSwitchDigest(bool,address,bytes32,uint64,uint256)(bytes32)" false "$VERIFIER" "$(cast keccak "$(cast code "$VERIFIER" --rpc-url "$RPC")")" 0 "$VALID" --rpc-url "$RPC")
+  expect_revert BadSignatureCount "$USD" "$(cast calldata "proposeVerifier(address,uint64,uint256,bytes)" "$VERIFIER" 0 "$VALID" "$(sigs "$SDIGEST" 2)")"
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "proposeVerifier(address,uint64,uint256,bytes)" "$VERIFIER" 0 "$VALID" "$(sigs "$SDIGEST" 3)")" 0 300000 > /dev/null
+  time_passes 1209601
+  must "$THIEF_KEY" "$USD" "$(cast calldata "activateVerifier()")" 0 200000 > /dev/null
+  [ "$(cast call "$USD" "verifier()(address)" --rpc-url "$RPC" | tr 'A-F' 'a-f')" = "$VERIFIER" ] || die "the verifier is not active"
+  N3=$(view "$USD" "nextSlot()(uint64)"); ID=$(dep_id "$N3")
+  D3=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$ID" "$N3" 1000000 "$SEEDER" --rpc-url "$RPC")
+  expect_revert CommitteeRetired "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$ID" "$N3" 1000000 "$SEEDER" "$(sigs "$D3" 2)")"
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$PRE")" 0 1500000 > /dev/null
+  pass "v3 switch: committee mint refused (CommitteeRetired); the mint queued before the switch credited"
+  R_USD=$(reserve_usd)
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "mintWithProof(bytes32,uint64,uint64,address,bytes)" "$ID" "$N3" 3000000 "$PAIR" 0x)" 0 400000 > /dev/null
+  [ "$(view "$USD" "uncancellable(bytes32)(bool)" "$ID")" = true ] || die "a proof mint should be uncancellable"
+  time_passes "$MINT_DELAY_S"
+  must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$ID")" 0 1500000 > /dev/null
+  [ $(( $(view "$USD" "$BAL" "$PAIR") - R_USD )) = 3000000 ] || die "the proof mint to the pair should be excess"
+  must "${GUARDIAN_KEYS[0]}" "$USD" "$(cast calldata "pause()")" 0 200000 > /dev/null
+  UD=$(cast call "$USD" "unpauseDigest()(bytes32)" --rpc-url "$RPC")
+  expect_revert CommitteeRetired "$USD" "$(cast calldata "unpause(bytes)" "$(sigs "$UD" 3)")"
+  settle
+  expect 1 v3-switch-monitor monitor --expect-seeded
+  grep -q 'no signer can end it early' "$EV/v3-switch-monitor.out" || die "the monitor did not say the pause cannot end early"
+  grep -q 'the committee is retired' "$EV/v3-switch-monitor.out" || die "the monitor did not report the switch"
+  expect 0 v3-switch-keeper keeper_run --state "$WORK/keeper/v3s.json" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"sent"' "$EV/v3-switch-keeper.out" || die "the keeper did not skim the proof mint"
+  sleep 1
+  SWAP_IN_OK; SWAP_OUT_OK; LP_EXIT_OK 10; k_ok
+  must "$SEEDER_KEY" "$USD" "$(cast calldata "burn(uint64,address)" 1000000 "$SEEDER")" 0 200000 > /dev/null
+  time_passes 259201
+  [ "$(cast call "$USD" "paused()(bool)" --rpc-url "$RPC")" = false ] || die "the pause did not expire"
+  pass "v3 switch: a proof mint to the pair became excess the keeper skimmed; a guardian pause cannot be ended (CommitteeRetired) and expired on its own; swaps, LP exit and burn worked throughout"
+  scene_end
+  fi
 fi
 
 echo "REHEARSAL OK ($MODE, $PASSES checks, $WORK)" | tee -a "$EV/steps.log"

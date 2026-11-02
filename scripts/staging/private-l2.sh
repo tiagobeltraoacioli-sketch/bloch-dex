@@ -88,7 +88,8 @@ require("fs").writeFileSync(process.argv[6] + ".tmp", JSON.stringify(status));
 require("fs").renameSync(process.argv[6] + ".tmp", process.argv[6]);
 ' "$RPC" "$HEAD" "$NETPIN" "$GENESIS" "$(pin l2.chainId)" "$WORK/status.json"
     for _ in $(seq 30); do
-      F=$(cast rpc eth_getBlockByNumber finalized false --rpc-url "$RPC" | node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(b?BigInt(b.number).toString():"none")')
+      # The next settled-RPC refuses the closed level (-32001) until it has read a status file; v2.1 answered null.
+      F=$( (cast rpc eth_getBlockByNumber finalized false --rpc-url "$RPC" 2> /dev/null || echo null) | node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(b?BigInt(b.number).toString():"none")')
       [ "$F" = "$HEAD" ] && break
       sleep 1
     done

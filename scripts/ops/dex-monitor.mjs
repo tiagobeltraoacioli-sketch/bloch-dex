@@ -19,6 +19,8 @@
 //        --safe-plan safe.plan.json --rpc http://127.0.0.1:18955 [--expect-seeded]
 //        [--lp-recipient 0x… [--lp-min-bps 5000], required with --expect-seeded]
 //        [--keeper-state /var/lib/…/state.json] [--rehearsal] [--ref-price 25.5] [--json]
+//        [--eth-rpc <Ethereum RPC> --bridge-vault 0x… [--bridge-vault-code-hash 0x…] [--bridge-token 0x…]]
+//        (bUSDC exits held = CRIT, paused = WARN: the vault and mint chain are read from the bridge)
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -26,7 +28,8 @@ import { evaluateFinalityGate, verifySafe } from "../staging/finality-gate.mjs";
 import {
   CRIT, CallReverted, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN,
   blockRef, call, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, excessFloor,
-  formatUnits, isAtKCeiling, isBricked, isClosed, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
+  formatUnits, isAtKCeiling, isBricked, isClosed, parseArgs, parseUnits, readBlock, readBridgeExit, readGate, readPair, stringify, worst,
+  ZERO_ADDRESS,
 } from "./dex-ops-lib.mjs";
 
 export const THRESHOLDS = Object.freeze({
@@ -152,20 +155,61 @@ export async function runMonitor(gate, options, request, deps = {}) {
         call(request, token.token, "availableToMint", [], at),
         call(request, token.token, "pausedUntil", [], at),
       ]);
-      facts[token.symbol] = { paused, totalSupply: supply, availableToMint: available, pausedUntil: until };
+      // BridgedStablecoinV3 (the launch token) also has a credit queue and a one-way mint switch. None of it can
+      // stop a transfer, so the pair and the router are unaffected; the figures are context for an incident.
+      let v3 = null;
+      try {
+        const [pending, nextSlot, mintCount, verifier] = await Promise.all([
+          call(request, token.token, "pendingSupply", [], at),
+          call(request, token.token, "nextSlot", [], at),
+          call(request, token.token, "mintCount", [], at),
+          call(request, token.token, "verifier", [], at),
+        ]);
+        v3 = { pendingSupply: pending, queuedSlots: BigInt(nextSlot) - BigInt(mintCount), mintCount, verifier: verifier.toLowerCase() };
+      } catch (error) {
+        if (!(error instanceof CallReverted)) throw error;
+      }
+      const switched = v3 !== null && v3.verifier !== ZERO_ADDRESS;
+      facts[token.symbol] = { paused, totalSupply: supply, availableToMint: available, pausedUntil: until, ...(v3 ?? {}) };
+      const queue = v3 === null
+        ? ""
+        : `; ${v3.queuedSlots} deposit slot(s) opened and not credited, ${v3.pendingSupply} pending, ${v3.mintCount} credited; ${switched ? `mint verifier ${v3.verifier} active, the committee is retired` : "committee mints"}`;
       add(
         `bridge_token[${token.symbol}]`,
         paused ? WARN : OK,
         paused
-          ? `mints paused until ${until}: no new ${token.symbol} can arrive, transfers, swaps and burns still work (docs/OPS-DEX-INCIDENTS.md)`
-          : `mints open, supply ${supply}, bucket ${available}`,
+          ? `mints paused until ${until}${switched ? " (after the switch no signer can end it early)" : ""}: no new ${token.symbol} can arrive, queued mints wait, transfers, swaps, LP exits and burns still work (docs/OPS-DEX-INCIDENTS.md)${queue}`
+          : `mints open, supply ${supply}, bucket ${available}${queue}`,
       );
     });
   }
 
+  if (options.ethRequest && options.bridgeVault) await checkBridgeExit({ deployment, finalized, add, facts, options }, request, guarded);
+
   if (options.keeperState) checkKeeperState(options.keeperState, now, add);
 
   return finish(checks, facts);
+}
+
+/// bUSDC exits to Ethereum (agent 139 finding 1): the pool cannot see a vault hold, so this check reads the bridge.
+/// held = CRIT (every new burn, including bUSDC out of the pool, is refused by the vault until the owner settles),
+/// paused or releases off = WARN (exits wait for the term). The report feeds l2_monitor.py, which alerts on both.
+export async function checkBridgeExit({ deployment, finalized, add, facts, options }, request, guarded) {
+  const wanted = (options.bridgeToken ?? "").toLowerCase();
+  const token = deployment.tokens.find((t) => (wanted ? t.token.toLowerCase() === wanted : t.symbol === "bUSDC"));
+  const name = `bridge_exit[${token?.symbol ?? "bUSDC"}]`;
+  if (!token) return add(name, CRIT, `no deployment token ${wanted || "bUSDC"} to check exits for`);
+  if (!finalized) return add(name, UNKNOWN, "no finalized L2 block to read the mint chain at");
+  await guarded(name, async () => {
+    const x = await readBridgeExit(options.ethRequest, request, { vault: options.bridgeVault, token: token.token, vaultCodeHash: options.bridgeVaultCodeHash }, finalized);
+    facts.bridgeExit = x;
+    const chain = (c) => `${c.mintCount} credited, ${c.depositCount} vault deposits, heads ${c.clean === null ? "token ahead of vault" : c.clean ? "equal" : "differ"}`;
+    if (x.state === "held")
+      add(name, CRIT, `EXITS HELD: a credited ${token.symbol} mint has no Ethereum deposit behind it${x.heldFinal ? "" : " (latest blocks only, not final yet)"}; the vault refuses every burn made from now on, including ${token.symbol} LPs take out of the pool. Not lost: waits for the owner's settlement. Finalized: ${chain(x.final)}; latest: ${chain(x.latest)}. DEX page shows the held banner (docs/OPS-DEX-INCIDENTS.md)`);
+    else if (x.state === "paused")
+      add(name, WARN, `exits paused: ${x.paused ? `vault guardian pause until ${x.pausedUntil}` : ""}${x.paused && !x.releasesEnabled ? "; " : ""}${x.releasesEnabled ? "" : "releases disabled"}; ${token.symbol} burns wait for the term. Swaps and LP exits on the L2 work`);
+    else add(name, OK, `exits open; mint chain matches the vault at Ethereum finalized ${x.ethFinalized} (${chain(x.final)})`);
+  });
 }
 
 /// How much of the keeper's rolling budget is gone, and whether someone is racing it. A
@@ -326,7 +370,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     const request = createRequest(args.rpc);
     const result = await runMonitor(
       readGate(args.config),
-      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], refPrice: args["ref-price"], keeperState: args["keeper-state"] },
+      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], refPrice: args["ref-price"], keeperState: args["keeper-state"],
+        ethRequest: args["eth-rpc"] ? createRequest(args["eth-rpc"]) : undefined, bridgeVault: args["bridge-vault"],
+        bridgeVaultCodeHash: args["bridge-vault-code-hash"], bridgeToken: args["bridge-token"] },
       request,
       { evaluateGate: await gateFor(args) },
     );

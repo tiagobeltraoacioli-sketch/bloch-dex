@@ -26,7 +26,10 @@ const WALLETCONNECT_FRAMES = [
 const WALLETCONNECT_IMAGES = ['https://api.web3modal.org', 'https://api.reown.com'];
 
 export function contentSecurityPolicy(network: MainnetNetwork): string {
-  const rpcOrigin = new URL(network.rpcUrl).origin;
+  const origins = [network.rpcUrl, ...network.bridges.map((b) => b.status?.ethRpcUrl)]
+    .filter((u): u is string => !!u)
+    .map((u) => new URL(u).origin);
+  const rpcOrigin = [...new Set(origins)].join(' ');
   return [
     "default-src 'none'",
     "script-src 'self'",

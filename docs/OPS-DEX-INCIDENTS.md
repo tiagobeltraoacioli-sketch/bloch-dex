@@ -63,9 +63,9 @@ If it exits 3, your node is the problem. Try the other backend before concluding
 
 ## bUSDC pause
 
-**What it means.** A guardian called `pause()` on the token. Duration is fixed at deployment (72 h planned); a new pause needs a cooldown after the last one; k signers can end it early. A guardian cannot move funds. The bridge guardian may have paused the Ethereum vault as well; check that separately, because it changes the analysis below.
+**What it means.** A guardian called `pause()` on the token. Duration is fixed at deployment (72 h planned); a new pause needs a cooldown after the last one. On the launch token, `BridgedStablecoinV3`, ending it early takes `switchThreshold` signatures (6 of 7), more than a mint (5 of 7); after the one-way verifier switch nobody can end it early, and each of the 3 guardians can renew it once per chain, so inflow can stop for up to 9 days. A guardian cannot move funds. The bridge guardian may have paused the Ethereum vault as well; check that separately, because it changes the analysis below.
 
-**Effect on the pool, tested on anvil with the real `BridgedStablecoinV2`.** A pause stops only `mint` and `executeMint`:
+**Effect on the pool, tested on anvil with the real `BridgedStablecoinV2` and `BridgedStablecoinV3`.** A pause stops only `mint`, `remint`, `mintWithProof`, `executeMint` and V3's `drain`; queued mints wait and credit after it:
 
 | Operation while paused | Result |
 |---|---|
@@ -86,6 +86,28 @@ The pool is not frozen. What changes is arbitrage:
 - Supply `--ref-price` to the monitor, so divergence is measured.
 
 **Do not:** treat the pause itself as a reason to withdraw our liquidity. If it comes with a finding of unbacked mints, go to the depeg section.
+
+## bUSDC V3: queued, cancelled and held mints, held exits, the switch
+
+The launch token is `BridgedStablecoinV3` with T = 0: every mint queues for 12 h, mints credit in deposit-nonce order, and each credit extends a mint chain that every burn states and the Ethereum vault checks. None of this touches `transfer` or `transferFrom`, which have no pause, hook or block list, so **the pair and the router behave as with any ERC-20, and an LP can always leave the pool**. Measured on anvil and the private L2 by `rehearse-ops.sh` section 10 (`agents/139-dex-v3-token.md`):
+
+| Token state | Pool, router, keeper, monitor |
+|---|---|
+| A mint queued with the pair as recipient | Nothing moves until it credits. Then it is excess: the monitor reports `pending_excess`, the keeper skims it to the Safe like any donation. A user who bridges to the pair address loses the deposit to the Safe |
+| A queued mint cancelled by the guardians | The pair never sees it. Later deposits wait behind the freed slot (`executeMint` reverts `NotReady`) until a remint or the real deposit fills it, so new bUSDC stops arriving while swaps and exits go on |
+| Paused with mints due | `executeMint` and `drain` hold; swaps, LP exits, transfers, burns and skims work |
+| Mint chain | Swaps, donations, skims and LP exits do not change `mintHead`, `mintCount` or `mintedTotal`; only credits do. A burn of LP proceeds states the same chain as any other burn |
+| A forged mint that credited (committee keys misused and no guardian cancel within 12 h) | Every burn made after it states a chain no real deposit matches, so the vault holds it: **all bUSDC exits are held, including bUSDC an LP takes out of the pool**. The forger can sell into the pool only up to the bUSDC cap; at a seed of half the cap this took half of the WBLCH side (5.08 to 2.55 WBLCH) |
+| After the one-way switch | Committee `mint` and `unpause` revert `CommitteeRetired`. Mints queued before the switch and `mintWithProof` mints still credit (a proof mint cannot be cancelled). A pause runs its full term |
+
+The monitor's `bridge_token` line on V3 shows the slots opened and not credited, the pending supply, the credited count, and whether the verifier is active. Since agent 144 the monitor's `bridge_exit[bUSDC]` line reads the vault too (held = CRIT, paused = WARN) and the DEX page shows a held or paused banner, an LP notice on the bUSDC pool and an acknowledgement before a swap into bUSDC. Without `--eth-rpc`/`--bridge-vault` it still cannot see the vault: **held exits are then visible only on Ethereum** (vault pause, `ProvenanceMismatch`, the bridge's `reservas` exit 2 "held"). Watch those with the bridge's guardian tools and treat a hold as the depeg section below: bUSDC is then a claim whose payout waits, and the pool will price it as a dollar until someone sells it in.
+
+**Do:**
+- On a hold or a forged credit: the depeg steps below. Moving our own liquidity out works, but the bUSDC we receive is held like everyone's.
+- On a cancel: tell users that deposits after the cancelled one wait for its remint; nothing to do on the DEX.
+- After the switch: nothing changes for the DEX; note in the incident text that a pause cannot be ended early.
+
+**Do not:** execute a queued mint from the first depositor's key before the seed. Any transaction from that key spends it (`OPS-INITIAL-LIQUIDITY.md`, L1); leave execution to the relayer or another account.
 
 ## bUSDC depeg or counterfeit
 
@@ -125,4 +147,4 @@ If USDC itself depegged while the bridge is sound, bUSDC tracks USDC: the pool r
 
 ## What was tested and what was not
 
-Tested on a private anvil chain by `scripts/ops/rehearse-ops.sh`: the pause table, the depeg dump, Safe threshold drift, pair code drift and a dead node. Stale head and finalized thresholds are unit tests with a fake node, because anvil cannot age a head against the wall clock. **No L1 stall, real finality lag or real L1 reorg was run.** The private L2 run uses synthetic finality.
+Tested on a private anvil chain by `scripts/ops/rehearse-ops.sh`: the pause table (V2 and V3), the V3 table above, the depeg dump, Safe threshold drift, pair code drift and a dead node. Stale head and finalized thresholds are unit tests with a fake node, because anvil cannot age a head against the wall clock. **No L1 stall, real finality lag or real L1 reorg was run.** The private L2 run uses synthetic finality.
