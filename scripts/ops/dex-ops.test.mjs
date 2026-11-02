@@ -6,7 +6,7 @@ import {
   ABI, CRIT, CallReverted, OK, RpcError, UNKNOWN, WARN, classifyExcess, closureOf, createRequest, excessFloor, isAtKCeiling, isBricked, isClosedByExcess, keccak256, parseUnits, formatUnits, worst,
 } from "./dex-ops-lib.mjs";
 import { checkKeeperState, runMonitor } from "./dex-monitor.mjs";
-import { DEFAULTS, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
+import { DEFAULTS, ceilingFloorWei, excessValueWei, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
 import { MAX_FRACTION_BPS, checkNotedTxs, holdsSeed, parseFractionBps, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -792,4 +792,72 @@ test("r10 DEX-4: the planner CLI refuses 7,001 and 8,000 before any RPC read, wi
     assert.match(run.stderr, /must be 1 to 7000/);
     assert.match(run.stderr, /k ceiling/);
   }
+});
+
+// ---- keeper at the k ceiling (DEX-4, round 10)
+
+// 800 bUSDC x 8 WBLCH = 64% of 1,000 x 10: exactly the ceiling, pool price 100.
+const AT_CEILING = [800_000_000n, 8n * 10n ** 18n];
+
+test("r10 DEX-4: the ceiling floor is the budget's per-transaction share, 0.05 BLCH / 48", () => {
+  assert.equal(DEFAULTS.ceilingFloorWei, null);
+  assert.equal(ceilingFloorWei(keeperOptions()), 1_041_666_666_666_666n);
+  assert.equal(ceilingFloorWei(keeperOptions({ ceilingFloorWei: 5n })), 5n);
+  // About 1 bps of the 10 WBLCH cap, a hundredth of the ordinary 100 bps floor.
+  assert.equal((ceilingFloorWei(keeperOptions()) * 10_000n) / CAP1, 1n);
+  // It is above the worst case the keeper can actually pay per skim at the RC limits
+  // (95k gas measured, 9 gwei = 1 gwei base + the 8 gwei top tip): each skim returns more
+  // than it costs, and 36 non-reserved skims a day stay inside 0.05 BLCH.
+  assert.ok(ceilingFloorWei(keeperOptions()) > 95_000n * 9_000_000_000n);
+});
+
+test("r10 DEX-4: excess value is priced in wrapped wei at the pool's own price", () => {
+  const state = { sides: [
+    { token: T0, reserve: 800_000_000n, balance: 800_110_000n, cap: CAP0 },
+    { token: T1, reserve: 8n * 10n ** 18n, balance: 8n * 10n ** 18n + 5n, cap: CAP1 },
+  ] };
+  // 0.11 bUSDC at 100 bUSDC per BLCH = 0.0011 BLCH, plus 5 wei.
+  assert.equal(excessValueWei(state, T1), 1_100_000_000_000_005n);
+  assert.equal(excessValueWei(state, address(0xdead)), null);
+  assert.equal(excessValueWei({ sides: [{ ...state.sides[0], reserve: 0n }, state.sides[1]] }, T1), null);
+});
+
+test("r10 DEX-4: at the ceiling the keeper skims fee excess to the Safe from about 0.001 BLCH", async () => {
+  const node = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n] });
+  const state = emptyKeeperState();
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  assert.equal(outcome.action, "sent");
+  assert.equal(outcome.kCeiling, true);
+  assert.equal(outcome.to, SAFE);
+  assert.equal(state.txs.at(-1).kind, "ceiling");
+  assert.equal(node.chain.sent.length, 1);
+  // The same 0.11 bUSDC was dust under the 100 bps floor (1% of the cap is 10 bUSDC).
+  assert.equal(outcome.seen[0].kinds[0], "dust");
+});
+
+test("r10 DEX-4: below the ceiling floor, or below the ceiling, nothing changes", async () => {
+  // 0.10 bUSDC = 0.001 BLCH, under 0.05 / 48.
+  const under = fakeNode({ reserves: AT_CEILING, balances: [800_100_000n, 8n * 10n ** 18n] });
+  assert.equal((await runKeeper(gate, keeperOptions(), emptyKeeperState(), keeperDeps(under))).action, "nothing-to-do");
+  // The 50% seed is far below the ceiling: 5 bUSDC of excess stays dust as before.
+  const seed = fakeNode({ balances: [505_000_000n, 5n * 10n ** 18n] });
+  assert.equal((await runKeeper(gate, keeperOptions(), emptyKeeperState(), keeperDeps(seed))).action, "nothing-to-do");
+  // An explicit floor wins over the default.
+  const set = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n] });
+  assert.equal((await runKeeper(gate, keeperOptions({ ceilingFloorWei: 2n * 10n ** 15n }), emptyKeeperState(), keeperDeps(set))).action, "nothing-to-do");
+});
+
+test("r10 DEX-4: ceiling skims keep the cooldown and never use the count kept for a hard closure", async () => {
+  const node = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n] });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  node.chain.receipts[state.txs[0].hash] = { status: "0x1", blockNumber: "0x9", gasUsed: "0x12c00", effectiveGasPrice: "0x77359400", logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01adb0" }] };
+  node.chain.nonce = 1n;
+  const soon = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
+  assert.equal(soon.action, "cooldown");
+  const full = emptyKeeperState();
+  const reserved = Number((BigInt(DEFAULTS.maxTx) * DEFAULTS.hardReserveBps) / 10_000n);
+  full.txs = Array.from({ length: DEFAULTS.maxTx - reserved }, (_, i) => ({ at: 990_000 + i, hash: `0x${i}`, nonce: String(i), pair: PAIR, reservedWei: "1", spentWei: "1", kind: "ceiling", status: "effective" }));
+  const fresh = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n], nonce: BigInt(DEFAULTS.maxTx) });
+  assert.equal((await runKeeper(gate, keeperOptions(), full, keeperDeps(fresh, 1_000_000))).action, "reserved-for-hard-closure");
 });
