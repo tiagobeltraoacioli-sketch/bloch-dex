@@ -423,6 +423,8 @@ node scripts/staging/frontend-record.mjs --config deployments/mainnet/dex-mainne
 Then set `genesisHash`, `rpc.status: "live"` and the explorer and bridge URLs in
 `frontend.network.json`, and review both files in the same change.
 
+**bUSDC exit status** (agent 144). A `bridges[]` entry may carry `"status": {"ethRpcUrl": "https://…", "vault": "0x…", "token": "0x…", "vaultCodeHash": "0x…" | null}` (lowercase addresses; `token` must be a token of the deployment). The page then reads the BridgedStablecoinV3 mint chain at the finalized and latest L2 blocks against the ProvenanceSourceVault deposit chain at the finalized and latest Ethereum blocks, and the vault's pause and `releasesEnabled`. Held or paused: a page alert, a notice on pools that pay out bUSDC, and a checkbox the user must tick before a swap into bUSDC is sendable. Unreadable: a "could not be checked" status line, nothing blocked. The CSP `connect-src` admits the Ethereum RPC origin (`headers.ts`); `VITE_BRIDGE_ETH_RPC_URL` overrides the URL for a local check. Browser rehearsal against the V3 bridge: `scripts/staging/render/hold-token.sh`.
+
 **Local render check.** Build against a throwaway anvil deployment without
 touching the committed files (absolute paths):
 

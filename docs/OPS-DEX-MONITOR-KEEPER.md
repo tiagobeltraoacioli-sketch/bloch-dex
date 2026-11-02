@@ -35,7 +35,10 @@ Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means 
 | `safe_allowance` | finalized | the Safe still has an LP allowance to the router | |
 | `lp_in_pair` | latest | | LP shares sit in the pair; anyone can burn them to themselves |
 | `bridge_token` | latest | mints paused | |
+| `bridge_exit[bUSDC]` | token at L2 finalized and latest; vault at Ethereum finalized and latest, with `--eth-rpc` and `--bridge-vault` (agent 144) | vault guardian pause or releases disabled: exits wait for the term | **held**: the token's mint chain differs from the vault's deposit chain, or it credited more mints than the vault has deposits even at latest. The vault refuses every burn from then on, including bUSDC taken out of the pool. A read failure is UNKNOWN, never OK |
 | `reference_price` | latest | 5% from `--ref-price` | 15% |
+
+`bridge_exit` reads the bridge the way its `reservas` monitor (status `held`) and the bridge page do: BridgedStablecoinV3 `mintHead()`/`mintCount()` against ProvenanceSourceVault `chainHeadAt(mintCount)`. The example units pass `--eth-rpc ${DEX_ETH_RPC} --bridge-vault ${DEX_BUSDC_VAULT}` (TBD-owner in the env file; an Ethereum RPC that serves `finalized`); `--bridge-vault-code-hash` optionally pins the vault code. Without them the check is not run. The keeper takes the same two options and reports `bridgeExit` (`normal`, `paused`, `held`, `unknown: …`) in its output; it never changes what the keeper does, and held or paused raise its exit to WARN. The DEX page shows the same state (see frontend README, `bridges[].status`).
 
 `--ref-price` is an operator input in bUSDC per BLCH. The kit trusts no oracle.
 
