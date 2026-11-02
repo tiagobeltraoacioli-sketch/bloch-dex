@@ -11,7 +11,7 @@ Read-only: it holds no key and its RPC client refuses any method outside a read 
 node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --rpc http://127.0.0.1:18955 --expect-seeded --lp-recipient TBD-owner --keeper-state /var/lib/bloch-dex-keeper/state.json
 ```
 
-Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means the node did not answer; it says nothing about the chain. `--json` prints the same checks for a pipeline. The monitor does not send alerts: use `OnFailure=` on the unit (WARN is a success status in the example unit, CRIT and UNKNOWN fail it) or feed `--json` to your alerting.
+Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means the node did not answer; it says nothing about the chain. `--json` prints the same checks for a pipeline. The monitor does not send alerts. The example unit writes its `--json` report to `/var/lib/bloch-dex-monitor/report.json`, and the L2 monitor (bloch-l2-evm `deployment/mainnet/l2_monitor.py --report dex=/var/lib/bloch-dex-monitor/report.json:900`) alerts on every WARN and CRIT check in it through its own `alert.json` (webhook, Telegram, `alert_command`, dead-man `heartbeat_url`) with one deduplication. A report older than 15 minutes is WARN there and 45 minutes CRIT: that is how a dead DEX monitor, a stopped timer or a node that stopped answering (UNKNOWN leaves an empty file) is noticed. Before agent 105's change the unit had no `OnFailure=` and no `--keeper-state`, so a CRIT only failed a unit nobody watched and `keeper_budget` was never checked.
 
 | Check | Reads at | WARN | CRIT |
 |---|---|---|---|
