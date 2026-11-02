@@ -7,7 +7,7 @@ import {
 } from "./dex-ops-lib.mjs";
 import { checkKeeperState, runMonitor } from "./dex-monitor.mjs";
 import { DEFAULTS, ceilingFloorWei, excessValueWei, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
-import { MAX_FRACTION_BPS, REPRICE_DONATION_MAX_BPS, checkNotedTxs, repriceByDonation, holdsSeed, parseFractionBps, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { MAX_FRACTION_BPS, REPRICE_DONATION_MAX_BPS, SEEDER_FLOOR_BPS, checkNotedTxs, planRemoval, repriceByDonation, seedFloorShares, holdsSeed, parseFractionBps, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
@@ -897,4 +897,41 @@ test("r10 178-X5: a real pool at a wrong price still gets the correcting swap, a
   const tooBig = planOpening({ wrapped: side(1n, WRAP_CAP), quote: side(1n, QUOTE_CAP), totalSupply: 1000n, price: 100n, fractionBps: 5000n });
   assert.equal(tooBig.decision, "refuse");
   assert.match(tooBig.reason, /above 1 bps of the cap/);
+});
+
+// ---- the seeder floor (coordinator decision, round 10)
+
+test("r10 seeder floor: 10% of the seed's shares, the same shares 178 measured at P = 100", () => {
+  assert.equal(SEEDER_FLOOR_BPS, 1000n);
+  const { seedShares, floorShares } = seedFloorShares({ wrappedCap: WRAP_CAP, quoteCap: QUOTE_CAP, price: 100_000_000n, fractionBps: 5000n });
+  assert.equal(seedShares, 49_999_999_999_000n);
+  assert.equal(floorShares, 4_999_999_999_900n);
+  // P = 200: the bUSDC cap binds (500 bUSDC + 2.5 WBLCH).
+  const p200 = seedFloorShares({ wrappedCap: WRAP_CAP, quoteCap: QUOTE_CAP, price: 200_000_000n, fractionBps: 5000n });
+  assert.equal(p200.seedShares, isqrtForTest(25n * 10n ** 17n * 500_000_000n) - 1000n);
+});
+function isqrtForTest(n) { let x = n, y = (x + 1n) / 2n; while (y < x) { x = y; y = (x + n / x) / 2n; } return x; }
+
+test("r10 seeder floor: a removal below the floor is refused unless overridden, with the reason", () => {
+  const floorShares = 4_999_999_999_900n;
+  const held = 49_999_999_999_000n;
+  const ok = planRemoval({ held, shares: held - floorShares, floorShares });
+  assert.equal(ok.decision, "remove");
+  assert.equal(ok.belowFloor, false);
+  assert.equal(ok.leftShares, floorShares);
+  const full = planRemoval({ held, shares: held, floorShares });
+  assert.equal(full.decision, "refuse-floor");
+  assert.match(full.reason, /below the seeder floor/);
+  assert.match(full.reason, /k ceiling/);
+  assert.match(full.reason, /At most 44999999999100 shares may be removed/);
+  assert.match(full.reason, /--allow-below-floor/);
+  assert.equal(planRemoval({ held, shares: held - floorShares + 1n, floorShares }).decision, "refuse-floor");
+  const forced = planRemoval({ held, shares: held, floorShares, allowBelowFloor: true });
+  assert.equal(forced.decision, "remove");
+  assert.equal(forced.belowFloor, true);
+  assert.match(forced.warning, /^OVERRIDE:/);
+  assert.equal(planRemoval({ held, shares: held + 1n, floorShares }).decision, "refuse");
+  assert.equal(planRemoval({ held, shares: 0n, floorShares }).decision, "refuse");
+  // A recipient already under the floor may not remove anything without the override.
+  assert.equal(planRemoval({ held: 10n, shares: 1n, floorShares }).decision, "refuse-floor");
 });

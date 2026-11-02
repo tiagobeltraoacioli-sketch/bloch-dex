@@ -16,6 +16,10 @@
 //                                   scripts/staging/sign-and-publish.sh
 //   node scripts/ops/dex-seed-plan.mjs verify --config gate.json --rpc URL
 //        --price 25.5 --to 0x<LP recipient> [--tolerance-bps 100]
+//   remove  the LP recipient's removal; refused below the seeder floor (10% of the seed's
+//           shares) unless --allow-below-floor is given
+//        node scripts/ops/dex-seed-plan.mjs remove --config gate.json --rpc URL --price 25.5
+//        --to 0x<LP recipient> --shares N | --bps B [--floor-shares N | --floor-bps 1000]
 //   note-tx record a planned approve or seed the depositor sent, after checking it
 //        node scripts/ops/dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>[,<hash>...]
 
@@ -103,6 +107,40 @@ export function repriceByDonation({ wrapped, quote, price, pool, gap }) {
     reservesAfter: after,
     reason: "LP shares exist but the pool holds only dust, so a correcting swap would pay out 0 and revert. Donate this dust to the pair and call sync, then plan again: the next plan is a top-up. The donation belongs to the current share holders.",
   };
+}
+
+/// The seeder keeps a floor: 10% of the seed's shares (coordinator decision, round 10, on
+/// agent 178's measurements). After a full exit the 1000 locked shares keep the pair
+/// "seeded" for ever, the first-depositor rule never returns, anyone can reprice the dust,
+/// and about $1,600 donated to the k ceiling freezes deposits and burns for good. With a
+/// floor the same donation is a gift to the LP.
+export const SEEDER_FLOOR_BPS = 1_000n;
+
+/// Shares the seed mints at this price and fraction (what planOpening plans on an empty
+/// pair, minus the 1000 locked), and the floor as a share of them.
+export function seedFloorShares({ wrappedCap, quoteCap, price, fractionBps, floorBps = SEEDER_FLOOR_BPS }) {
+  let targetWrapped = (wrappedCap * fractionBps) / 10_000n;
+  let targetQuote = (targetWrapped * price) / WAD;
+  const quoteLimit = (quoteCap * fractionBps) / 10_000n;
+  if (targetQuote > quoteLimit) {
+    targetQuote = quoteLimit;
+    targetWrapped = (targetQuote * WAD) / price;
+  }
+  const seedShares = isqrt(targetWrapped * targetQuote) - MINIMUM_LIQUIDITY;
+  return { seedShares, floorShares: (seedShares * floorBps) / 10_000n };
+}
+
+/// The pure part of `remove`: how many shares the LP recipient may take out.
+export function planRemoval({ held, shares, floorShares, allowBelowFloor = false }) {
+  if (shares <= 0n) return { decision: "refuse", reason: "nothing to remove" };
+  if (shares > held) return { decision: "refuse", reason: `the LP recipient holds ${held} shares, fewer than ${shares}` };
+  const left = held - shares;
+  if (left < floorShares) {
+    const detail = `this removal leaves ${left} shares, below the seeder floor of ${floorShares} (10% of the seed). After a full exit the pair belongs to whoever uses it next: anyone can reprice the dust, and a donation to the k ceiling (about $1,600 at P = 100) blocks deposits and burns for good. See docs/OPS-INITIAL-LIQUIDITY.md`;
+    if (!allowBelowFloor) return { decision: "refuse-floor", leftShares: left, floorShares, reason: `${detail}. At most ${held > floorShares ? held - floorShares : 0n} shares may be removed; --allow-below-floor overrides this, deliberately` };
+    return { decision: "remove", shares, leftShares: left, floorShares, belowFloor: true, warning: `OVERRIDE: ${detail}` };
+  }
+  return { decision: "remove", shares, leftShares: left, floorShares, belowFloor: false };
 }
 
 /// Whether `to` holds the seed: nearly every share, apart from the 1000 locked ones.
@@ -215,9 +253,40 @@ async function load(args, request) {
   return { deployment, pair, state, wrapped, quote, decimals, latest, price: parseUnits(args.price, decimals) };
 }
 
+/// Plan the LP recipient's removal, refusing one that would take it below the seeder floor.
+async function remove(args) {
+  if (!args.config || !args.rpc || !args.price || !args.to || (!args.shares === !args.bps)) {
+    console.error("usage: dex-seed-plan.mjs remove --config <gate.json> --rpc <url> --price <opening price> --to <LP recipient> --shares <n> | --bps <of its shares> [--floor-shares <n> | --floor-bps 1000] [--fraction-bps 5000] [--allow-below-floor] [--deadline-min 60]");
+    return UNKNOWN;
+  }
+  const fractionBps = parseFractionBps(args["fraction-bps"]);
+  const request = createRequest(args.rpc);
+  const { deployment, pair, state, wrapped, quote, latest, price } = await load(args, request);
+  const held = await call(request, pair.address, "balanceOf", [args.to], blockRef(latest));
+  const shares = args.shares !== undefined ? BigInt(args.shares) : (held * BigInt(args.bps)) / 10_000n;
+  const floor = args["floor-shares"] !== undefined
+    ? { seedShares: null, floorShares: BigInt(args["floor-shares"]) }
+    : seedFloorShares({ wrappedCap: wrapped.cap, quoteCap: quote.cap, price, fractionBps, floorBps: BigInt(args["floor-bps"] ?? SEEDER_FLOOR_BPS) });
+  const plan = planRemoval({ held, shares, floorShares: floor.floorShares, allowBelowFloor: Boolean(args["allow-below-floor"]) });
+  if (plan.decision !== "remove") {
+    console.log(stringify({ ...plan, recipient: args.to, heldShares: held, seedShares: floor.seedShares, pair: pair.address, block: latest.number }));
+    return CRIT;
+  }
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * Number(args["deadline-min"] ?? 60));
+  const minWrapped = (wrapped.reserve * shares * 99n) / (state.totalSupply * 100n);
+  const minQuote = (quote.reserve * shares * 99n) / (state.totalSupply * 100n);
+  const steps = [
+    { description: "approve the router for the LP shares", to: pair.address, value: "0", data: encode("approve", [deployment.router.address, shares]) },
+    { description: "remove liquidity to the LP recipient (minimums 99% of the pro-rata reserves)", to: deployment.router.address, value: "0", data: encode("removeLiquidity", [wrapped.token, quote.token, shares, minWrapped, minQuote, args.to, deadline]), deadline },
+  ];
+  console.log(stringify({ ...plan, recipient: args.to, heldShares: held, seedShares: floor.seedShares, pair: pair.address, block: latest.number, steps }));
+  return plan.belowFloor ? WARN : OK;
+}
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2), { flags: ["allow-below-floor"] });
   const [command] = args._;
+  if (command === "remove") return remove(args);
   if (command === "note-tx") {
     // A planned approve or seed already sent. It is recorded only if it checks out.
     if (!args.config || !args.rpc || !args.tx) {

@@ -121,6 +121,17 @@ The Safe and the Multicall3 and CREATE2 deployments are kept. This procedure has
 
 **The first-deposit rule does not come back.** If every LP exits, 1,000 locked shares remain, so anyone can `sync` a new price over the dust reserves and deposit. Keep a position in the pool, or treat a full exit as reopening the pair to everyone (agent 98, A98-5).
 
+**The seeder keeps a floor of 10% of the seed's shares** (coordinator decision, round 10, on agent 178's measurements; at P = 100 that is 4,999,999,999,900 of 49,999,999,999,000 shares, about 0.5 WBLCH + 50 bUSDC). Plan every removal by the LP recipient with the planner, which refuses one that would leave less:
+
+```
+node scripts/ops/dex-seed-plan.mjs remove --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --price TBD-owner --to TBD-owner --bps 5000
+```
+
+- The floor is computed from the opening price and `--fraction-bps`, exactly as the seed was planned (`--floor-bps 1000`), or given as `--floor-shares N` (use the same number as the monitor's `--lp-min-shares`, where that flag exists).
+- Refused: exit 2, `refuse-floor`, with the largest removal that keeps the floor. `--allow-below-floor` overrides it deliberately: the plan then carries an `OVERRIDE` warning and exits 1.
+- The output is the approve and the `removeLiquidity` call to the LP recipient, with minimums at 99% of the pro-rata reserves. The planner holds no key and cannot stop a burn sent another way; the monitor's floor alarm is the backstop.
+- Why: after a full exit agent 178 measured 1 bUSDC unit and 1e8 wei WBLCH left, the price 100x off, anyone able to reprice it, and a donation of about $1,600 to the k ceiling freezing deposits and burns for good. With the floor, the same donation went to the LP. If a full exit happens anyway, `plan` reopens the pair with `reprice-by-donation`, then `top-up`.
+
 - Run the monitor with `--expect-seeded --lp-recipient <LP recipient>`. Below half the shares it reports `lp_recipient` CRIT. If the recipient exits on purpose, lower `--lp-min-bps`.
 - Start the keeper.
 - Add liquidity only pro rata through the router. A deposit reverts if a reserve would pass its cap (`RESERVE_CAP`) or if `k` would pass the ceiling (`K_CEILING`). Both a filled pool and a side at its cap close deposits, and no swap reopens a filled one.
