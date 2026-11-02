@@ -803,6 +803,7 @@ test("r10 DEX-4: the ceiling floor is the budget's per-transaction share, 0.05 B
   assert.equal(DEFAULTS.ceilingFloorWei, null);
   assert.equal(ceilingFloorWei(keeperOptions()), 1_041_666_666_666_666n);
   assert.equal(ceilingFloorWei(keeperOptions({ ceilingFloorWei: 5n })), 5n);
+  assert.equal(ceilingFloorWei(keeperOptions({ maxTx: 0 })), DEFAULTS.budgetWei);
   // About 1 bps of the 10 WBLCH cap, a hundredth of the ordinary 100 bps floor.
   assert.equal((ceilingFloorWei(keeperOptions()) * 10_000n) / CAP1, 1n);
   // It is above the worst case the keeper can actually pay per skim at the RC limits

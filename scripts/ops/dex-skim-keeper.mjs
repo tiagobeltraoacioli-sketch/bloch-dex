@@ -90,7 +90,8 @@ export function excessValueWei(pairState, wrapped) {
 /// The ceiling floor in force: the option, or the budget's per-transaction share.
 export function ceilingFloorWei(options) {
   if (options.ceilingFloorWei !== null && options.ceilingFloorWei !== undefined) return options.ceilingFloorWei;
-  return options.budgetWei / BigInt(options.maxTx);
+  // --max-tx 0 stops every skim later on; it must not throw here (found by the ops rehearsal).
+  return options.maxTx > 0 ? options.budgetWei / BigInt(options.maxTx) : options.budgetWei;
 }
 
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
