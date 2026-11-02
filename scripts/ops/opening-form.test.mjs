@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { checkForm, seedAmounts } from "./opening-form.mjs";
-import { planOpening } from "./dex-seed-plan.mjs";
+import { MAX_FRACTION_BPS, planOpening, seedFloorShares } from "./dex-seed-plan.mjs";
 
 const committed = JSON.parse(readFileSync(new URL("../../deployments/mainnet/dex-mainnet.config.json", import.meta.url), "utf8"));
 const template = JSON.parse(readFileSync(new URL("../../deployments/mainnet/opening-form.json", import.meta.url), "utf8"));
@@ -73,13 +73,20 @@ test("the depositor must be its own key", () => {
   assert.ok(check(f).problems.some((p) => p.includes("keeper.address")));
 });
 
-test("exit policy: the floor in shares, or 0 with full-exit", () => {
+test("exit policy: the floor in shares, at least 10%, and no full exit (round 10)", () => {
   const keep = check(filled()).values;
   assert.equal(keep.floorShares, keep.seed.shares / 10n);
+  // The form's floor is the planner's floor for the same seed (the remove command and the monitor use one number).
+  const planner = seedFloorShares({ wrappedCap: 10n * 10n ** 18n, quoteCap: keep.quoteCap, price: keep.price, fractionBps: keep.fractionBps });
+  assert.equal(keep.seed.shares, planner.seedShares);
+  assert.equal(keep.floorShares, planner.floorShares);
   const f = filled(); f.seederExit = { policy: "full-exit", floorBps: 0 };
-  assert.equal(check(f).values.floorShares, 0n);
-  const bad = filled(); bad.seederExit = { policy: "full-exit", floorBps: 1000 };
-  assert.ok(check(bad).problems.some((p) => p.includes("floorBps must be 0")));
+  assert.ok(check(f).problems.some((p) => p.includes("full-exit is not allowed")));
+  const low = filled(); low.seederExit = { policy: "keep-floor", floorBps: 999 };
+  assert.ok(check(low).problems.some((p) => p.includes("floorBps must be 1000 to 10000")));
+  const high = filled(); high.seederExit = { policy: "keep-floor", floorBps: 2000 };
+  assert.deepEqual(check(high).problems, []);
+  assert.equal(check(high).values.floorShares, keep.seed.shares / 5n);
 });
 
 test("page: https only for the Ethereum RPC, loopback only in a rehearsal; the vault is required", () => {
@@ -92,7 +99,12 @@ test("page: https only for the Ethereum RPC, loopback only in a rehearsal; the v
   assert.ok(check(h).problems.some((p) => p.includes("without credentials")));
 });
 
-test("fraction above 8000 bps is refused, as by the planner", () => {
-  const f = filled(); f.seed.fractionBps = 9000;
-  assert.ok(check(f).problems.some((p) => p.includes("fractionBps")));
+test("fraction above 7000 bps is refused, as by the planner (round 10, DEX-4)", () => {
+  for (const bad of [7001, 8000, 9000]) {
+    const f = filled(); f.seed.fractionBps = bad;
+    assert.ok(check(f).problems.some((p) => p.includes("seed.fractionBps must be 1 to 7000")), String(bad));
+  }
+  const ok = filled(); ok.seed.fractionBps = 7000;
+  assert.deepEqual(check(ok).problems, []);
+  assert.equal(MAX_FRACTION_BPS, 7000n);
 });

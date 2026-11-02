@@ -370,22 +370,26 @@ state "after the LP's exit"
 pass "x4: with a floor the donation became the LP's; the LP's burn reopened the room (no permanent fill)"
 restore "$SNAP_SEEDED"; SNAP_SEEDED=$(snapshot)
 
-log "X5 the owner reopens after a full exit with the kit's planner (correct-price, then top-up)"
+log "X5 the owner reopens after a full exit with the kit's planner (reprice-by-donation since 196's bf3dab5, then top-up)"
 restore "$SNAP_SEEDED"; SNAP_SEEDED=$(snapshot)
 exit_lp "$SHARES" > /dev/null
+X5_DUST=$(snapshot)
+X5_DECISIONS=""
 for round in 1 2 3; do
   set +e; "${SP[@]}" plan --config "$EV/gate.json" --rpc "$SHIM" --price $PRICE --to "$LP" > "$EV/x5-plan-$round.out" 2>&1; XC=$?; set -e
   DEC=$(jsonget "$EV/x5-plan-$round.out" decision 2>/dev/null || echo error)
   note "round $round: planner exit $XC decision $DEC"
   case "$DEC" in
-    correct-price|top-up)
-      for i in 0 1; do
+    correct-price|reprice-by-donation|top-up)
+      X5_DECISIONS="$X5_DECISIONS $DEC"
+      for i in 0 1 2; do
         TO=$(jsonget "$EV/x5-plan-$round.out" steps.$i.to 2>/dev/null) || break
         [ -n "$TO" ] && [ "$TO" != undefined ] || break
         [ "$(jsonget "$EV/x5-plan-$round.out" steps.$i.skip 2>/dev/null)" = true ] && continue
         OUT=$(send "$LP_KEY" "$TO" "$(jsonget "$EV/x5-plan-$round.out" steps.$i.data)" "$(jsonget "$EV/x5-plan-$round.out" steps.$i.value)" 1000000)
         note "  step $i to $TO: $OUT"
-      done ;;
+      done
+      settle ;;
     *) break ;;
   esac
   [ "$DEC" = top-up ] && break
@@ -394,8 +398,11 @@ note "pool price after reopening: $(price_of)"
 state "after reopening"
 set +e; "${SP[@]}" verify --config "$EV/gate.json" --rpc "$SHIM" --price $PRICE --to "$LP" > "$EV/x5-verify.out" 2>&1; XC=$?; set -e
 note "verify after reopening: exit $XC $(jsonget "$EV/x5-verify.out" decision 2>/dev/null || true)"
+[ "$XC" = 0 ] && [ "$(echo $X5_DECISIONS)" = "reprice-by-donation top-up" ] || die "the planner did not reopen the dust pool by reprice-by-donation then top-up (decisions:$X5_DECISIONS, verify exit $XC)"
+pass "x5: the kit's planner reopened the pair after a full exit (reprice-by-donation, then top-up), and verify passes"
+restore "$X5_DUST"
 
-log "X5b the reopening that works at dust: the operator donates WBLCH to set P over the dust reserves, syncs, then the planner tops up"
+log "X5b the manual route over the same dust (kept as a cross-check): the operator donates WBLCH to set P over the dust reserves, syncs, then the planner tops up"
 read -r u0 w0 < <(reserves_usd_w)
 DW=$(node -e 'const [u,w,p]=process.argv.slice(1).map(BigInt);console.log((u*10n**18n/p-w).toString())' "$u0" "$w0" "${PRICE}000000")
 must "$LP_KEY" "$WRAPPED" "$(cast calldata "deposit()")" "$DW" 100000 > /dev/null
@@ -408,7 +415,7 @@ must "$LP_KEY" "$USD" "$(jsonget "$EV/x5b-plan.out" steps.0.data)" 0 100000 > /d
 must "$LP_KEY" "$(jsonget "$EV/x5b-plan.out" steps.1.to)" "$(jsonget "$EV/x5b-plan.out" steps.1.data)" "$(jsonget "$EV/x5b-plan.out" steps.1.value)" 1000000 > /dev/null
 state "after the top-up"
 expect 0 x5b-verify "${SP[@]}" verify --config "$EV/gate.json" --rpc "$SHIM" --price $PRICE --to "$LP"
-pass "x5b: reopened at P after a full exit by donate + sync + top-up (the planner's correct-price swap cannot work over 1 unit of bUSDC)"
+pass "x5b: reopened at P after a full exit by a manual donate + sync + top-up (the same donation the planner plans in X5)"
 
 log "X6 a full exit after trading: the Safe's protocol-fee shares stay in the pool"
 restore "$SNAP_SEEDED"; SNAP_SEEDED=$(snapshot)

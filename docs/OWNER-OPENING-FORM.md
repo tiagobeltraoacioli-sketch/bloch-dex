@@ -10,12 +10,12 @@ One page. Fill `deployments/mainnet/opening-form.json` (public addresses and pat
 | 2 | `busdcCap` | `"auto"`, or whole bUSDC | `"auto"` = min(1000, 10 x P). Anything outside 75-125% of 10 x P is refused |
 | 3 | `firstDepositor` | A **new** EOA (hardware wallet) used only for the approve and the seed | Not a Safe owner, not the LP recipient, not the keeper, not the deployer. The tool refuses those |
 | 4 | `lpRecipient` | Address that receives the LP shares | Not the Safe (principal and fee stay apart; an exit does not need 3 of 5) |
-| 5 | `seederExit.policy` | `"keep-floor"` or `"full-exit"` | **`keep-floor`**, `floorBps` 1000 (keep 10% of the seed position, 0.5 WBLCH + 50 bUSDC at P = 100) |
+| 5 | `seederExit.policy`, `seederExit.floorBps` | `"keep-floor"` and 1000 or more | **Decided (round 10): `keep-floor`, `floorBps` 1000** (keep 10% of the seed position, 0.5 WBLCH + 50 bUSDC at P = 100). The tool refuses `full-exit` and a floor under 1000 |
 | 6 | `keeper.address`, `keeper.keystore`, `keeper.passwordFile` | Hot gas-only key; absolute paths on the keeper host | Budget defaults: 0.05 BLCH and 48 tx per 24 h |
 | 7 | `bridgeStatus.ethRpcUrl`, `bridgeStatus.vault`, `bridgeStatus.vaultCodeHash` | Ethereum RPC (https, serves `finalized`, CORS open), ProvenanceSourceVault address, its runtime code hash (or `null`) | Fill all three: without them the page and the monitor cannot see held or paused bUSDC exits |
 | 8 | `site.*` | Public L2 RPC and its status, explorer, bridge links | `rpcStatus: "live"` only once the public RPC is up |
 
-Optional: `seed.fractionBps` (default 5000, at most 8000), `seed.deadlineMin` (default 120; raise it if L2 blocks are slow).
+Optional: `seed.fractionBps` (default 5000, at most 7000, the planner's limit: at 8000 a balanced seed sits on the k ceiling, DEX-4), `seed.deadlineMin` (default 120; raise it if L2 blocks are slow).
 
 ## B. Values from earlier steps (copy, do not choose)
 
@@ -28,11 +28,11 @@ The first-deposit rule only protects a pair with no shares. After the seed, 1,00
 - The pool keeps 1 unit of bUSDC and 1e8 wei of WBLCH; rounding puts its price at 10,000 instead of 100.
 - Anyone can set any price for about 2e-8 WBLCH (donation + `sync`) and fill the pair to a cap at that price. After that, nobody else can deposit.
 - A donation of about 1,600 bUSDC of value, synced to the k ceiling, fills the pair permanently: those reserves belong only to the locked shares, so no deposit or burn can ever change them. Reopening on your terms then means a new factory and a new DEX deployment.
-- The kit's planner cannot reopen from that dust: its price-correcting swap reverts. The manual route works (donate WBLCH to set P, `sync`, then the planner's top-up; `OPS-INITIAL-LIQUIDITY.md`).
+- At 178's tip the kit's planner could not reopen from that dust (its price-correcting swap reverted). It now plans `reprice-by-donation` (donate WBLCH to set P, `sync`), then the top-up (`OPS-INITIAL-LIQUIDITY.md`).
 
 With the floor kept, the same donation went to the LP recipient (6.75 BLCH + 675 bUSDC recovered in the rehearsal), and the room reopened when the LP exited. The monitor reports `lp_floor` CRIT if the recipient falls below the floor.
 
-Choose `full-exit` only if you accept that the pair then belongs to whoever uses it next.
+Decided for launch: no full exit. The form refuses `full-exit`, the planner's `remove` refuses a removal below the floor (unless `--allow-below-floor`), and the monitor's `lp_floor` is the backstop for a burn sent another way.
 
 ## D. Run
 

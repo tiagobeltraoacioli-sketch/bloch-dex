@@ -23,6 +23,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequest, isqrt, parseArgs, parseUnits } from "./dex-ops-lib.mjs";
 import { PENDING, configSha256, validateDeployConfig } from "../staging/dex-deploy-config.mjs";
+import { MAX_FRACTION_BPS, SEEDER_FLOOR_BPS } from "./dex-seed-plan.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const FORM_DOMAIN = "postern.dex.opening-form.v1";
@@ -118,14 +119,16 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
 
   // 3. Seed, exit policy, floor.
   const fractionBps = BigInt(form.seed?.fractionBps ?? 5000);
-  need(fractionBps > 0n && fractionBps <= 8000n, "seed.fractionBps must be 1 to 8000 (the planner refuses more, A98-OPS-2)");
+  // The planner's own limit (round 10, DEX-4): 8000 puts a balanced seed exactly on the k ceiling.
+  need(fractionBps > 0n && fractionBps <= MAX_FRACTION_BPS, `seed.fractionBps must be 1 to ${MAX_FRACTION_BPS} (the planner refuses more: at 8000 a balanced seed sits on the k ceiling, where swap fees stay outside the reserves; DEX-4)`);
   const deadlineMin = Number(form.seed?.deadlineMin ?? 120);
   need(Number.isInteger(deadlineMin) && deadlineMin >= 10 && deadlineMin <= 1440, "seed.deadlineMin must be 10 to 1440 minutes");
   const policy = form.seederExit?.policy;
   need(EXIT_POLICIES.includes(policy), `seederExit.policy must be one of ${EXIT_POLICIES.join(", ")}`);
   const floorBps = BigInt(form.seederExit?.floorBps ?? 0);
-  if (policy === "keep-floor") need(floorBps >= 100n && floorBps <= 10_000n, "seederExit.floorBps must be 100 to 10000 (share of the seed position kept) with keep-floor");
-  if (policy === "full-exit") need(floorBps === 0n, "seederExit.floorBps must be 0 with full-exit");
+  // Round 10 decision: the seeder keeps at least 10% of the seed position; no full exit.
+  if (policy === "keep-floor") need(floorBps >= SEEDER_FLOOR_BPS && floorBps <= 10_000n, `seederExit.floorBps must be ${SEEDER_FLOOR_BPS} to 10000 (share of the seed position kept; the launch rule is a floor of at least 10%)`);
+  if (policy === "full-exit") problems.push("seederExit.policy full-exit is not allowed at launch: the seeder keeps a floor of at least 10% of the seed position (round 10 decision; OWNER-OPENING-FORM.md section C)");
 
   // 4. Keeper.
   const keystore = form.keeper?.keystore; const passwordFile = form.keeper?.passwordFile;
@@ -281,7 +284,10 @@ function commandsFile(v) {
     "5. Monitor (the unit runs the same with `dex-ops.env`):",
     "",
     block(`node scripts/ops/dex-monitor.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${v.status.ethRpcUrl} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
-    "6. Keeper, dry run first:",
+    "6. Any later removal by the LP recipient goes through the planner, which refuses to go below the floor (the same shares as the monitor's `--lp-min-shares`). Example, half of the position:",
+    "",
+    block(`node scripts/ops/dex-seed-plan.mjs remove --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp} --bps 5000 --fraction-bps ${v.fractionBps} --floor-shares ${v.floorShares}`),
+    "7. Keeper, dry run first:",
     "",
     block(`node scripts/ops/dex-skim-keeper.mjs --config ${G} --rpc ${R} --keeper ${v.keeper} --state /var/lib/bloch-dex-keeper/state.json --budget-wei ${v.budgetWei} --max-tx ${v.maxTx} --eth-rpc ${v.status.ethRpcUrl} --bridge-vault ${v.status.vault}`),
     "",
