@@ -125,9 +125,9 @@ Decisions and values:
 | 18 | Bucket capacity check | `reserveCaps[1].bridgeBucketCapacity` | Must equal the token's `bucketCapacity()`. Committed: `10000000000` |
 | 19 | Keeper host, monitor host, alert route | `scripts/ops/systemd/dex-monitor.env.example` | The monitor sends no alerts by itself |
 | 20 | Keeper budget | Keeper flags | Default 0.05 BLCH and 48 transactions per 24 h. Depends on the L2 base fee |
-| 21 | Fees at signing | `sign-and-publish.sh --max-fee-wei --priority-fee-wei` | Chosen at signing time |
+| 21 | Fees at signing | `sign-and-publish.sh --max-fee-wei --priority-fee-wei` | Chosen at signing time. The max fee must be above the L2 base fee (`cast base-fee`), or the RPC refuses the first transaction with `max fee per gas less than block base fee`; nothing is sent then. The balance check uses gas limit x max fee, so a high max fee needs more gas funds |
 
-Website, in `frontend.network.json` and `_headers`:
+Website, in `frontend.network.json` and `_headers` (items 22-25), and the bridge pins in `frontend.bridge.json` (item 26):
 
 | # | Input | Note |
 |---|---|---|
@@ -135,9 +135,23 @@ Website, in `frontend.network.json` and `_headers`:
 | 23 | `rpc.url` and `rpc.status` | Placeholder until the public RPC is live. The CSP `connect-src` must name the same origin |
 | 24 | `explorer.url` | |
 | 25 | bUSDC `depositUrl`, `withdrawUrl`, `docsUrl` | |
+| 26 | `frontend.bridge.json`: `ethereum.rpc.url` and `rpc.status`, `ethereum.vault`, `route`, `vaultCodeHash`, `signers`, `guardians`, `l2.token`, `tokenCodeHash`, `signers`, `proposed.*`, then `status: "live"` last | From the bridge deployment (`vault_pontes.py verify`). The Ethereum RPC origin also goes in `_headers` `connect-src`; `npm test` prints the expected file |
+
+What the site does not keep: the page's transaction list lives in memory. A reload keeps only a swap whose outcome is still unknown. A finished swap, an approve, a wrap or a skim is gone after a reload, so users and support must use the explorer (item 24) for history.
 
 Derived by the tools, not chosen: `blochInc` (from `deploy-safe.mjs blochinc`) and the finality gate file.
 
 Order: Safe, then the bUSDC bridge, then items 16 to 18, then the DEX plan. Infra comes first of all.
 
 Funds: BLCH on the L2 for gas on keys 6, 7, 8, 8a and 11; the seed in BLCH and bridged bUSDC on key 8a.
+
+## 5. Before the first command
+
+The commands are in `MAINNET-700770-PACKAGE.md`, "Mainnet sequence (owner)", then `OPS-INITIAL-LIQUIDITY.md`. On the signing machine:
+
+- Node 24 and Foundry (`cast`, `forge`). Run `npm ci` in `frontend/` first: every deployment tool loads `viem` from there and fails with `Cannot find module 'viem'` otherwise.
+- `SAFE_ARTIFACTS`: the `build/artifacts` folder of the npm tarball `@safe-global/safe-contracts@1.4.1`, checked against the integrity in `pins.json`. `deploy-safe.mjs plan`, `preflight` and `txs` need `--artifacts`.
+- Signer arguments for `sign-and-publish.sh`: `--ledger`, or `--keystore <file> --password-file <file>`. Do not use `--private-key`: the key is then in the process list while it runs.
+- Every `sign-and-publish.sh` run needs a new `--hashes-out` file. A second run of the same file is refused at its first nonce, which is the intended stop.
+- The seed is signed the same way: `dex-seed-plan.mjs plan … --write-txs <new file>` writes the approve and the seed with chain, genesis, depositor and nonces. Pass that file to `sign-and-publish.sh` with `--confirm` set to the `configSha256` the plan prints. Keep `--fraction-bps` at most 8,000 (the planner refuses more). On a slow L2, raise `--deadline-min` above the time two blocks take, or the seed expires after the approve and needs `note-tx`.
+- A new deployment after a spent depositor key (`OPS-INITIAL-LIQUIDITY.md`, F1) keeps the Safe, Multicall3 and the CREATE2 deployer, but WBLCH, the factory, the router, the lens and the pair are all new addresses. Run `deploy-dex.mjs validate` again before `txs`: the config hash, and so `--confirm`, changes.

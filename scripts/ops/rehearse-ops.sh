@@ -355,7 +355,7 @@ fi
 log "4 seed from the plan: 50% of the tighter cap at $PRICE bUSDC per BLCH"
 expect 0 seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --write-txs "$WORK/seed.txs.json"
 expect 2 seed-plan-fraction-too-high node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --fraction-bps 8001
-SEED_CONFIRM=$(jsonget "$EV/seed-plan.out" txFile.confirm)
+SEED_CONFIRM=$(jsonget "$EV/seed-plan.out" txsFile.configSha256)
 node -e 'const fs=require("fs"),t=JSON.parse(fs.readFileSync(process.argv[1]));t.chainId=1;fs.writeFileSync(process.argv[2],JSON.stringify(t))' "$WORK/seed.txs.json" "$WORK/seed-wrong-chain.txs.json"
 expect 1 seed-wrong-chain scripts/staging/sign-and-publish.sh --txs "$WORK/seed-wrong-chain.txs.json" --rpc "$RPC" --confirm "$SEED_CONFIRM" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$WORK/seed-wrong.hashes" -- --private-key "$SEEDER_KEY"
 grep -q 'chain ID differs' "$EV/seed-wrong-chain.out" || die "sign-and-publish did not refuse the wrong chain"

@@ -1246,6 +1246,28 @@ describe('swap panel safety fixes', () => {
       expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
     });
 
+    it('after a mined swap, finality moving and a reload, the transaction list is empty', async () => {
+      // Kit walk (agent 97): only an unresolved swap survives a reload. A swap whose
+      // receipt was seen is forgotten, so the owner's runbook must not promise a list.
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let finalized = FINALIZED;
+      const moving: Rpc = (m, p) =>
+        m === 'eth_getBlockByNumber' && p[0] === 'finalized'
+          ? Promise.resolve(finalized)
+          : rpc(m, p);
+      let reply: () => unknown = () => null;
+      const chain = withReceipts(moving, () => reply());
+      const { view } = await sendOne(chain, state);
+      reply = () => MINED;
+      await waitFor(() => expect(steps()).toContain('Mined in block 442'));
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+      finalized = { ...FINALIZED, number: '0x1bb', hash: `0x${'e'.repeat(64)}` };
+      view.unmount();
+      await mount(chain, state);
+      await screen.findByText(/Pools at finalized block 443/);
+      expect(screen.queryByRole('list', { name: 'Transactions' })).toBeNull();
+    });
+
     it('holds when the panel remounts on a new finalized block', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
       let finalized = FINALIZED;
