@@ -112,6 +112,7 @@ send() {
     raw=$(cast mktx --chain 700770 --nonce "$nonce" --gas-limit "$gas" --gas-price $MAXFEE --priority-gas-price $TIP --value "$value" --private-key "$k" "$to" "$data")
   fi
   hash=$(cast keccak "$raw")
+  echo "$hash" > "$WORK/last.hash"
   cast publish --rpc-url "$RPC" "$raw" > /dev/null
   for _ in $(seq 300); do
     receipt=$(cast rpc eth_getTransactionReceipt "$hash" --rpc-url "$RPC")
@@ -722,8 +723,17 @@ if [ "$MODE" = anvil ]; then
   restore "$SNAP"
 fi
 
-if [ "$MODE" = anvil ] && [ "$IS_V3" = 1 ]; then
+if [ "$IS_V3" = 1 ]; then
   # -------------------------------------------------------------- BridgedStablecoinV3 incidents
+  # 10a-10d run on both chains: on anvil each scene is undone by a snapshot, on the private L2 they run in sequence,
+  # in real time (MINT_DELAY_S). 10e and 10f need weeks of chain time and run on anvil only.
+  scene_start() { if [ "$MODE" = anvil ]; then SNAP=$(snapshot); fi; }
+  scene_end() { if [ "$MODE" = anvil ]; then restore "$SNAP"; fi; }
+  # burn_rx AMOUNT: the seeder burns; prints the receipt JSON.
+  burn_rx() {
+    send "$SEEDER_KEY" "$USD" "$(cast calldata "burn(uint64,address)" "$1" "$SEEDER")" 0 200000 > /dev/null
+    cast rpc eth_getTransactionReceipt "$(cat "$WORK/last.hash")" --rpc-url "$RPC"
+  }
   SWAP_IN_OK() { must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000 > /dev/null; }
   SWAP_OUT_OK() { must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" $FUTURE)" 10000000000000000 400000 > /dev/null; }
   LP_EXIT_OK() { # FRACTION_DIVISOR
@@ -745,7 +755,7 @@ if [ "$MODE" = anvil ] && [ "$IS_V3" = 1 ]; then
   }
 
   log "10a V3 held mint: a mint queued to the pair adds nothing until it credits; then it is excess the keeper sends to the Safe"
-  SNAP=$(snapshot)
+  scene_start
   R_USD=$(view "$USD" "$BAL" "$PAIR")
   queue_usd "$PAIR" 3000000; HELD=$LAST_ID
   [ "$(view "$USD" "$BAL" "$PAIR")" = "$R_USD" ] || die "a queued mint moved the pair's balance"
@@ -767,10 +777,10 @@ if [ "$MODE" = anvil ] && [ "$IS_V3" = 1 ]; then
   [ $(( $(view "$USD" "$BAL" "$SAFE") - SAFE_USD )) -ge 3000000 ] || die "the credited mint did not reach the Safe"
   SWAP_IN_OK; k_ok
   pass "v3 held mint: queued to the pair, no effect; credited after the delay, it was excess and the keeper skimmed it to the Safe; swaps and k unaffected"
-  restore "$SNAP"
+  scene_end
 
   log "10b V3 cancelled mint: guardians cancel a mint to the pair; later mints wait for the slot; a remint fills it"
-  SNAP=$(snapshot)
+  scene_start
   R_USD=$(view "$USD" "$BAL" "$PAIR")
   queue_usd "$PAIR" 4000000; CANCELLED=$LAST_ID; CANCELLED_NONCE=$DEP_NONCE
   queue_usd "$SEEDER" 2000000; BEHIND=$LAST_ID
@@ -797,10 +807,10 @@ if [ "$MODE" = anvil ] && [ "$IS_V3" = 1 ]; then
   [ "$(view "$USD" "$BAL" "$PAIR")" = "$(reserve_usd)" ] || die "the pair holds an excess after the remint went to the seeder"
   SWAP_IN_OK; k_ok
   pass "v3 cancel: the mint to the pair never reached it; the next slot waited (NotReady) while swaps and LP exits worked; the remint credited and drained the waiting mint"
-  restore "$SNAP"
+  scene_end
 
   log "10c V3 pause with a mint due: execution stops, the DEX does not; the unpause needs 3 signatures"
-  SNAP=$(snapshot)
+  scene_start
   queue_usd "$SEEDER" 2000000; DUE=$LAST_ID; QUEUED=()
   time_passes "$MINT_DELAY_S"
   must "${GUARDIAN_KEYS[2]}" "$USD" "$(cast calldata "pause()")" 0 200000 > /dev/null
@@ -818,17 +828,17 @@ if [ "$MODE" = anvil ] && [ "$IS_V3" = 1 ]; then
   must "$RELAYER_KEY" "$USD" "$(cast calldata "unpause(bytes)" "$(sigs "$UD" 3)")" 0 300000 > /dev/null
   must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$DUE")" 0 1500000 > /dev/null
   pass "v3 pause: due mint and drain held; swaps, LP exit, burn, monitor and keeper unaffected; 2 signatures cannot unpause, 3 can, then the mint credits"
-  restore "$SNAP"
+  scene_end
 
   log "10d V3 provenance: DEX activity never moves the mint chain; a burn of LP proceeds states the chain the vault checks"
-  SNAP=$(snapshot)
+  scene_start
   CHAIN0=$(chain_state)
   SWAP_IN_OK; SWAP_OUT_OK
   must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" 5000000)" 0 100000 > /dev/null
   must "$THIEF_KEY" "$PAIR" "$(cast calldata "skim(address)" "$THIEF")" 0 200000 > /dev/null
   LP_EXIT_OK 4
   [ "$(chain_state)" = "$CHAIN0" ] || die "DEX activity moved the mint chain"
-  BURN_RX=$(cast send --json --private-key "$SEEDER_KEY" --rpc-url "$RPC" "$USD" "burn(uint64,address)" 10000000 "$SEEDER")
+  BURN_RX=$(burn_rx 10000000)
   node -e '
 const rx=JSON.parse(process.argv[1]), [count,total,head]=process.argv[2].split(" ");
 const topic=process.argv[3].toLowerCase();
@@ -845,10 +855,11 @@ console.log("burn states mintCount",BigInt("0x"+w[2]),"mintedTotal",BigInt("0x"+
       node -e 'for (const l of JSON.parse(require("fs").readFileSync(0,"utf8"))) console.log(l.topics[1], "0x"+l.topics[2].slice(26), BigInt(l.data).toString())')
   [ "$H" = "$(echo "$CHAIN0" | awk '{print $3}')" ] || die "the recomputed deposit chain $H differs from the token's"
   pass "v3 provenance: swaps, donation, skim and LP exit left the chain unchanged; the LP's burn states it, and it equals the chain recomputed from the credits"
-  restore "$SNAP"
+  scene_end
 
+  if [ "$MODE" = anvil ]; then
   log "10e V3 forged credit (committee keys misused, guardians absent): exits after it are held; the pool loses at most its cap"
-  SNAP=$(snapshot)
+  scene_start
   HONEST=$(chain_state)
   queue_usd "$GRIEFER" 900000000; release_usd
   [ "$(chain_state)" != "$HONEST" ] || die "the forged credit did not extend the chain"
@@ -861,14 +872,14 @@ console.log("burn states mintCount",BigInt("0x"+w[2]),"mintedTotal",BigInt("0x"+
   echo "forged dump: WBLCH reserve $W_BEFORE -> $W_AFTER; bUSDC at its cap $USD_CAP" | tee -a "$EV/steps.log"
   k_ok
   LP_EXIT_OK 1
-  BURN_RX=$(cast send --json --private-key "$SEEDER_KEY" --rpc-url "$RPC" "$USD" "burn(uint64,address)" 10000000 "$SEEDER")
+  BURN_RX=$(burn_rx 10000000)
   STATED=$(node -e 'const rx=JSON.parse(process.argv[1]);const l=rx.logs.find((l)=>l.topics[0].toLowerCase()===process.argv[2].toLowerCase());console.log("0x"+l.data.slice(2).match(/.{64}/g)[4])' "$BURN_RX" "$(cast keccak "Burned(bytes32,uint64,address,uint64,address,uint64,uint64,bytes32)")")
   [ "$STATED" != "$(echo "$HONEST" | awk '{print $3}')" ] || die "the burn states the honest chain"
   pass "v3 forged credit: the LP left the pool in full, but its burn states head $STATED, which no real-deposit chain matches, so ProvenanceSourceVault holds it (agent 109); the dump stopped at the bUSDC cap"
-  restore "$SNAP"
+  scene_end
 
   log "10f V3 one-way switch: committee retired; a queued mint and the proof path still credit; a pause then runs its full term"
-  SNAP=$(snapshot)
+  scene_start
   queue_usd "$SEEDER" 2000000; PRE=$LAST_ID; QUEUED=()
   SEL=$(cast sig "verifyMint(address,bytes32,bytes)" | cut -c3-)
   VERIFIER=$(must "$RELAYER_KEY" create "0x6010600c60003960106000f363${SEL}60e01b60005260206000f3" 0 200000 | awk '{print tolower($2)}')
@@ -905,7 +916,8 @@ console.log("burn states mintCount",BigInt("0x"+w[2]),"mintedTotal",BigInt("0x"+
   time_passes 259201
   [ "$(cast call "$USD" "paused()(bool)" --rpc-url "$RPC")" = false ] || die "the pause did not expire"
   pass "v3 switch: a proof mint to the pair became excess the keeper skimmed; a guardian pause cannot be ended (CommitteeRetired) and expired on its own; swaps, LP exit and burn worked throughout"
-  restore "$SNAP"
+  scene_end
+  fi
 fi
 
 echo "REHEARSAL OK ($MODE, $PASSES checks, $WORK)" | tee -a "$EV/steps.log"
