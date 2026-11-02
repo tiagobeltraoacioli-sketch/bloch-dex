@@ -599,8 +599,10 @@ describe('mainnet route', () => {
       rpcUrls: ['https://l2rpc.blochl1.com'],
       blockExplorerUrls: ['https://explorer.example.invalid'],
     });
-    const approve = requests[4].params![0] as { to: Address; data: Hex };
+    const approve = requests[4].params![0] as { to: Address; data: Hex; chainId?: string };
     expect(approve.to).toBe(BUSDC);
+    // frontends-sec r10: each send names chain 700770, so a wallet that left it refuses.
+    expect(approve.chainId).toBe('0xab162');
     expect(norm(decodeFunctionData({ abi: ERC20_ABI, data: approve.data }).args)).toEqual([
       ROUTER,
       1_000_000n,
@@ -613,8 +615,10 @@ describe('mainnet route', () => {
     const swap = requests.filter((r) => r.method === 'eth_sendTransaction')[1].params![0] as {
       to: Address;
       data: Hex;
+      chainId?: string;
     };
     expect(swap.to).toBe(ROUTER);
+    expect(swap.chainId).toBe('0xab162');
     const decoded = decodeFunctionData({ abi: ROUTER_ABI, data: swap.data });
     expect(decoded.functionName).toBe('swapExactTokensForTokens');
     expect(norm(decoded.args)).toEqual([
@@ -760,7 +764,7 @@ describe('mainnet route', () => {
     });
 
     it('does not warn or ask again while the latest quote stays within the slippage', async () => {
-      const within = { available: true, amountOut: 30_900_000n, minimumOut: 30_745_000n };
+      const within = { available: true, amountOut: 30_900_000n, minimumOut: 30_745_500n };
       await open({ latestQuote: within });
       expect(screen.queryByLabelText('Stale quote')).toBeNull();
       expect((screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement).disabled).toBe(
@@ -1539,6 +1543,9 @@ describe('swap panel safety fixes', () => {
 
 describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
   const VAULT = '0x00000000000000000000000000000000000ba017' as Address;
+  const VAULT_CODE = '0x6005' as Hex;
+  const VAULT_CODE_HASH = keccak256(VAULT_CODE);
+  const ETH_GENESIS = '0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3';
   const head = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as Hex;
   type Bridge = {
     mintCount: bigint;
@@ -1569,7 +1576,7 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
         ethRpcUrl: 'https://eth.example.invalid',
         vault: VAULT,
         token: BUSDC,
-        vaultCodeHash: null,
+        vaultCodeHash: VAULT_CODE_HASH,
       },
     })),
   });
@@ -1604,7 +1611,11 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
     };
     const eth: Rpc = async (method, params) => {
       if (b.ethDown) throw new Error('Ethereum RPC down');
+      if (method === 'eth_chainId') return '0x1';
+      if (method === 'eth_getBlockByNumber' && params[0] === '0x0')
+        return { number: '0x0', hash: ETH_GENESIS };
       if (method === 'eth_getBlockByNumber') return { number: '0x64', hash: `0x${'e'.repeat(64)}` };
+      if (method === 'eth_getCode') return VAULT_CODE;
       const { functionName, args } = decodeFunctionData({
         abi: HOLD_VAULT_ABI as Abi,
         data: (params[0] as { data: Hex }).data,
@@ -1742,7 +1753,7 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
       ethRpcUrl: 'https://eth.example.invalid',
       vault: VAULT,
       token: BUSDC,
-      vaultCodeHash: null,
+      vaultCodeHash: VAULT_CODE_HASH,
     };
     const lag = chains({
       ...clean,
@@ -1772,6 +1783,24 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
     expect((await readBridgeHold(eth, pinned.l2, wrongCode, FINALIZED.hash as Hex)).state).toBe(
       'unknown',
     );
+    // frontends-sec r10: another chain, another genesis or no pinned code never reads as normal.
+    const sepolia: Rpc = (m, p) =>
+      m === 'eth_chainId' ? Promise.resolve('0xaa36a7') : pinned.eth(m, p);
+    expect(await readBridgeHold(sepolia, pinned.l2, cfg, FINALIZED.hash as Hex)).toMatchObject({
+      state: 'unknown',
+      reason: 'the Ethereum RPC serves another chain',
+    });
+    const fork: Rpc = (m, p) =>
+      m === 'eth_getBlockByNumber' && p[0] === '0x0'
+        ? Promise.resolve({ number: '0x0', hash: `0x${'1'.repeat(64)}` })
+        : pinned.eth(m, p);
+    expect((await readBridgeHold(fork, pinned.l2, cfg, FINALIZED.hash as Hex)).state).toBe(
+      'unknown',
+    );
+    const unpinned = { ...cfg, vaultCodeHash: null };
+    expect(
+      (await readBridgeHold(pinned.eth, pinned.l2, unpinned, FINALIZED.hash as Hex)).state,
+    ).toBe('unknown');
   });
 
   it('the network file takes an optional bridge status, and the CSP then admits its Ethereum RPC', () => {
@@ -1781,11 +1810,13 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
       vault: VAULT,
       token: BUSDC,
     };
+    expect(() => parseNetwork(json)).toThrow(/vaultCodeHash is required/);
+    json.bridges[0].status.vaultCodeHash = VAULT_CODE_HASH;
     const parsed = parseNetwork(json);
     expect(parsed.bridges[0].status).toMatchObject({
       vault: VAULT,
       token: BUSDC,
-      vaultCodeHash: null,
+      vaultCodeHash: VAULT_CODE_HASH,
     });
     expect(contentSecurityPolicy(parsed)).toContain(
       "connect-src 'self' https://l2rpc.blochl1.com https://eth.example.invalid ",

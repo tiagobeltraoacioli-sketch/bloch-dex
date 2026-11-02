@@ -498,7 +498,10 @@ function PendingExcess({
     try {
       await ensureChain(wallet.provider, addChainParameters(network));
       const to = wallet.account.address.toLowerCase() as Address;
-      const hash = await sendTransaction(wallet.provider, skimTransaction(pool.address, to));
+      const hash = await sendTransaction(wallet.provider, {
+        ...skimTransaction(pool.address, to),
+        chainId: network.chainId,
+      });
       const receipt = await waitForReceipt(rpc, hash);
       setNote(
         receipt.status === 'success'
@@ -875,7 +878,7 @@ function SwapPanel({
       await requireFinality(rpc);
       if (generation !== formGeneration.current)
         throw new Error('The form changed, so nothing was sent. Get a new quote.');
-      hash = await sendTransaction(provider, build());
+      hash = await sendTransaction(provider, { ...build(), chainId: network.chainId });
       if (onSent) {
         onSent(hash);
         setSteps((all) => all.slice(0, index));

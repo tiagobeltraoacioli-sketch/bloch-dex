@@ -27,6 +27,8 @@ export type TransactionRequest = {
   data: Hex;
   value: bigint;
   gas: bigint;
+  /** Lets the wallet refuse if it left the network checked just before this send. */
+  chainId?: number;
 };
 export type SwapSide = { token: Address; native: boolean };
 
@@ -168,7 +170,16 @@ export async function ensureDevnet4(
 export async function sendTransaction(provider: Provider, tx: TransactionRequest): Promise<Hex> {
   const hash = await provider.request({
     method: 'eth_sendTransaction',
-    params: [{ from: tx.from, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) }],
+    params: [
+      {
+        from: tx.from,
+        to: tx.to,
+        data: tx.data,
+        value: hex(tx.value),
+        gas: hex(tx.gas),
+        ...(tx.chainId === undefined ? {} : { chainId: `0x${tx.chainId.toString(16)}` }),
+      },
+    ],
   });
   refuse(
     typeof hash === 'string' && /^0x[0-9a-fA-F]{64}$/.test(hash),

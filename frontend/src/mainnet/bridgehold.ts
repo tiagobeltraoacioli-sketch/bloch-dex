@@ -21,6 +21,10 @@ export const HOLD_VAULT_ABI = parseAbi([
   'function releasesEnabled() view returns (bool)',
 ]);
 
+/** Ethereum mainnet genesis block hash, as pinned in deployments/mainnet/frontend.bridge.json. */
+export const ETHEREUM_GENESIS =
+  '0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3';
+
 export type BridgeStatusConfig = {
   /** Ethereum RPC the page reads the vault from (a CSP connect-src origin). */
   ethRpcUrl: string;
@@ -89,12 +93,18 @@ export async function readBridgeHold(
 ): Promise<BridgeHold> {
   if (!c) return { state: 'unchecked', reason: 'no bridge status source is configured' };
   try {
+    // Same identity checks as the bridge page: an RPC for another chain, or any
+    // contract at the vault address, must not be able to report "normal".
+    if (BigInt(String(await eth('eth_chainId', []))) !== 1n)
+      throw new Error('the Ethereum RPC serves another chain');
+    const genesis = (await eth('eth_getBlockByNumber', ['0x0', false])) as { hash?: string } | null;
+    if (genesis?.hash?.toLowerCase() !== ETHEREUM_GENESIS)
+      throw new Error('the Ethereum RPC genesis is not Ethereum mainnet');
     const ethFinal = await finalizedEth(eth);
-    if (c.vaultCodeHash) {
-      const code = (await eth('eth_getCode', [c.vault, { blockHash: ethFinal.hash }])) as Hex;
-      if (keccak256(code) !== c.vaultCodeHash)
-        throw new Error('the vault code is not the reviewed one');
-    }
+    if (!c.vaultCodeHash) throw new Error('no reviewed vault code hash is configured');
+    const code = (await eth('eth_getCode', [c.vault, { blockHash: ethFinal.hash }])) as Hex;
+    if (typeof code !== 'string' || code === '0x' || keccak256(code) !== c.vaultCodeHash)
+      throw new Error('the vault code is not the reviewed one');
     const [final, latest] = await Promise.all([
       side(eth, l2, c, { blockHash: ethFinal.hash }, { blockHash: l2Final }),
       side(eth, l2, c, 'latest', 'latest'),

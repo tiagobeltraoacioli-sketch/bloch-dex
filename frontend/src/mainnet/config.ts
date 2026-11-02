@@ -76,7 +76,9 @@ function refuse(condition: unknown, message: string): asserts condition {
 
 const HASH = /^0x[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
-const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?(\/.*)?$/;
+const LOOPBACK = __POSTERN_LOCAL_RENDER__
+  ? /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?(\/.*)?$/
+  : /^$/;
 
 /** https only; plain http only for loopback (a local render check). */
 export function safeUrl(value: unknown, field: string): string | null {
@@ -89,7 +91,7 @@ export function safeUrl(value: unknown, field: string): string | null {
     throw new MainnetConfigError(`mainnet configuration: ${field} is not a URL`);
   }
   refuse(
-    (url.protocol === 'https:' || LOOPBACK.test(value)) &&
+    (url.protocol === 'https:' || (__POSTERN_LOCAL_RENDER__ && LOOPBACK.test(value))) &&
       !url.username &&
       !url.password &&
       !url.hash,
@@ -157,7 +159,8 @@ function parseBridgeStatus(value: unknown, field: string): BridgeStatusConfig | 
   refuse(typeof v.vault === 'string' && ADDRESS.test(v.vault), `${field}.vault`);
   refuse(typeof v.token === 'string' && ADDRESS.test(v.token), `${field}.token`);
   const hash = v.vaultCodeHash ?? null;
-  refuse(hash === null || (typeof hash === 'string' && HASH.test(hash)), `${field}.vaultCodeHash`);
+  // Required: without it any contract at the vault address could report "normal".
+  refuse(typeof hash === 'string' && HASH.test(hash), `${field}.vaultCodeHash is required`);
   return {
     ethRpcUrl,
     vault: v.vault as Address,

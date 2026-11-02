@@ -1,3 +1,4 @@
+import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
@@ -37,8 +38,23 @@ const devnet4Proxy = {
   },
 };
 
-export default defineConfig({
+// Any of these makes a build a local render build: loopback RPC URLs are then
+// accepted, the RPC overrides apply and the page shows a "not for publication" banner.
+const RENDER_OVERRIDES = [
+  'POSTERN_MAINNET_NETWORK',
+  'POSTERN_MAINNET_RECORD',
+  'VITE_MAINNET_RPC_URL',
+  'VITE_BRIDGE_ETH_RPC_URL',
+];
+
+export default defineConfig(({ command, mode }) => ({
   plugins: [react()],
+  define: {
+    __POSTERN_LOCAL_RENDER__: JSON.stringify(
+      command === 'serve' ||
+        RENDER_OVERRIDES.some((name) => Boolean(env[name] || loadEnv(mode, '.', 'VITE_')[name])),
+    ),
+  },
   base: './',
   resolve: {
     alias: {
@@ -69,4 +85,4 @@ export default defineConfig({
     setupFiles: ['./src/test/setup.ts'],
     restoreMocks: true,
   },
-});
+}));
