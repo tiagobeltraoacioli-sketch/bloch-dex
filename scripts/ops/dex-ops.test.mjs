@@ -295,6 +295,19 @@ test("monitor: stranded LP shares are CRIT, a leftover allowance WARN, extra pai
   assert.deepEqual(levelOf(await runMonitor(gate, {}, paused.request, monitorDeps(paused)), "bridge_token"), [WARN]);
 });
 
+test("monitor: the owner's LP floor (--lp-min-shares) is CRIT below it and absent when unset", async () => {
+  // The fake node answers balanceOf(any holder) on the pair with lpInPair.
+  const options = { expectSeeded: true, lpRecipient: KEEPER };
+  const above = fakeNode({ lpInPair: 10n ** 13n });
+  assert.deepEqual(levelOf(await runMonitor(gate, { ...options, lpMinShares: "5000000000000" }, above.request, monitorDeps(above)), "lp_floor"), [OK]);
+  const below = fakeNode({ lpInPair: 4_999_999_999_999n });
+  const result = await runMonitor(gate, { ...options, lpMinShares: "5000000000000" }, below.request, monitorDeps(below));
+  assert.deepEqual(levelOf(result, "lp_floor"), [CRIT]);
+  assert.match(result.checks.find((c) => c.name.startsWith("lp_floor")).detail, /A98-5/);
+  assert.deepEqual(levelOf(await runMonitor(gate, options, below.request, monitorDeps(below)), "lp_floor"), []);
+  assert.deepEqual(levelOf(await runMonitor(gate, { ...options, lpMinShares: "0" }, below.request, monitorDeps(below)), "lp_floor"), []);
+});
+
 test("monitor: BridgedStablecoinV3 queue and switch are reported, a V2 token still reads", async () => {
   const ZERO = `0x${"0".repeat(40)}`;
   const detail = (r) => r.checks.filter((c) => c.name.startsWith("bridge_token")).map((c) => c.detail).join("\n");

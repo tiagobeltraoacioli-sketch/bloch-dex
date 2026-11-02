@@ -34,6 +34,7 @@ Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means 
 | `fee_tracking` | finalized | | `kLast` is zero on a seeded pair |
 | `safe_allowance` | finalized | the Safe still has an LP allowance to the router | |
 | `lp_in_pair` | latest | | LP shares sit in the pair; anyone can burn them to themselves |
+| `lp_floor` | latest, with `--expect-seeded --lp-recipient` and `--lp-min-shares N` above 0 (opening form, `DEX_LP_MIN_SHARES`) | | the LP recipient holds fewer than the owner's floor: a full exit reopens the pair to anyone at any price (A98-5, `OPS-INITIAL-LIQUIDITY.md`) |
 | `bridge_token` | latest | mints paused | |
 | `bridge_exit[bUSDC]` | token at L2 finalized and latest; vault at Ethereum finalized and latest, with `--eth-rpc` and `--bridge-vault` (agent 144) | vault guardian pause or releases disabled: exits wait for the term | **held**: the token's mint chain differs from the vault's deposit chain, or it credited more mints than the vault has deposits even at latest. The vault refuses every burn from then on, including bUSDC taken out of the pool. A read failure is UNKNOWN, never OK |
 | `reference_price` | latest | 5% from `--ref-price` | 15% |

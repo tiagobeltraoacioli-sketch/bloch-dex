@@ -108,8 +108,19 @@ The Safe and the Multicall3 and CREATE2 deployments are kept. This procedure has
 
 ## After the seed
 
-**The first-deposit rule does not come back.** If every LP exits, 1,000 locked shares remain, so anyone can `sync` a new price over the dust reserves and deposit. Keep a position in the pool, or treat a full exit as reopening the pair to everyone (agent 98, A98-5).
+**The first-deposit rule does not come back.** If every LP exits, 1,000 locked shares remain, so anyone can `sync` a new price over the dust reserves and deposit. Keep a position in the pool, or treat a full exit as reopening the pair to everyone (agent 98, A98-5). The owner chooses in the opening form (`OWNER-OPENING-FORM.md`, `seederExit`); the recommendation is a floor of 10% of the seed position. Rehearsed on anvil (`scripts/ops/rehearse-opening.sh`, section X, at P = 100):
 
-- Run the monitor with `--expect-seeded --lp-recipient <LP recipient>`. Below half the shares it reports `lp_recipient` CRIT. If the recipient exits on purpose, lower `--lp-min-bps`.
+| After a full exit | Measured |
+|---|---|
+| What stays | 1 bUSDC unit and 1e8 wei WBLCH; the rounding makes the pool price 10,000 |
+| Repricing by a stranger | 1.99e-8 WBLCH donated and `sync`: price 50. It then filled to the WBLCH cap (9.9 WBLCH + 495 bUSDC); further deposits revert |
+| Donation to the k ceiling | 8 WBLCH + 800 bUSDC donated and `sync`: the reserves belong only to the locked shares. No deposit passes and no burn is possible, permanently. Swaps work |
+| The same donation with a 10% floor | It went to the LP recipient: 6.75 BLCH + 675 bUSDC recovered on exit, and the room reopened |
+| Reopening with `dex-seed-plan.mjs` | `correct-price` gives a swap whose output is 0 bUSDC; it reverts every round. See below |
+| After trading | The Safe's protocol-fee shares remain, worth dust (0.12 bUSDC) |
+
+**Reopening after a full exit** (only if nobody else has deposited): the planner's swap cannot move a 1-unit reserve. Donate WBLCH to the pair to set P over the dust, `sync`, then plan again: the planner returns `top-up`; send its two steps and `verify`. The amount is `bUSDC reserve * 1e18 / (P * 1e6) - WBLCH reserve` wei (9.9e9 wei at P = 100). The donation goes to the locked shares. Rehearsed in section X5b.
+
+- Run the monitor with `--expect-seeded --lp-recipient <LP recipient> --lp-min-shares <floor>`. Below half the shares it reports `lp_recipient` CRIT; below the floor it reports `lp_floor` CRIT. If the recipient exits on purpose, lower `--lp-min-bps`; `--lp-min-shares 0` removes the floor check.
 - Start the keeper.
 - Add liquidity only pro rata through the router. A deposit reverts if a reserve would pass its cap (`RESERVE_CAP`) or if `k` would pass the ceiling (`K_CEILING`). Both a filled pool and a side at its cap close deposits, and no swap reopens a filled one.

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.opening-form.v1",
+  "openingPrice": "TBD-owner",
+  "busdcCap": "auto",
+  "firstDepositor": "TBD-owner",
+  "lpRecipient": "TBD-owner",
+  "seederExit": {
+    "policy": "TBD-owner",
+    "floorBps": 1000
+  },
+  "keeper": {
+    "address": "TBD-owner",
+    "keystore": "TBD-owner",
+    "passwordFile": "TBD-owner",
+    "budgetWei": "50000000000000000",
+    "maxTx": 48
+  },
+  "seed": {
+    "fractionBps": 5000,
+    "deadlineMin": 120
+  },
+  "bridgeStatus": {
+    "ethRpcUrl": "TBD-owner",
+    "vault": "TBD-owner",
+    "vaultCodeHash": "TBD-owner"
+  },
+  "site": {
+    "rpcUrl": "https://l2rpc.blochl1.com",
+    "rpcStatus": "placeholder",
+    "explorerUrl": null,
+    "depositUrl": null,
+    "withdrawUrl": null,
+    "docsUrl": null
+  },
+  "fromEarlierSteps": {
+    "dexDeployer": "TBD-owner",
+    "safeOwners": ["TBD-owner", "TBD-owner", "TBD-owner", "TBD-owner", "TBD-owner"],
+    "busdcToken": "TBD-owner",
+    "busdcCodeHash": "TBD-owner",
+    "busdcBucketCapacity": "10000000000"
+  }
+}
