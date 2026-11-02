@@ -384,11 +384,23 @@ need the Bloch L2 binaries and are not required for the audit.
 
 ## 11. Related engagement: bUSDC bridge V3
 
-The quote token's bridge is scoped separately in `bloch-l2-bridge`
-`docs/AUDIT-SCOPE-BRIDGE-V3.md` (`codex/bridge-audit-scope-v3-r8-20261102` @ `323eddd`,
-target `9f91a56`; contracts unchanged at `5fb9cf0`). Its contract scope is about
-1,600 nSLOC (`BridgedStablecoinV3` 136, `BridgedStablecoinV2` 286,
-`SignerMintedToken` 303, `ProvenanceSourceVault` 484, `ContextBoundSourceVault`
-360, `SP1ReleaseVerifier` 33), plus about 5,700 lines of Python daemons and an
-SP1 light-client release guest in Rust. We welcome a quote for both, with the DEX
-and bridge contracts as one engagement and the daemons and the guest as options.
+The quote token's bridge has its own request for proposal: `bloch-l2-bridge`
+`docs/AUDIT-RFP-BRIDGE-V3.md` (`codex/bridge-rfp-r10-20261102` @ `a44b9b0`), with a
+proposed freeze commit `125227b` (bridge V3 `5fb9cf0` plus
+`RecoverableReleaseVerifier`). Its size, by the same counting method:
+
+| Track | Size |
+|---|---|
+| A1 Solidity | 1,435 nSLOC (`BridgedStablecoinV3` 136, `BridgedStablecoinV2` 286, `SignerMintedToken` 303, `ProvenanceSourceVault` 484, `RecoverableReleaseVerifier` 193, `SP1ReleaseVerifier` 33) |
+| A2 Python daemons that hold keys or decide | 4,710 logical lines |
+| B SP1 guests and the light-client code they run | about 3,690 nSLOC (Rust) |
+| C frontend (optional) | 2,909 SLOC |
+
+The DEX and the bridge share one launch: the only planned pair is WBLCH/bUSDC.
+We welcome one proposal that covers both, with separate line items and separate
+reports:
+
+1. **DEX phase** (this package, tiers A and B; tier C optional). The code is frozen.
+2. **Bridge phase**, tracks A1 and A2, and B if the firm has zkVM experience.
+3. **The DEX and bUSDC integration** (section 5), reviewed once.
+4. One fix review per phase.
