@@ -5,6 +5,10 @@ It records the scope, the differences from upstream Uniswap V2, the invariants
 the test suite enforces, the internal review findings and the known issues.
 It is an internal review, not an audit.
 
+For the external audit, start with `AUDIT-PACKAGE-DEX.md`: revision and code
+hashes at RC `86c6f2c6`, nSLOC, invariant-to-test map and the status of every
+known finding (agents 17, 51, 61 and 98).
+
 ## 1. Revision
 
 | Item | Value |
