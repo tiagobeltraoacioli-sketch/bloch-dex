@@ -12,6 +12,7 @@ import {
   type Hex,
 } from 'viem';
 import type { DevnetDeployment, DevnetToken } from './record';
+import { SLIPPAGE_RANGE_TEXT, isAllowedSlippageBps } from '../slippage';
 
 export type Rpc = (method: string, params: unknown[]) => Promise<unknown>;
 
@@ -220,10 +221,7 @@ export async function quoteExactInput(
 ): Promise<LensQuote | null> {
   refuse(tokenIn !== tokenOut, 'choose two different tokens');
   refuse(amountIn > 0n, 'the amount must be positive');
-  refuse(
-    Number.isInteger(slippageBps) && slippageBps >= 1 && slippageBps <= 500,
-    'slippage must be 0.01% to 5%',
-  );
+  refuse(isAllowedSlippageBps(slippageBps), `slippage must be ${SLIPPAGE_RANGE_TEXT}`);
   const routes = routesFor(d, tokenIn, tokenOut);
   refuse(routes.length > 0, 'no route between these tokens');
   type Quote = {

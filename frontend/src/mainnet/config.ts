@@ -30,9 +30,8 @@ const INFRA_PLAN_DOMAIN = 'postern.dex.mainnet-infra-plan.v1';
 export const MULTICALL3_CODE_HASH =
   '0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891';
 
-/** Slippage: 0.50% by default; the lens and this route accept 0.01% to 5.00%. */
-export const DEFAULT_SLIPPAGE_BPS = 50;
-export const MAX_SLIPPAGE_BPS = 500;
+/** Slippage: 0.50% by default, 0.01% to 3.00% (owner decision DEX-5); defined in src/slippage.ts. */
+export { DEFAULT_SLIPPAGE_BPS, MAX_SLIPPAGE_BPS, RETRY_SLIPPAGE_BPS } from '../slippage';
 /**
  * Deadline: one L2 block per settlement proof (10–20 minutes observed on
  * devnet4), so 60 minutes leaves room for a missed block or two; 10–180.

@@ -164,7 +164,8 @@ cannot disagree.
 - Balances, allowances, caps and the binding quote are read at the finalized
   block. The lens quote is also taken at `latest`. If it falls below the active
   quote's minimum output, the site warns and disables Swap until the user
-  reconfirms at the latest price; the default slippage stays 0.50%. The check
+  reconfirms at the latest price; the default slippage stays 0.50%, and the
+  maximum is 3.00% (DEX-5). The check
   runs again when Swap is pressed.
 - A donation above the reserves (accepted residual risk DEX-02) is shown per
   pool with a `skim` action. The lens reports such a route as unavailable.

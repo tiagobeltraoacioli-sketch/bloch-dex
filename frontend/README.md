@@ -395,9 +395,21 @@ an error, never a fallback. URLs must be `https` without credentials.
   input still fits. A quote shows the share of each cap's headroom it uses and
   the conditions that can still revert it (cap filled by others, price move
   beyond slippage, deadline).
-- **Defaults.** Slippage 0.50% (0.01–5.00%); deadline 60 minutes (10–180),
-  because there is one L2 block per settlement proof. A swap above your
-  finalized balance is blocked.
+- **Defaults.** Slippage 0.50% (0.01–3.00%, owner decision DEX-5; every form
+  and quote takes its limits from `src/slippage.ts` only); deadline 60 minutes
+  (10–180), because there is one L2 block per settlement proof. A swap above
+  your finalized balance is blocked.
+- **One retry after a revert on the minimum.** The settled RPC has no trace, so
+  when a sent swap reverts, `src/mainnet/retry.ts` reads the chain: past the
+  deadline at the swap's block means `BDEX: EXPIRED`; the router's
+  `getAmountsOut` for the same amount and path below the signed minimum at the
+  start or end of that block means `BDEX: INSUFFICIENT_OUTPUT_AMOUNT`. Only then,
+  and only for a first attempt below 1%, the page explains that someone most
+  likely traded the same way in the same block and offers "Retry once at
+  1.00%", which refills the form and quotes again. The retry is never above the
+  3% maximum, and a retry that also reverts gets no further offer. Any other
+  cause, or a sandwich whose back-run restored the price inside the block, is
+  reported as unknown with no offer. The offer is not kept across a reload.
 - **Wallet.** `wallet_switchEthereumChain` to `0xab162`, falling back to
   `wallet_addEthereumChain` with the network file's RPC and explorer; exact
   approvals; explicit gas limits; explorer links for transactions when an
