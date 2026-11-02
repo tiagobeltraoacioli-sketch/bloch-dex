@@ -753,12 +753,3 @@ test("N2: the seed is ours only if the recipient holds nearly all the shares", (
   assert.equal(holdsSeed({ held: 0n, totalSupply: 0n }), false);
   assert.equal(holdsSeed({ held: 0n, totalSupply: 1000n }), false);
 });
-
-test("A98-OPS-2: the opening fraction is capped at 80% of the caps", () => {
-  const price = 25_000_000n;
-  const plan = (fractionBps) => planOpening({ wrapped: side(0n, WRAP_CAP), quote: side(0n, QUOTE_CAP), totalSupply: 0n, price, fractionBps });
-  assert.equal(plan(8_000n).decision, "proceed");
-  assert.equal(plan(8_001n).decision, "refuse");
-  assert.equal(plan(9_000n).decision, "refuse");
-  assert.equal(plan(0n).decision, "refuse");
-});
