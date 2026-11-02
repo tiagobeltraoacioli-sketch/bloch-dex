@@ -228,6 +228,16 @@ function smallSwapFits(into, outOf) {
   return within(into.balance + input, into) && within(outOf.balance - output, outOf);
 }
 
+/// The pool's k is within one reserve of the 64% ceiling: the contract's K_CEILING_BPS. Swap
+/// fees stay outside the reserves there, so LPs and the protocol fee earn nothing from them
+/// and anyone can take them with skim (limit L2 of the k ceiling).
+export function isAtKCeiling(state) {
+  const [a, b] = state.sides;
+  if (a.cap === 0n || b.cap === 0n) return false;
+  const margin = a.reserve > b.reserve ? a.reserve : b.reserve;
+  return a.reserve * b.reserve + margin > (a.cap * b.cap * 6400n) / 10_000n;
+}
+
 /// Unrecorded balance stops swaps of a useful size in both directions until someone
 /// skims (limit L3 of the k ceiling). A much larger swap can still pass when its output
 /// pays the excess down. The real closure with 200 bUSDC + 2 WBLCH looked like this:
@@ -235,6 +245,22 @@ function smallSwapFits(into, outOf) {
 export function isClosedByExcess(state) {
   const [a, b] = state.sides;
   return state.sides.some((s) => s.balance > s.reserve) && !smallSwapFits(a, b) && !smallSwapFits(b, a);
+}
+
+/// What a closure stops. Swaps into a full side revert at any size. A swap out of an overfull
+/// side passes if its output pays down that side's balance above max(cap, reserve), which is
+/// `minOutput`; zero on every side means both balances are at their caps and nothing passes.
+/// `hard` means an excess at or above the floor, so the griefer has the floor at stake and
+/// ordinary swaps stop. A soft closure stops only swaps below the floor, costs about 1 USD
+/// when a side already sits at its cap, and must not cost the keeper as if it were hard.
+export function closureOf(state, floorBps = DEFAULT_EXCESS_FLOOR_BPS) {
+  if (!isClosedByExcess(state)) return null;
+  const over = state.sides.map((s) => {
+    const bound = s.cap === 0n ? s.balance : s.cap > s.reserve ? s.cap : s.reserve;
+    return s.balance > bound ? s.balance - bound : 0n;
+  });
+  const hard = state.sides.some((s) => s.balance - s.reserve >= excessFloor(s, floorBps));
+  return { hard, minOutput: over, tokens: state.sides.map((s) => s.token) };
 }
 
 /// Parse a decimal string into base units. Refuses precision it would lose.

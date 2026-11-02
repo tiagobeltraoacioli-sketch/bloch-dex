@@ -8,7 +8,7 @@ Both read the schema-2 gate file written by `deploy-dex.mjs record`, so they hav
 Read-only: it holds no key and its RPC client refuses any method outside a read list. Run it against your own settled RPC.
 
 ```
-node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --rpc http://127.0.0.1:18955 --expect-seeded --lp-recipient TBD-owner
+node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --rpc http://127.0.0.1:18955 --expect-seeded --lp-recipient TBD-owner --keeper-state /var/lib/bloch-dex-keeper/state.json
 ```
 
 Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means the node did not answer; it says nothing about the chain. `--json` prints the same checks for a pipeline. The monitor does not send alerts: use `OnFailure=` on the unit (WARN is a success status in the example unit, CRIT and UNKNOWN fail it) or feed `--json` to your alerting.
@@ -26,6 +26,9 @@ Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means 
 | `reserve_cap` | latest | at 80% of the cap, or at the cap | above the cap, or no cap |
 | `pending_excess[latest]` | latest | blocking | balance below reserve |
 | `pending_excess[finalized]` | finalized | material | blocking: it has stood about 100 minutes, so the keeper did not clear it |
+| `closed_by_excess` | latest, finalized | soft: only swaps below the floor stop | hard: an excess at or above the floor closes the pair |
+| `k_ceiling` | latest | at the ceiling: swap fees reach neither LPs nor the Safe | |
+| `keeper_budget` | keeper state file, with `--keeper-state` | 3 or more skims that moved nothing in 24 h, or half the count used | count used up, or the state file is unreadable |
 | `price_drift` | both | 10% between finalized and latest | 50% |
 | `fee_accrued` | finalized | | facts only: minted LP, pending LP, reserve share |
 | `fee_tracking` | finalized | | `kLast` is zero on a seeded pair |
@@ -74,8 +77,11 @@ Signing goes through `cast mktx`; the keeper never sees the key. Use a fresh add
 
 | Limit | Option | Default |
 |---|---|---|
-| Budget, rolling 24 h, worst case reserved before signing | `--budget-wei` | 0.01 BLCH |
-| Transactions per 24 h | `--max-tx` | 8 |
+| Budget, rolling 24 h, worst case reserved before signing | `--budget-wei` | 0.05 BLCH |
+| Transactions per 24 h | `--max-tx` | 48 |
+| Share of the count a soft closure may use | `--soft-share-bps` | 2,500 |
+| Share of the count kept for a hard closure | `--hard-reserve-bps` | 2,500 |
+| Lowest tip, and the top of the climbing range | `--tip-wei`, `--max-tip-wei` | 1 gwei, 8 gwei |
 | Fee ceiling | `--max-fee-wei` | 20 gwei |
 | Gas limit ceiling (1.2 x the estimate must fit) | `--max-gas` | 150,000 (measured use 77,000) |
 | Floor | `--floor-bps` | 100 |
@@ -89,7 +95,8 @@ Exit status: 0 nothing needed, sent, waiting or cooling down; 1 needs attention 
 | Attack | What happens | Cost to the attacker |
 |---|---|---|
 | Dust donations to drain gas | No transaction | Gas |
-| Repeated material donations | Each one is sent to the Safe. At most 8 keeper transactions a day, and the budget holds | The floor or more per transaction, forfeited |
+| Repeated material donations | Each one is sent to the Safe. At most `--max-tx` keeper transactions a day, and the budget holds | The floor or more per transaction, forfeited |
+| About 1 USD on a side already at its cap (soft closure) | Stops only swaps smaller than the donation. The keeper keeps its cooldown and backoff, and spends at most a quarter of its count | About 95k gas a round; the donation only if it loses |
 | Donate, then front-run the keeper's skim to get the money back | The skim moves nothing, is recorded as wasted, and the keeper backs off exponentially (2x, 4x… the cooldown, capped at 6 h). Measured on anvil | Gas only, but the capital is exposed: if the keeper lands first it goes to the Safe |
 | Donate just before a user's swap, skim right after | The user's swap reverts inside that block. No keeper can prevent this; ordering decides it | Gas. This is the accepted residual of DEX-02 |
 | Steal the keeper key | Only the gas balance is at risk; recipient and pair are not options | |
@@ -107,8 +114,61 @@ State is written before publishing. A crash after that leaves a `pending` entry;
 
 ## Both directions closed by excess
 
-Unrecorded balance can stop ordinary swaps both ways until someone calls `skim`. It takes about 2 WBLCH + 200 bUSDC from a pool at the ceiling, which go to whoever skims.
+Unrecorded balance can stop swaps both ways until someone calls `skim`. A swap into a full side reverts at any size. A swap out of an overfull side passes if it takes out at least that side's balance above its cap, so a closure is only as wide as the donation.
 
-- The monitor reports `closed_by_excess` as CRIT at latest and at finalized. It means a swap of 0.1% of a cap reverts both ways. A much larger swap can still pass if its output pays the excess down. One side above its cap can be enough, and a small donation can do it when that side's reserve is already at its cap, so this check does not use the dust floor.
-- The keeper treats this pair first, and skips its backoff and cooldown. It keeps the budget, the transaction count, the fee ceiling and the simulation.
-- **A griefer can race the keeper.** If its own skim lands first, it gets the donation back and the pair reopens, and the keeper pays for one wasted skim. Repeating this spends the griefer's gas and the keeper's budget, at most `--max-tx` transactions per 24 h. When the budget is gone the keeper stops (`budget-exhausted`, exit 1), and the pair stays closed until anyone skims. Rehearsed on anvil only, with one race; ordering on the L2 is not tested.
+| Closure | What it takes | What stops | Monitor | Keeper |
+|---|---|---|---|---|
+| Soft | About 1 USD when a side's reserve already sits at its cap: 0.0397 WBLCH at a pool price of 25 | Swaps smaller than the excess, and the full side's inflow, which its cap already stopped | WARN, names the size that passes | Cooldown and backoff apply, a quarter of the count |
+| Hard | An excess of at least the floor, 1% of a cap. About 2 WBLCH + 200 bUSDC from a pool at the ceiling, which go to whoever skims | Ordinary swaps | CRIT at latest and at finalized | First, skips backoff and cooldown. If it stops at a limit its exit is CRIT |
+
+The closed test is a swap of 0.1% of a cap reverting both ways; the floor sets soft or hard.
+
+**A griefer can race the keeper, and it wins whenever it pays more.** On the private L2 (real selector, synthetic finality), seeing only the keeper's pending nonce, it won 8 of 8 rounds at a 3 gwei tip against the fixed 1 gwei of the old defaults. The old 8-transaction limit was gone for about 0.0028 BLCH of gas and no lost capital. Now:
+
+- The tip varies between `--tip-wei` and a top that doubles with each wasted skim, up to `--max-tip-wei`. A griefer below the top risks its donation.
+- A griefer that skims above the keeper can only re-donate below the keeper's tip in the same block, or the keeper takes the donation. A user whose tip is above that re-donation trades in between. See the agent report for the run.
+- Nothing stops a griefer who always pays above the top. It then pays more than the keeper per round, and the limit runs out at a known cost. When it does, the keeper stops with exit 2 on a hard closure.
+
+When `keeper_budget` warns or the keeper stops:
+
+1. Check `closed_by_excess[latest]`. A soft closure can wait.
+2. A hard closure holds at least 1% of a cap, free to anyone. Skim it by hand with the command above, from any funded key.
+3. Raise `--max-tx` and `--budget-wei` for a day if the race goes on. Each round costs the griefer more than it costs you.
+
+## The k ceiling
+
+At the ceiling a swap's fee stays outside the reserves. LPs and the Safe earn nothing from it, and anyone can take it with `skim`. The monitor warns with `k_ceiling`. Measured on the private L2 at exactly 64% of the caps, 150 alternating swaps of 4% of the input reserve:
+
+| | At 50% of the caps | Exactly at the ceiling |
+|---|---|---:|
+| k growth | 1.7% on $2,955 of volume | 0 on $4,708 |
+| Protocol fee pending | 15.95 bps of supply | 0 |
+| Unrecorded at the end | 0 | $136, 2.9% of volume |
+| Keeper's first action, floor 1% | none | swap 43, $1,350 of volume |
+
+The excess is about ten times the 0.3% fee, because a standing excess fills later trades with the reserves unmoved: those traders still get their quote, and the excess keeps their price impact. It costs LPs nothing beyond the missing fee.
+
+The keeper sends what it skims to the Safe, so at the ceiling the fee that used to be the LPs' goes to the Safe or to a faster skimmer. A lower floor at the ceiling would collect more for the Safe. That is an owner decision and is not implemented.
+
+## Storage footprint
+
+The settlement guest loads the complete storage of every account a block touches, about 12.5k instructions per slot. A swap touches the pair, WBLCH and bUSDC, so their slots add up. `scripts/ops/dex-storage-footprint.mjs` counts them from logs and calls, and compares the sum with what the proven class allows at the current L2 height. It holds no key.
+
+```
+node scripts/ops/dex-storage-footprint.mjs --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --state /var/lib/bloch-dex-keeper/footprint.json
+```
+
+Exit status as the monitor. WARN at 37.5% and CRIT at 62.5% of the capacity at that height. It matched anvil's state dump exactly at 1,543 slots.
+
+| Action | Pair | WBLCH | bUSDC |
+|---|---:|---:|---:|
+| Swap, a holder that already has a balance | 0 | 0 | 0 |
+| Swap BLCH to bUSDC, new holder | 0 | 0 | +1 |
+| Sell bUSDC, exact approve (the mainnet page) | 0 | 0 | 0, or -1 when selling all |
+| Sell bUSDC, unlimited approve (other wallets) | 0 | 0 | +1, once |
+| Bridge deposit | 0 | 0 | +2 first, then +1 each, forever |
+| Bridge burn of all | 0 | 0 | 0 |
+| New LP | +2 | 0 | 0 |
+| Any `approve` to a fresh spender, no balance needed | +1 | +1 | +1 |
+
+The router and Lens hold no storage. A griefer can add about 580 slots per 15M-gas block to any one of the three, for about 26 microBLCH each. This tool sees that; it cannot stop it. Only the guest or the sequencer can.

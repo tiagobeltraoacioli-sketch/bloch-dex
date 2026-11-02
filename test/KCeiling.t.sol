@@ -157,3 +157,58 @@ contract KCeilingTest is TestBase {
         assertTrue(a0 > 0 && a1 > 0);
     }
 }
+
+/// Agent 96: griefing and fee behaviour exactly at the ceiling. Regression only, no contract change.
+contract KCeilingGriefingTest is KCeilingTest {
+    function testAboutOneDollarClosesOnlySwapsSmallerThanTheDonation() public {
+        mintAt(5 ether, 500e6);
+        sell(true, 5 ether); // WBLCH exactly at its cap: reserve 10, about 250 bUSDC, price about 25.
+        (uint256 rw, uint256 rq) = reserves();
+        assertEq(rw, CAP_W);
+        // 0.1% of the bUSDC cap takes out about 0.0397 WBLCH. Donate a little more.
+        uint256 output = 1e6 * 997 * rw / (rq * 1000 + 1e6 * 997);
+        w.transfer(address(pair), output + 1e15);
+        // Too small to pay the excess down: reverts on the cap check.
+        q.transfer(address(pair), 1e6);
+        bool outIs0 = wFirst;
+        vm.expectRevert(bytes("BDEX: RESERVE_CAP"));
+        pair.swap(outIs0 ? output : 0, outIs0 ? 0 : output, address(this), "");
+        // A swap of 2 bUSDC (1 already sent) takes out more than the donation and passes.
+        q.transfer(address(pair), 1e6);
+        uint256 larger = 2e6 * 997 * rw / (rq * 1000 + 2e6 * 997);
+        pair.swap(outIs0 ? larger : 0, outIs0 ? 0 : larger, address(this), "");
+        pair.skim(address(0xD0));
+    }
+
+    function testExactlyAtTheCeilingFeesLeaveTheReservesBothWays() public {
+        mintAt(8 ether, 800e6);
+        (uint256 rw, uint256 rq) = reserves();
+        assertEq(rw * rq, CEILING);
+        uint256 lastK = rw * rq;
+        for (uint256 i; i < 6; ++i) {
+            sell(i % 2 == 0, i % 2 == 0 ? 0.2 ether : 20e6);
+            (rw, rq) = reserves();
+            assertTrue(rw * rq <= CEILING);
+            // Rounds down by at most one reserve, and never grows.
+            assertTrue(rw * rq + (rw > rq ? rw : rq) >= lastK);
+        }
+        // The fee is outside the reserves, so the excess is non-zero and k did not grow.
+        assertTrue(w.balanceOf(address(pair)) + q.balanceOf(address(pair)) > rw + rq);
+        // No protocol fee shares from it: a burn after this mints nothing to feeTo.
+        assertEq(pair.balanceOf(address(0x5AFE)), 0);
+        pair.transfer(address(pair), pair.balanceOf(address(this)) / 10);
+        pair.burn(address(this));
+        assertEq(pair.balanceOf(address(0x5AFE)), 0);
+    }
+
+    function testSyncRefusesAboveTheCeilingAndOneUnitMoreMintRefuses() public {
+        mintAt(8 ether, 800e6);
+        q.transfer(address(pair), 1);
+        vm.expectRevert(bytes("BDEX: K_CEILING"));
+        pair.sync();
+        w.transfer(address(pair), 0.01 ether);
+        q.transfer(address(pair), 1e6);
+        vm.expectRevert(bytes("BDEX: K_CEILING"));
+        pair.mint(address(this));
+    }
+}

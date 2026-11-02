@@ -3,10 +3,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  ABI, CRIT, CallReverted, OK, RpcError, UNKNOWN, WARN, classifyExcess, createRequest, excessFloor, isBricked, isClosedByExcess, keccak256, parseUnits, formatUnits, worst,
+  ABI, CRIT, CallReverted, OK, RpcError, UNKNOWN, WARN, classifyExcess, closureOf, createRequest, excessFloor, isAtKCeiling, isBricked, isClosedByExcess, keccak256, parseUnits, formatUnits, worst,
 } from "./dex-ops-lib.mjs";
-import { runMonitor } from "./dex-monitor.mjs";
-import { DEFAULTS, runKeeper } from "./dex-skim-keeper.mjs";
+import { checkKeeperState, runMonitor } from "./dex-monitor.mjs";
+import { DEFAULTS, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
 import { checkNotedTxs, holdsSeed, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
 import { createRequire } from "node:module";
@@ -144,14 +144,15 @@ const account = privateKeyToAccount(`0x${"11".repeat(32)}`);
 const keeperOptions = (extra = {}) => ({
   keeper: account.address, execute: true, budgetWei: DEFAULTS.budgetWei, maxTx: DEFAULTS.maxTx, maxFeeWei: DEFAULTS.maxFeeWei,
   tipWei: DEFAULTS.tipWei, maxGas: DEFAULTS.maxGas, floorBps: DEFAULTS.floorBps, cooldownSeconds: DEFAULTS.cooldownSeconds,
-  pendingTimeoutSeconds: DEFAULTS.pendingTimeoutSeconds, ...extra,
+  pendingTimeoutSeconds: DEFAULTS.pendingTimeoutSeconds, maxTipWei: DEFAULTS.maxTipWei, softShareBps: DEFAULTS.softShareBps,
+  hardReserveBps: DEFAULTS.hardReserveBps, ...extra,
 });
 const emptyKeeperState = () => ({ schema: "postern.dex.skim-keeper.v1", txs: [], consecutiveWasted: 0, nextAllowedAt: 0 });
 const signer = async ({ chainId, nonce, gasLimit, maxFee, tip, to, data }) =>
   account.signTransaction({ chainId, nonce: Number(nonce), gas: gasLimit, maxFeePerGas: maxFee, maxPriorityFeePerGas: tip, to, data, type: "eip1559" });
 function keeperDeps(node, now = 1_000_000) {
   const saves = [];
-  return { request: node.request, sign: signer, now, save: (s) => saves.push(JSON.stringify(s)), saves };
+  return { request: node.request, sign: signer, now, save: (s) => saves.push(JSON.stringify(s)), saves, random: () => 0n };
 }
 const ABOVE_CAP = [CAP0 + 1n, 5n * 10n ** 18n];
 
@@ -581,6 +582,126 @@ test("L3: the monitor reports a closed pair as CRIT at latest and names it", asy
   assert.equal(closed.level, CRIT);
   assert.match(closed.detail, /pair closed/);
   assert.match(closed.name, /:latest\]$/);
+});
+
+// Agent 96's measured state: WBLCH exactly at its cap after a fall, on a pair seeded at 5 + 500.
+const AT_CAP = { reserves: [250_375_564n, CAP1], balances: [250_375_564n, CAP1] };
+const SOFT = { ...AT_CAP, balances: [250_375_564n, CAP1 + 40_455_000_000_000_000n], finalizedReserves: AT_CAP.reserves, finalizedBalances: AT_CAP.reserves && AT_CAP.balances };
+const HARD = { ...AT_CAP, balances: [250_375_564n, CAP1 + 2n * 10n ** 18n], finalizedReserves: AT_CAP.reserves, finalizedBalances: AT_CAP.balances };
+
+test("closure: a donation of about 1 USD on a side at its cap is soft, one of 1% of the cap is hard", () => {
+  const sides = (b0, b1) => ({ sides: [{ token: T0, reserve: AT_CAP.reserves[0], balance: b0, cap: CAP0 }, { token: T1, reserve: CAP1, balance: b1, cap: CAP1 }] });
+  assert.equal(closureOf(sides(AT_CAP.balances[0], CAP1)), null);
+  const soft = closureOf(sides(250_375_564n, SOFT.balances[1]));
+  assert.equal(soft.hard, false);
+  assert.deepEqual(soft.minOutput, [0n, 40_455_000_000_000_000n]);
+  assert.equal(closureOf(sides(250_375_564n, HARD.balances[1])).hard, true);
+});
+
+test("closure: agent 50's real closure stays hard", () => {
+  const state = { sides: [{ token: T0, reserve: 742_000_000n, balance: 942_000_000n, cap: CAP0 }, { token: T1, reserve: 8_618_052_029_873_667_082n, balance: 10_618_052_029_873_667_082n, cap: CAP1 }] };
+  assert.equal(closureOf(state).hard, true);
+});
+
+test("k ceiling: exact, one reserve below, and well below", () => {
+  const at = (r0, r1) => ({ sides: [{ reserve: r0, cap: CAP0 }, { reserve: r1, cap: CAP1 }] });
+  assert.equal(isAtKCeiling(at(800_000_000n, 8n * 10n ** 18n)), true);
+  assert.equal(isAtKCeiling(at(800_000_000n, 8n * 10n ** 18n - 2n)), true);
+  assert.equal(isAtKCeiling(at(790_000_000n, 79n * 10n ** 17n)), false);
+  assert.equal(isAtKCeiling(at(0n, 0n)), false);
+});
+
+test("keeper: a soft closure takes the backoff and a small share; a hard one does not", async () => {
+  const node = fakeNode(SOFT);
+  const state = emptyKeeperState();
+  state.nextAllowedAt = 1_000_500;
+  const held = await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  assert.equal(held.action, "backoff");
+  assert.equal(held.level, WARN);
+  assert.equal((await runKeeper(gate, keeperOptions(), state, keeperDeps(fakeNode(HARD)))).action, "sent");
+
+  const soft = emptyKeeperState();
+  const used = Number((BigInt(DEFAULTS.maxTx) * DEFAULTS.softShareBps) / 10_000n);
+  soft.txs = Array.from({ length: used }, (_, i) => ({ at: 990_000, hash: `0x${i}`, nonce: "0", status: "wasted", kind: "soft", spentWei: "1" }));
+  const stop = await runKeeper(gate, keeperOptions(), soft, keeperDeps(fakeNode(SOFT)));
+  assert.equal(stop.action, "soft-closure-share-used");
+  assert.equal(stop.level, WARN);
+});
+
+test("keeper: ordinary excess cannot spend the reserve, a hard closure can, and an exhausted hard closure is CRIT", async () => {
+  const full = (n) => {
+    const state = emptyKeeperState();
+    state.txs = Array.from({ length: n }, (_, i) => ({ at: 990_000, hash: `0x${i}`, nonce: "0", status: "effective", kind: "excess", spentWei: "1" }));
+    return state;
+  };
+  const reserved = DEFAULTS.maxTx - Number((BigInt(DEFAULTS.maxTx) * DEFAULTS.hardReserveBps) / 10_000n);
+  const ordinary = fakeNode({ balances: [CAP0 / 2n + CAP0 / 10n, 5n * 10n ** 18n] });
+  const a = await runKeeper(gate, keeperOptions(), full(reserved), keeperDeps(ordinary));
+  assert.equal(a.action, "reserved-for-hard-closure");
+  assert.equal(a.level, WARN);
+  assert.equal((await runKeeper(gate, keeperOptions(), full(reserved), keeperDeps(fakeNode(HARD)))).action, "sent");
+  const out = await runKeeper(gate, keeperOptions(), full(DEFAULTS.maxTx), keeperDeps(fakeNode(HARD)));
+  assert.equal(out.action, "tx-count-exhausted");
+  assert.equal(out.level, CRIT);
+});
+
+test("keeper: the tip varies, climbs with waste and stays under the cap", async () => {
+  const options = keeperOptions();
+  const top = (wasted) => nextTip({ consecutiveWasted: wasted }, options, (n) => n - 1n);
+  assert.equal(nextTip({ consecutiveWasted: 0 }, options, () => 0n), DEFAULTS.tipWei);
+  assert.equal(top(0), 2n * DEFAULTS.tipWei);
+  assert.equal(top(1), 4n * DEFAULTS.tipWei);
+  assert.equal(top(2), DEFAULTS.maxTipWei);
+  assert.equal(top(40), DEFAULTS.maxTipWei);
+  for (let i = 0; i < 50; i++) {
+    const tip = nextTip({ consecutiveWasted: 1 }, options);
+    assert.ok(tip >= DEFAULTS.tipWei && tip <= 4n * DEFAULTS.tipWei);
+  }
+  const node = fakeNode(HARD);
+  const state = emptyKeeperState();
+  state.consecutiveWasted = 2;
+  const sent = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node), random: (n) => n - 1n });
+  assert.equal(sent.tip, DEFAULTS.maxTipWei);
+  assert.equal(state.txs.at(-1).kind, "hard");
+});
+
+test("monitor: a soft closure is WARN with the size that passes, the ceiling is WARN", async () => {
+  const node = fakeNode(SOFT);
+  const result = await runMonitor(gate, { expectSeeded: true }, node.request, monitorDeps(node));
+  const closed = result.checks.find((c) => c.name.startsWith("closed_by_excess"));
+  assert.equal(closed.level, WARN);
+  assert.match(closed.detail, /small swaps only/);
+  const ceil = fakeNode({ reserves: [800_000_000n, 8n * 10n ** 18n], balances: [802_000_000n, 8n * 10n ** 18n] });
+  const at = await runMonitor(gate, { expectSeeded: true }, ceil.request, monitorDeps(ceil));
+  const check = at.checks.find((c) => c.name.startsWith("k_ceiling"));
+  assert.equal(check.level, WARN);
+  assert.match(check.detail, /not reaching LPs or the Safe/);
+});
+
+test("monitor: keeper budget levels, from the keeper's own state file", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const path = join(mkdtempSync(join(tmpdir(), "keeper-")), "state.json");
+  const levelOf = (txs) => {
+    const checks = [];
+    writeFileSync(path, JSON.stringify({ txs }));
+    checkKeeperState(path, 1_000_000, (name, level, detail) => checks.push({ name, level, detail }));
+    return checks[0];
+  };
+  const tx = (status) => ({ at: 999_000, status, spentWei: "100" });
+  assert.equal(levelOf([tx("effective")]).level, OK);
+  const raced = levelOf([tx("wasted"), tx("wasted"), tx("wasted")]);
+  assert.equal(raced.level, WARN);
+  assert.match(raced.detail, /winning skims/);
+  assert.equal(levelOf(Array.from({ length: 48 }, () => tx("effective"))).level, CRIT);
+  assert.equal(levelOf([{ at: 1, status: "wasted" }]).level, OK);
+  const checks = [];
+  checkKeeperState(`${path}.missing`, 1_000_000, (name, level) => checks.push(level));
+  assert.equal(checks[0], OK);
+  writeFileSync(path, "{broken");
+  checkKeeperState(path, 1_000_000, (name, level) => checks.push(level));
+  assert.equal(checks[1], CRIT);
 });
 
 test("note-tx: an unrecorded approve and seed pass only together, and bad hashes are refused", async () => {

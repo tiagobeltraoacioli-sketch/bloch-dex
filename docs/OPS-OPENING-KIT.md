@@ -64,7 +64,7 @@ Recommendation: `C = min(1000, 10 * P)`. The price is the owner's decision.
 
 The owner chose the k ceiling with a first depositor, and accepted limit L2 for the guarded launch. Pair init hash `0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683`. Both caps stay, and the dump bounds above do not change.
 
-Figures are agent 61's, at `P = 100` with the committed caps, from forge and anvil with `TestToken`. No race or ordering on the L2 was tested.
+Figures are agent 61's, at `P = 100` with the committed caps, from forge and anvil with `TestToken`, except where agent 96's private-L2 runs are named: `docs/OPS-DEX-MONITOR-KEEPER.md`.
 
 ### L2: at the ceiling, LPs and the Safe earn nothing
 
@@ -75,7 +75,7 @@ Figures are agent 61's, at `P = 100` with the committed caps, from forge and anv
 - **The fee is optional at the ceiling.** A swap and a `skim` in one transaction refund it. Arbitrageurs can trade against LPs with no fee.
 - **Ordinary trading gets there too:** about $204,000 of volume on a $1,000 pool (4,079 round trips of 0.25 BLCH + 25 bUSDC).
 - An LP burn lowers `k` and restores fees until someone refills.
-- A standing excess fills the next trade with the reserves unmoved, so whoever skims keeps that trade's input. The trader still gets the quote. A trader who could order around others made about $3 on $50; ordering on this L2 was not tested.
+- A standing excess fills the next trade with the reserves unmoved, so whoever skims keeps that trade's input. The trader still gets the quote. Unskimmed for 150 swaps at exactly the ceiling on a private L2, the excess reached $136 on $4,708 of volume, about ten times the fee.
 
 No fix is designed.
 
@@ -87,7 +87,7 @@ One call from the depositor's key to a hostile contract spends the first-deposit
 
 | Limit | Effect |
 |---|---|
-| L3 | Unrecorded balance past both rooms closes both directions until anyone skims: about $400, paid to the skimmer unless the griefer wins its own skim. Depends on `skim` being called. The keeper does it |
+| L3 | Unrecorded balance past both rooms closes both directions until anyone skims: about $400, paid to the skimmer unless the griefer wins its own skim. On a side already at its cap about $1 closes the pair to swaps smaller than that donation. Depends on `skim` being called. The keeper does it, and a griefer who pays more can win every race |
 | L4 | A pre-seed donation above half a cap reverts the seed until a skim. About $500 a round, or $50 at `P = 10` (arithmetic). The skimmer keeps it |
 | L5 | A filled pool takes no top-ups, and no swap reopens them |
 | L6 | A fill narrows the one-swap price range from about 25-399 to about 64-156 |
@@ -120,7 +120,7 @@ Decisions and values:
 | 17 | bUSDC runtime code hash | `reserveCaps[1].codeHash` | From the bridge deployment |
 | 18 | Bucket capacity check | `reserveCaps[1].bridgeBucketCapacity` | Must equal the token's `bucketCapacity()`. Committed: `10000000000` |
 | 19 | Keeper host, monitor host, alert route | `scripts/ops/systemd/dex-monitor.env.example` | The monitor sends no alerts by itself |
-| 20 | Keeper budget | Keeper flags | Default 0.01 BLCH per 24 h. Depends on the L2 base fee |
+| 20 | Keeper budget | Keeper flags | Default 0.05 BLCH and 48 transactions per 24 h. Depends on the L2 base fee |
 | 21 | Fees at signing | `sign-and-publish.sh --max-fee-wei --priority-fee-wei` | Chosen at signing time |
 
 Website, in `frontend.network.json` and `_headers`:
