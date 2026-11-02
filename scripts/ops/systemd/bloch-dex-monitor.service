@@ -6,7 +6,7 @@ After=network-online.target
 Type=oneshot
 User=bloch-dex-ops
 EnvironmentFile=/etc/bloch-dex-ops/env
-ExecStart=/usr/bin/env node ${DEX_OPS_ROOT}/scripts/ops/dex-monitor.mjs --config ${DEX_GATE} --safe-plan ${DEX_SAFE_PLAN} --rpc ${DEX_RPC} --expect-seeded --lp-recipient ${DEX_LP_RECIPIENT} --keeper-state /var/lib/bloch-dex-keeper/state.json --eth-rpc ${DEX_ETH_RPC} --bridge-vault ${DEX_BUSDC_VAULT} --json
+ExecStart=/usr/bin/env node ${DEX_OPS_ROOT}/scripts/ops/dex-monitor.mjs --config ${DEX_GATE} --safe-plan ${DEX_SAFE_PLAN} --rpc ${DEX_RPC} --expect-seeded --lp-recipient ${DEX_LP_RECIPIENT} --lp-min-shares ${DEX_LP_MIN_SHARES} --keeper-state /var/lib/bloch-dex-keeper/state.json --eth-rpc ${DEX_ETH_RPC} --bridge-vault ${DEX_BUSDC_VAULT} --json
 # This unit sends nothing. The report goes to a file that bloch-l2-evm l2_monitor.py reads with
 # --report dex=/var/lib/bloch-dex-monitor/report.json:900 and alerts on, with its deduplication; a stale or empty
 # file there is how a dead or failing DEX monitor is noticed. CRIT is a success here because it is in the report.

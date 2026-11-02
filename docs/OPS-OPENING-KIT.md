@@ -99,6 +99,8 @@ One call from the depositor's key to a hostile contract spends the first-deposit
 
 ## 4. What the owner must provide
 
+The owner's decisions for the opening (price, cap, depositor, LP recipient, seeder exit, keeper, page bridge status) go in one file, `deployments/mainnet/opening-form.json`, checked and applied by `scripts/ops/opening-form.mjs`. See `OWNER-OPENING-FORM.md`. The tables below remain the reference.
+
 Provide public addresses only. Keys stay with the owner and are never put in a repo, a config or a chat.
 
 | # | Input | Where it goes | Key rule |

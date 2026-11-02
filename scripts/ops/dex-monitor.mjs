@@ -17,7 +17,7 @@
 //
 //   node scripts/ops/dex-monitor.mjs --config finality-gate.mainnet.json
 //        --safe-plan safe.plan.json --rpc http://127.0.0.1:18955 [--expect-seeded]
-//        [--lp-recipient 0x… [--lp-min-bps 5000], required with --expect-seeded]
+//        [--lp-recipient 0x… [--lp-min-bps 5000] [--lp-min-shares N], required with --expect-seeded]
 //        [--keeper-state /var/lib/…/state.json] [--rehearsal] [--ref-price 25.5] [--json]
 //        [--eth-rpc <Ethereum RPC> --bridge-vault 0x… [--bridge-vault-code-hash 0x…] [--bridge-token 0x…]]
 //        (bUSDC exits held = CRIT, paused = WARN: the vault and mint chain are read from the bridge)
@@ -258,6 +258,15 @@ async function checkPair({ pair, deployment, latest, finalized, add, facts, opti
     const minBps = BigInt(options.lpMinBps ?? 5000);
     const ok = held * 10_000n >= head.totalSupply * minBps;
     add(`lp_recipient[${tag}]`, ok ? OK : CRIT, ok ? `${options.lpRecipient} holds ${held} of ${head.totalSupply} shares` : `${options.lpRecipient} holds only ${held} of ${head.totalSupply} shares: the seed may not have landed, or someone else filled the pool`);
+    // The owner's floor (opening form, seederExit keep-floor): an absolute share count the LP
+    // recipient keeps. Below it the pool nears a full exit, after which the first-deposit rule
+    // is gone for good and anyone can reprice the dust reserves (A98-5). 0 or absent: no floor.
+    const floor = BigInt(options.lpMinShares ?? 0);
+    if (floor > 0n) {
+      add(`lp_floor[${tag}]`, held >= floor ? OK : CRIT, held >= floor
+        ? `${options.lpRecipient} holds ${held} shares, at or above the floor ${floor}`
+        : `${options.lpRecipient} holds ${held} shares, below the floor ${floor}: a full exit reopens the pair to anyone at any price (A98-5)`);
+    }
   }
 
   // LP shares in a run that expects none: someone minted before the planned seed.
@@ -364,13 +373,13 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     const args = parseArgs(process.argv.slice(2), { flags: ["rehearsal", "json", "expect-seeded"] });
     // Written by the skim keeper. Optional: the monitor can run on a host with no keeper.
     if (!args.config || !args.rpc || (!args.rehearsal && !args["safe-plan"]) || (args["expect-seeded"] && !args["lp-recipient"])) {
-      console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --rpc <url> [--expect-seeded --lp-recipient 0x<address> [--lp-min-bps 5000]] [--ref-price P] [--rehearsal] [--json]");
+      console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --rpc <url> [--expect-seeded --lp-recipient 0x<address> [--lp-min-bps 5000] [--lp-min-shares N]] [--ref-price P] [--rehearsal] [--json]");
       process.exit(UNKNOWN);
     }
     const request = createRequest(args.rpc);
     const result = await runMonitor(
       readGate(args.config),
-      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], refPrice: args["ref-price"], keeperState: args["keeper-state"],
+      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"],
         ethRequest: args["eth-rpc"] ? createRequest(args["eth-rpc"]) : undefined, bridgeVault: args["bridge-vault"],
         bridgeVaultCodeHash: args["bridge-vault-code-hash"], bridgeToken: args["bridge-token"] },
       request,
