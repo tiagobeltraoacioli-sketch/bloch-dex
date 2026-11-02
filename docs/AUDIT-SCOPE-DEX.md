@@ -45,6 +45,10 @@ An independent review at `258fdd2` reported these.
 
 A mint ceiling at 80% of the caps was tried and reverted (`e9b18cc`, `b404458`): wash trading and recorded donations still reach both caps.
 
+### Open item for the external audit: swap fees at the k ceiling (owner decision DEX-4, round 10)
+
+Accepted for launch, with no contract change before deploy, and sent to the external audit as an explicit item. At the ceiling `_applyCeiling` records the side that grew as `C / other`, so the swap fee stays outside the reserves: LPs and the protocol fee earn nothing from it, and anyone can take it with `skim`, with a `swap` that sends nothing (inputs are inferred from balance growth), or with `mint` as shares. Arbitrage becomes fee-free (swap plus skim). LP principal is never taken (fuzz, agent 177). Restricting `skim` does not keep the fees, because of the `swap` path. The auditor is asked to assess the candidate fix "at the ceiling, transfer the clamped amount to `feeTo` inside `swap`" (not written or tested; it changes the init code hash) and any better design. Mitigations at launch, off chain: the seed planner refuses more than 7,000 bps of the caps (k at 76.6% of the ceiling), and the keeper skims fee excess to the Safe at the ceiling from 0.00104 BLCH (`OPS-DEX-MONITOR-KEEPER.md`, "The ceiling floor"). Evidence: agent 177 (`test/Cap*.t.sol` on `codex/dex-cap-math-r10-20261102`).
+
 ## 2. Scope
 
 In scope (deployed by `script/DeployMainnet.s.sol`):

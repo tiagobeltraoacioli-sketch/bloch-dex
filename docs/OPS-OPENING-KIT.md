@@ -81,7 +81,7 @@ Figures are agent 61's, at `P = 100` with the committed caps, from forge and anv
 - **Fees at the ceiling go to whoever skims.** That is not the LPs and not the Safe, unless the keeper wins. Calling `mint` with no deposit also turns standing excess into LP shares, which is the same as skimming it. One 1 WBLCH swap left 0.003 WBLCH to a stranger (A98-7).
 - **k can fall by less than one base unit of a reserve on a swap at the ceiling.** The LPs lose at most about one bUSDC unit, and it does not build up (A98-1).
 
-No fix is designed.
+No fix is designed. **The owner accepted this behaviour for launch (DEX-4, round 10), with no contract change, and it is an explicit item for the external audit** (`AUDIT-SCOPE-DEX.md`). Launch mitigations: the seed planner refuses more than 7,000 bps of the caps, and the keeper skims fee excess at the ceiling to the Safe from 0.00104 BLCH (`OPS-DEX-MONITOR-KEEPER.md`). Against a bot that skims every block from its own gas cost, the Safe still collects only about a quarter, and nobody collects arbitrage fees: an arbitrageur refunds its own fee with swap plus skim.
 
 ### L1: the depositor key
 
