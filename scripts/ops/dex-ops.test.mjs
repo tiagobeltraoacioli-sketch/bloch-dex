@@ -7,7 +7,7 @@ import {
 } from "./dex-ops-lib.mjs";
 import { runMonitor } from "./dex-monitor.mjs";
 import { DEFAULTS, runKeeper } from "./dex-skim-keeper.mjs";
-import { holdsSeed, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { checkNotedTxs, holdsSeed, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
 import { createRequire } from "node:module";
 
@@ -552,10 +552,77 @@ test("F1: a correcting swap reaches the target price", () => {
   assert.ok(after > (price * 99n) / 100n && after < (price * 101n) / 100n, String(after));
 });
 
-test("L3: unrecorded balance on both caps is reported, and the keeper's target outranks backoff", async () => {
-  assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 8n, balance: 10n }, { cap: 20n, reserve: 16n, balance: 20n }] }), true);
-  assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 8n, balance: 10n }, { cap: 20n, reserve: 16n, balance: 19n }] }), false);
-  assert.equal(isClosedByExcess({ sides: [{ cap: 10n, reserve: 10n, balance: 10n }, { cap: 20n, reserve: 20n, balance: 20n }] }), false);
+test("L3: closed means a swap of 0.1% of a cap reverts both ways, including with one side over its cap", async () => {
+  const W = 10n ** 19n;
+  const Q = 10n ** 9n;
+  const side = (reserve, balance, cap) => ({ reserve, balance, cap });
+  // Both balances at the caps.
+  assert.equal(isClosedByExcess({ sides: [side(8n * W / 10n, W, W), side(8n * Q / 10n, Q, Q)] }), true);
+  // Agent 50's real closure: only the WBLCH side is above its cap.
+  assert.equal(isClosedByExcess({ sides: [side(8_618_052_029_873_667_082n, 10_618_052_029_873_667_082n, W), side(742_000_000n, 942_000_000n, Q)] }), true);
+  // No excess: a side at its cap only closes that direction.
+  assert.equal(isClosedByExcess({ sides: [side(W, W, W), side(64n * Q / 100n, 64n * Q / 100n, Q)] }), false);
+  // Over the cap by less than a small swap pays down: selling the other side still runs.
+  assert.equal(isClosedByExcess({ sides: [side(5n * W / 10n, W + 1n, W), side(Q / 2n, Q / 2n, Q)] }), false);
+  // Room on both sides.
+  assert.equal(isClosedByExcess({ sides: [side(W / 2n, W / 2n + 5n, W), side(Q / 2n, Q / 2n, Q)] }), false);
+});
+
+test("L3: the monitor reports a closed pair as CRIT at latest and names it", async () => {
+  const node = fakeNode({
+    reserves: [742_000_000n, 8_618_052_029_873_667_082n],
+    balances: [942_000_000n, 10_618_052_029_873_667_082n],
+    finalizedReserves: [742_000_000n, 8_618_052_029_873_667_082n],
+    finalizedBalances: [742_000_000n, 8_618_052_029_873_667_082n],
+  });
+  const result = await runMonitor(gate, { expectSeeded: true }, node.request, monitorDeps(node));
+  assert.equal(result.level, CRIT);
+  const closed = result.checks.find((c) => c.name.startsWith("closed_by_excess"));
+  assert.equal(closed.level, CRIT);
+  assert.match(closed.detail, /pair closed/);
+  assert.match(closed.name, /:latest\]$/);
+});
+
+test("note-tx: an unrecorded approve and seed pass only together, and bad hashes are refused", async () => {
+  const depositor = `0x${"9".repeat(40)}`;
+  const router = `0x${"7".repeat(40)}`;
+  const token = `0x${"6".repeat(40)}`;
+  const contract = (address) => ({ address, codeHash: `0x${"1".repeat(64)}` });
+  const hashA = `0x${"a".repeat(64)}`;
+  const hashB = `0x${"b".repeat(64)}`;
+  const pad = (a) => a.slice(2).padStart(64, "0");
+  const txs = {
+    [hashA]: { from: depositor, nonce: "0x0", to: token, input: `0x095ea7b3${pad(router)}${"0".repeat(64)}` },
+    [hashB]: { from: depositor, nonce: "0x1", to: router, input: `${viem.toFunctionSelector("addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)")}${pad(token)}` },
+  };
+  const request = async (method, params) => {
+    if (method === "eth_getTransactionCount") return "0x2";
+    if (method === "eth_getTransactionByHash") return txs[params[0]] ?? null;
+    if (method === "eth_getTransactionReceipt") return { status: "0x0" };
+    throw new Error(`unexpected ${method}`);
+  };
+  const record = (listed) => ({
+    schemaVersion: 2,
+    chain: { id: 1, genesisHash: `0x${"2".repeat(64)}` },
+    deployment: {
+      firstDepositor: depositor,
+      contracts: { factory: contract(`0x${"3".repeat(40)}`), router: contract(router), lens: contract(`0x${"4".repeat(40)}`), wrappedNative: contract(`0x${"5".repeat(40)}`) },
+      pairInitCodeHash: `0x${"8".repeat(64)}`,
+      feeTo: `0x${"c".repeat(40)}`,
+      roles: { blochInc: contract(`0x${"c".repeat(40)}`) },
+      tokens: [{ token }],
+      pairs: [],
+      reserveCaps: [],
+      ...(listed ? { depositorTransactions: listed } : {}),
+    },
+  });
+  // The deadlock: each hash alone leaves a nonce unlisted.
+  await assert.rejects(checkNotedTxs(record(), hashA, request), /nonce 1 is not listed/);
+  await assert.rejects(checkNotedTxs(record(), hashB, request), /nonce 0 is not listed/);
+  assert.deepEqual((await checkNotedTxs(record(), `${hashA},${hashB}`, request)).listed, [hashA, hashB]);
+  assert.deepEqual((await checkNotedTxs(record([hashA]), hashB.toUpperCase().replace("0X", "0x"), request)).listed, [hashA, hashB]);
+  await assert.rejects(checkNotedTxs(record(), `${hashA},`, request), /not a transaction hash/);
+  await assert.rejects(checkNotedTxs(record(), `${hashA},0x12`, request), /not a transaction hash/);
 });
 
 test("N2: the seed is ours only if the recipient holds nearly all the shares", () => {

@@ -68,6 +68,39 @@ export function atKCeiling(
   return pool.reserve0 * pool.reserve1 + margin > ceiling;
 }
 
+/**
+ * True when a swap of 0.1% of the input side's cap reverts in both directions because
+ * of unrecorded balance. The lens's blocksInflow flags cannot say this: one side above
+ * its cap is enough, and a balance exactly at its cap is not flagged.
+ */
+export function closedByExcess(pool: LivePool): boolean {
+  const e = pool.excess;
+  if (!e || (e.excess0 === 0n && e.excess1 === 0n)) return false;
+  const b0 = pool.reserve0 + e.excess0;
+  const b1 = pool.reserve1 + e.excess1;
+  const within = (balance: bigint, reserve: bigint, cap: bigint) =>
+    cap === 0n || balance <= (cap > reserve ? cap : reserve);
+  const fits = (
+    balIn: bigint,
+    rIn: bigint,
+    capIn: bigint,
+    balOut: bigint,
+    rOut: bigint,
+    capOut: bigint,
+  ) => {
+    if (capIn === 0n) return true;
+    const input = capIn / 1000n || 1n;
+    return (
+      within(balIn + input, rIn, capIn) &&
+      within(balOut - amountOut(input, rIn, rOut), rOut, capOut)
+    );
+  };
+  return (
+    !fits(b0, pool.reserve0, pool.cap0, b1, pool.reserve1, pool.cap1) &&
+    !fits(b1, pool.reserve1, pool.cap1, b0, pool.reserve0, pool.cap0)
+  );
+}
+
 /** Walk a route hop by hop on finalized reserves, stopping at the first hop that would revert. */
 export function checkRoute(pools: LivePool[], path: Address[], amountIn: bigint): RouteCheck {
   const amounts = [amountIn];

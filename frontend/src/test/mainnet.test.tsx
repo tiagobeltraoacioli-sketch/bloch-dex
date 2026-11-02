@@ -498,6 +498,36 @@ describe('mainnet route', () => {
     expect(requests).toHaveLength(0);
   });
 
+  it('says a pool closed by excess is closed, not that more can flow in', async () => {
+    const { rpc, state } = fakeChain();
+    state.reserves[USD_PAIR] = [800_000_000n, 8n * 10n ** 18n, 1];
+    state.excess = {
+      [USD_PAIR]: {
+        excess0: 200_000_000n,
+        excess1: 2n * 10n ** 18n,
+        blocksInflow0: false,
+        blocksInflow1: false,
+      },
+    };
+    const { wallet } = fakeWallet(state);
+    render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => NOW_MS}
+      />,
+    );
+    const table = await screen.findByRole('table');
+    expect(table.textContent).toContain('bUSDC inflow closed until someone calls skim');
+    expect(table.textContent).toContain('BLCH inflow closed until someone calls skim');
+    expect(table.textContent).not.toContain('bUSDC more can flow in');
+    expect(table.textContent).toContain('This pool is closed');
+    expect(screen.queryByLabelText('K ceiling')).toBeNull();
+  });
+
   it('reads pools, caps and balances at the finalized block, quotes there, approves the exact amount and swaps with a 60-minute deadline', async () => {
     const user = userEvent.setup();
     const { rpc, state } = fakeChain();

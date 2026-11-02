@@ -49,6 +49,7 @@ import {
 import {
   atKCeiling,
   checkRoute,
+  closedByExcess,
   explainBlock,
   headroom,
   headroomUse,
@@ -485,7 +486,7 @@ function PendingExcess({
         .map(([amount, t]) => `${formatAmount(amount, t.decimals)} ${t.symbol}`)
         .join(' and ')}{' '}
       above the reserves.{' '}
-      {e.blocksInflow0 && e.blocksInflow1
+      {closedByExcess(pool)
         ? 'This pool is closed: swaps in both directions and deposits revert until someone calls skim. '
         : blocked && 'Swaps and deposits on that side revert until someone calls skim. '}
       Anyone can call <code>skim</code> on this pool; the caller receives the excess.{' '}
@@ -512,18 +513,21 @@ function PoolsTable({
   wallet: Devnet4Wallet;
   onMined: () => void;
 }) {
-  const side = (reserve: bigint, cap: bigint, t: LiveToken) => {
-    const room = headroom(reserve, cap);
+  const side = (reserve: bigint, excess: bigint, cap: bigint, t: LiveToken, closed: boolean) => {
+    // Excess is in the balance, and the cap check reads the balance.
+    const room = headroom(reserve + excess, cap);
     return (
       <>
         {formatAmount(cap, t.decimals)} {t.symbol} ({percent(reserve, cap)}% used)
         <br />
-        <span className={room === 0n ? 'form-error' : 'muted'}>
+        <span className={room === 0n || closed ? 'form-error' : 'muted'}>
           {room === null
             ? 'Uncapped'
-            : room === 0n
-              ? `${t.symbol} inflow paused (at cap)`
-              : `${formatAmount(room, t.decimals)} ${t.symbol} more can flow in`}
+            : closed
+              ? `${t.symbol} inflow closed until someone calls skim`
+              : room === 0n
+                ? `${t.symbol} inflow paused (at cap)`
+                : `${formatAmount(room, t.decimals)} ${t.symbol} more can flow in`}
         </span>
       </>
     );
@@ -558,7 +562,7 @@ function PoolsTable({
                   wallet={wallet}
                   onMined={onMined}
                 />
-                {atKCeiling(p) && !(p.excess?.blocksInflow0 && p.excess?.blocksInflow1) && (
+                {atKCeiling(p) && !closedByExcess(p) && (
                   <div className="microcopy" aria-label="K ceiling">
                     At the pool&apos;s k ceiling: deposits revert with BDEX: K_CEILING. Swaps still
                     run, and their fee stays outside the reserves as excess.
@@ -566,9 +570,9 @@ function PoolsTable({
                 )}
               </td>
               <td>
-                {side(p.reserve0, p.cap0, p.token0)}
+                {side(p.reserve0, p.excess?.excess0 ?? 0n, p.cap0, p.token0, closedByExcess(p))}
                 <br />
-                {side(p.reserve1, p.cap1, p.token1)}
+                {side(p.reserve1, p.excess?.excess1 ?? 0n, p.cap1, p.token1, closedByExcess(p))}
               </td>
             </tr>
           ))}

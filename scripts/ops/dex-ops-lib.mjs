@@ -215,10 +215,26 @@ export function isClosed(state) {
   return state.totalSupply !== 0n && state.sides.every((s) => s.cap !== 0n && s.reserve * 1000n >= s.cap * 999n);
 }
 
-/// Unrecorded balance fills the room on both capped sides, so no swap passes in
-/// either direction until someone skims (limit L3 of the k ceiling).
+/// Would a swap of 0.1% of the input side's cap pass the pair's cap check?
+/// The same check as UniswapV2Pair._update: a balance may end above its cap only
+/// if it is not above the reserve. Excess counts, on the output side too: it must
+/// be paid down by the output, so a small swap out of an overfull side reverts.
+function smallSwapFits(into, outOf) {
+  if (into.cap === 0n || into.reserve === 0n || outOf.reserve === 0n) return true;
+  const input = into.cap / 1000n || 1n;
+  const output = (input * 997n * outOf.reserve) / (into.reserve * 1000n + input * 997n);
+  const bound = (side) => (side.cap === 0n ? null : side.cap > side.reserve ? side.cap : side.reserve);
+  const within = (balance, side) => bound(side) === null || balance <= bound(side);
+  return within(into.balance + input, into) && within(outOf.balance - output, outOf);
+}
+
+/// Unrecorded balance stops swaps of a useful size in both directions until someone
+/// skims (limit L3 of the k ceiling). A much larger swap can still pass when its output
+/// pays the excess down. The real closure with 200 bUSDC + 2 WBLCH looked like this:
+/// only one side was above its cap, and both directions reverted.
 export function isClosedByExcess(state) {
-  return state.sides.every((s) => s.cap !== 0n && s.balance >= s.cap) && state.sides.some((s) => s.balance > s.reserve);
+  const [a, b] = state.sides;
+  return state.sides.some((s) => s.balance > s.reserve) && !smallSwapFits(a, b) && !smallSwapFits(b, a);
 }
 
 /// Parse a decimal string into base units. Refuses precision it would lose.

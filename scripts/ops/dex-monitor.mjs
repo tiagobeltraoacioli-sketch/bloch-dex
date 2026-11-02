@@ -225,7 +225,7 @@ async function checkPair({ pair, deployment, latest, finalized, add, facts, opti
   const views = settled ? [["latest", head, 0], ["finalized", settled, 1]] : [["latest", head, 0]];
   for (const [view, state, index] of views) {
     if (isClosedByExcess(state)) {
-      add(`closed_by_excess[${tag}:${view}]`, index ? CRIT : WARN, "unrecorded balance fills both caps: no swap passes in either direction until someone calls skim. The keeper should clear it");
+      add(`closed_by_excess[${tag}:${view}]`, CRIT, "pair closed: swaps of 0.1% of a cap revert in both directions because of unrecorded balance, until someone calls skim. The keeper should clear it");
     }
     state.sides.forEach((side) => {
       const kind = classifyExcess(side, THRESHOLDS.excessFloorBps);

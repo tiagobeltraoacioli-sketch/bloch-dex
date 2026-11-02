@@ -128,6 +128,22 @@ export function priceGapBps({ wrapped, quote, price }) {
   return ((pool > price ? pool - price : price - pool) * 10_000n) / price;
 }
 
+/// The depositor's recorded hashes plus `--tx a,b`, if the whole history checks out.
+/// One call must name every unrecorded transaction: alone, each would leave a nonce
+/// unlisted and be refused.
+export async function checkNotedTxs(gate, txArg, request) {
+  const deployment = deploymentFromGate(gate);
+  const given = txArg.toLowerCase().split(",");
+  for (const hash of given) if (!/^0x[0-9a-f]{64}$/.test(hash)) throw new Error(`--tx: ${hash} is not a transaction hash`);
+  const listed = [...new Set([...deployment.depositorTransactions, ...given])];
+  const count = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
+  await verifyDepositorHistory(
+    { depositor: deployment.firstDepositor, count, transactions: listed, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token) },
+    request,
+  );
+  return { listed, count };
+}
+
 async function load(args, request) {
   const deployment = deploymentFromGate(readGate(args.config));
   await checkIdentity(request, deployment);
@@ -153,14 +169,7 @@ async function main() {
     }
     const request = createRequest(args.rpc);
     const gate = readGate(args.config);
-    const deployment = deploymentFromGate(gate);
-    // The whole history must check out, so unrecorded approve and seed are recorded together.
-    const listed = [...new Set([...deployment.depositorTransactions, ...args.tx.toLowerCase().split(",")])];
-    const count = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
-    await verifyDepositorHistory(
-      { depositor: deployment.firstDepositor, count, transactions: listed, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token) },
-      request,
-    );
+    const { listed, count } = await checkNotedTxs(gate, args.tx, request);
     gate.deployment.depositorTransactions = listed;
     const temp = `${args.config}.tmp`;
     writeFileSync(temp, `${JSON.stringify(gate, null, 2)}\n`);

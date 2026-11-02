@@ -455,7 +455,7 @@ if [ "$MODE" = anvil ]; then
   must_fail "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000
   must_fail "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" $FUTURE)" 100000000000000000 400000
   pass "l3: both directions revert while the excess stands"
-  expect 1 l3-monitor monitor --expect-seeded
+  expect 2 l3-monitor monitor --expect-seeded
   grep -q 'closed_by_excess' "$EV/l3-monitor.out" || die "the monitor did not report closed_by_excess"
   node -e 'const fs=require("fs"),p=process.argv[1],s=JSON.parse(fs.readFileSync(p));if(s.consecutiveWasted<1)process.exit(1);s.nextAllowedAt=Math.floor(Date.now()/1000)+21600;fs.writeFileSync(p,JSON.stringify(s));' "$STATE"
   cast rpc evm_setAutomine false --rpc-url "$RPC" > /dev/null
