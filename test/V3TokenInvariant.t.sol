@@ -204,7 +204,7 @@ contract V3Handler {
         (address r, uint64 a, uint64 t) = q.pendingMints(id);
         if (a == 0) return;
         for (uint256 k; k < 2; ++k) {
-            VMX.prank(guardians[(g + k) % 3]);
+            VMX.prank(guardians[(g % 3 + k) % 3]);
             try q.voteCancelMint(id, r, a, t) {} catch {}
         }
         (, a,) = q.pendingMints(id);
