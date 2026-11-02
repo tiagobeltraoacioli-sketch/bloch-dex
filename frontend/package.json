@@ -13,6 +13,7 @@
     "test:mobile-edge": "node --test edge/worker.check.mjs",
     "test:qr-release": "node --test qr-release/worker.check.mjs",
     "preview": "vite preview --host 127.0.0.1",
+    "check:bundle": "node scripts/check-production-bundle.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -22,20 +22,33 @@ import { bundledNetwork, bundledState, plannedCaps, plannedPairs } from './mainn
 // Devnet4 live route. The settled RPC sends no CORS headers: the app reads it
 // through the dev/preview server proxy at /devnet4-rpc (see README); a wallet
 // adding the network uses VITE_DEVNET4_WALLET_RPC_URL.
-const DEVNET4_RPC = httpRpc(import.meta.env.VITE_DEVNET4_RPC_URL ?? '/devnet4-rpc');
-const DEVNET4_WALLET_RPC = import.meta.env.VITE_DEVNET4_WALLET_RPC_URL ?? 'http://127.0.0.1:18945';
+// The route exists only on the dev server or with VITE_DEVNET4_ROUTE=1, so a
+// production bundle holds neither its endpoints nor its deployment record.
+const DEVNET4_ROUTE = import.meta.env.DEV || import.meta.env.VITE_DEVNET4_ROUTE === '1';
+const DEVNET4_RPC = httpRpc(
+  DEVNET4_ROUTE ? (import.meta.env.VITE_DEVNET4_RPC_URL ?? '/devnet4-rpc') : '',
+);
+const DEVNET4_WALLET_RPC = DEVNET4_ROUTE
+  ? (import.meta.env.VITE_DEVNET4_WALLET_RPC_URL ?? 'http://127.0.0.1:18945')
+  : '';
 const loadDevnet4Record = () => verifyDeploymentRecord();
 
 // Mainnet route (chain 700770). Reads go to the public RPC from the bundled
 // network file (it must send CORS headers for this site's origin and appear in
 // the CSP connect-src), or to VITE_MAINNET_RPC_URL (a same-origin proxy).
 const MAINNET_NETWORK = bundledNetwork();
-const MAINNET_RPC = httpRpc(import.meta.env.VITE_MAINNET_RPC_URL ?? MAINNET_NETWORK.rpcUrl);
+// The RPC overrides apply only to a local render build (vite.config.ts), which
+// shows LOCAL_RENDER_BANNER.
+const renderOverride = (value: string | undefined) =>
+  __POSTERN_LOCAL_RENDER__ ? value : undefined;
+const MAINNET_RPC = httpRpc(
+  renderOverride(import.meta.env.VITE_MAINNET_RPC_URL) ?? MAINNET_NETWORK.rpcUrl,
+);
 const MAINNET_PLANNED = { caps: plannedCaps(), pairs: plannedPairs() };
 // bUSDC hold status: the Ethereum RPC of the network file's bridge status, or
 // VITE_BRIDGE_ETH_RPC_URL (a same-origin proxy for a local render check).
 const MAINNET_HOLD_URL =
-  import.meta.env.VITE_BRIDGE_ETH_RPC_URL ??
+  renderOverride(import.meta.env.VITE_BRIDGE_ETH_RPC_URL) ??
   MAINNET_NETWORK.bridges.find((b) => b.status)?.status?.ethRpcUrl;
 const MAINNET_ETH_RPC = MAINNET_HOLD_URL ? httpRpc(MAINNET_HOLD_URL) : undefined;
 
@@ -204,7 +217,7 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
             ))}
             {liveAvailable && <a href="#/live-pools">Live read</a>}
             <a href="#/mainnet">Mainnet</a>
-            <a href="#/devnet4">Devnet4 live</a>
+            {DEVNET4_ROUTE && <a href="#/devnet4">Devnet4 live</a>}
           </nav>
           <div className="header-actions">
             <button className="network-button" onClick={() => setModal('network')}>
@@ -646,7 +659,7 @@ function ApplicationRouter() {
   }, []);
   return hash === '#/mainnet' ? (
     <MainnetApplication />
-  ) : hash === '#/devnet4' ? (
+  ) : DEVNET4_ROUTE && hash === '#/devnet4' ? (
     <Devnet4Application />
   ) : hash === '#/live-pools' ? (
     <LiveReadApplication gate={gate} />
@@ -655,9 +668,18 @@ function ApplicationRouter() {
   );
 }
 
+/** Only a local render build (RPC or configuration overrides) shows this. */
+export const LOCAL_RENDER_BANNER =
+  'Local render build with RPC or configuration overrides: not for publication.';
+
 export default function App() {
   return (
     <ErrorBoundary>
+      {__POSTERN_LOCAL_RENDER__ && import.meta.env.PROD && (
+        <p className="form-error" role="alert">
+          {LOCAL_RENDER_BANNER}
+        </p>
+      )}
       <ApplicationRouter />
     </ErrorBoundary>
   );
