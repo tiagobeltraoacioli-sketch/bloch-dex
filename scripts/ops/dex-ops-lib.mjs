@@ -132,7 +132,8 @@ export async function readBridgeExit(ethRequest, l2Request, { vault, token, vaul
     call(ethRequest, vault, "pausedUntil", [], "latest"),
     call(ethRequest, vault, "releasesEnabled", [], "latest"),
   ]);
-  const heldFinal = final.clean === false;
+  // A finalized credit beyond every deposit the vault has even at latest has no deposit at all (reservas: held).
+  const heldFinal = final.clean === false || (final.clean === null && final.mintCount > latest.depositCount);
   const heldLatest = latest.clean !== true;
   const state = heldFinal || heldLatest ? "held" : paused || !releasesEnabled ? "paused" : "normal";
   return { state, heldFinal, heldLatest, final, latest, paused, pausedUntil, releasesEnabled, ethFinalized: ethFinal.number };

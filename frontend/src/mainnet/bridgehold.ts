@@ -105,7 +105,9 @@ export async function readBridgeHold(
       v<bigint>('pausedUntil'),
       v<boolean>('releasesEnabled'),
     ]);
-    const heldFinal = final.clean === false;
+    // A finalized credit beyond every deposit the vault has even at latest has no deposit at all.
+    const heldFinal =
+      final.clean === false || (final.clean === null && final.mintCount > latest.depositCount);
     const heldLatest = latest.clean !== true;
     if (heldFinal || heldLatest)
       return {

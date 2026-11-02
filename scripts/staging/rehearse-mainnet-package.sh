@@ -71,7 +71,9 @@ trap cleanup EXIT
 forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
 case "$MODE" in
   anvil)
-    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 --silent > "$WORK/anvil.log" 2>&1 &
+    # HOLD_TOKEN (agent 144): the V3 token's 12 h mint delay passes on the chain clock, so the chain starts that far back.
+    ANVIL_TS=(); [ -n "${HOLD_TOKEN:-}" ] && ANVIL_TS=(--timestamp $(( $(date +%s) - 43900 )))
+    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 "${ANVIL_TS[@]}" --silent > "$WORK/anvil.log" 2>&1 &
     PIDS+=($!)
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
@@ -175,9 +177,15 @@ log "0 Safe: Bloch Inc = $BLOCH_INC"
 
 # ---------------------------------------------------------------- 1 DEX
 log "1 DEX: test bUSDC with bucketCapacity() (stands in for the bridge token)"
-TOKEN_INIT=$(node -e 'const a=require(process.argv[1]);console.log(a.bytecode.object)' "$ROOT/out/RehearsalBridgedToken.sol/RehearsalBridgedToken.json")$(cast abi-encode "c(string,string,uint8,uint256,address,uint256)" "Rehearsal bUSDC" bUSDC 6 1000000000000 "$ISSUER" $USD_BUCKET | cut -c3-)
-ASSET=$(must "$ISSUER_KEY" create "$TOKEN_INIT" 0 3000000 | awk '{print tolower($2)}')
-ASSET_CODE=$(cast keccak "$(cast code "$ASSET" --rpc-url "$RPC")")
+if [ -n "${HOLD_TOKEN:-}" ]; then
+  # agent 144: BridgedStablecoinV3 over a ProvenanceSourceVault on a second anvil (scripts/staging/render/hold-token.sh)
+  # shellcheck source=/dev/null
+  . "$HOLD_TOKEN"
+else
+  TOKEN_INIT=$(node -e 'const a=require(process.argv[1]);console.log(a.bytecode.object)' "$ROOT/out/RehearsalBridgedToken.sol/RehearsalBridgedToken.json")$(cast abi-encode "c(string,string,uint8,uint256,address,uint256)" "Rehearsal bUSDC" bUSDC 6 1000000000000 "$ISSUER" $USD_BUCKET | cut -c3-)
+  ASSET=$(must "$ISSUER_KEY" create "$TOKEN_INIT" 0 3000000 | awk '{print tolower($2)}')
+  ASSET_CODE=$(cast keccak "$(cast code "$ASSET" --rpc-url "$RPC")")
+fi
 log "1 DEX: committed mainnet config lists what is pending"
 node scripts/staging/deploy-dex.mjs pending --config deployments/mainnet/dex-mainnet.config.json | tee "$EV/dex.pending.json"
 FIRST_DEPOSITOR=$DEPOSITOR node -e '

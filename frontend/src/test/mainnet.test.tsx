@@ -1546,6 +1546,7 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
     latestCount?: bigint;
     latestHead?: Hex;
     deposits: bigint;
+    latestDeposits?: bigint;
     paused: boolean;
     releasesEnabled: boolean;
     mode: number;
@@ -1563,7 +1564,7 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
     ...network,
     bridges: network.bridges.map((b) => ({
       ...b,
-      withdrawUrl: 'https://bridge.example.invalid/#/bridge',
+      withdrawUrl: 'https://bridge.example.invalid/bridge',
       status: {
         ethRpcUrl: 'https://eth.example.invalid',
         vault: VAULT,
@@ -1610,7 +1611,7 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
       });
       const values: Record<string, unknown> = {
         provenanceMode: b.mode,
-        depositCount: b.deposits,
+        depositCount: params[1] === 'latest' ? (b.latestDeposits ?? b.deposits) : b.deposits,
         paused: b.paused,
         pausedUntil: 1_792_300_000n,
         releasesEnabled: b.releasesEnabled,
@@ -1668,7 +1669,7 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
     expect(banner.textContent).toContain('bUSDC exits to Ethereum are held.');
     expect(banner.textContent).toContain('take out of a pool');
     expect(within(banner).getByRole('link', { name: 'Bridge status' }).getAttribute('href')).toBe(
-      'https://bridge.example.invalid/#/bridge',
+      'https://bridge.example.invalid/bridge',
     );
     const notices = screen.getAllByLabelText('Held exit LP notice');
     expect(notices).toHaveLength(1);
@@ -1681,6 +1682,19 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
     expect(swapButton().disabled).toBe(true);
     await user.click(within(notice).getByRole('checkbox'));
     await waitFor(() => expect(swapButton().disabled).toBe(false));
+  });
+
+  it('a finalized credit beyond every vault deposit is held and final', async () => {
+    await mount({
+      ...clean,
+      mintCount: 4n,
+      mintHead: head(97),
+      latestCount: 4n,
+      latestHead: head(97),
+    });
+    const text = (await screen.findByLabelText('Bridge exit status')).textContent;
+    expect(text).toContain('bUSDC exits to Ethereum are held.');
+    expect(text).not.toContain('not final yet');
   });
 
   it('held at latest only (a forged credit not final yet) is already held', async () => {
@@ -1734,8 +1748,7 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
       ...clean,
       mintCount: 3n,
       deposits: 2n,
-      latestCount: 2n,
-      latestHead: head(2),
+      latestDeposits: 3n,
     });
     expect(await readBridgeHold(lag.eth, lag.l2, cfg, FINALIZED.hash as Hex)).toMatchObject({
       state: 'normal',

@@ -780,7 +780,7 @@ test("N2: the seed is ours only if the recipient holds nearly all the shares", (
 // bUSDC exit status (agent 144): the token's mint chain on the L2 against the vault's deposit chain on Ethereum.
 const VAULT = address(0xb01);
 const H = (n) => `0x${n.toString(16).padStart(64, "0")}`;
-function fakeBridge({ mintCount = 3n, mintHead = H(3), latestCount, latestHead, deposits = 3n, heads = [H(0), H(1), H(2), H(3)], paused = false, releasesEnabled = true, mode = 1, ethDown = false } = {}) {
+function fakeBridge({ mintCount = 3n, mintHead = H(3), latestCount, latestHead, deposits = 3n, latestDeposits, heads = [H(0), H(1), H(2), H(3)], paused = false, releasesEnabled = true, mode = 1, ethDown = false } = {}) {
   const l2 = fakeNode();
   const inner = l2.request;
   const l2request = async (method, params) => {
@@ -797,7 +797,7 @@ function fakeBridge({ mintCount = 3n, mintHead = H(3), latestCount, latestHead, 
     if (method === "eth_getBlockByNumber") return { number: "0x64", hash: "0xE", timestamp: "0x1", baseFeePerGas: "0x1" };
     if (method === "eth_getCode") return "0x6009";
     const { functionName, args } = decodeFunctionData({ abi: ABI, data: params[0].data });
-    const value = { provenanceMode: mode, depositCount: deposits, paused, pausedUntil: 2_000_100_000n, releasesEnabled }[functionName] ?? (functionName === "chainHeadAt" ? heads[Number(args[0])] : undefined);
+    const value = { provenanceMode: mode, depositCount: params[1] === "latest" && latestDeposits !== undefined ? latestDeposits : deposits, paused, pausedUntil: 2_000_100_000n, releasesEnabled }[functionName] ?? (functionName === "chainHeadAt" ? heads[Number(args[0])] : undefined);
     if (value === undefined) throw new Error(`fake eth: ${functionName}`);
     return encodeFunctionResult({ abi: ABI, functionName, result: value });
   };
@@ -819,6 +819,10 @@ test("monitor: bUSDC exits open, held (CRIT), held at latest only (CRIT), paused
   [c] = await exitCheck(fakeBridge({ latestCount: 4n, latestHead: H(98) }));
   assert.equal(c.level, CRIT);
   assert.match(c.detail, /latest blocks only, not final yet/);
+  // a finalized forged credit beyond every vault deposit (even at latest) is final
+  [c] = await exitCheck(fakeBridge({ mintCount: 4n, mintHead: H(97), latestCount: 4n, latestHead: H(97) }));
+  assert.equal(c.level, CRIT);
+  assert.doesNotMatch(c.detail, /not final yet/);
   [c] = await exitCheck(fakeBridge({ paused: true }));
   assert.equal(c.level, WARN);
   assert.match(c.detail, /guardian pause until 2000100000/);
@@ -833,7 +837,7 @@ test("monitor: bUSDC exits open, held (CRIT), held at latest only (CRIT), paused
   assert.equal(c.level, CRIT);
   assert.match(c.detail, /differs from the pin/);
   // a finalized token ahead of the finalized vault is a lagging Ethereum view, not a hold, while latest matches
-  [c] = await exitCheck(fakeBridge({ mintCount: 3n, deposits: 2n, latestCount: 2n, latestHead: H(2) }));
+  [c] = await exitCheck(fakeBridge({ mintCount: 3n, deposits: 2n, latestDeposits: 3n }));
   assert.equal(c.level, OK);
   // without --eth-rpc nothing is checked (rehearsals and older units)
   const plain = fakeNode();
