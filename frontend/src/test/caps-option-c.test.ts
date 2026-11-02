@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { atKCeiling, closedByExcess, explainBlock } from '../mainnet/caps';
+import { atKCeiling, closedByExcess, closureMinOutput, explainBlock } from '../mainnet/caps';
 import type { LivePool } from '../devnet4/chain';
 
 const caps = { cap0: 1_000_000_000n, cap1: 10n ** 19n };
@@ -33,6 +33,20 @@ describe('option C in the pool view', () => {
         reserve1: r1,
         excess: { excess0: x0, excess1: x1, blocksInflow0: false, blocksInflow1: false },
       }) as unknown as LivePool;
+    it('names what a swap must take out, and nothing when both balances sit at their caps', () => {
+      expect(closureMinOutput(pool(742_000_000n, 200_000_000n, 8_618_052_029_873_667_082n, 2n * 10n ** 18n))).toEqual({
+        amount0: 0n,
+        amount1: 618_052_029_873_667_082n,
+      });
+      expect(closureMinOutput(pool(800_000_000n, 200_000_000n, 8n * 10n ** 18n, 2n * 10n ** 18n))).toEqual({
+        amount0: 0n,
+        amount1: 0n,
+      });
+      // A side at its cap, the pool at the seed's k: about 1 USD closes it to small swaps.
+      const soft = pool(250_375_564n, 0n, W, 40_455_000_000_000_000n);
+      expect(closedByExcess(soft)).toBe(true);
+      expect(closureMinOutput(soft).amount1).toBe(40_455_000_000_000_000n);
+    });
     it('is true for the real closure with one side above its cap, which the lens flags as one side', () => {
       const reserve1 = 8_618_052_029_873_667_082n;
       expect(closedByExcess(pool(742_000_000n, 200_000_000n, reserve1, 2n * 10n ** 18n))).toBe(true);

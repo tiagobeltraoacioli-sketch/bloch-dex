@@ -57,7 +57,13 @@ node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-ga
 | `closed` | 2 | Both reserves at their caps. The contracts should make this unreachable, so treat it as an incident |
 | `bricked` | 2 | See DEX-09 |
 
-Send the plan's `to`, `value` and `data` from the first depositor (`from` in the plan), without changing them. Send them as soon as you have the plan: the plan is good only for the state it read.
+Send them with `sign-and-publish.sh`, not a wallet: it refuses another chain ID or genesis, another signer, and a nonce that is not the planned one. Add `--write-txs seed.txs.json` to the `plan` command, then:
+
+```
+scripts/staging/sign-and-publish.sh --txs seed.txs.json --rpc http://127.0.0.1:18955 --confirm TBD-confirm-from-plan --max-fee-wei TBD-owner --priority-fee-wei TBD-owner --hashes-out seed.hashes.txt -- --ledger
+```
+
+`--confirm` is the plan's `txFile.confirm`. The approve is for the exact deposit: never give this key a larger allowance, because the exact amount stops a second plan from depositing twice. `--fraction-bps` is refused above 8,000, where the opening would pass the k ceiling. Send them as soon as you have the plan: the plan is good only for the state it read.
 
 Record a sent approve or seed if you need to plan again: after the approve, or after a failed seed. It writes `deployment.depositorTransactions` in the gate file, only if the whole history checks out:
 
@@ -101,6 +107,8 @@ Unrecorded balance can still fill the room on both sides, which closes both swap
 The Safe and the Multicall3 and CREATE2 deployments are kept. This procedure has not been rehearsed.
 
 ## After the seed
+
+**The first-deposit rule does not come back.** If every LP exits, 1,000 locked shares remain, so anyone can `sync` a new price over the dust reserves and deposit. Keep a position in the pool, or treat a full exit as reopening the pair to everyone (agent 98, A98-5).
 
 - Run the monitor with `--expect-seeded --lp-recipient <LP recipient>`. Below half the shares it reports `lp_recipient` CRIT. If the recipient exits on purpose, lower `--lp-min-bps`.
 - Start the keeper.

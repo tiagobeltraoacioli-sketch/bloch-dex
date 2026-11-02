@@ -50,6 +50,7 @@ import {
   atKCeiling,
   checkRoute,
   closedByExcess,
+  closureMinOutput,
   explainBlock,
   headroom,
   headroomUse,
@@ -453,6 +454,11 @@ function PendingExcess({
   const e = pool.excess;
   if (!e || (e.excess0 === 0n && e.excess1 === 0n)) return null;
   const blocked = e.blocksInflow0 || e.blocksInflow1;
+  const minimum = closureMinOutput(pool);
+  const minimums = [
+    [minimum.amount0, pool.token0],
+    [minimum.amount1, pool.token1],
+  ] as const;
   const parts = [
     [e.excess0, pool.token0],
     [e.excess1, pool.token1],
@@ -487,7 +493,12 @@ function PendingExcess({
         .join(' and ')}{' '}
       above the reserves.{' '}
       {closedByExcess(pool)
-        ? 'This pool is closed: swaps in both directions and deposits revert until someone calls skim. '
+        ? minimums.some(([amount]) => amount > 0n)
+          ? `This pool is closed: deposits, swaps into the full side, and swaps that take out less than ${minimums
+              .filter(([amount]) => amount > 0n)
+              .map(([amount, t]) => `${formatAmount(amount, t.decimals)} ${t.symbol}`)
+              .join(' or ')} revert until someone calls skim. `
+          : 'This pool is closed: swaps in both directions and deposits revert until someone calls skim. '
         : blocked && 'Swaps and deposits on that side revert until someone calls skim. '}
       Anyone can call <code>skim</code> on this pool; the caller receives the excess.{' '}
       {wallet.account && (
@@ -565,7 +576,8 @@ function PoolsTable({
                 {atKCeiling(p) && !closedByExcess(p) && (
                   <div className="microcopy" aria-label="K ceiling">
                     At the pool&apos;s k ceiling: deposits revert with BDEX: K_CEILING. Swaps still
-                    run, and their fee stays outside the reserves as excess.
+                    run, but their fee stays outside the reserves, so liquidity providers and the
+                    protocol earn nothing from it, and anyone can collect it with skim.
                   </div>
                 )}
               </td>
@@ -922,6 +934,11 @@ function SwapPanel({
             onChange={(e) => (setSlippage(e.target.value), clear())}
           />
         </label>
+        <p className="microcopy" aria-label="Slippage note">
+          Plan to lose up to this share of your output. Block order follows the tip paid, so someone
+          can trade just before and after you and keep the difference, up to your minimum. Keep it
+          low, and split large swaps.
+        </p>
         <label className="field-label">
           Deadline (minutes)
           <input

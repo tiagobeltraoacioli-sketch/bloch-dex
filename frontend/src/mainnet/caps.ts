@@ -101,6 +101,25 @@ export function closedByExcess(pool: LivePool): boolean {
   );
 }
 
+/**
+ * On a closed pool, the amount a swap must take out of an overfull side to pass, per token:
+ * the output pays that excess down. Smaller swaps revert. Zero where a side is not overfull.
+ */
+export function closureMinOutput(pool: LivePool): { amount0: bigint; amount1: bigint } {
+  const e = pool.excess;
+  if (!e) return { amount0: 0n, amount1: 0n };
+  const over = (excess: bigint, reserve: bigint, cap: bigint) => {
+    if (cap === 0n) return 0n;
+    const bound = cap > reserve ? cap : reserve;
+    const balance = reserve + excess;
+    return balance > bound ? balance - bound : 0n;
+  };
+  return {
+    amount0: over(e.excess0, pool.reserve0, pool.cap0),
+    amount1: over(e.excess1, pool.reserve1, pool.cap1),
+  };
+}
+
 /** Walk a route hop by hop on finalized reserves, stopping at the first hop that would revert. */
 export function checkRoute(pools: LivePool[], path: Address[], amountIn: bigint): RouteCheck {
   const amounts = [amountIn];

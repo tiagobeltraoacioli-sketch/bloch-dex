@@ -10,7 +10,9 @@
 // off target; 3 the node could not answer.
 //
 //   node scripts/ops/dex-seed-plan.mjs plan --config gate.json --rpc URL
-//        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000] [--deadline-min 60]
+//        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000, at most 8000] [--deadline-min 60]
+//        [--write-txs <file> [--from 0x<sender after the seed>]]: a raw-transaction file for
+//        scripts/staging/sign-and-publish.sh (chain, genesis, signer and nonce checked)
 //   node scripts/ops/dex-seed-plan.mjs verify --config gate.json --rpc URL
 //        --price 25.5 --to 0x<LP recipient> [--tolerance-bps 100]
 //   note-tx record a planned approve or seed the depositor sent, after checking it
@@ -22,6 +24,7 @@ import {
   blockRef, call, checkIdentity, createRequest, deploymentFromGate, encode, formatUnits, isBricked, isClosed, isqrt,
   parseArgs, parseUnits, readBlock, readGate, readPair, stringify,
 } from "./dex-ops-lib.mjs";
+import { createHash } from "node:crypto";
 import { renameSync, writeFileSync } from "node:fs";
 import { verifyDepositorHistory } from "../staging/finality-gate.mjs";
 
@@ -29,6 +32,8 @@ const WAD = 10n ** 18n;
 const MINIMUM_LIQUIDITY = 1000n;
 const PRICE_TOLERANCE_BPS = 100n;
 const SEED_SHARE_BPS = 9_900n;
+/// Gas limits for the depositor's raw transactions: about 2x what the rehearsals used.
+export const SEED_GAS = Object.freeze({ approve: 100_000, seed: 1_000_000 });
 
 /// LP shares already exist: our own seed, or a first mint nobody planned (F1). The
 /// price comes first: a swap sets it, then a pro-rata deposit reaches the target.
@@ -79,7 +84,12 @@ export function holdsSeed({ held, totalSupply, minBps = SEED_SHARE_BPS }) {
 
 /// The pure part of `plan`. `wrapped` and `quote` are pair sides; `price` is in
 /// quote base units per 1e18 wrapped base units.
+export const MAX_FRACTION_BPS = 8_000n;
+
 export function planOpening({ wrapped, quote, totalSupply, price, fractionBps }) {
+  // Above 80% of both caps the opening's k passes the ceiling, the mint reverts with
+  // K_CEILING and a depositor nonce is spent (A98-OPS-2).
+  if (fractionBps <= 0n || fractionBps > MAX_FRACTION_BPS) return { decision: "refuse", reason: `--fraction-bps must be between 1 and ${MAX_FRACTION_BPS}` };
   if (price <= 0n) return { decision: "refuse", reason: "the price must be positive" };
   if (totalSupply !== 0n) return planWithShares({ wrapped, quote, totalSupply, price, fractionBps });
   const excess = [wrapped, quote].filter((s) => s.balance !== s.reserve);
@@ -258,11 +268,30 @@ async function main() {
   const topUp = plan.decision === "top-up";
   const seedCall = encode("addLiquidityBLCH", [quote.token, plan.depositQuote, topUp ? (plan.depositQuote * 99n) / 100n : plan.depositQuote, topUp ? (plan.depositWrapped * 99n) / 100n : plan.depositWrapped, args.to, deadline]);
   const liquidity = topUp ? (plan.depositWrapped * state.totalSupply) / wrapped.reserve : isqrt(plan.depositWrapped * plan.depositQuote) - MINIMUM_LIQUIDITY;
+  // A98-OPS-1: the depositor signs through sign-and-publish.sh, which checks the chain ID,
+  // the genesis, the signer and each nonce, rather than with whatever wallet is at hand.
+  let txFile = null;
+  if (args["write-txs"]) {
+    const from = seeding ? deployment.firstDepositor : args.from;
+    if (!from) throw new Error("--from <sender> is required with --write-txs after the seed");
+    let nonce = BigInt(await request("eth_getTransactionCount", [from, "latest"]));
+    const transactions = [];
+    if (!enoughAllowance) {
+      transactions.push({ nonce: Number(nonce), label: "approve", to: quote.token, value: "0", data: encode("approve", [deployment.router.address, plan.depositQuote]), gasLimit: SEED_GAS.approve, expect: null });
+      nonce += 1n;
+    }
+    transactions.push({ nonce: Number(nonce), label: seeding ? "seed" : "top-up", to: deployment.router.address, value: String(plan.depositWrapped), data: seedCall, gasLimit: SEED_GAS.seed, expect: null });
+    const body = { schemaVersion: 1, domain: "postern.dex.raw-txs.v1", chainId: deployment.chainId, genesisHash: deployment.genesisHash, from, transactions };
+    const configSha256 = `0x${createHash("sha256").update(JSON.stringify(body)).digest("hex")}`;
+    writeFileSync(args["write-txs"], `${JSON.stringify({ ...body, configSha256 }, null, 2)}\n`, { flag: "wx" });
+    txFile = { file: args["write-txs"], confirm: configSha256, from, transactions: transactions.length };
+  }
   console.log(stringify({
     ...plan,
     pair: pair.address,
     block: latest.number,
     targetPrice: args.price,
+    ...(txFile ? { txFile } : {}),
     human: {
       wrapped: formatUnits(plan.depositWrapped, 18),
       quote: formatUnits(plan.depositQuote, decimals),

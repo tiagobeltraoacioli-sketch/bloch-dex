@@ -92,6 +92,19 @@ contract CappedFeeHandler {
         if (pair.kLast() != uint256(r0) * r1) kLastHeld = false;
     }
 
+    /// k may fall only at the k ceiling, by less than one unit of a reserve, and must end
+    /// within that unit of the ceiling (agent 98, finding A98-2). This is tighter than
+    /// bounding the fall by the larger reserve anywhere: a swap that loses k away from the
+    /// ceiling fails here.
+    function _kAnchored(uint256 r0, uint256 r1, uint256 n0, uint256 n1) internal pure returns (bool) {
+        uint256 kBefore = r0 * r1;
+        uint256 kAfter = n0 * n1;
+        if (kAfter >= kBefore) return true;
+        uint256 kept = n0 > n1 ? n0 : n1;
+        uint256 ceiling = CAP0 * CAP1 * 6400 / 10_000;
+        return kBefore - kAfter < kept && kAfter + kept > ceiling;
+    }
+
     function swap(bool zeroForOne, uint96 seed) external {
         (uint112 r0, uint112 r1,) = pair.getReserves();
         uint256 amount = uint256(seed) % 50 ether + 1e6;
@@ -100,7 +113,7 @@ contract CappedFeeHandler {
         (zeroForOne ? token0 : token1).mint(address(pair), amount);
         try pair.swap(zeroForOne ? 0 : out, zeroForOne ? out : 0, address(0xD0), "") {
             (uint112 n0, uint112 n1,) = pair.getReserves();
-            if (uint256(n0) * (uint256(n1) + 1) * 2 < uint256(r0) * r1 * 2 - uint256(n0)) kHeld = false; // floor at the ceiling
+            if (!_kAnchored(r0, r1, n0, n1)) kHeld = false;
             ++swaps;
         } catch (bytes memory data) {
             _expect(data, "BDEX: RESERVE_CAP");
@@ -117,7 +130,7 @@ contract CappedFeeHandler {
         pendingRepay = repay;
         try pair.swap(borrow0 ? out : 0, borrow0 ? 0 : out, address(this), hex"01") {
             (uint112 n0, uint112 n1,) = pair.getReserves();
-            if (uint256(n0) * (uint256(n1) + 1) * 2 < uint256(r0) * r1 * 2 - uint256(n0)) kHeld = false; // floor at the ceiling
+            if (!_kAnchored(r0, r1, n0, n1)) kHeld = false;
             ++flashes;
         } catch (bytes memory data) {
             _expect(data, "BDEX: RESERVE_CAP");

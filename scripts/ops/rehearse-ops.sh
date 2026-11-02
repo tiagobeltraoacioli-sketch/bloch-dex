@@ -353,11 +353,17 @@ fi
 
 # ---------------------------------------------------------------- seed
 log "4 seed from the plan: 50% of the tighter cap at $PRICE bUSDC per BLCH"
-expect 0 seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+expect 0 seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --write-txs "$WORK/seed.txs.json"
+expect 2 seed-plan-fraction-too-high node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --fraction-bps 8001
+SEED_CONFIRM=$(jsonget "$EV/seed-plan.out" txFile.confirm)
+node -e 'const fs=require("fs"),t=JSON.parse(fs.readFileSync(process.argv[1]));t.chainId=1;fs.writeFileSync(process.argv[2],JSON.stringify(t))' "$WORK/seed.txs.json" "$WORK/seed-wrong-chain.txs.json"
+expect 1 seed-wrong-chain scripts/staging/sign-and-publish.sh --txs "$WORK/seed-wrong-chain.txs.json" --rpc "$RPC" --confirm "$SEED_CONFIRM" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$WORK/seed-wrong.hashes" -- --private-key "$SEEDER_KEY"
+grep -q 'chain ID differs' "$EV/seed-wrong-chain.out" || die "sign-and-publish did not refuse the wrong chain"
+expect 1 seed-wrong-signer scripts/staging/sign-and-publish.sh --txs "$WORK/seed.txs.json" --rpc "$RPC" --confirm "$SEED_CONFIRM" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$WORK/seed-wrong2.hashes" -- --private-key "$GRIEFER_KEY"
+[ "$(cast nonce "$SEEDER" --rpc-url "$RPC")" = 0 ] || die "a refused signing sent something"
 [ "$(cast nonce "$SEEDER" --rpc-url "$RPC")" = 0 ] || die "the first depositor is not fresh"
-must "$SEEDER_KEY" "$(jsonget "$EV/seed-plan.out" steps.0.to)" "$(jsonget "$EV/seed-plan.out" steps.0.data)" 0 100000 > /dev/null
-SEED_TO=$(jsonget "$EV/seed-plan.out" steps.1.to); SEED_VALUE=$(jsonget "$EV/seed-plan.out" steps.1.value); SEED_DATA=$(jsonget "$EV/seed-plan.out" steps.1.data)
-must "$SEEDER_KEY" "$SEED_TO" "$SEED_DATA" "$SEED_VALUE" 1000000 > /dev/null
+expect 0 seed-sign-and-publish scripts/staging/sign-and-publish.sh --txs "$WORK/seed.txs.json" --rpc "$RPC" --confirm "$SEED_CONFIRM" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$EV/seed.hashes.txt" -- --private-key "$SEEDER_KEY"
+pass "the depositor's approve and seed went through sign-and-publish.sh, with chain, genesis, signer and nonce checked"
 [ "$(cast nonce "$SEEDER" --rpc-url "$RPC")" = 2 ] || die "the first depositor must send exactly two transactions"
 pass "the first depositor sent the approve and the seed, and nothing else"
 must "$SEEDER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 100000000000)" 0 100000 > /dev/null

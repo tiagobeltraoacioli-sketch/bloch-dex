@@ -9,7 +9,13 @@
 //     the pair and token code hashes checked first; the recipient is not an
 //     option, so a stolen keeper key can only spend the gas budget;
 //   * dust below the floor is ignored, so a griefer cannot trigger a transaction
-//     without forfeiting at least the floor to the Safe;
+//     without forfeiting at least the floor to the Safe, except a soft closure: about
+//     1 USD on a side already at its cap. That can only use a small share of the count;
+//   * part of the count is kept for a hard closure, where the griefer has the floor at
+//     stake, so cheap donations cannot spend the keeper before the one that matters;
+//   * a tip that varies and climbs after a wasted skim: to win a race for certain a griefer
+//     must always pay above the top of the range, and its re-donation cannot land safely
+//     above the keeper's tip, so users' swaps get through in between;
 //   * every transaction is simulated first, has a gas limit and a fee ceiling,
 //     and its worst-case cost is reserved against a rolling 24 h budget and a
 //     transaction count BEFORE it is signed; the state file is written before
@@ -24,27 +30,36 @@
 //
 //   node scripts/ops/dex-skim-keeper.mjs --config finality-gate.mainnet.json
 //        --rpc http://127.0.0.1:18955 --keeper 0x… --state /var/lib/…/state.json
-//        [--execute] [--budget-wei 10000000000000000] [--max-tx 8]
+//        [--execute] [--budget-wei 50000000000000000] [--max-tx 48]
 //        [--max-fee-wei 20000000000] [--max-gas 150000] [--floor-bps 100]
+//        [--tip-wei 1000000000] [--max-tip-wei 8000000000]
+//        [--soft-share-bps 2500] [--hard-reserve-bps 2500]
 //        [--cooldown-s 1800] [--pending-timeout-s 7200] -- <cast signer arguments>
 
 import { execFile } from "node:child_process";
+import { randomInt } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
-  blockRef, checkIdentity, classifyExcess, codeHash, isClosedByExcess, createRequest, deploymentFromGate, encode, keccak256,
+  blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, keccak256,
   parseArgs, readBlock, readGate, readPair, recoverTransactionAddress, stringify,
 } from "./dex-ops-lib.mjs";
 
 const DAY = 86_400;
 export const DEFAULTS = Object.freeze({
-  budgetWei: 10_000_000_000_000_000n, // 0.01 BLCH per 24 h: all 8 transactions at a 3 gwei max fee, 4 at the 20 gwei ceiling
-  maxTx: 8,
+  // 0.05 BLCH per 24 h: about 70 skims at the top of the tip range. A griefer who wins a
+  // round pays about 1.7x the keeper's gas in the same fee market, and loses its donation when
+  // it loses one, so a larger budget costs the griefer more than it costs the Safe.
+  budgetWei: 50_000_000_000_000_000n,
+  maxTx: 48, // One every 30 minutes, about every second block at 12-15 min.
   maxFeeWei: 20_000_000_000n,
   tipWei: 1_000_000_000n,
+  maxTipWei: 8_000_000_000n,
+  softShareBps: 2_500n, // At most this share of maxTx on soft closures.
+  hardReserveBps: 2_500n, // This share of maxTx is only for hard closures.
   maxGas: 150_000n, // measured about 60-95k, depending on cold recipient balances
   floorBps: 100n,
   cooldownSeconds: 1_800, // a little over two L2 blocks at 12-15 min
@@ -90,6 +105,19 @@ function acquireLock(path, now) {
 
 const windowTxs = (state, now) => state.txs.filter((t) => now - t.at < DAY);
 const windowSpend = (state, now) => windowTxs(state, now).reduce((sum, t) => sum + BigInt(t.spentWei ?? t.reservedWei), 0n);
+
+/// The tip of the next skim: uniform between tipWei and tipWei * 2^(wasted + 1), capped at
+/// maxTipWei. It varies even with no waste, because a known tip tells a griefer exactly how
+/// low its re-donation has to go to stay behind the keeper's skim.
+export function nextTip(state, options, random = (n) => BigInt(randomInt(Number(n)))) {
+  const shift = BigInt(Math.min((state.consecutiveWasted ?? 0) + 1, 16));
+  const top = options.tipWei << shift;
+  const ceiling = top < options.maxTipWei ? top : options.maxTipWei;
+  if (ceiling <= options.tipWei) return options.tipWei;
+  // Steps of 1 Mwei keep the range inside randomInt's limits.
+  const steps = (ceiling - options.tipWei) / 1_000_000n;
+  return options.tipWei + random(steps + 1n) * 1_000_000n;
+}
 
 /// Settle the transaction in flight. Returns true when it is still in flight.
 async function reconcile(state, keeper, deployment, request, now, options) {
@@ -148,31 +176,42 @@ export async function runKeeper(gate, options, state, deps) {
     }
 
     let target = null;
-    let closedPair = null;
+    let hardPair = null;
+    let softPair = null;
     const seen = [];
     for (const pair of deployment.pairs) {
       const observed = await codeHash(request, pair.address, at);
       if (observed !== pair.codeHash) throw new IdentityError(`pair ${pair.address} code ${observed} differs from the pin`);
       const pairState = await readPair(request, pair, at);
       const kinds = pairState.sides.map((side) => classifyExcess(side, options.floorBps));
-      seen.push({ pair: pair.address, kinds, excess: pairState.sides.map((s) => s.balance - s.reserve) });
+      const closure = closureOf(pairState, options.floorBps);
+      seen.push({ pair: pair.address, kinds, excess: pairState.sides.map((s) => s.balance - s.reserve), closure: closure ? (closure.hard ? "hard" : "soft") : null });
       if (kinds.includes("negative")) throw new IdentityError(`pair ${pair.address} holds less than its reserves`);
-      const closing = isClosedByExcess(pairState);
-      if (closing && !closedPair) closedPair = pair;
-      if (!target && (closing || kinds.some((k) => k === "material" || k === "blocking"))) target = pair;
+      if (closure?.hard && !hardPair) hardPair = pair;
+      if (closure && !closure.hard && !softPair) softPair = pair;
+      if (!target && kinds.some((k) => k === "material" || k === "blocking")) target = pair;
     }
-    // Both directions closed outranks the first pair with an ordinary excess.
-    if (closedPair) target = closedPair;
+    // A hard closure outranks everything. A soft one comes last.
+    if (hardPair) target = hardPair;
+    const soft = !target && Boolean(softPair);
+    if (soft) target = softPair;
     if (!target) return result(OK, "nothing-to-do", { seen });
 
-    const blocked = (action, detail) => result(WARN, action, { pair: target.address, seen, ...detail });
+    // Stopped with a hard closure standing means ordinary swaps stay stopped and nothing
+    // here will clear it: that is an operator's problem now, not a warning.
+    const blocked = (action, detail) => result(hardPair ? CRIT : WARN, action, { pair: target.address, seen, ...detail });
     // A griefer that wins its own skim could use the backoff to hold a pair closed,
-    // so a closed pair skips the backoff and the cooldown. The budget and the
-    // transaction count still apply.
-    if (!closedPair && now < state.nextAllowedAt) return blocked("backoff", { until: state.nextAllowedAt, consecutiveWasted: state.consecutiveWasted });
-    const last = windowTxs(state, now).at(-1);
-    if (!closedPair && last && now - last.at < options.cooldownSeconds) return result(OK, "cooldown", { pair: target.address, seen, until: last.at + options.cooldownSeconds });
-    if (windowTxs(state, now).length >= options.maxTx) return blocked("tx-count-exhausted", { maxTx: options.maxTx });
+    // so a hard closure skips the backoff and the cooldown. A soft closure does not: it
+    // stops only swaps below the floor, and it costs the griefer about 1 USD. The budget
+    // and the transaction count always apply.
+    if (!hardPair && now < state.nextAllowedAt) return blocked("backoff", { until: state.nextAllowedAt, consecutiveWasted: state.consecutiveWasted });
+    const inWindow = windowTxs(state, now);
+    const last = inWindow.at(-1);
+    if (!hardPair && last && now - last.at < options.cooldownSeconds) return result(OK, "cooldown", { pair: target.address, seen, until: last.at + options.cooldownSeconds });
+    if (inWindow.length >= options.maxTx) return blocked("tx-count-exhausted", { maxTx: options.maxTx });
+    const share = (bps) => (BigInt(options.maxTx) * bps) / 10_000n;
+    if (soft && BigInt(inWindow.filter((t) => t.kind === "soft").length) >= share(options.softShareBps)) return blocked("soft-closure-share-used", { softTx: share(options.softShareBps) });
+    if (!hardPair && BigInt(inWindow.length) >= BigInt(options.maxTx) - share(options.hardReserveBps)) return blocked("reserved-for-hard-closure", { reservedTx: share(options.hardReserveBps) });
 
     // The recipient is fixed: donations go to the Bloch Inc Safe, never to the
     // keeper, so running or attacking a keeper pays nobody.
@@ -184,7 +223,9 @@ export async function runKeeper(gate, options, state, deps) {
     if (gasLimit > options.maxGas) return blocked("gas-limit-exceeded", { estimate, maxGas: options.maxGas });
 
     if (latest.baseFee + options.tipWei > options.maxFeeWei) return blocked("fee-above-ceiling", { baseFee: latest.baseFee, maxFeeWei: options.maxFeeWei });
-    const wanted = latest.baseFee * 2n + options.tipWei;
+    let tip = nextTip(state, options, deps.random);
+    if (latest.baseFee + tip > options.maxFeeWei) tip = options.maxFeeWei - latest.baseFee;
+    const wanted = latest.baseFee * 2n + tip;
     const maxFee = wanted < options.maxFeeWei ? wanted : options.maxFeeWei;
     const worstCase = gasLimit * maxFee;
     const spent = windowSpend(state, now);
@@ -192,15 +233,15 @@ export async function runKeeper(gate, options, state, deps) {
     const funds = BigInt(await request("eth_getBalance", [keeper, "latest"]));
     if (funds < worstCase) return blocked("keeper-underfunded", { balanceWei: funds, worstCaseWei: worstCase });
 
-    const plan = { pair: target.address, to: deployment.feeTo, gasLimit, maxFee, worstCaseWei: worstCase, spentWei: spent, budgetWei: options.budgetWei, seen };
+    const plan = { pair: target.address, to: deployment.feeTo, closure: hardPair ? "hard" : soft ? "soft" : null, tip, gasLimit, maxFee, worstCaseWei: worstCase, spentWei: spent, budgetWei: options.budgetWei, seen };
     if (!options.execute) return result(OK, "would-skim", plan);
 
     const nonce = BigInt(await request("eth_getTransactionCount", [keeper, "pending"]));
-    const raw = await sign({ chainId: deployment.chainId, nonce, gasLimit, maxFee, tip: options.tipWei, to: target.address, data });
+    const raw = await sign({ chainId: deployment.chainId, nonce, gasLimit, maxFee, tip, to: target.address, data });
     const signer = (await recoverTransactionAddress({ serializedTransaction: raw })).toLowerCase();
     if (signer !== keeper) throw new IdentityError(`the signer is ${signer}, not the configured keeper ${keeper}`);
     const hash = keccak256(raw);
-    const entry = { at: now, hash, nonce: nonce.toString(), pair: target.address, reservedWei: worstCase.toString(), status: "pending" };
+    const entry = { at: now, hash, nonce: nonce.toString(), pair: target.address, reservedWei: worstCase.toString(), kind: hardPair ? "hard" : soft ? "soft" : "excess", tipWei: tip.toString(), status: "pending" };
     state.txs = [...windowTxs(state, now), entry];
     save(state); // Before publishing: a crash after this point cannot overspend.
     try {
@@ -258,6 +299,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       maxTx: Number(args["max-tx"] ?? DEFAULTS.maxTx),
       maxFeeWei: bigOption(args, "max-fee-wei", DEFAULTS.maxFeeWei),
       tipWei: bigOption(args, "tip-wei", DEFAULTS.tipWei),
+      maxTipWei: bigOption(args, "max-tip-wei", DEFAULTS.maxTipWei),
+      softShareBps: bigOption(args, "soft-share-bps", DEFAULTS.softShareBps),
+      hardReserveBps: bigOption(args, "hard-reserve-bps", DEFAULTS.hardReserveBps),
       maxGas: bigOption(args, "max-gas", DEFAULTS.maxGas),
       floorBps: bigOption(args, "floor-bps", DEFAULTS.floorBps),
       cooldownSeconds: Number(args["cooldown-s"] ?? DEFAULTS.cooldownSeconds),

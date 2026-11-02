@@ -18,15 +18,15 @@
 //   node scripts/ops/dex-monitor.mjs --config finality-gate.mainnet.json
 //        --safe-plan safe.plan.json --rpc http://127.0.0.1:18955 [--expect-seeded]
 //        [--lp-recipient 0x… [--lp-min-bps 5000], required with --expect-seeded]
-//        [--rehearsal] [--ref-price 25.5] [--json]
+//        [--keeper-state /var/lib/…/state.json] [--rehearsal] [--ref-price 25.5] [--json]
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { evaluateFinalityGate, verifySafe } from "../staging/finality-gate.mjs";
 import {
   CRIT, CallReverted, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN,
-  blockRef, call, checkIdentity, classifyExcess, codeHash, createRequest, deploymentFromGate, excessFloor,
-  formatUnits, isBricked, isClosed, isClosedByExcess, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
+  blockRef, call, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, excessFloor,
+  formatUnits, isAtKCeiling, isBricked, isClosed, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
 } from "./dex-ops-lib.mjs";
 
 export const THRESHOLDS = Object.freeze({
@@ -163,7 +163,27 @@ export async function runMonitor(gate, options, request, deps = {}) {
     });
   }
 
+  if (options.keeperState) checkKeeperState(options.keeperState, now, add);
+
   return finish(checks, facts);
+}
+
+/// How much of the keeper's rolling budget is gone, and whether someone is racing it. A
+/// griefer's own skim leaves the pair open, so the pair checks alone never show this.
+export function checkKeeperState(path, now, add, maxTx = 48) {
+  let state;
+  try {
+    state = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return add("keeper_budget", OK, "no keeper transaction recorded yet");
+    return add("keeper_budget", CRIT, `keeper state ${path} is unreadable: ${error.message}`);
+  }
+  const txs = (state.txs ?? []).filter((t) => Number(now) - t.at < 86_400);
+  const wasted = txs.filter((t) => t.status === "wasted" || t.status === "reverted").length;
+  const used = txs.length;
+  const spent = txs.reduce((sum, t) => sum + BigInt(t.spentWei ?? t.reservedWei ?? 0), 0n);
+  const level = used >= maxTx ? CRIT : wasted >= 3 || used * 2 >= maxTx ? WARN : OK;
+  add("keeper_budget", level, `${used} of ${maxTx} transactions in 24 h, ${wasted} moved nothing, ${spent} wei spent${wasted >= 3 ? "; someone is winning skims against the keeper, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}`);
 }
 
 async function checkPair({ pair, deployment, latest, finalized, add, facts, options }, request) {
@@ -224,14 +244,28 @@ async function checkPair({ pair, deployment, latest, finalized, add, facts, opti
   const excessLevel = { none: [OK, OK], dust: [OK, OK], material: [OK, WARN], blocking: [WARN, CRIT], negative: [CRIT, CRIT] };
   const views = settled ? [["latest", head, 0], ["finalized", settled, 1]] : [["latest", head, 0]];
   for (const [view, state, index] of views) {
-    if (isClosedByExcess(state)) {
-      add(`closed_by_excess[${tag}:${view}]`, CRIT, "pair closed: swaps of 0.1% of a cap revert in both directions because of unrecorded balance, until someone calls skim. The keeper should clear it");
+    const closure = closureOf(state, THRESHOLDS.excessFloorBps);
+    if (closure) {
+      const size = closure.minOutput.map((amount, i) => (amount > 0n ? `${amount} of ${closure.tokens[i]}` : null)).filter(Boolean).join(" and ");
+      add(
+        `closed_by_excess[${tag}:${view}]`,
+        closure.hard ? CRIT : WARN,
+        closure.hard
+          ? `pair closed: ${size ? `swaps into a full side, and swaps taking out less than ${size},` : "swaps in both directions"} revert because of unrecorded balance, until someone calls skim. The keeper should clear it`
+          : `pair closed to small swaps only: a swap taking out at least ${size} passes. A side at its cap makes this cost about 1 USD, so the keeper treats it as low priority`,
+      );
     }
     state.sides.forEach((side) => {
       const kind = classifyExcess(side, THRESHOLDS.excessFloorBps);
       const excess = side.balance - side.reserve;
       add(`pending_excess[${tag}:${side.token}:${view}]`, excessLevel[kind][index], `${kind}: ${excess} above the reserve (floor ${excessFloor(side, THRESHOLDS.excessFloorBps)})${kind === "blocking" || kind === "material" ? "; call skim, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}`);
     });
+  }
+
+  // At the ceiling swap fees stay outside the reserves: LPs and the Safe earn nothing from
+  // them, and anyone can take them with skim. It stays true until an LP burns.
+  if (head.totalSupply !== 0n && isAtKCeiling(head)) {
+    add(`k_ceiling[${tag}]`, WARN, `pool at the k ceiling: swap fees are not reaching LPs or the Safe (excess now ${head.sides.map((s) => s.balance - s.reserve).join(" + ")}). Deposits revert with BDEX: K_CEILING until an LP burns`);
   }
 
   // Price moved between what the UI displays (finalized) and latest.
@@ -284,6 +318,7 @@ async function gateFor(args) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ["rehearsal", "json", "expect-seeded"] });
+    // Written by the skim keeper. Optional: the monitor can run on a host with no keeper.
     if (!args.config || !args.rpc || (!args.rehearsal && !args["safe-plan"]) || (args["expect-seeded"] && !args["lp-recipient"])) {
       console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --rpc <url> [--expect-seeded --lp-recipient 0x<address> [--lp-min-bps 5000]] [--ref-price P] [--rehearsal] [--json]");
       process.exit(UNKNOWN);
@@ -291,7 +326,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     const request = createRequest(args.rpc);
     const result = await runMonitor(
       readGate(args.config),
-      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], refPrice: args["ref-price"] },
+      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], refPrice: args["ref-price"], keeperState: args["keeper-state"] },
       request,
       { evaluateGate: await gateFor(args) },
     );
