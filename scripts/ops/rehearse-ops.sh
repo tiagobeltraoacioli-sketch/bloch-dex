@@ -794,7 +794,7 @@ if [ "$MODE" = anvil ] && [ "$IS_V3" = 1 ]; then
   must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$CANCELLED")" 0 1500000 > /dev/null
   [ "$(pending_amount "$BEHIND")" = 0 ] || die "the waiting mint did not drain behind the remint"
   [ $(( $(view "$USD" "$BAL" "$SEEDER") - SEEDER_USD )) = 6000000 ] || die "remint and waiting mint did not both credit"
-  [ "$(view "$USD" "$BAL" "$PAIR")" = "$R_USD" ] || die "the pair got the cancelled mint"
+  [ "$(view "$USD" "$BAL" "$PAIR")" = "$(reserve_usd)" ] || die "the pair holds an excess after the remint went to the seeder"
   SWAP_IN_OK; k_ok
   pass "v3 cancel: the mint to the pair never reached it; the next slot waited (NotReady) while swaps and LP exits worked; the remint credited and drained the waiting mint"
   restore "$SNAP"
