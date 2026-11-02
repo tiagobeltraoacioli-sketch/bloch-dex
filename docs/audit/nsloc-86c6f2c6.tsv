@@ -1,0 +1,27 @@
+# nSLOC of postern-dex at 86c6f2c6 (contracts d18ab04). Method: docs/audit/nsloc.py. Columns: file, SLOC, nSLOC
+## in scope
+contracts/UniswapV2Pair.sol	213	198
+contracts/UniswapV2ERC20.sol	75	61
+contracts/UniswapV2Factory.sol	45	45
+contracts/libraries/Math.sol	18	18
+contracts/libraries/UQ112x112.sol	10	10
+contracts/periphery/BDexRouter.sol	467	302
+contracts/periphery/BDexLibrary.sol	101	97
+contracts/periphery/BDexLens.sol	202	199
+contracts/assets/WBLCH.sol	63	63
+contracts/interfaces/IERC20.sol	14	14
+contracts/interfaces/IUniswapV2Callee.sol	4	4
+contracts/interfaces/IUniswapV2ERC20.sol	19	19
+contracts/interfaces/IUniswapV2Factory.sol	14	14
+contracts/interfaces/IUniswapV2Pair.sol	30	23
+contracts/periphery/interfaces/IBDexRouter.sol	152	39
+contracts/periphery/interfaces/IWBLCH.sol	8	8
+script/DeployMainnet.s.sol	202	157
+TOTAL	1637	1271
+## out of scope (for reference)
+contracts/TreasuryFeeCollector.sol	136	136
+contracts/assets/BlochAsset.sol	52	52
+script/CreatePair.s.sol	72	60
+script/LocalDeployment.s.sol	42	40
+script/DeployAsset.s.sol	28	28
+TOTAL	330	316
