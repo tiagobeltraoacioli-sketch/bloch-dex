@@ -4,6 +4,7 @@
 //
 //   plan    amounts for the owner's opening price, accounting for any donation
 //           already in the pair (DEX-04), and the router call to make
+//           (after a full LP exit at dust: a donation plus sync, reprice-by-donation)
 //   verify  after the seed: the pool price against the target, within a tolerance
 //
 // Exit status: 0 proceed or verified; 1 do this first (skim); 2 refused or price
@@ -55,6 +56,10 @@ function planWithShares({ wrapped, quote, totalSupply, price, fractionBps }) {
     const amountIn = ((next - rIn) * 1000n) / 997n + 1n;
     if (rIn + amountIn > cap) return { decision: "refuse", reason: "the correcting swap would pass this side's cap. The pool cannot reach this price; see the runbook (F1)." };
     const out = (amountIn * 997n * rOut) / (rIn * 1000n + amountIn * 997n);
+    // After a full LP exit the reserves are a few base units (agent 178: 1 bUSDC unit and
+    // 1e8 wei). A swap then pays out 0 and the router reverts, round after round. A dust
+    // donation plus sync sets the price instead (sync is open while shares exist).
+    if ((out * 99n) / 100n === 0n) return repriceByDonation({ wrapped, quote, price, pool, gap });
     return { decision: "correct-price", sellWrapped, amountIn, amountOutMin: (out * 99n) / 100n, gapBps: gap, reason: "LP shares exist at another price. Swap to the target price, then plan again." };
   }
   let targetWrapped = (wrapped.cap * fractionBps) / 10_000n;
@@ -72,6 +77,34 @@ function planWithShares({ wrapped, quote, totalSupply, price, fractionBps }) {
   return { decision: "top-up", depositWrapped, depositQuote, poolWrapped: targetWrapped, poolQuote: quote.reserve + depositQuote, donated: null };
 }
 
+/// Largest donation `reprice-by-donation` plans, in basis points of that side's cap. It
+/// is a gift to whoever holds shares, so only dust is planned; anything larger is refused.
+export const REPRICE_DONATION_MAX_BPS = 1n;
+
+/// Set the price of a dust pool by donating to one side and calling sync. The other side
+/// stays as it is, so the donated side is sized from it: wrapped = quote * 1e18 / price,
+/// or quote = wrapped * price / 1e18 (rounded up).
+export function repriceByDonation({ wrapped, quote, price, pool, gap }) {
+  const donateWrapped = pool > price;
+  const side = donateWrapped ? wrapped : quote;
+  const next = donateWrapped ? (quote.reserve * WAD) / price : (wrapped.reserve * price + WAD - 1n) / WAD;
+  const amount = next - side.reserve;
+  if (amount <= 0n) return { decision: "refuse", reason: "the pool holds too little to price; see the runbook (seeder exit)" };
+  if (side.cap !== 0n && next > side.cap) return { decision: "refuse", reason: "the repricing donation would pass this side's cap" };
+  if (side.cap !== 0n && amount * 10_000n > side.cap * REPRICE_DONATION_MAX_BPS) {
+    return { decision: "refuse", reason: `a swap cannot correct this price (its output rounds to 0) and the donation that would, ${amount} base units, is above ${REPRICE_DONATION_MAX_BPS} bps of the cap. See the runbook (seeder exit)` };
+  }
+  const after = donateWrapped ? { wrapped: next, quote: quote.reserve } : { wrapped: wrapped.reserve, quote: next };
+  return {
+    decision: "reprice-by-donation",
+    donateWrapped,
+    amount,
+    gapBps: gap,
+    reservesAfter: after,
+    reason: "LP shares exist but the pool holds only dust, so a correcting swap would pay out 0 and revert. Donate this dust to the pair and call sync, then plan again: the next plan is a top-up. The donation belongs to the current share holders.",
+  };
+}
+
 /// Whether `to` holds the seed: nearly every share, apart from the 1000 locked ones.
 /// A first mint nobody planned (spent rule) or a fill leaves a price that can look
 /// right, so the price alone proves nothing (N2).
@@ -80,8 +113,6 @@ export function holdsSeed({ held, totalSupply, minBps = SEED_SHARE_BPS }) {
   return held * 10_000n >= (totalSupply - MINIMUM_LIQUIDITY) * minBps;
 }
 
-/// The pure part of `plan`. `wrapped` and `quote` are pair sides; `price` is in
-/// quote base units per 1e18 wrapped base units.
 /// Largest seed, in basis points of each cap, the planner accepts (owner decision DEX-4).
 export const MAX_FRACTION_BPS = 7_000n;
 
@@ -102,6 +133,8 @@ export function parseFractionBps(raw) {
   return value;
 }
 
+/// The pure part of `plan`. `wrapped` and `quote` are pair sides; `price` is in
+/// quote base units per 1e18 wrapped base units.
 export function planOpening({ wrapped, quote, totalSupply, price, fractionBps }) {
   if (typeof fractionBps !== "bigint" || fractionBps < 1n || fractionBps > MAX_FRACTION_BPS) parseFractionBps(String(fractionBps));
   if (price <= 0n) return { decision: "refuse", reason: "the price must be positive" };
@@ -267,6 +300,20 @@ async function main() {
       : [
           { description: "approve the router for the quote token", to: quote.token, value: "0", data: encode("approve", [deployment.router.address, plan.amountIn]) },
           { description: "sell the quote token to the target price", to: deployment.router.address, value: "0", data: encode("swapExactTokensForBLCH", [plan.amountIn, plan.amountOutMin, [quote.token, wrapped.token], args.to, deadline]), deadline },
+        ];
+    console.log(stringify({ ...plan, pair: pair.address, block: latest.number, targetPrice: args.price, steps }));
+    return WARN;
+  }
+  if (plan.decision === "reprice-by-donation") {
+    const steps = plan.donateWrapped
+      ? [
+          { description: "wrap BLCH for the donation", to: wrapped.token, value: plan.amount, data: encode("deposit") },
+          { description: "donate the WBLCH dust to the pair", to: wrapped.token, value: "0", data: encode("transfer", [pair.address, plan.amount]) },
+          { description: "sync the pair to the new balances", to: pair.address, value: "0", data: encode("sync") },
+        ]
+      : [
+          { description: "donate the quote-token dust to the pair", to: quote.token, value: "0", data: encode("transfer", [pair.address, plan.amount]) },
+          { description: "sync the pair to the new balances", to: pair.address, value: "0", data: encode("sync") },
         ];
     console.log(stringify({ ...plan, pair: pair.address, block: latest.number, targetPrice: args.price, steps }));
     return WARN;

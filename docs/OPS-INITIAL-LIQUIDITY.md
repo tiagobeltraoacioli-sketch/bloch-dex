@@ -53,6 +53,7 @@ node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-ga
 | `refuse` | 2 | Seeded already, or a donation too large for this price within the caps |
 | `refuse` naming the nonce | 2 | The first depositor is not fresh. See "The first depositor" |
 | `correct-price` | 1 | LP shares at another price, which needs the depositor's key to have been baited. Send the plan's swap steps, then plan again |
+| `reprice-by-donation` | 1 | LP shares exist but the pool holds only dust, for example after the seeder's full exit (agent 178: 1 bUSDC unit and 1e8 wei WBLCH). A correcting swap would pay out 0 and revert, so the plan donates dust to one side and calls `sync` (wrap, transfer, sync). It is planned only up to 1 bps of that side's cap, and it belongs to the current share holders. Send the steps, then plan again: the next plan is `top-up` |
 | `top-up` | 0 | LP shares at this price. Send `steps[0]` and `steps[1]`; the deposit follows the pool's ratio |
 | `closed` | 2 | Both reserves at their caps. The contracts should make this unreachable, so treat it as an incident |
 | `bricked` | 2 | See DEX-09 |

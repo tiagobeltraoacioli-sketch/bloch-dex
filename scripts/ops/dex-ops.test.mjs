@@ -7,7 +7,7 @@ import {
 } from "./dex-ops-lib.mjs";
 import { checkKeeperState, runMonitor } from "./dex-monitor.mjs";
 import { DEFAULTS, ceilingFloorWei, excessValueWei, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
-import { MAX_FRACTION_BPS, checkNotedTxs, holdsSeed, parseFractionBps, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { MAX_FRACTION_BPS, REPRICE_DONATION_MAX_BPS, checkNotedTxs, repriceByDonation, holdsSeed, parseFractionBps, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
@@ -860,4 +860,41 @@ test("r10 DEX-4: ceiling skims keep the cooldown and never use the count kept fo
   full.txs = Array.from({ length: DEFAULTS.maxTx - reserved }, (_, i) => ({ at: 990_000 + i, hash: `0x${i}`, nonce: String(i), pair: PAIR, reservedWei: "1", spentWei: "1", kind: "ceiling", status: "effective" }));
   const fresh = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n], nonce: BigInt(DEFAULTS.maxTx) });
   assert.equal((await runKeeper(gate, keeperOptions(), full, keeperDeps(fresh, 1_000_000))).action, "reserved-for-hard-closure");
+});
+
+// ---- reopening after a full seeder exit (agent 178, X5)
+
+test("r10 178-X5: after a full exit the planner reprices by a dust donation, not a swap that pays out 0", () => {
+  // 178's measured state: 1000 locked shares over 1 bUSDC unit and 1e8 wei WBLCH (pool price 10,000).
+  const price = 100_000_000n; // 100 bUSDC per BLCH
+  const dust = { wrapped: side(10n ** 8n, WRAP_CAP), quote: side(1n, QUOTE_CAP), totalSupply: 1000n, price, fractionBps: 5000n };
+  const plan = planOpening(dust);
+  assert.equal(plan.decision, "reprice-by-donation");
+  assert.equal(plan.donateWrapped, true);
+  // 178's manual route donated 9.9e9 wei and reached P = 100.
+  assert.equal(plan.amount, 9_900_000_000n);
+  assert.deepEqual(plan.reservesAfter, { wrapped: 10n ** 10n, quote: 1n });
+  assert.ok(plan.amount * 10_000n <= WRAP_CAP * REPRICE_DONATION_MAX_BPS);
+  // After the donation and sync the next plan is the top-up 178 sent by hand.
+  const after = planOpening({ ...dust, wrapped: side(10n ** 10n, WRAP_CAP), quote: side(1n, QUOTE_CAP) });
+  assert.equal(after.decision, "top-up");
+  assert.equal(priceGapBps({ wrapped: side(10n ** 10n, WRAP_CAP), quote: side(1n, QUOTE_CAP), price }), 0n);
+  // Price too low instead: the quote side is donated, rounded up so the price lands at the target.
+  const low = repriceByDonation({ wrapped: side(10n ** 8n, WRAP_CAP), quote: side(1n, QUOTE_CAP), price: 10n ** 11n, pool: 10n ** 10n, gap: 9000n });
+  assert.equal(low.decision, "reprice-by-donation");
+  assert.equal(low.donateWrapped, false);
+  assert.equal(low.amount, 9n);
+  assert.deepEqual(low.reservesAfter, { wrapped: 10n ** 8n, quote: 10n });
+});
+
+test("r10 178-X5: a real pool at a wrong price still gets the correcting swap, and a large donation is refused", () => {
+  const price = 100_000_000n;
+  const real = planOpening({ wrapped: side(5n * WAD, WRAP_CAP), quote: side(250_000_000n, QUOTE_CAP), totalSupply: 10n ** 12n, price, fractionBps: 5000n });
+  assert.equal(real.decision, "correct-price");
+  assert.ok(real.amountOutMin > 0n);
+  // 1 wei WBLCH over 1 bUSDC unit, target 100 base units per BLCH: the swap pays 0 and the
+  // donation needed (1e16 wei) is above 1 bps of the 10 WBLCH cap (1e15), so it is refused.
+  const tooBig = planOpening({ wrapped: side(1n, WRAP_CAP), quote: side(1n, QUOTE_CAP), totalSupply: 1000n, price: 100n, fractionBps: 5000n });
+  assert.equal(tooBig.decision, "refuse");
+  assert.match(tooBig.reason, /above 1 bps of the cap/);
 });
