@@ -57,6 +57,7 @@ import {
   type RouteCheck,
 } from './mainnet/caps';
 import { usePendingSwap } from './mainnet/pendingswap';
+import { loadHistory, recordFinished, type FinishedTx } from './mainnet/txhistory';
 import { blocksSwap, compareQuotes, signedQuote, type QuoteCheck } from './mainnet/quotecheck';
 import {
   readAllowance,
@@ -641,6 +642,26 @@ function SwapPanel({
   const [steps, setSteps] = useState<Step[]>([]);
   const [busy, setBusy] = useState(false);
   const tracked = pendingSwap.tracked;
+  const historyAccount = wallet.account?.address as Address | undefined;
+  const [history, setHistory] = useState<FinishedTx[]>(() =>
+    historyAccount ? loadHistory(network.chainId, historyAccount) : [],
+  );
+  const remember = (tx: { label: string; hash?: Hex; state: string; detail?: string }) => {
+    if (!historyAccount || !tx.hash) return;
+    if (!['mined', 'failed', 'unknown', 'expired'].includes(tx.state)) return;
+    // Only these fields: a tracked swap also carries a bigint deadline, which JSON cannot store.
+    const entry: FinishedTx = {
+      label: tx.label,
+      hash: tx.hash,
+      state: tx.state as FinishedTx['state'],
+      ...(tx.detail ? { detail: tx.detail } : {}),
+    };
+    setHistory((list) => recordFinished(network.chainId, historyAccount, list, entry));
+  };
+  useEffect(() => {
+    if (tracked && tracked.hash) remember(tracked);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracked?.hash, tracked?.state]);
   // Bumped on every form change. A reply or a send that started under an older
   // value belongs to a form the user has since changed, and is dropped.
   const formGeneration = useRef(0);
@@ -798,7 +819,10 @@ function SwapPanel({
     const generation = formGeneration.current;
     setBusy(true);
     const index = steps.length;
-    const update = (step: Step) => setSteps((all) => [...all.slice(0, index), step]);
+    const update = (step: Step) => {
+      setSteps((all) => [...all.slice(0, index), step]);
+      remember(step);
+    };
     update({ label, state: 'waiting', detail: 'Confirm in your wallet.' });
     let hash: Hex | undefined;
     try {
@@ -1115,6 +1139,19 @@ function SwapPanel({
             Swap
           </button>
         </div>
+      )}
+      {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
+        <ol className="devnet4-steps" aria-label="Earlier transactions">
+          {history
+            .filter((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash)
+            .map((h) => (
+              <li key={h.hash} data-state={h.state}>
+                <strong>{h.label}</strong>: {h.state}{' '}
+                <ExplorerLink network={network} kind="tx" value={h.hash} />
+                {h.detail && <span className="muted"> {h.detail}</span>}
+              </li>
+            ))}
+        </ol>
       )}
       {(steps.length > 0 || tracked) && (
         <ol className="devnet4-steps" aria-label="Transactions">
