@@ -145,6 +145,8 @@ Order: Safe, then the bUSDC bridge, then items 16 to 18, then the DEX plan. Infr
 
 Funds: BLCH on the L2 for gas on keys 6, 7, 8, 8a and 11; the seed in BLCH and bridged bUSDC on key 8a.
 
+The bUSDC for the seed comes through `BridgedStablecoinV3` at T = 0: it credits no earlier than 12 h after its mint queues, and only after every earlier deposit credits, so a cancelled deposit ahead of it holds it until that slot is reminted. Bridge it a day ahead. Anyone may call `executeMint`, but **not key 8a**: one transaction from it spends the depositor key. Let the relayer execute it, and check `balanceOf(8a)` and `cast nonce 8a` = 0 before the plan.
+
 ## 5. Before the first command
 
 The commands are in `MAINNET-700770-PACKAGE.md`, "Mainnet sequence (owner)", then `OPS-INITIAL-LIQUIDITY.md`. On the signing machine:
