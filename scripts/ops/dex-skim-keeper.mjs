@@ -32,6 +32,7 @@
 //        --rpc http://127.0.0.1:18955 --keeper 0x… --state /var/lib/…/state.json
 //        [--execute] [--budget-wei 50000000000000000] [--max-tx 48]
 //        [--max-fee-wei 20000000000] [--max-gas 150000] [--floor-bps 100]
+//        [--ceiling-floor-wei <default budget-wei / max-tx>]
 //        [--tip-wei 1000000000] [--max-tip-wei 8000000000]
 //        [--soft-share-bps 2500] [--hard-reserve-bps 2500]
 //        [--cooldown-s 1800] [--pending-timeout-s 7200] -- <cast signer arguments>
@@ -44,7 +45,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
-  blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, keccak256,
+  blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, isAtKCeiling, keccak256,
   parseArgs, readBlock, readBridgeExit, readGate, readPair, recoverTransactionAddress, stringify,
 } from "./dex-ops-lib.mjs";
 
@@ -62,10 +63,37 @@ export const DEFAULTS = Object.freeze({
   hardReserveBps: 2_500n, // This share of maxTx is only for hard closures.
   maxGas: 150_000n, // measured about 60-95k, depending on cold recipient balances
   floorBps: 100n,
+  // At the k ceiling a swap's fee stays outside the reserves as excess (DEX-4). There the
+  // keeper skims once the excess is worth this much, in wei of the wrapped token at the pool
+  // price. null means budgetWei / maxTx: every skim then returns at least its share of the
+  // daily budget, so the Safe never spends more gas than it collects even if the keeper
+  // skims at every chance. With the RC budget that is 0.05 BLCH / 48 = 0.00104 BLCH,
+  // about 1 bps of the 10 WBLCH cap, against 100 bps (0.1 BLCH) for ordinary excess.
+  ceilingFloorWei: null,
   cooldownSeconds: 1_800, // a little over two L2 blocks at 12-15 min
   pendingTimeoutSeconds: 7_200,
   backoffCapSeconds: 6 * 3_600,
 });
+/// Value of a pair's unrecorded balance, in wei of the wrapped token at the pool's own
+/// price (reserves). null when the pair has no wrapped side or an empty reserve.
+export function excessValueWei(pairState, wrapped) {
+  const w = wrapped.toLowerCase();
+  const sides = pairState.sides;
+  const i = sides.findIndex((side) => side.token.toLowerCase() === w);
+  if (i < 0) return null;
+  const [mine, other] = [sides[i], sides[1 - i]];
+  if (mine.reserve === 0n || other.reserve === 0n) return null;
+  const pos = (side) => (side.balance > side.reserve ? side.balance - side.reserve : 0n);
+  return pos(mine) + (pos(other) * mine.reserve) / other.reserve;
+}
+
+/// The ceiling floor in force: the option, or the budget's per-transaction share.
+export function ceilingFloorWei(options) {
+  if (options.ceilingFloorWei !== null && options.ceilingFloorWei !== undefined) return options.ceilingFloorWei;
+  // --max-tx 0 stops every skim later on; it must not throw here (found by the ops rehearsal).
+  return options.maxTx > 0 ? options.budgetWei / BigInt(options.maxTx) : options.budgetWei;
+}
+
 const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 
 const emptyState = () => ({ schema: "postern.dex.skim-keeper.v1", txs: [], consecutiveWasted: 0, nextAllowedAt: 0 });
@@ -176,6 +204,8 @@ export async function runKeeper(gate, options, state, deps) {
     }
 
     let target = null;
+    let ceilingPair = null;
+    const ceilingFloor = ceilingFloorWei(options);
     let hardPair = null;
     let softPair = null;
     const seen = [];
@@ -190,7 +220,15 @@ export async function runKeeper(gate, options, state, deps) {
       if (closure?.hard && !hardPair) hardPair = pair;
       if (closure && !closure.hard && !softPair) softPair = pair;
       if (!target && kinds.some((k) => k === "material" || k === "blocking")) target = pair;
+      // DEX-4: at the k ceiling the excess is swap fees nobody else will collect for the Safe.
+      if (!ceilingPair && isAtKCeiling(pairState)) {
+        const value = excessValueWei(pairState, deployment.wrapped.address);
+        seen.at(-1).kCeiling = { excessValueWei: value, floorWei: ceilingFloor };
+        if (value !== null && value >= ceilingFloor) ceilingPair = pair;
+      }
     }
+    if (!target && ceilingPair) target = ceilingPair;
+    const atCeiling = target !== null && target === ceilingPair && !hardPair;
     // A hard closure outranks everything. A soft one comes last.
     if (hardPair) target = hardPair;
     const soft = !target && Boolean(softPair);
@@ -233,7 +271,7 @@ export async function runKeeper(gate, options, state, deps) {
     const funds = BigInt(await request("eth_getBalance", [keeper, "latest"]));
     if (funds < worstCase) return blocked("keeper-underfunded", { balanceWei: funds, worstCaseWei: worstCase });
 
-    const plan = { pair: target.address, to: deployment.feeTo, closure: hardPair ? "hard" : soft ? "soft" : null, tip, gasLimit, maxFee, worstCaseWei: worstCase, spentWei: spent, budgetWei: options.budgetWei, seen };
+    const plan = { pair: target.address, to: deployment.feeTo, closure: hardPair ? "hard" : soft ? "soft" : null, kCeiling: atCeiling, tip, gasLimit, maxFee, worstCaseWei: worstCase, spentWei: spent, budgetWei: options.budgetWei, seen };
     if (!options.execute) return result(OK, "would-skim", plan);
 
     const nonce = BigInt(await request("eth_getTransactionCount", [keeper, "pending"]));
@@ -241,7 +279,7 @@ export async function runKeeper(gate, options, state, deps) {
     const signer = (await recoverTransactionAddress({ serializedTransaction: raw })).toLowerCase();
     if (signer !== keeper) throw new IdentityError(`the signer is ${signer}, not the configured keeper ${keeper}`);
     const hash = keccak256(raw);
-    const entry = { at: now, hash, nonce: nonce.toString(), pair: target.address, reservedWei: worstCase.toString(), kind: hardPair ? "hard" : soft ? "soft" : "excess", tipWei: tip.toString(), status: "pending" };
+    const entry = { at: now, hash, nonce: nonce.toString(), pair: target.address, reservedWei: worstCase.toString(), kind: hardPair ? "hard" : soft ? "soft" : atCeiling ? "ceiling" : "excess", tipWei: tip.toString(), status: "pending" };
     state.txs = [...windowTxs(state, now), entry];
     save(state); // Before publishing: a crash after this point cannot overspend.
     try {
@@ -321,6 +359,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       hardReserveBps: bigOption(args, "hard-reserve-bps", DEFAULTS.hardReserveBps),
       maxGas: bigOption(args, "max-gas", DEFAULTS.maxGas),
       floorBps: bigOption(args, "floor-bps", DEFAULTS.floorBps),
+      ceilingFloorWei: bigOption(args, "ceiling-floor-wei", DEFAULTS.ceilingFloorWei),
       cooldownSeconds: Number(args["cooldown-s"] ?? DEFAULTS.cooldownSeconds),
       pendingTimeoutSeconds: Number(args["pending-timeout-s"] ?? DEFAULTS.pendingTimeoutSeconds),
     };

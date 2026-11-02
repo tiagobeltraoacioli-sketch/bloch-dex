@@ -9,11 +9,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Address, Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
 import { RECEIPT_TIMEOUT_MS, parseReceipt, type Receipt } from '../devnet4/swap';
+import type { RevertCause, SwapRetryInfo } from './retry';
 
-export type PendingSwap = { hash: Hex; label: string; deadline: bigint; sentAtMs: number };
+export type PendingSwap = {
+  hash: Hex;
+  label: string;
+  deadline: bigint;
+  sentAtMs: number;
+  /** What a revert explanation and the one retry need (DEX-5). Absent in older records. */
+  retry?: SwapRetryInfo;
+};
 export type TrackedSwap = PendingSwap & {
   state: 'pending' | 'unknown' | 'mined' | 'failed' | 'expired';
   detail: string;
+  /** Set on a failed swap once the page has read why it reverted. */
+  cause?: RevertCause;
 };
 export type SwapPoll =
   | { kind: 'receipt'; receipt: Receipt }
@@ -30,6 +40,41 @@ const POLL_INTERVAL_MS = 10_000;
 export const pendingSwapKey = (chainId: number, account: Address) =>
   `${STORAGE_PREFIX}.${chainId}.${account.toLowerCase()}`;
 
+const ADDRESS = /^0x[0-9a-f]{40}$/;
+const UINT = /^[0-9]{1,78}$/;
+
+/** The stored retry fields; anything malformed drops only these fields. */
+function parseRetry(v: unknown): SwapRetryInfo | undefined {
+  if (!v || typeof v !== 'object') return undefined;
+  const r = v as Record<string, unknown>;
+  if (
+    typeof r.tokenIn !== 'string' ||
+    !ADDRESS.test(r.tokenIn) ||
+    typeof r.tokenOut !== 'string' ||
+    !ADDRESS.test(r.tokenOut) ||
+    typeof r.amountIn !== 'string' ||
+    !UINT.test(r.amountIn) ||
+    typeof r.minimumOut !== 'string' ||
+    !UINT.test(r.minimumOut) ||
+    !Array.isArray(r.path) ||
+    r.path.length < 2 ||
+    !r.path.every((a) => typeof a === 'string' && ADDRESS.test(a)) ||
+    typeof r.slippageBps !== 'number' ||
+    !Number.isInteger(r.slippageBps) ||
+    (r.attempt !== 1 && r.attempt !== 2)
+  )
+    return undefined;
+  return {
+    tokenIn: r.tokenIn as Address,
+    tokenOut: r.tokenOut as Address,
+    amountIn: BigInt(r.amountIn),
+    minimumOut: BigInt(r.minimumOut),
+    path: r.path as Address[],
+    slippageBps: r.slippageBps,
+    attempt: r.attempt,
+  };
+}
+
 /** Parse a stored record; anything malformed counts as absent. */
 export function parsePendingSwap(raw: string | null): PendingSwap | null {
   if (!raw) return null;
@@ -45,11 +90,13 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
       !Number.isFinite(v.sentAtMs)
     )
       return null;
+    const retry = parseRetry(v.retry);
     return {
       hash: v.hash as Hex,
       label: v.label,
       deadline: BigInt(v.deadline),
       sentAtMs: v.sentAtMs,
+      ...(retry ? { retry } : {}),
     };
   } catch {
     return null;
@@ -66,7 +113,15 @@ function readStored(key: string): PendingSwap | null {
 
 function writeStored(key: string, swap: PendingSwap): boolean {
   try {
-    localStorage.setItem(key, JSON.stringify({ ...swap, deadline: swap.deadline.toString() }));
+    const retry = swap.retry && {
+      ...swap.retry,
+      amountIn: swap.retry.amountIn.toString(),
+      minimumOut: swap.retry.minimumOut.toString(),
+    };
+    localStorage.setItem(
+      key,
+      JSON.stringify({ ...swap, deadline: swap.deadline.toString(), ...(retry ? { retry } : {}) }),
+    );
     return true;
   } catch {
     return false;
@@ -137,6 +192,7 @@ export function usePendingSwap({
   enabled,
   now,
   onMined,
+  explain,
   intervalMs = POLL_INTERVAL_MS,
 }: {
   rpc: Rpc;
@@ -145,14 +201,16 @@ export function usePendingSwap({
   enabled: boolean;
   now: () => number;
   onMined: () => void;
+  /** Reads why a reverted swap failed; only called for a swap that carries retry fields. */
+  explain?: (swap: PendingSwap, receipt: Receipt) => Promise<RevertCause>;
   intervalMs?: number;
 }) {
   const key = account ? pendingSwapKey(chainId, account) : null;
   const [tracked, setTracked] = useState<TrackedSwap | null>(null);
   // Holds what localStorage may refuse, so a blocked browser keeps the hold until reload.
   const memory = useRef(new Map<string, { swap: PendingSwap; saved: boolean }>());
-  const latest = useRef({ now, onMined });
-  latest.current = { now, onMined };
+  const latest = useRef({ now, onMined, explain });
+  latest.current = { now, onMined, explain };
 
   const recall = useCallback((k: string) => {
     const held = memory.current.get(k);
@@ -197,6 +255,12 @@ export function usePendingSwap({
             : `Reverted in block ${blockNumber} (gas ${gasUsed}).`,
         });
         if (ok) latest.current.onMined();
+        const why = latest.current.explain;
+        if (!ok && swap.retry && why) {
+          const cause = await why(swap, poll.receipt).catch((): RevertCause => 'unknown');
+          // Not gated on `live`: this effect ends as soon as the swap is no longer open.
+          setTracked((t) => (t?.hash === swap.hash && t.state === 'failed' ? { ...t, cause } : t));
+        }
         return;
       }
       if (poll.kind === 'expired') {

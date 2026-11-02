@@ -4,17 +4,22 @@
 //
 //   plan    amounts for the owner's opening price, accounting for any donation
 //           already in the pair (DEX-04), and the router call to make
+//           (after a full LP exit at dust: a donation plus sync, reprice-by-donation)
 //   verify  after the seed: the pool price against the target, within a tolerance
 //
 // Exit status: 0 proceed or verified; 1 do this first (skim); 2 refused or price
 // off target; 3 the node could not answer.
 //
 //   node scripts/ops/dex-seed-plan.mjs plan --config gate.json --rpc URL
-//        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000] [--deadline-min 60]
+//        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000, at most 7000] [--deadline-min 60]
 //        [--write-txs <new file>]   the steps as a raw-transaction file for
 //                                   scripts/staging/sign-and-publish.sh
 //   node scripts/ops/dex-seed-plan.mjs verify --config gate.json --rpc URL
 //        --price 25.5 --to 0x<LP recipient> [--tolerance-bps 100]
+//   remove  the LP recipient's removal; refused below the seeder floor (10% of the seed's
+//           shares) unless --allow-below-floor is given
+//        node scripts/ops/dex-seed-plan.mjs remove --config gate.json --rpc URL --price 25.5
+//        --to 0x<LP recipient> --shares N | --bps B [--floor-shares N | --floor-bps 1000]
 //   note-tx record a planned approve or seed the depositor sent, after checking it
 //        node scripts/ops/dex-seed-plan.mjs note-tx --config <gate.json> --rpc <url> --tx <hash>[,<hash>...]
 
@@ -55,6 +60,10 @@ function planWithShares({ wrapped, quote, totalSupply, price, fractionBps }) {
     const amountIn = ((next - rIn) * 1000n) / 997n + 1n;
     if (rIn + amountIn > cap) return { decision: "refuse", reason: "the correcting swap would pass this side's cap. The pool cannot reach this price; see the runbook (F1)." };
     const out = (amountIn * 997n * rOut) / (rIn * 1000n + amountIn * 997n);
+    // After a full LP exit the reserves are a few base units (agent 178: 1 bUSDC unit and
+    // 1e8 wei). A swap then pays out 0 and the router reverts, round after round. A dust
+    // donation plus sync sets the price instead (sync is open while shares exist).
+    if ((out * 99n) / 100n === 0n) return repriceByDonation({ wrapped, quote, price, pool, gap });
     return { decision: "correct-price", sellWrapped, amountIn, amountOutMin: (out * 99n) / 100n, gapBps: gap, reason: "LP shares exist at another price. Swap to the target price, then plan again." };
   }
   let targetWrapped = (wrapped.cap * fractionBps) / 10_000n;
@@ -72,6 +81,68 @@ function planWithShares({ wrapped, quote, totalSupply, price, fractionBps }) {
   return { decision: "top-up", depositWrapped, depositQuote, poolWrapped: targetWrapped, poolQuote: quote.reserve + depositQuote, donated: null };
 }
 
+/// Largest donation `reprice-by-donation` plans, in basis points of that side's cap. It
+/// is a gift to whoever holds shares, so only dust is planned; anything larger is refused.
+export const REPRICE_DONATION_MAX_BPS = 1n;
+
+/// Set the price of a dust pool by donating to one side and calling sync. The other side
+/// stays as it is, so the donated side is sized from it: wrapped = quote * 1e18 / price,
+/// or quote = wrapped * price / 1e18 (rounded up).
+export function repriceByDonation({ wrapped, quote, price, pool, gap }) {
+  const donateWrapped = pool > price;
+  const side = donateWrapped ? wrapped : quote;
+  const next = donateWrapped ? (quote.reserve * WAD) / price : (wrapped.reserve * price + WAD - 1n) / WAD;
+  const amount = next - side.reserve;
+  if (amount <= 0n) return { decision: "refuse", reason: "the pool holds too little to price; see the runbook (seeder exit)" };
+  if (side.cap !== 0n && next > side.cap) return { decision: "refuse", reason: "the repricing donation would pass this side's cap" };
+  if (side.cap !== 0n && amount * 10_000n > side.cap * REPRICE_DONATION_MAX_BPS) {
+    return { decision: "refuse", reason: `a swap cannot correct this price (its output rounds to 0) and the donation that would, ${amount} base units, is above ${REPRICE_DONATION_MAX_BPS} bps of the cap. See the runbook (seeder exit)` };
+  }
+  const after = donateWrapped ? { wrapped: next, quote: quote.reserve } : { wrapped: wrapped.reserve, quote: next };
+  return {
+    decision: "reprice-by-donation",
+    donateWrapped,
+    amount,
+    gapBps: gap,
+    reservesAfter: after,
+    reason: "LP shares exist but the pool holds only dust, so a correcting swap would pay out 0 and revert. Donate this dust to the pair and call sync, then plan again: the next plan is a top-up. The donation belongs to the current share holders.",
+  };
+}
+
+/// The seeder keeps a floor: 10% of the seed's shares (coordinator decision, round 10, on
+/// agent 178's measurements). After a full exit the 1000 locked shares keep the pair
+/// "seeded" for ever, the first-depositor rule never returns, anyone can reprice the dust,
+/// and about $1,600 donated to the k ceiling freezes deposits and burns for good. With a
+/// floor the same donation is a gift to the LP.
+export const SEEDER_FLOOR_BPS = 1_000n;
+
+/// Shares the seed mints at this price and fraction (what planOpening plans on an empty
+/// pair, minus the 1000 locked), and the floor as a share of them.
+export function seedFloorShares({ wrappedCap, quoteCap, price, fractionBps, floorBps = SEEDER_FLOOR_BPS }) {
+  let targetWrapped = (wrappedCap * fractionBps) / 10_000n;
+  let targetQuote = (targetWrapped * price) / WAD;
+  const quoteLimit = (quoteCap * fractionBps) / 10_000n;
+  if (targetQuote > quoteLimit) {
+    targetQuote = quoteLimit;
+    targetWrapped = (targetQuote * WAD) / price;
+  }
+  const seedShares = isqrt(targetWrapped * targetQuote) - MINIMUM_LIQUIDITY;
+  return { seedShares, floorShares: (seedShares * floorBps) / 10_000n };
+}
+
+/// The pure part of `remove`: how many shares the LP recipient may take out.
+export function planRemoval({ held, shares, floorShares, allowBelowFloor = false }) {
+  if (shares <= 0n) return { decision: "refuse", reason: "nothing to remove" };
+  if (shares > held) return { decision: "refuse", reason: `the LP recipient holds ${held} shares, fewer than ${shares}` };
+  const left = held - shares;
+  if (left < floorShares) {
+    const detail = `this removal leaves ${left} shares, below the seeder floor of ${floorShares} (10% of the seed). After a full exit the pair belongs to whoever uses it next: anyone can reprice the dust, and a donation to the k ceiling (about $1,600 at P = 100) blocks deposits and burns for good. See docs/OPS-INITIAL-LIQUIDITY.md`;
+    if (!allowBelowFloor) return { decision: "refuse-floor", leftShares: left, floorShares, reason: `${detail}. At most ${held > floorShares ? held - floorShares : 0n} shares may be removed; --allow-below-floor overrides this, deliberately` };
+    return { decision: "remove", shares, leftShares: left, floorShares, belowFloor: true, warning: `OVERRIDE: ${detail}` };
+  }
+  return { decision: "remove", shares, leftShares: left, floorShares, belowFloor: false };
+}
+
 /// Whether `to` holds the seed: nearly every share, apart from the 1000 locked ones.
 /// A first mint nobody planned (spent rule) or a fill leaves a price that can look
 /// right, so the price alone proves nothing (N2).
@@ -80,9 +151,30 @@ export function holdsSeed({ held, totalSupply, minBps = SEED_SHARE_BPS }) {
   return held * 10_000n >= (totalSupply - MINIMUM_LIQUIDITY) * minBps;
 }
 
+/// Largest seed, in basis points of each cap, the planner accepts (owner decision DEX-4).
+export const MAX_FRACTION_BPS = 7_000n;
+
+/// The pair keeps reserve0 * reserve1 at or below 64% of cap0 * cap1 (the k ceiling).
+/// A seed of f of both caps has k / ceiling = f^2 / 0.64, so 8,000 bps sits exactly on
+/// the ceiling where the caps balance (P = 50, 80 and 100 with the planned caps): from
+/// the first swap the fee stays outside the reserves and LPs and the Safe earn nothing.
+/// 7,000 bps gives k at 76.6% of the ceiling, about $70k of fee volume of room (agent 177).
+export function parseFractionBps(raw) {
+  const text = raw === undefined ? "5000" : String(raw);
+  if (!/^[0-9]{1,6}$/.test(text)) throw new Error(`--fraction-bps must be a whole number of basis points, got ${JSON.stringify(text)}`);
+  const value = BigInt(text);
+  if (value < 1n || value > MAX_FRACTION_BPS) {
+    throw new Error(
+      `--fraction-bps must be 1 to ${MAX_FRACTION_BPS}, got ${value}: the pair caps k at 64% of cap0 * cap1, so a seed of 80% of both caps sits exactly on that k ceiling (above it the seed reverts with K_CEILING). At the ceiling every swap fee stays outside the reserves, where anyone can take it with skim, so LPs and the Safe earn nothing. ${MAX_FRACTION_BPS} keeps k at 76.6% of the ceiling. See docs/OPS-INITIAL-LIQUIDITY.md`,
+    );
+  }
+  return value;
+}
+
 /// The pure part of `plan`. `wrapped` and `quote` are pair sides; `price` is in
 /// quote base units per 1e18 wrapped base units.
 export function planOpening({ wrapped, quote, totalSupply, price, fractionBps }) {
+  if (typeof fractionBps !== "bigint" || fractionBps < 1n || fractionBps > MAX_FRACTION_BPS) parseFractionBps(String(fractionBps));
   if (price <= 0n) return { decision: "refuse", reason: "the price must be positive" };
   if (totalSupply !== 0n) return planWithShares({ wrapped, quote, totalSupply, price, fractionBps });
   const excess = [wrapped, quote].filter((s) => s.balance !== s.reserve);
@@ -161,9 +253,40 @@ async function load(args, request) {
   return { deployment, pair, state, wrapped, quote, decimals, latest, price: parseUnits(args.price, decimals) };
 }
 
+/// Plan the LP recipient's removal, refusing one that would take it below the seeder floor.
+async function remove(args) {
+  if (!args.config || !args.rpc || !args.price || !args.to || (!args.shares === !args.bps)) {
+    console.error("usage: dex-seed-plan.mjs remove --config <gate.json> --rpc <url> --price <opening price> --to <LP recipient> --shares <n> | --bps <of its shares> [--floor-shares <n> | --floor-bps 1000] [--fraction-bps 5000] [--allow-below-floor] [--deadline-min 60]");
+    return UNKNOWN;
+  }
+  const fractionBps = parseFractionBps(args["fraction-bps"]);
+  const request = createRequest(args.rpc);
+  const { deployment, pair, state, wrapped, quote, latest, price } = await load(args, request);
+  const held = await call(request, pair.address, "balanceOf", [args.to], blockRef(latest));
+  const shares = args.shares !== undefined ? BigInt(args.shares) : (held * BigInt(args.bps)) / 10_000n;
+  const floor = args["floor-shares"] !== undefined
+    ? { seedShares: null, floorShares: BigInt(args["floor-shares"]) }
+    : seedFloorShares({ wrappedCap: wrapped.cap, quoteCap: quote.cap, price, fractionBps, floorBps: BigInt(args["floor-bps"] ?? SEEDER_FLOOR_BPS) });
+  const plan = planRemoval({ held, shares, floorShares: floor.floorShares, allowBelowFloor: Boolean(args["allow-below-floor"]) });
+  if (plan.decision !== "remove") {
+    console.log(stringify({ ...plan, recipient: args.to, heldShares: held, seedShares: floor.seedShares, pair: pair.address, block: latest.number }));
+    return CRIT;
+  }
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * Number(args["deadline-min"] ?? 60));
+  const minWrapped = (wrapped.reserve * shares * 99n) / (state.totalSupply * 100n);
+  const minQuote = (quote.reserve * shares * 99n) / (state.totalSupply * 100n);
+  const steps = [
+    { description: "approve the router for the LP shares", to: pair.address, value: "0", data: encode("approve", [deployment.router.address, shares]) },
+    { description: "remove liquidity to the LP recipient (minimums 99% of the pro-rata reserves)", to: deployment.router.address, value: "0", data: encode("removeLiquidity", [wrapped.token, quote.token, shares, minWrapped, minQuote, args.to, deadline]), deadline },
+  ];
+  console.log(stringify({ ...plan, recipient: args.to, heldShares: held, seedShares: floor.seedShares, pair: pair.address, block: latest.number, steps }));
+  return plan.belowFloor ? WARN : OK;
+}
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2), { flags: ["allow-below-floor"] });
   const [command] = args._;
+  if (command === "remove") return remove(args);
   if (command === "note-tx") {
     // A planned approve or seed already sent. It is recorded only if it checks out.
     if (!args.config || !args.rpc || !args.tx) {
@@ -181,9 +304,11 @@ async function main() {
     return OK;
   }
   if (!["plan", "verify"].includes(command) || !args.config || !args.rpc || !args.price) {
-    console.error("usage: dex-seed-plan.mjs plan|verify --config <gate.json> --rpc <url> --price <quote per wrapped> [--to <LP recipient, required by verify>] [--fraction-bps 5000] [--tolerance-bps 100]");
+    console.error("usage: dex-seed-plan.mjs plan|verify --config <gate.json> --rpc <url> --price <quote per wrapped> [--to <LP recipient, required by verify>] [--fraction-bps 5000, at most 7000] [--tolerance-bps 100]");
     return UNKNOWN;
   }
+  // Refused before any read: a seed on the k ceiling is never a valid plan.
+  const fractionBps = command === "plan" ? parseFractionBps(args["fraction-bps"]) : null;
   const request = createRequest(args.rpc);
   const { deployment, pair, state, wrapped, quote, decimals, latest, price } = await load(args, request);
 
@@ -231,9 +356,6 @@ async function main() {
       return CRIT;
     }
   }
-  const fractionBps = BigInt(args["fraction-bps"] ?? 5000);
-  // F1: reserve0 * reserve1 <= 64% of cap0 * cap1, so a seed above 80% of both caps reverts (K_CEILING).
-  if (fractionBps < 1n || fractionBps > 8000n) throw new Error("--fraction-bps must be 1 to 8000: above 80% of the caps the seed passes the k ceiling and reverts");
   const plan = planOpening({ wrapped, quote, totalSupply: state.totalSupply, price, fractionBps });
   if (plan.decision === "skim-first") {
     console.log(stringify({ ...plan, pair: pair.address, excess: { wrapped: wrapped.balance - wrapped.reserve, quote: quote.balance - quote.reserve } }));
@@ -247,6 +369,20 @@ async function main() {
       : [
           { description: "approve the router for the quote token", to: quote.token, value: "0", data: encode("approve", [deployment.router.address, plan.amountIn]) },
           { description: "sell the quote token to the target price", to: deployment.router.address, value: "0", data: encode("swapExactTokensForBLCH", [plan.amountIn, plan.amountOutMin, [quote.token, wrapped.token], args.to, deadline]), deadline },
+        ];
+    console.log(stringify({ ...plan, pair: pair.address, block: latest.number, targetPrice: args.price, steps }));
+    return WARN;
+  }
+  if (plan.decision === "reprice-by-donation") {
+    const steps = plan.donateWrapped
+      ? [
+          { description: "wrap BLCH for the donation", to: wrapped.token, value: plan.amount, data: encode("deposit") },
+          { description: "donate the WBLCH dust to the pair", to: wrapped.token, value: "0", data: encode("transfer", [pair.address, plan.amount]) },
+          { description: "sync the pair to the new balances", to: pair.address, value: "0", data: encode("sync") },
+        ]
+      : [
+          { description: "donate the quote-token dust to the pair", to: quote.token, value: "0", data: encode("transfer", [pair.address, plan.amount]) },
+          { description: "sync the pair to the new balances", to: pair.address, value: "0", data: encode("sync") },
         ];
     console.log(stringify({ ...plan, pair: pair.address, block: latest.number, targetPrice: args.price, steps }));
     return WARN;

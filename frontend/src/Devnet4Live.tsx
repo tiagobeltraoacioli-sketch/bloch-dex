@@ -22,6 +22,7 @@ import {
 } from './devnet4/chain';
 import type { DevnetDeployment } from './devnet4/record';
 import type { Provider, WalletAccount, WalletOption } from './wallet';
+import { SLIPPAGE_RANGE_TEXT, isAllowedSlippageBps } from './slippage';
 
 export type Devnet4Wallet = {
   account: WalletAccount | null;
@@ -249,7 +250,7 @@ function SwapPanel({
   const output = options.find((o) => o.key === outKey);
   const amountIn = input ? parseAmount(amount, input.token.decimals) : null;
   const slippageBps = parseAmount(slippage, 2);
-  const slippageValid = slippageBps !== null && slippageBps >= 1n && slippageBps <= 500n;
+  const slippageValid = slippageBps !== null && isAllowedSlippageBps(slippageBps);
   const account = wallet.account?.address.toLowerCase() as Address | undefined;
   const onChain = wallet.account ? BigInt(wallet.account.chainId) === BigInt(d.chainId) : false;
 
@@ -259,7 +260,7 @@ function SwapPanel({
     if (!input || !output || input.key === output.key)
       return setQuoteNote('Choose two different tokens.');
     if (!amountIn || amountIn <= 0n) return setQuoteNote('Enter an amount.');
-    if (!slippageValid) return setQuoteNote('Use a slippage tolerance of 0.01% to 5.00%.');
+    if (!slippageValid) return setQuoteNote(`Use a slippage tolerance of ${SLIPPAGE_RANGE_TEXT}.`);
     try {
       const q = await quoteExactInput(
         rpc,

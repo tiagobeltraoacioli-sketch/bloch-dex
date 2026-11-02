@@ -437,7 +437,7 @@ fi
 # ---------------------------------------------------------------- seed
 log "4 seed from the plan: 50% of the tighter cap at $PRICE bUSDC per BLCH"
 expect 0 seed-plan node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --write-txs "$WORK/seed.txs.json"
-expect 2 seed-plan-fraction-too-high node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --fraction-bps 8001
+expect 2 seed-plan-fraction-too-high node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --fraction-bps 7001
 SEED_CONFIRM=$(jsonget "$EV/seed-plan.out" txsFile.configSha256)
 node -e 'const fs=require("fs"),t=JSON.parse(fs.readFileSync(process.argv[1]));t.chainId=1;fs.writeFileSync(process.argv[2],JSON.stringify(t))' "$WORK/seed.txs.json" "$WORK/seed-wrong-chain.txs.json"
 expect 1 seed-wrong-chain scripts/staging/sign-and-publish.sh --txs "$WORK/seed-wrong-chain.txs.json" --rpc "$RPC" --confirm "$SEED_CONFIRM" --max-fee-wei $MAXFEE --priority-fee-wei $TIP --hashes-out "$WORK/seed-wrong.hashes" -- --private-key "$SEEDER_KEY"
@@ -453,6 +453,12 @@ must "$SEEDER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 
 expect 0 seed-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
 expect 2 seed-verify-wrong-price node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price 30 --to "$SEEDER"
 expect 2 seed-plan-refused node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
+expect 2 remove-full-exit-refused node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 10000
+grep -q refuse-floor "$EV/remove-full-exit-refused.out" || die "a full exit was not refused by the seeder floor"
+expect 0 remove-half node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 5000
+expect 1 remove-full-exit-override node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 10000 --allow-below-floor
+grep -q OVERRIDE "$EV/remove-full-exit-override.out" || die "the override carries no warning"
+pass "seeder floor: a full exit is refused, half is planned, the override warns"
 for _ in 1 2 3; do
   must "$GRIEFER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 5000000 0 "$PATH_U_W" "$GRIEFER" $FUTURE)" 0 400000 > /dev/null
   must "$GRIEFER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$GRIEFER" $FUTURE)" 200000000000000000 400000 > /dev/null
@@ -509,6 +515,34 @@ pass "keeper: swaps work again"
 sleep 2
 settle
 expect 0 monitor-after-skim monitor --expect-seeded
+
+if [ "$MODE" = anvil ]; then
+  log "5 DEX-4: at the k ceiling the keeper skims swap fees to the Safe from budget / max-tx"
+  SNAP_CEIL=$(snapshot)
+  R=$(cast call "$PAIR" "getReserves()(uint112,uint112,uint32)" --rpc-url "$RPC" | num | head -2 | tr '\n' ' ')
+  T0=$(cast call "$PAIR" "token0()(address)" --rpc-url "$RPC" | tr 'A-F' 'a-f')
+  if [ "$T0" = "$WRAPPED" ]; then RW=${R%% *}; RQ=$(echo "$R" | awk '{print $2}'); else RQ=${R%% *}; RW=$(echo "$R" | awk '{print $2}'); fi
+  QT=$((USD_CAP * 8 / 10))
+  WT=$(node -e 'const [w,q]=process.argv.slice(1).map(BigInt);console.log((w*q*64n/100n/BigInt(process.argv[3])).toString())' "$WRAP_CAP" "$USD_CAP" "$QT")
+  DW=$(node -e 'console.log((BigInt(process.argv[1])-BigInt(process.argv[2])).toString())' "$WT" "$RW")
+  DQ=$((QT - RQ))
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "deposit()")" "$DW" 100000 > /dev/null
+  must "$GRIEFER_KEY" "$WRAPPED" "$(cast calldata "$TRANSFER" "$PAIR" "$DW")" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" "$DQ")" 0 100000 > /dev/null
+  must "$GRIEFER_KEY" "$PAIR" "$(cast calldata "sync()")" 0 200000 > /dev/null
+  must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 20000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000 > /dev/null
+  CSTATE=$WORK/keeper/ceiling.json
+  SAFE_USD_C0=$(view "$USD" "$BAL" "$SAFE")
+  expect 0 keeper-ceiling keeper_run --state "$CSTATE" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"kCeiling": true' "$EV/keeper-ceiling.out" || die "the keeper did not act at the ceiling"
+  H=$(jsonget "$EV/keeper-ceiling.out" hash)
+  for _ in $(seq 240); do [ "$(cast rpc eth_getTransactionReceipt "$H" --rpc-url "$RPC")" != null ] && break; sleep 0.5; done
+  SAFE_USD_C1=$(view "$USD" "$BAL" "$SAFE")
+  [ "$SAFE_USD_C1" -gt "$SAFE_USD_C0" ] || die "the ceiling fees did not reach the Safe"
+  CEIL_GAS=$(node -e 'console.log(BigInt(JSON.parse(process.argv[1]).gasUsed).toString())' "$(cast receipt "$H" --json --rpc-url "$RPC")")
+  pass "keeper at the k ceiling: $((SAFE_USD_C1 - SAFE_USD_C0)) bUSDC base units of swap fees to the Safe, gas $CEIL_GAS"
+  restore "$SNAP_CEIL"
+fi
 
 if [ "$MODE" = anvil ]; then
   log "5 griefing: a griefer front-runs the keeper's skim and takes the donation back; the keeper backs off"

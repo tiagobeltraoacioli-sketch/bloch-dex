@@ -18,6 +18,7 @@ import { httpRpc } from './devnet4/chain';
 import { verifyDeploymentRecord } from './devnet4/record';
 import MainnetLive from './MainnetLive';
 import { bundledNetwork, bundledState, plannedCaps, plannedPairs } from './mainnet/config';
+import { DEFAULT_SLIPPAGE_BPS, SLIPPAGE_RANGE_TEXT, isAllowedSlippageBps } from './slippage';
 
 // Devnet4 live route. The settled RPC sends no CORS headers: the app reads it
 // through the dev/preview server proxy at /devnet4-rpc (see README); a wallet
@@ -55,15 +56,15 @@ const MAINNET_ETH_RPC = MAINNET_HOLD_URL ? httpRpc(MAINNET_HOLD_URL) : undefined
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
 function parseStoredSlippage(raw: string | null) {
-  if (raw === null || !/^(?:[1-9][0-9]{0,2})$/.test(raw)) return 50;
+  if (raw === null || !/^(?:[1-9][0-9]{0,2})$/.test(raw)) return DEFAULT_SLIPPAGE_BPS;
   const value = Number(raw);
-  return Number.isInteger(value) && value >= 1 && value <= 500 ? value : 50;
+  return isAllowedSlippageBps(value) ? value : DEFAULT_SLIPPAGE_BPS;
 }
 function storedSlippage() {
   try {
     return parseStoredSlippage(localStorage.getItem('postern.slippage.v1'));
   } catch {
-    return 50;
+    return DEFAULT_SLIPPAGE_BPS;
   }
 }
 
@@ -78,7 +79,7 @@ function Settings({
 }) {
   const [input, setInput] = useState((value / 100).toFixed(2));
   const parsed = parseAmount(input, 2);
-  const valid = parsed !== null && parsed >= 1n && parsed <= 500n;
+  const valid = parsed !== null && isAllowedSlippageBps(parsed);
   return (
     <Modal title="Swap settings" onClose={close}>
       <p className="muted">Set the maximum output change you would accept.</p>
@@ -101,7 +102,7 @@ function Settings({
         ))}
       </div>
       <p className={valid ? 'microcopy' : 'form-error'} id="slippage-help">
-        Use 0.01% to 5.00%, with at most two decimal places.
+        Use {SLIPPAGE_RANGE_TEXT}, with at most two decimal places.
       </p>
       {valid && parsed > 100n && (
         <p className="notice">

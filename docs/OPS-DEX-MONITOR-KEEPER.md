@@ -89,6 +89,7 @@ Signing goes through `cast mktx`; the keeper never sees the key. Use a fresh add
 | Fee ceiling | `--max-fee-wei` | 20 gwei |
 | Gas limit ceiling (1.2 x the estimate must fit) | `--max-gas` | 150,000 (measured use 77,000) |
 | Floor | `--floor-bps` | 100 |
+| Floor at the k ceiling, in wei of the wrapped token at the pool price | `--ceiling-floor-wei` | `--budget-wei` / `--max-tx` = 0.00104 BLCH |
 | Time between transactions | `--cooldown-s` | 1,800 s |
 | Unconfirmed transaction expiry | `--pending-timeout-s` | 7,200 s |
 
@@ -152,7 +153,44 @@ At the ceiling a swap's fee stays outside the reserves. LPs and the Safe earn no
 
 The excess is about ten times the 0.3% fee, because a standing excess fills later trades with the reserves unmoved: those traders still get their quote, and the excess keeps their price impact. It costs LPs nothing beyond the missing fee.
 
-The keeper sends what it skims to the Safe, so at the ceiling the fee that used to be the LPs' goes to the Safe or to a faster skimmer. A lower floor at the ceiling would collect more for the Safe. That is an owner decision and is not implemented.
+The keeper sends what it skims to the Safe, so at the ceiling the fee that used to be the LPs' goes to the Safe or to a faster skimmer.
+
+**Ceiling-fee behaviour is accepted for launch** (owner decision DEX-4, round 10): no contract change before deploy, and the behaviour is an explicit item for the external audit (DEX-8), with the candidate fix "send the clamped amount to `feeTo` inside `swap`". Restricting `skim` would not help: a `swap` that sends nothing claims the excess as its own input (agent 177, section 3).
+
+### The ceiling floor (round 10)
+
+At the ceiling the keeper uses a second, lower floor so that the Safe, not a bot, collects ordinary swap fees. It applies only while `isAtKCeiling` holds for the pair (k within one reserve unit of 64% of `cap0 * cap1`), and only to pairs with the wrapped token, because the excess of both sides is valued in wrapped wei at the pool's own reserves. Everywhere else the 100 bps floor, and the soft and hard closure rules built on it, are unchanged.
+
+**The value: `--budget-wei / --max-tx`, 0.05 BLCH / 48 = 0.00104 BLCH (about $0.10 at P = 100).** It is the lowest floor at which every skim returns at least its share of the daily budget, so the Safe never pays more gas than it collects even if the keeper skims at every chance:
+
+| | Per skim | Per day, at the 36 skims a ceiling may use |
+|---|---:|---:|
+| Value collected, at least | 0.00104 BLCH | 0.0375 BLCH |
+| Gas paid, typical: 77,000 gas x (1 gwei base + 1-2 gwei tip) | 0.00015-0.00023 BLCH | 0.006-0.008 BLCH |
+| Gas paid, worst the limits allow: 95,000 gas x (1 gwei + 8 gwei top tip) | 0.00086 BLCH | 0.031 BLCH |
+| Reserved before signing: 1.2 x the estimate x `maxFee` (at most `2 x base + tip`, 20 gwei ceiling) | up to 0.0011 BLCH | stays under the 0.05 BLCH budget, which the keeper enforces |
+
+- In bps of the caps: about 1 bps of the 10 WBLCH cap, and of the bUSDC cap for P from 50 to 100 (`min(1000, 10P)` bUSDC); about 2 bps of it at P = 200. The ordinary floor is 100 bps.
+- Ceiling skims are kind `ceiling` in the state file. They keep the cooldown and the backoff, and they cannot use the quarter of the count kept for a hard closure, so at most 36 a day.
+- A griefer who donates 0.00104 BLCH at the ceiling to make the keeper spend gas gives that donation to the Safe, or wins a race and sends the keeper into backoff. Either way the count and budget hold, as before.
+
+**Who collects the fees at the ceiling.** A deterministic model (`scripts/ops/dex-ceiling-capture-model.mjs`, agent 196): P = 100, one L2 block every 10 minutes, ordinary router swaps of $8.73 on average (177's flow), 30 days. Arbitrage is left out: at the ceiling an arbitrageur does swap plus skim in one transaction and refunds its own fee (177, section 4), so **no keeper or bot collects arbitrage fees**, at any floor.
+
+| Daily volume at the ceiling | Competitor | Safe, floor 1% (before) | Safe, ceiling floor (now) | Keeper gas, now, per 30 days |
+|---|---|---:|---:|---:|
+| $1,000 | none | 89% | 100% | $14.56 |
+| $1,000 | a bot that skims from $1 at a 1 gwei tip | 0% | 100% | $14.56 |
+| $5,000 | none | 98% | 99% | $20.86 |
+| $5,000 | a bot that skims from $1 at a 1 gwei tip | 0% | 78% | $20.76 |
+| $5,000 | a bot that skims from its own gas cost ($0.015) at 1 gwei | 0% | 27% | $19.92 |
+| $5,000 | the same bot at a 3 gwei tip | 0% | 4% | $13.87 |
+| $5,000 | a bot that always tips above 8 gwei | 0% | 0% | $5.31 |
+| $20,000 | a bot that skims from $1 at a 1 gwei tip | 0% | 75% | $20.86 |
+| $20,000 | a bot that skims from its own gas cost at 1 gwei | 0% | 25% | $20.86 |
+
+- With no bot the old floor also reached the Safe, only later. The gain is against bots whose threshold lies between the two floors: from 0% to 75-100%.
+- A bot that skims every block from its own gas cost still takes about three quarters, because the keeper may act only every 30 minutes (one block in three). A bot that outbids the keeper's tip takes everything. Lowering the floor further cannot change either: below 0.00104 BLCH a skim at the worst-case cost no longer pays for itself, and the cooldown and count are the RC budget.
+- Collecting more would need the keeper to act every block or outbid bots (more budget), or the contract fix above.
 
 ## Storage footprint
 

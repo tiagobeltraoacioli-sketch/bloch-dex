@@ -1,4 +1,5 @@
 import type { Pool, Quote, Symbol } from './model';
+import { isAllowedSlippageBps } from './slippage';
 
 export const MAX_UINT256 = (1n << 256n) - 1n;
 const MAX_RESERVE = (1n << 112n) - 1n;
@@ -65,7 +66,7 @@ export function quoteRoute(
 ): Quote | null {
   if (input <= 0n || path.length < 2 || path.length > MAX_PATH_LENGTH || hasRepeatedPool(path))
     return null;
-  if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 500) return null;
+  if (slippageBps !== 0 && !isAllowedSlippageBps(slippageBps)) return null;
   const amounts = [input];
   let marginal = input;
   for (let i = 1; i < path.length; i++) {

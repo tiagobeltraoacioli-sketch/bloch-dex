@@ -59,6 +59,8 @@ import {
 import { usePendingSwap } from './mainnet/pendingswap';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
+import { explainSwapRevert, retryOffer, revertText, type SwapRetryInfo } from './mainnet/retry';
+import { isAllowedSlippageBps } from './slippage';
 import { loadHistory, recordFinished, type FinishedTx } from './mainnet/txhistory';
 import { blocksSwap, compareQuotes, signedQuote, type QuoteCheck } from './mainnet/quotecheck';
 import {
@@ -178,6 +180,16 @@ export default function MainnetLive({
     enabled: live && !!snapshot,
     now,
     onMined: () => setGeneration((g) => g + 1),
+    explain: (swap, receipt) =>
+      state?.status === 'live' && swap.retry
+        ? explainSwapRevert(
+            rpc,
+            state.deployment.router,
+            swap.retry,
+            receipt.blockNumber,
+            swap.deadline,
+          )
+        : Promise.resolve('unknown'),
     intervalMs: receiptPollMs,
   });
   return (
@@ -675,6 +687,8 @@ function SwapPanel({
   const [outKey, setOutKey] = useState(options[1]?.key ?? '');
   const [amount, setAmount] = useState('');
   const [slippage, setSlippage] = useState((DEFAULT_SLIPPAGE_BPS / 100).toFixed(2));
+  // 2 once the user took the page's one retry after a revert on the minimum (DEX-5).
+  const [attempt, setAttempt] = useState<1 | 2>(1);
   const [deadline, setDeadline] = useState(String(DEFAULT_DEADLINE_MINUTES));
   const [quote, setQuote] = useState<LensQuote | null>(null);
   const [blocked, setBlocked] = useState<RouteCheck[]>([]);
@@ -719,8 +733,7 @@ function SwapPanel({
   const output = options.find((o) => o.key === outKey);
   const amountIn = input ? parseAmount(amount, input.token.decimals) : null;
   const slippageBps = parseAmount(slippage, 2);
-  const slippageValid =
-    slippageBps !== null && slippageBps >= 1n && slippageBps <= BigInt(MAX_SLIPPAGE_BPS);
+  const slippageValid = slippageBps !== null && isAllowedSlippageBps(slippageBps);
   const deadlineMinutes = /^[0-9]{1,3}$/.test(deadline) ? Number(deadline) : NaN;
   const deadlineValid =
     deadlineMinutes >= MIN_DEADLINE_MINUTES && deadlineMinutes <= MAX_DEADLINE_MINUTES;
@@ -926,6 +939,15 @@ function SwapPanel({
       const signed = signedQuote(active, fresh);
       const label = `Swap ${formatAmount(signed.amountIn, input!.token.decimals)} ${input!.label} for ${output!.label}`;
       const deadline = deadlineFrom(now(), deadlineMinutes);
+      const retry: SwapRetryInfo = {
+        tokenIn: input!.token.address,
+        tokenOut: output!.token.address,
+        amountIn: signed.amountIn,
+        path: [...signed.path],
+        minimumOut: signed.minimumOut,
+        slippageBps: Number(slippageBps),
+        attempt,
+      };
       await run(
         label,
         () =>
@@ -937,12 +959,30 @@ function SwapPanel({
             account!,
             deadline,
           ),
-        (hash) => pendingSwap.begin({ hash, label, deadline, sentAtMs: now() }),
+        (hash) => pendingSwap.begin({ hash, label, deadline, sentAtMs: now(), retry }),
       );
     } finally {
       setBusy(false);
     }
   }
+
+  /** Refill the form with the reverted swap at the retry tolerance and quote it again. */
+  function retryAt(info: SwapRetryInfo, bps: number) {
+    const from = options.find((o) => o.token.address === info.tokenIn);
+    const to = options.find((o) => o.token.address === info.tokenOut);
+    if (!from || !to || !isAllowedSlippageBps(bps)) return;
+    clear();
+    setInKey(from.key);
+    setOutKey(to.key);
+    setAmount(formatAmount(info.amountIn, from.token.decimals));
+    setSlippage((bps / 100).toFixed(2));
+    setAttempt(2);
+    setRequote((n) => n + 1);
+  }
+  const offer =
+    tracked?.state === 'failed' && tracked.retry && tracked.cause
+      ? retryOffer(tracked.retry, tracked.cause)
+      : null;
 
   const effectiveAllowance =
     input && !input.native
@@ -973,7 +1013,10 @@ function SwapPanel({
       <div className="devnet4-form">
         <label className="field-label">
           You pay
-          <select value={inKey} onChange={(e) => (setInKey(e.target.value), clear())}>
+          <select
+            value={inKey}
+            onChange={(e) => (setInKey(e.target.value), setAttempt(1), clear())}
+          >
             {options.map((o) => (
               <option key={o.key} value={o.key}>
                 {o.label}
@@ -987,12 +1030,15 @@ function SwapPanel({
             className="text-input"
             inputMode="decimal"
             value={amount}
-            onChange={(e) => (setAmount(e.target.value), clear())}
+            onChange={(e) => (setAmount(e.target.value), setAttempt(1), clear())}
           />
         </label>
         <label className="field-label">
           You receive
-          <select value={outKey} onChange={(e) => (setOutKey(e.target.value), clear())}>
+          <select
+            value={outKey}
+            onChange={(e) => (setOutKey(e.target.value), setAttempt(1), clear())}
+          >
             {options.map((o) => (
               <option key={o.key} value={o.key}>
                 {o.label}
@@ -1227,6 +1273,23 @@ function SwapPanel({
               <strong>{tracked.label}</strong>: {tracked.state}{' '}
               <ExplorerLink network={network} kind="tx" value={tracked.hash} />
               <span className="muted"> {tracked.detail}</span>
+              {tracked.state === 'failed' && tracked.retry && tracked.cause && (
+                <p className="notice" role="status" aria-label="Why the swap reverted">
+                  {revertText(tracked.retry, tracked.cause)}
+                  {offer?.kind === 'retry' && (
+                    <>
+                      {' '}
+                      <button
+                        className="button secondary"
+                        disabled={busy || pendingSwap.open || attempt === 2}
+                        onClick={() => retryAt(tracked.retry!, offer.slippageBps)}
+                      >
+                        Retry once at {(offer.slippageBps / 100).toFixed(2)}%
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
             </li>
           )}
         </ol>

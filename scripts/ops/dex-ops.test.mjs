@@ -7,8 +7,10 @@ import {
 } from "./dex-ops-lib.mjs";
 import { checkKeeperState, runMonitor } from "./dex-monitor.mjs";
 import { withBridgeExit } from "./dex-skim-keeper.mjs";
-import { DEFAULTS, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
-import { checkNotedTxs, holdsSeed, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { DEFAULTS, ceilingFloorWei, excessValueWei, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
+import { MAX_FRACTION_BPS, REPRICE_DONATION_MAX_BPS, SEEDER_FLOOR_BPS, checkNotedTxs, planRemoval, repriceByDonation, seedFloorShares, holdsSeed, parseFractionBps, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
 import { createRequire } from "node:module";
 
@@ -870,4 +872,185 @@ test("keeper: bUSDC exit status is reported and never changes the action", async
   const down = await withBridgeExit(base, d.eth, d.l2.request, { vault: VAULT }, deployment);
   assert.equal(down.level, OK);
   assert.match(down.bridgeExit, /^unknown: /);
+});
+
+test("r10 DEX-4: the seed planner refuses --fraction-bps above 7,000 and says why (k ceiling)", () => {
+  assert.equal(MAX_FRACTION_BPS, 7000n);
+  assert.equal(parseFractionBps(undefined), 5000n);
+  assert.equal(parseFractionBps("1"), 1n);
+  assert.equal(parseFractionBps("7000"), 7000n);
+  for (const bad of ["7001", "8000", "9000", "10000"]) {
+    assert.throws(() => parseFractionBps(bad), (e) => {
+      assert.match(e.message, /must be 1 to 7000/);
+      assert.match(e.message, /k ceiling/);
+      assert.match(e.message, /80% of both caps sits exactly on that k ceiling/);
+      assert.match(e.message, /LPs and the Safe earn nothing/);
+      return true;
+    }, bad);
+  }
+  for (const bad of ["0", "-1", "7000.5", "7e3", "", "true"]) assert.throws(() => parseFractionBps(bad), /--fraction-bps/, bad);
+  // The library function refuses on its own, so no other caller can plan a seed on the ceiling.
+  assert.throws(() => planOpening({ wrapped: side(0n, WRAP_CAP), quote: side(0n, QUOTE_CAP), totalSupply: 0n, price: 100_000_000n, fractionBps: 8000n }), /k ceiling/);
+  assert.equal(planOpening({ wrapped: side(0n, WRAP_CAP), quote: side(0n, QUOTE_CAP), totalSupply: 0n, price: 100_000_000n, fractionBps: 7000n }).decision, "proceed");
+});
+
+test("r10 DEX-4: 7,000 bps keeps k at 76.6% of the ceiling; 8,000 bps sits on it when the caps balance", () => {
+  // k / ceiling = (f * cap0) * (f * cap1) / (0.64 * cap0 * cap1) = f^2 / 0.64, in bps.
+  const ratioBps = (f) => (f * f * 10_000n) / (6_400n * 10_000n);
+  assert.equal(ratioBps(5_000n), 3_906n);
+  assert.equal(ratioBps(7_000n), 7_656n);
+  assert.equal(ratioBps(8_000n), 10_000n);
+});
+
+test("r10 DEX-4: the planner CLI refuses 7,001 and 8,000 before any RPC read, with exit 2", () => {
+  const script = fileURLToPath(new URL("./dex-seed-plan.mjs", import.meta.url));
+  for (const value of ["7001", "8000"]) {
+    const run = spawnSync(process.execPath, [script, "plan", "--config", "/nonexistent/gate.json", "--rpc", "http://127.0.0.1:9", "--price", "100", "--to", address(0xc01), "--fraction-bps", value], { encoding: "utf8" });
+    assert.equal(run.status, CRIT, run.stderr);
+    assert.match(run.stderr, /must be 1 to 7000/);
+    assert.match(run.stderr, /k ceiling/);
+  }
+});
+
+// ---- keeper at the k ceiling (DEX-4, round 10)
+
+// 800 bUSDC x 8 WBLCH = 64% of 1,000 x 10: exactly the ceiling, pool price 100.
+const AT_CEILING = [800_000_000n, 8n * 10n ** 18n];
+
+test("r10 DEX-4: the ceiling floor is the budget's per-transaction share, 0.05 BLCH / 48", () => {
+  assert.equal(DEFAULTS.ceilingFloorWei, null);
+  assert.equal(ceilingFloorWei(keeperOptions()), 1_041_666_666_666_666n);
+  assert.equal(ceilingFloorWei(keeperOptions({ ceilingFloorWei: 5n })), 5n);
+  assert.equal(ceilingFloorWei(keeperOptions({ maxTx: 0 })), DEFAULTS.budgetWei);
+  // About 1 bps of the 10 WBLCH cap, a hundredth of the ordinary 100 bps floor.
+  assert.equal((ceilingFloorWei(keeperOptions()) * 10_000n) / CAP1, 1n);
+  // It is above the worst case the keeper can actually pay per skim at the RC limits
+  // (95k gas measured, 9 gwei = 1 gwei base + the 8 gwei top tip): each skim returns more
+  // than it costs, and 36 non-reserved skims a day stay inside 0.05 BLCH.
+  assert.ok(ceilingFloorWei(keeperOptions()) > 95_000n * 9_000_000_000n);
+});
+
+test("r10 DEX-4: excess value is priced in wrapped wei at the pool's own price", () => {
+  const state = { sides: [
+    { token: T0, reserve: 800_000_000n, balance: 800_110_000n, cap: CAP0 },
+    { token: T1, reserve: 8n * 10n ** 18n, balance: 8n * 10n ** 18n + 5n, cap: CAP1 },
+  ] };
+  // 0.11 bUSDC at 100 bUSDC per BLCH = 0.0011 BLCH, plus 5 wei.
+  assert.equal(excessValueWei(state, T1), 1_100_000_000_000_005n);
+  assert.equal(excessValueWei(state, address(0xdead)), null);
+  assert.equal(excessValueWei({ sides: [{ ...state.sides[0], reserve: 0n }, state.sides[1]] }, T1), null);
+});
+
+test("r10 DEX-4: at the ceiling the keeper skims fee excess to the Safe from about 0.001 BLCH", async () => {
+  const node = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n] });
+  const state = emptyKeeperState();
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  assert.equal(outcome.action, "sent");
+  assert.equal(outcome.kCeiling, true);
+  assert.equal(outcome.to, SAFE);
+  assert.equal(state.txs.at(-1).kind, "ceiling");
+  assert.equal(node.chain.sent.length, 1);
+  // The same 0.11 bUSDC was dust under the 100 bps floor (1% of the cap is 10 bUSDC).
+  assert.equal(outcome.seen[0].kinds[0], "dust");
+});
+
+test("r10 DEX-4: below the ceiling floor, or below the ceiling, nothing changes", async () => {
+  // 0.10 bUSDC = 0.001 BLCH, under 0.05 / 48.
+  const under = fakeNode({ reserves: AT_CEILING, balances: [800_100_000n, 8n * 10n ** 18n] });
+  assert.equal((await runKeeper(gate, keeperOptions(), emptyKeeperState(), keeperDeps(under))).action, "nothing-to-do");
+  // The 50% seed is far below the ceiling: 5 bUSDC of excess stays dust as before.
+  const seed = fakeNode({ balances: [505_000_000n, 5n * 10n ** 18n] });
+  assert.equal((await runKeeper(gate, keeperOptions(), emptyKeeperState(), keeperDeps(seed))).action, "nothing-to-do");
+  // An explicit floor wins over the default.
+  const set = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n] });
+  assert.equal((await runKeeper(gate, keeperOptions({ ceilingFloorWei: 2n * 10n ** 15n }), emptyKeeperState(), keeperDeps(set))).action, "nothing-to-do");
+});
+
+test("r10 DEX-4: ceiling skims keep the cooldown and never use the count kept for a hard closure", async () => {
+  const node = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n] });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  node.chain.receipts[state.txs[0].hash] = { status: "0x1", blockNumber: "0x9", gasUsed: "0x12c00", effectiveGasPrice: "0x77359400", logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01adb0" }] };
+  node.chain.nonce = 1n;
+  const soon = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
+  assert.equal(soon.action, "cooldown");
+  const full = emptyKeeperState();
+  const reserved = Number((BigInt(DEFAULTS.maxTx) * DEFAULTS.hardReserveBps) / 10_000n);
+  full.txs = Array.from({ length: DEFAULTS.maxTx - reserved }, (_, i) => ({ at: 990_000 + i, hash: `0x${i}`, nonce: String(i), pair: PAIR, reservedWei: "1", spentWei: "1", kind: "ceiling", status: "effective" }));
+  const fresh = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n], nonce: BigInt(DEFAULTS.maxTx) });
+  assert.equal((await runKeeper(gate, keeperOptions(), full, keeperDeps(fresh, 1_000_000))).action, "reserved-for-hard-closure");
+});
+
+// ---- reopening after a full seeder exit (agent 178, X5)
+
+test("r10 178-X5: after a full exit the planner reprices by a dust donation, not a swap that pays out 0", () => {
+  // 178's measured state: 1000 locked shares over 1 bUSDC unit and 1e8 wei WBLCH (pool price 10,000).
+  const price = 100_000_000n; // 100 bUSDC per BLCH
+  const dust = { wrapped: side(10n ** 8n, WRAP_CAP), quote: side(1n, QUOTE_CAP), totalSupply: 1000n, price, fractionBps: 5000n };
+  const plan = planOpening(dust);
+  assert.equal(plan.decision, "reprice-by-donation");
+  assert.equal(plan.donateWrapped, true);
+  // 178's manual route donated 9.9e9 wei and reached P = 100.
+  assert.equal(plan.amount, 9_900_000_000n);
+  assert.deepEqual(plan.reservesAfter, { wrapped: 10n ** 10n, quote: 1n });
+  assert.ok(plan.amount * 10_000n <= WRAP_CAP * REPRICE_DONATION_MAX_BPS);
+  // After the donation and sync the next plan is the top-up 178 sent by hand.
+  const after = planOpening({ ...dust, wrapped: side(10n ** 10n, WRAP_CAP), quote: side(1n, QUOTE_CAP) });
+  assert.equal(after.decision, "top-up");
+  assert.equal(priceGapBps({ wrapped: side(10n ** 10n, WRAP_CAP), quote: side(1n, QUOTE_CAP), price }), 0n);
+  // Price too low instead: the quote side is donated, rounded up so the price lands at the target.
+  const low = repriceByDonation({ wrapped: side(10n ** 8n, WRAP_CAP), quote: side(1n, QUOTE_CAP), price: 10n ** 11n, pool: 10n ** 10n, gap: 9000n });
+  assert.equal(low.decision, "reprice-by-donation");
+  assert.equal(low.donateWrapped, false);
+  assert.equal(low.amount, 9n);
+  assert.deepEqual(low.reservesAfter, { wrapped: 10n ** 8n, quote: 10n });
+});
+
+test("r10 178-X5: a real pool at a wrong price still gets the correcting swap, and a large donation is refused", () => {
+  const price = 100_000_000n;
+  const real = planOpening({ wrapped: side(5n * WAD, WRAP_CAP), quote: side(250_000_000n, QUOTE_CAP), totalSupply: 10n ** 12n, price, fractionBps: 5000n });
+  assert.equal(real.decision, "correct-price");
+  assert.ok(real.amountOutMin > 0n);
+  // 1 wei WBLCH over 1 bUSDC unit, target 100 base units per BLCH: the swap pays 0 and the
+  // donation needed (1e16 wei) is above 1 bps of the 10 WBLCH cap (1e15), so it is refused.
+  const tooBig = planOpening({ wrapped: side(1n, WRAP_CAP), quote: side(1n, QUOTE_CAP), totalSupply: 1000n, price: 100n, fractionBps: 5000n });
+  assert.equal(tooBig.decision, "refuse");
+  assert.match(tooBig.reason, /above 1 bps of the cap/);
+});
+
+// ---- the seeder floor (coordinator decision, round 10)
+
+test("r10 seeder floor: 10% of the seed's shares, the same shares 178 measured at P = 100", () => {
+  assert.equal(SEEDER_FLOOR_BPS, 1000n);
+  const { seedShares, floorShares } = seedFloorShares({ wrappedCap: WRAP_CAP, quoteCap: QUOTE_CAP, price: 100_000_000n, fractionBps: 5000n });
+  assert.equal(seedShares, 49_999_999_999_000n);
+  assert.equal(floorShares, 4_999_999_999_900n);
+  // P = 200: the bUSDC cap binds (500 bUSDC + 2.5 WBLCH).
+  const p200 = seedFloorShares({ wrappedCap: WRAP_CAP, quoteCap: QUOTE_CAP, price: 200_000_000n, fractionBps: 5000n });
+  assert.equal(p200.seedShares, isqrtForTest(25n * 10n ** 17n * 500_000_000n) - 1000n);
+});
+function isqrtForTest(n) { let x = n, y = (x + 1n) / 2n; while (y < x) { x = y; y = (x + n / x) / 2n; } return x; }
+
+test("r10 seeder floor: a removal below the floor is refused unless overridden, with the reason", () => {
+  const floorShares = 4_999_999_999_900n;
+  const held = 49_999_999_999_000n;
+  const ok = planRemoval({ held, shares: held - floorShares, floorShares });
+  assert.equal(ok.decision, "remove");
+  assert.equal(ok.belowFloor, false);
+  assert.equal(ok.leftShares, floorShares);
+  const full = planRemoval({ held, shares: held, floorShares });
+  assert.equal(full.decision, "refuse-floor");
+  assert.match(full.reason, /below the seeder floor/);
+  assert.match(full.reason, /k ceiling/);
+  assert.match(full.reason, /At most 44999999999100 shares may be removed/);
+  assert.match(full.reason, /--allow-below-floor/);
+  assert.equal(planRemoval({ held, shares: held - floorShares + 1n, floorShares }).decision, "refuse-floor");
+  const forced = planRemoval({ held, shares: held, floorShares, allowBelowFloor: true });
+  assert.equal(forced.decision, "remove");
+  assert.equal(forced.belowFloor, true);
+  assert.match(forced.warning, /^OVERRIDE:/);
+  assert.equal(planRemoval({ held, shares: held + 1n, floorShares }).decision, "refuse");
+  assert.equal(planRemoval({ held, shares: 0n, floorShares }).decision, "refuse");
+  // A recipient already under the floor may not remove anything without the override.
+  assert.equal(planRemoval({ held: 10n, shares: 1n, floorShares }).decision, "refuse-floor");
 });

@@ -5,6 +5,7 @@ import {
   decodeFunctionData,
   encodeFunctionResult,
   keccak256,
+  parseAbi,
   sha256,
   stringToBytes,
   type Abi,
@@ -203,15 +204,22 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
               },
             );
           if (name === 'bestExactInput') {
-            const [amountIn, routes] = call.args as [bigint, Address[][]];
+            const [amountIn, routes, slippageBps] = call.args as [bigint, Address[][], bigint];
             const latest = params[1] === 'latest';
             const active = (latest && state.latestQuote) || state.quote;
+            // Like BDexLens.sol: the minimum follows the requested tolerance. The page refuses a
+            // quote whose minimum is not amountOut * (10000 - bps) / 10000 (agent 176, M2), so a
+            // fixed fixture minimum would only fit the 0.5% default. Fixtures are given at 0.5%.
+            const minimumOut =
+              slippageBps === 50n
+                ? active.minimumOut
+                : (active.amountOut * (10_000n - slippageBps)) / 10_000n;
             const q = (route: Address[]) => ({
               available: active.available,
               blockNumber: latest ? 500n : 440n,
               timestamp: 0n,
               amountOut: active.amountOut,
-              minimumOut: active.minimumOut,
+              minimumOut,
               amounts: route.map((_, i) => (i === 0 ? amountIn : active.amountOut)),
               executionLossBps: route.slice(1).map(() => 30n),
             });
@@ -685,9 +693,13 @@ describe('mainnet route', () => {
     await user.clear(screen.getByLabelText('Deadline (minutes)'));
     await user.type(screen.getByLabelText('Deadline (minutes)'), '60');
     await user.clear(screen.getByLabelText('Slippage tolerance (%)'));
-    await user.type(screen.getByLabelText('Slippage tolerance (%)'), '7');
+    await user.type(screen.getByLabelText('Slippage tolerance (%)'), '3.01');
     await user.click(screen.getByRole('button', { name: 'Get quote' }));
-    expect(await screen.findByText(/0.01% to 5.00%/)).toBeTruthy();
+    expect(await screen.findByText(/0.01% to 3.00%/)).toBeTruthy();
+    await user.clear(screen.getByLabelText('Slippage tolerance (%)'));
+    await user.type(screen.getByLabelText('Slippage tolerance (%)'), '4');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    expect(await screen.findByText(/0.01% to 3.00%/)).toBeTruthy();
     await user.clear(screen.getByLabelText('Slippage tolerance (%)'));
     await user.type(screen.getByLabelText('Slippage tolerance (%)'), '0.5');
     await user.click(screen.getByRole('button', { name: 'Get quote' }));
@@ -1537,6 +1549,163 @@ describe('swap panel safety fixes', () => {
         expect(screen.getByLabelText('Transactions').textContent).toContain('nothing was sent'),
       );
       expect(sends()).toHaveLength(0);
+    });
+  });
+
+  describe('DEX-5: one retry at 1% after a revert on the minimum', () => {
+    const ROUTER_READ = parseAbi([
+      'function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)',
+    ]);
+    const BLOCK = {
+      hash: `0x${'b'.repeat(64)}`,
+      parentHash: `0x${'c'.repeat(64)}`,
+      timestamp: `0x${(NOW_MS / 1000 + 600).toString(16)}`,
+    };
+    /** Reverted receipts, block 0x1ba, and the router's getAmountsOut under test control. */
+    const chainWith = (
+      rpc: Rpc,
+      receipt: () => unknown,
+      out: { atParent: bigint; atBlock: bigint },
+      block = BLOCK,
+    ): Rpc => {
+      const base = withReceipts(rpc, receipt);
+      return (m, p) => {
+        if (m === 'eth_getBlockByNumber' && p[0] === '0x1ba') return Promise.resolve(block);
+        if (m === 'eth_call') {
+          const { to, data } = p[0] as { to: Address; data: Hex };
+          if (to === deployment.router) {
+            const call = decodeFunctionData({ abi: ROUTER_READ, data });
+            const [amountIn] = call.args as readonly [bigint, readonly Address[]];
+            const at = (p[1] as { blockHash: string }).blockHash;
+            const amountOut = at === block.parentHash ? out.atParent : out.atBlock;
+            return Promise.resolve(
+              encodeFunctionResult({
+                abi: ROUTER_READ,
+                functionName: 'getAmountsOut',
+                result: [amountIn, amountOut],
+              } as never),
+            );
+          }
+        }
+        return base(m, p);
+      };
+    };
+    const lensSlippage = (state: ChainState) =>
+      state.sent
+        .filter((c) => c.method === 'eth_call')
+        .flatMap((c) => {
+          try {
+            const call = decodeFunctionData({
+              abi: LENS_ABI as Abi,
+              data: (c.params[0] as { data: Hex }).data,
+            });
+            return call.functionName === 'bestExactInput' ? [(call.args as bigint[])[2]] : [];
+          } catch {
+            return [];
+          }
+        });
+    const why = () => screen.findByLabelText('Why the swap reverted');
+    const retryButton = () => screen.queryByRole('button', { name: /Retry once at/ });
+
+    it('offers one retry at 1.00% with clear words, refills the form, and offers none after the retry reverts', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let receipt: () => unknown = () => null;
+      // Below the signed minimum (30,845,000) at the end of the block: the minimum failed.
+      const chain = chainWith(rpc, () => receipt(), {
+        atParent: 31_000_000n,
+        atBlock: 30_000_000n,
+      });
+      const { user, sends } = await mount(chain, state);
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      const stored = parsePendingSwap(
+        localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)),
+      );
+      expect(stored?.retry).toMatchObject({ slippageBps: 50, attempt: 1, minimumOut: 30_845_000n });
+      receipt = () => REVERTED;
+      const note = (await why()).textContent!;
+      expect(note).toContain('reverted on its minimum received (BDEX: INSUFFICIENT_OUTPUT_AMOUNT)');
+      expect(note).toContain('more than your 0.50% tolerance');
+      expect(note).toContain('someone traded the same way in the same block');
+      expect(note).toContain('Only the gas was spent; your tokens did not move.');
+      expect(note).toContain('You can retry once at 1.00%');
+      const button = await screen.findByRole('button', { name: 'Retry once at 1.00%' });
+
+      await user.click(button);
+      expect((screen.getByLabelText('Slippage tolerance (%)') as HTMLInputElement).value).toBe(
+        '1.00',
+      );
+      expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('1');
+      await screen.findByLabelText('Quote');
+      await waitFor(() => expect(lensSlippage(state).at(-1)).toBe(100n));
+      expect(lensSlippage(state).every((bps) => bps <= 300n)).toBe(true);
+      expect(
+        (screen.getByRole('button', { name: 'Retry once at 1.00%' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+
+      receipt = () => null;
+      await waitFor(() => expect(swapButton().disabled).toBe(false));
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(2));
+      expect(
+        parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))?.retry,
+      ).toMatchObject({ slippageBps: 100, attempt: 2 });
+      receipt = () => REVERTED;
+      await waitFor(async () =>
+        expect((await why()).textContent).toContain('This was the one retry the page offers'),
+      );
+      expect(retryButton()).toBeNull();
+    });
+
+    it('offers no retry when the tolerance was already 1% or more', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let receipt: () => unknown = () => null;
+      const chain = chainWith(rpc, () => receipt(), {
+        atParent: 30_000_000n,
+        atBlock: 31_000_000n,
+      });
+      const { user, sends } = await mount(chain, state);
+      await user.clear(screen.getByLabelText('Slippage tolerance (%)'));
+      await user.type(screen.getByLabelText('Slippage tolerance (%)'), '2');
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      receipt = () => REVERTED;
+      const note = (await why()).textContent!;
+      expect(note).toContain('more than your 2.00% tolerance');
+      expect(note).toContain('offers a retry only below 1.00%');
+      expect(retryButton()).toBeNull();
+    });
+
+    it('says EXPIRED and offers no retry when the block was past the deadline', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let receipt: () => unknown = () => null;
+      const late = { ...BLOCK, timestamp: `0x${(NOW_MS / 1000 + 7200).toString(16)}` };
+      const chain = chainWith(rpc, () => receipt(), { atParent: 1n, atBlock: 1n }, late);
+      const { user, sends } = await mount(chain, state);
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      receipt = () => REVERTED;
+      expect((await why()).textContent).toContain('BDEX: EXPIRED');
+      expect(retryButton()).toBeNull();
+    });
+
+    it('offers no retry when the chain does not show the minimum failing', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let receipt: () => unknown = () => null;
+      const chain = chainWith(rpc, () => receipt(), {
+        atParent: 31_000_000n,
+        atBlock: 31_000_000n,
+      });
+      const { user, sends } = await mount(chain, state);
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      receipt = () => REVERTED;
+      expect((await why()).textContent).toContain('could not tell why from the chain');
+      expect(retryButton()).toBeNull();
     });
   });
 });
