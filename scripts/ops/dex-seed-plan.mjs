@@ -10,7 +10,7 @@
 // off target; 3 the node could not answer.
 //
 //   node scripts/ops/dex-seed-plan.mjs plan --config gate.json --rpc URL
-//        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000] [--deadline-min 60]
+//        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000, at most 7000] [--deadline-min 60]
 //        [--write-txs <new file>]   the steps as a raw-transaction file for
 //                                   scripts/staging/sign-and-publish.sh
 //   node scripts/ops/dex-seed-plan.mjs verify --config gate.json --rpc URL
@@ -82,7 +82,28 @@ export function holdsSeed({ held, totalSupply, minBps = SEED_SHARE_BPS }) {
 
 /// The pure part of `plan`. `wrapped` and `quote` are pair sides; `price` is in
 /// quote base units per 1e18 wrapped base units.
+/// Largest seed, in basis points of each cap, the planner accepts (owner decision DEX-4).
+export const MAX_FRACTION_BPS = 7_000n;
+
+/// The pair keeps reserve0 * reserve1 at or below 64% of cap0 * cap1 (the k ceiling).
+/// A seed of f of both caps has k / ceiling = f^2 / 0.64, so 8,000 bps sits exactly on
+/// the ceiling where the caps balance (P = 50, 80 and 100 with the planned caps): from
+/// the first swap the fee stays outside the reserves and LPs and the Safe earn nothing.
+/// 7,000 bps gives k at 76.6% of the ceiling, about $70k of fee volume of room (agent 177).
+export function parseFractionBps(raw) {
+  const text = raw === undefined ? "5000" : String(raw);
+  if (!/^[0-9]{1,6}$/.test(text)) throw new Error(`--fraction-bps must be a whole number of basis points, got ${JSON.stringify(text)}`);
+  const value = BigInt(text);
+  if (value < 1n || value > MAX_FRACTION_BPS) {
+    throw new Error(
+      `--fraction-bps must be 1 to ${MAX_FRACTION_BPS}, got ${value}: the pair caps k at 64% of cap0 * cap1, so a seed of 80% of both caps sits exactly on that k ceiling (above it the seed reverts with K_CEILING). At the ceiling every swap fee stays outside the reserves, where anyone can take it with skim, so LPs and the Safe earn nothing. ${MAX_FRACTION_BPS} keeps k at 76.6% of the ceiling. See docs/OPS-INITIAL-LIQUIDITY.md`,
+    );
+  }
+  return value;
+}
+
 export function planOpening({ wrapped, quote, totalSupply, price, fractionBps }) {
+  if (typeof fractionBps !== "bigint" || fractionBps < 1n || fractionBps > MAX_FRACTION_BPS) parseFractionBps(String(fractionBps));
   if (price <= 0n) return { decision: "refuse", reason: "the price must be positive" };
   if (totalSupply !== 0n) return planWithShares({ wrapped, quote, totalSupply, price, fractionBps });
   const excess = [wrapped, quote].filter((s) => s.balance !== s.reserve);
@@ -181,9 +202,11 @@ async function main() {
     return OK;
   }
   if (!["plan", "verify"].includes(command) || !args.config || !args.rpc || !args.price) {
-    console.error("usage: dex-seed-plan.mjs plan|verify --config <gate.json> --rpc <url> --price <quote per wrapped> [--to <LP recipient, required by verify>] [--fraction-bps 5000] [--tolerance-bps 100]");
+    console.error("usage: dex-seed-plan.mjs plan|verify --config <gate.json> --rpc <url> --price <quote per wrapped> [--to <LP recipient, required by verify>] [--fraction-bps 5000, at most 7000] [--tolerance-bps 100]");
     return UNKNOWN;
   }
+  // Refused before any read: a seed on the k ceiling is never a valid plan.
+  const fractionBps = command === "plan" ? parseFractionBps(args["fraction-bps"]) : null;
   const request = createRequest(args.rpc);
   const { deployment, pair, state, wrapped, quote, decimals, latest, price } = await load(args, request);
 
@@ -231,9 +254,6 @@ async function main() {
       return CRIT;
     }
   }
-  const fractionBps = BigInt(args["fraction-bps"] ?? 5000);
-  // F1: reserve0 * reserve1 <= 64% of cap0 * cap1, so a seed above 80% of both caps reverts (K_CEILING).
-  if (fractionBps < 1n || fractionBps > 8000n) throw new Error("--fraction-bps must be 1 to 8000: above 80% of the caps the seed passes the k ceiling and reverts");
   const plan = planOpening({ wrapped, quote, totalSupply: state.totalSupply, price, fractionBps });
   if (plan.decision === "skim-first") {
     console.log(stringify({ ...plan, pair: pair.address, excess: { wrapped: wrapped.balance - wrapped.reserve, quote: quote.balance - quote.reserve } }));

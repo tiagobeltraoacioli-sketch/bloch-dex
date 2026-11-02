@@ -7,7 +7,9 @@ import {
 } from "./dex-ops-lib.mjs";
 import { checkKeeperState, runMonitor } from "./dex-monitor.mjs";
 import { DEFAULTS, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
-import { checkNotedTxs, holdsSeed, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { MAX_FRACTION_BPS, checkNotedTxs, holdsSeed, parseFractionBps, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
 import { createRequire } from "node:module";
 
@@ -752,4 +754,42 @@ test("N2: the seed is ours only if the recipient holds nearly all the shares", (
   assert.equal(holdsSeed({ held: 0n, totalSupply: 10n ** 18n }), false);
   assert.equal(holdsSeed({ held: 0n, totalSupply: 0n }), false);
   assert.equal(holdsSeed({ held: 0n, totalSupply: 1000n }), false);
+});
+
+test("r10 DEX-4: the seed planner refuses --fraction-bps above 7,000 and says why (k ceiling)", () => {
+  assert.equal(MAX_FRACTION_BPS, 7000n);
+  assert.equal(parseFractionBps(undefined), 5000n);
+  assert.equal(parseFractionBps("1"), 1n);
+  assert.equal(parseFractionBps("7000"), 7000n);
+  for (const bad of ["7001", "8000", "9000", "10000"]) {
+    assert.throws(() => parseFractionBps(bad), (e) => {
+      assert.match(e.message, /must be 1 to 7000/);
+      assert.match(e.message, /k ceiling/);
+      assert.match(e.message, /80% of both caps sits exactly on that k ceiling/);
+      assert.match(e.message, /LPs and the Safe earn nothing/);
+      return true;
+    }, bad);
+  }
+  for (const bad of ["0", "-1", "7000.5", "7e3", "", "true"]) assert.throws(() => parseFractionBps(bad), /--fraction-bps/, bad);
+  // The library function refuses on its own, so no other caller can plan a seed on the ceiling.
+  assert.throws(() => planOpening({ wrapped: side(0n, WRAP_CAP), quote: side(0n, QUOTE_CAP), totalSupply: 0n, price: 100_000_000n, fractionBps: 8000n }), /k ceiling/);
+  assert.equal(planOpening({ wrapped: side(0n, WRAP_CAP), quote: side(0n, QUOTE_CAP), totalSupply: 0n, price: 100_000_000n, fractionBps: 7000n }).decision, "proceed");
+});
+
+test("r10 DEX-4: 7,000 bps keeps k at 76.6% of the ceiling; 8,000 bps sits on it when the caps balance", () => {
+  // k / ceiling = (f * cap0) * (f * cap1) / (0.64 * cap0 * cap1) = f^2 / 0.64, in bps.
+  const ratioBps = (f) => (f * f * 10_000n) / (6_400n * 10_000n);
+  assert.equal(ratioBps(5_000n), 3_906n);
+  assert.equal(ratioBps(7_000n), 7_656n);
+  assert.equal(ratioBps(8_000n), 10_000n);
+});
+
+test("r10 DEX-4: the planner CLI refuses 7,001 and 8,000 before any RPC read, with exit 2", () => {
+  const script = fileURLToPath(new URL("./dex-seed-plan.mjs", import.meta.url));
+  for (const value of ["7001", "8000"]) {
+    const run = spawnSync(process.execPath, [script, "plan", "--config", "/nonexistent/gate.json", "--rpc", "http://127.0.0.1:9", "--price", "100", "--to", address(0xc01), "--fraction-bps", value], { encoding: "utf8" });
+    assert.equal(run.status, CRIT, run.stderr);
+    assert.match(run.stderr, /must be 1 to 7000/);
+    assert.match(run.stderr, /k ceiling/);
+  }
 });

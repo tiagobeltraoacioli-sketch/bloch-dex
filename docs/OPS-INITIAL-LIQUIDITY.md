@@ -40,7 +40,7 @@ The WBLCH at risk stays bounded by the seed. **The bUSDC cap must be near `10 * 
 
 ## Opening
 
-Plan. It is read-only and uses 50% of the tighter cap by default:
+Plan. It is read-only and uses 50% of the tighter cap by default (`--fraction-bps 5000`):
 
 ```
 node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --price TBD-owner --to TBD-owner
@@ -56,6 +56,16 @@ node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-ga
 | `top-up` | 0 | LP shares at this price. Send `steps[0]` and `steps[1]`; the deposit follows the pool's ratio |
 | `closed` | 2 | Both reserves at their caps. The contracts should make this unreachable, so treat it as an incident |
 | `bricked` | 2 | See DEX-09 |
+
+**Seed size limit.** `--fraction-bps` above 7,000 is refused before any read, with exit 2 (owner decision DEX-4, round 10; it was 8,000). The pair keeps `reserve0 * reserve1` at or below 64% of `cap0 * cap1`, so a seed of a fraction `f` of both caps puts k at `f^2 / 0.64` of that ceiling:
+
+| `--fraction-bps` | k / ceiling | Fees to LPs and the Safe |
+|---:|---:|---|
+| 5,000 (default) | 39.1% | Normal: about $200k of fee volume before k reaches the ceiling |
+| 7,000 (largest accepted) | 76.6% | Normal: about $70k of fee volume of room |
+| 8,000 (refused) | 100% where the caps balance (P = 50, 80, 100) | None from the first swap: the fee stays outside the reserves and goes to whoever calls `skim` |
+
+At P = 200 the bUSDC cap binds first, so the ceiling cannot be reached at the opening price; the limit applies anyway. Figures: agent 177 (`177-dex-cap-math.md` section 1).
 
 Add `--write-txs <new file>` to write the steps as a raw-transaction file, then sign and publish it with the depositor's key:
 
