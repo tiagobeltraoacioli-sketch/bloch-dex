@@ -155,6 +155,8 @@ test("the quote cap must balance the WBLCH cap at the opening price", () => {
   assert.throws(withCap("1000000", "10000000", "100000000"), /too low for the opening price/);
   // The bucket rule holds the cap below the band at a high price: shallower, not riskier.
   assert.doesNotThrow(withCap("10000000", "400000000"));
+  // Below the band at a high price, the message names the bucket limit, not a refused value.
+  assert.throws(withCap("8000000", "400000000"), /set it to 10000000 \(the lower of/);
   const noPrice = config();
   delete noPrice.openingPrice;
   assert.throws(() => validateDeployConfig(noPrice), /exactly the fields/);
@@ -582,4 +584,12 @@ test("record verifies sender, nonce, init code and created address of every tran
     await assert.rejects(verifyBroadcast(wrapperOnly, reversed, request(mutate)), pattern);
   }
   await assert.rejects(verifyBroadcast(wrapperOnly, [], request()), /expected 1 transactions/);
+});
+
+test("the first depositor is never a Safe owner", () => {
+  const c = config();
+  if (c.blochInc.safe) {
+    c.firstDepositor = c.blochInc.safe.owners[0];
+    assert.throws(() => validateDeployConfig(c), /must not be a Bloch Inc Safe owner/);
+  }
 });

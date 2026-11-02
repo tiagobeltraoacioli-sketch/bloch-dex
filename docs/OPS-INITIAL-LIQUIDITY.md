@@ -57,7 +57,13 @@ node scripts/ops/dex-seed-plan.mjs plan --config deployments/mainnet/finality-ga
 | `closed` | 2 | Both reserves at their caps. The contracts should make this unreachable, so treat it as an incident |
 | `bricked` | 2 | See DEX-09 |
 
-Send the plan's `to`, `value` and `data` from the first depositor (`from` in the plan), without changing them. Send them as soon as you have the plan: the plan is good only for the state it read.
+Add `--write-txs <new file>` to write the steps as a raw-transaction file, then sign and publish it with the depositor's key:
+
+```
+scripts/staging/sign-and-publish.sh --txs <file> --rpc http://127.0.0.1:18955 --confirm <txsFile.configSha256 from the plan> --max-fee-wei TBD --priority-fee-wei TBD --hashes-out <new file> -- --ledger
+```
+
+It checks chain, genesis, signer and each nonce. Do not change the steps. Send them as soon as you have the plan: the plan is good only for the state it read. If only the approve landed, run `note-tx` with its hash and plan again; the new plan skips the approve.
 
 Record a sent approve or seed if you need to plan again: after the approve, or after a failed seed. It writes `deployment.depositorTransactions` in the gate file, only if the whole history checks out:
 

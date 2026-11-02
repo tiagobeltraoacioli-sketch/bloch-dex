@@ -11,6 +11,8 @@
 //
 //   node scripts/ops/dex-seed-plan.mjs plan --config gate.json --rpc URL
 //        --price 25.5 --to 0x<LP recipient> [--fraction-bps 5000] [--deadline-min 60]
+//        [--write-txs <new file>]   the steps as a raw-transaction file for
+//                                   scripts/staging/sign-and-publish.sh
 //   node scripts/ops/dex-seed-plan.mjs verify --config gate.json --rpc URL
 //        --price 25.5 --to 0x<LP recipient> [--tolerance-bps 100]
 //   note-tx record a planned approve or seed the depositor sent, after checking it
@@ -22,7 +24,8 @@ import {
   blockRef, call, checkIdentity, createRequest, deploymentFromGate, encode, formatUnits, isBricked, isClosed, isqrt,
   parseArgs, parseUnits, readBlock, readGate, readPair, stringify,
 } from "./dex-ops-lib.mjs";
-import { renameSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { verifyDepositorHistory } from "../staging/finality-gate.mjs";
 
 const WAD = 10n ** 18n;
@@ -224,11 +227,14 @@ async function main() {
       }
     }
     if (historyProblem) {
-      console.log(stringify({ decision: "refuse", firstDepositor: deployment.firstDepositor, nonce: used, detail: historyProblem, reason: "the first depositor must be a fresh EOA with nonce 0 before the seed, or its history must be only planned approves and seeds (note-tx). Its key may be spent; see OPS-INITIAL-LIQUIDITY.md" }));
+      console.log(stringify({ decision: "refuse", firstDepositor: deployment.firstDepositor, nonce: used, detail: historyProblem, reason: "the first depositor must be a fresh EOA with nonce 0 before the seed, or its history must be only planned approves and seeds. If the unlisted transaction is your own approve or seed from an earlier plan, record it with note-tx and plan again. Anything else means the key is spent and the factory must be redeployed; see OPS-INITIAL-LIQUIDITY.md" }));
       return CRIT;
     }
   }
-  const plan = planOpening({ wrapped, quote, totalSupply: state.totalSupply, price, fractionBps: BigInt(args["fraction-bps"] ?? 5000) });
+  const fractionBps = BigInt(args["fraction-bps"] ?? 5000);
+  // F1: reserve0 * reserve1 <= 64% of cap0 * cap1, so a seed above 80% of both caps reverts (K_CEILING).
+  if (fractionBps < 1n || fractionBps > 8000n) throw new Error("--fraction-bps must be 1 to 8000: above 80% of the caps the seed passes the k ceiling and reverts");
+  const plan = planOpening({ wrapped, quote, totalSupply: state.totalSupply, price, fractionBps });
   if (plan.decision === "skim-first") {
     console.log(stringify({ ...plan, pair: pair.address, excess: { wrapped: wrapped.balance - wrapped.reserve, quote: quote.balance - quote.reserve } }));
     return WARN;
@@ -258,6 +264,18 @@ async function main() {
   const topUp = plan.decision === "top-up";
   const seedCall = encode("addLiquidityBLCH", [quote.token, plan.depositQuote, topUp ? (plan.depositQuote * 99n) / 100n : plan.depositQuote, topUp ? (plan.depositWrapped * 99n) / 100n : plan.depositWrapped, args.to, deadline]);
   const liquidity = topUp ? (plan.depositWrapped * state.totalSupply) / wrapped.reserve : isqrt(plan.depositWrapped * plan.depositQuote) - MINIMUM_LIQUIDITY;
+  const steps = [
+    {
+      description: enoughAllowance ? "skipped: the router's allowance from the earlier approve is enough (a harmless repeat would use the key again)" : "approve the router for the quote token",
+      ...(enoughAllowance ? { skip: true } : {}),
+      to: quote.token,
+      value: "0",
+      data: encode("approve", [deployment.router.address, plan.depositQuote]),
+    },
+    { description: "seed (the minimums equal the deposit; on a fresh pair they do not protect the ratio, verify does)", to: deployment.router.address, value: plan.depositWrapped, data: seedCall, deadline },
+  ];
+  let txsFile;
+  if (args["write-txs"]) txsFile = await writeSeedTxs(args["write-txs"], readGate(args.config), deployment, steps, request);
   console.log(stringify({
     ...plan,
     pair: pair.address,
@@ -271,18 +289,33 @@ async function main() {
     },
     expectedLiquidity: liquidity,
     from: state.totalSupply === 0n ? deployment.firstDepositor : undefined,
-    steps: [
-      {
-        description: enoughAllowance ? "skipped: the router's allowance from the earlier approve is enough (a harmless repeat would use the key again)" : "approve the router for the quote token",
-        ...(enoughAllowance ? { skip: true } : {}),
-        to: quote.token,
-        value: "0",
-        data: encode("approve", [deployment.router.address, plan.depositQuote]),
-      },
-      { description: "seed (the minimums equal the deposit; on a fresh pair they do not protect the ratio, verify does)", to: deployment.router.address, value: plan.depositWrapped, data: seedCall, deadline },
-    ],
+    steps,
+    ...(txsFile ? { txsFile } : {}),
   }));
   return OK;
+}
+
+// Gas limits about 1.5 times the gas measured on anvil (approve 46k, seed 283k).
+const SEED_GAS = { approve: 100_000n, seed: 400_000n };
+
+/// The plan's unskipped steps as an unsigned-transaction file for
+/// scripts/staging/sign-and-publish.sh, from the first depositor at its latest
+/// nonce. Its `configSha256` is the SHA-256 of the steps, which the signer's
+/// --confirm must repeat. Only for the seed itself (the depositor sends it).
+async function writeSeedTxs(file, gate, deployment, steps, request) {
+  if (existsSync(file)) throw new Error(`${file} exists; write a new file for every plan`);
+  const from = deployment.firstDepositor;
+  let nonce = BigInt(await request("eth_getTransactionCount", [from, "latest"]));
+  const transactions = [];
+  for (const [i, step] of steps.entries()) {
+    if (step.skip) continue;
+    const label = i === 0 ? "approve" : "seed";
+    transactions.push({ label, nonce: (nonce++).toString(), to: step.to, data: step.data, value: String(step.value), gasLimit: SEED_GAS[label].toString(), expect: null });
+  }
+  const sha = `0x${createHash("sha256").update(JSON.stringify(transactions)).digest("hex")}`;
+  const out = { schemaVersion: 1, domain: "postern.dex.raw-txs.v1", chainId: gate.chain.id, genesisHash: gate.chain.genesisHash, from, configSha256: sha, transactions };
+  writeFileSync(file, `${JSON.stringify(out, null, 2)}\n`, { flag: "wx" });
+  return { file, configSha256: sha, count: transactions.length };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

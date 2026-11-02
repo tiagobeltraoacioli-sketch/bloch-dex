@@ -96,6 +96,6 @@ for i in $(seq 0 $((COUNT - 1))); do
   fi
   GASUSED=$(node -e 'console.log(BigInt(JSON.parse(process.argv[1]).gasUsed).toString())' "$RECEIPT")
   echo "$HASH" >> "$OUT"
-  echo "$LABEL ok: gasUsed $GASUSED of $GAS${EXPECT:+, at $EXPECT}" >&2
+  [ "$EXPECT" = null ] && EXPECT=; echo "$LABEL ok: gasUsed $GASUSED of $GAS${EXPECT:+, at $EXPECT}" >&2
 done
 echo "published $COUNT transaction(s); hashes in $OUT" >&2

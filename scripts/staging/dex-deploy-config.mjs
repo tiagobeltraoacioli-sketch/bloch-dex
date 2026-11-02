@@ -164,10 +164,12 @@ function checkOpeningPrice(config, wrappedCap) {
     cap * 100n <= balanced * OPENING_CAP_BAND_PERCENT.max,
     `the ${symbol} cap ${cap} is too high for the opening price: set it near ${balanced} (WBLCH cap x price). Above that, a dump of unbacked ${symbol} takes more than half of the WBLCH side`,
   );
+  const bucketLimit = BigInt(entry.bridgeBucketCapacity) / BRIDGE_BUCKET_DIVISOR;
   const atBucketLimit = cap * BRIDGE_BUCKET_DIVISOR >= BigInt(entry.bridgeBucketCapacity);
+  const target = balanced < bucketLimit ? balanced : bucketLimit;
   refuse(
     atBucketLimit || cap * 100n >= balanced * OPENING_CAP_BAND_PERCENT.min,
-    `the ${symbol} cap ${cap} is too low for the opening price: set it near ${balanced} (WBLCH cap x price)`,
+    `the ${symbol} cap ${cap} is too low for the opening price: set it to ${target} (the lower of WBLCH cap x price, ${balanced}, and 1/10 of the bridge bucket, ${bucketLimit})`,
   );
 }
 
@@ -231,6 +233,8 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   hash(config.blochInc.codeHash, "blochInc.codeHash");
   refuse(config.blochInc.codeHash !== EMPTY_CODE_HASH, "blochInc must be a multisig contract, not an externally owned account");
   refuse(config.blochInc.address !== config.deployer.address, "the deployer and Bloch Inc must be distinct accounts");
+  // F1, limit L1: the first depositor is single-purpose, so it is never one of the Safe's owners.
+  refuse(!(config.blochInc.safe?.owners ?? []).includes(config.firstDepositor), "the first depositor must not be a Bloch Inc Safe owner: use a fresh EOA made only for the seed");
   const { safe } = config.blochInc;
   refuse(network.rehearsal || safe, "blochInc.safe is required on the mainnet (the pinned Bloch Inc Safe v1.4.1)");
   if (safe) {

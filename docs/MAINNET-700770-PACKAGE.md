@@ -43,8 +43,8 @@ signed offline and published one at a time:
 The forge path (`deploy-dex.mjs run --broadcast`) is unchanged. `run` without
 `--broadcast` stays the forge dry run.
 
-Gas limits are about 1.5 times the measured gas. The same values were measured
-on anvil and on the private L2:
+Gas limits are about 1.5 times the measured gas (factory, lens and createPair
+remeasured on anvil at 4ec2fe9c, 2026-11-02; margins now 1.33 to 1.43):
 
 | Step | Gas used | Limit |
 |---|---|---|
@@ -53,10 +53,10 @@ on anvil and on the private L2:
 | CompatibilityFallbackHandler | 1,267,726 | 1,900,000 |
 | createProxyWithNonce (3 of 5) | 352,788 | 550,000 |
 | WBLCH | 612,333 | 1,000,000 |
-| Factory (2 caps) | 2,456,799 | 3,700,000 |
+| Factory (2 caps) | 2,661,496 | 3,700,000 |
 | Router | 4,074,147 | 6,200,000 |
-| Lens | 1,938,483 | 3,000,000 |
-| createPair | 2,135,685 | 3,300,000 |
+| Lens | 2,256,517 | 3,000,000 |
+| createPair | 2,315,112 | 3,300,000 |
 
 ## Multicall3 and the CREATE2 deployer
 
