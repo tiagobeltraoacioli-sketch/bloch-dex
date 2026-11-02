@@ -86,6 +86,10 @@ function fakeNode(overrides = {}) {
       case "paused": return chain.paused;
       case "pausedUntil": return 0n;
       case "availableToMint": return 1n;
+      case "pendingSupply": case "nextSlot": case "mintCount": case "verifier": {
+        if (!chain.v3) throw new CallReverted("eth_call: execution reverted");
+        return chain.v3[fn];
+      }
       case "decimals": return 6;
       case "allowance": return chain.allowance;
       case "position": return { liquidity: 7n, pendingProtocolLiquidity: 3n, dilutedSupply: 10n, reserveShare0: 1n, reserveShare1: 2n };
@@ -288,6 +292,23 @@ test("monitor: stranded LP shares are CRIT, a leftover allowance WARN, extra pai
   assert.deepEqual(levelOf(await runMonitor(gate, {}, pairs.request, monitorDeps(pairs)), "pair_count"), [WARN]);
   const paused = fakeNode({ paused: true });
   assert.deepEqual(levelOf(await runMonitor(gate, {}, paused.request, monitorDeps(paused)), "bridge_token"), [WARN]);
+});
+
+test("monitor: BridgedStablecoinV3 queue and switch are reported, a V2 token still reads", async () => {
+  const ZERO = `0x${"0".repeat(40)}`;
+  const VERIFIER = `0x${"7".repeat(40)}`;
+  const v2 = fakeNode();
+  const r2 = await runMonitor(gate, {}, v2.request, monitorDeps(v2));
+  assert.deepEqual(levelOf(r2, "bridge_token"), [OK]);
+  const open = fakeNode({ v3: { pendingSupply: 3_000_000n, nextSlot: 7n, mintCount: 5n, verifier: ZERO } });
+  const r3 = await runMonitor(gate, {}, open.request, monitorDeps(open));
+  assert.deepEqual(levelOf(r3, "bridge_token"), [OK]);
+  assert.match(JSON.stringify(r3), /2 deposit slot\(s\) opened and not credited, 3000000 pending, 5 credited; committee mints/);
+  const switched = fakeNode({ paused: true, v3: { pendingSupply: 0n, nextSlot: 5n, mintCount: 5n, verifier: VERIFIER } });
+  const r4 = await runMonitor(gate, {}, switched.request, monitorDeps(switched));
+  assert.deepEqual(levelOf(r4, "bridge_token"), [WARN]);
+  assert.match(JSON.stringify(r4), /no signer can end it early/);
+  assert.match(JSON.stringify(r4), /the committee is retired/);
 });
 
 test("monitor: reference price bands", async () => {

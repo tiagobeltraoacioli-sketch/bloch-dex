@@ -27,6 +27,7 @@ import {
   CRIT, CallReverted, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN,
   blockRef, call, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, excessFloor,
   formatUnits, isAtKCeiling, isBricked, isClosed, parseArgs, parseUnits, readBlock, readGate, readPair, stringify, worst,
+  ZERO_ADDRESS,
 } from "./dex-ops-lib.mjs";
 
 export const THRESHOLDS = Object.freeze({
@@ -152,13 +153,31 @@ export async function runMonitor(gate, options, request, deps = {}) {
         call(request, token.token, "availableToMint", [], at),
         call(request, token.token, "pausedUntil", [], at),
       ]);
-      facts[token.symbol] = { paused, totalSupply: supply, availableToMint: available, pausedUntil: until };
+      // BridgedStablecoinV3 (the launch token) also has a credit queue and a one-way mint switch. None of it can
+      // stop a transfer, so the pair and the router are unaffected; the figures are context for an incident.
+      let v3 = null;
+      try {
+        const [pending, nextSlot, mintCount, verifier] = await Promise.all([
+          call(request, token.token, "pendingSupply", [], at),
+          call(request, token.token, "nextSlot", [], at),
+          call(request, token.token, "mintCount", [], at),
+          call(request, token.token, "verifier", [], at),
+        ]);
+        v3 = { pendingSupply: pending, queuedSlots: BigInt(nextSlot) - BigInt(mintCount), mintCount, verifier: verifier.toLowerCase() };
+      } catch (error) {
+        if (!(error instanceof CallReverted)) throw error;
+      }
+      const switched = v3 !== null && v3.verifier !== ZERO_ADDRESS;
+      facts[token.symbol] = { paused, totalSupply: supply, availableToMint: available, pausedUntil: until, ...(v3 ?? {}) };
+      const queue = v3 === null
+        ? ""
+        : `; ${v3.queuedSlots} deposit slot(s) opened and not credited, ${v3.pendingSupply} pending, ${v3.mintCount} credited; ${switched ? `mint verifier ${v3.verifier} active, the committee is retired` : "committee mints"}`;
       add(
         `bridge_token[${token.symbol}]`,
         paused ? WARN : OK,
         paused
-          ? `mints paused until ${until}: no new ${token.symbol} can arrive, transfers, swaps and burns still work (docs/OPS-DEX-INCIDENTS.md)`
-          : `mints open, supply ${supply}, bucket ${available}`,
+          ? `mints paused until ${until}${switched ? " (after the switch no signer can end it early)" : ""}: no new ${token.symbol} can arrive, queued mints wait, transfers, swaps, LP exits and burns still work (docs/OPS-DEX-INCIDENTS.md)${queue}`
+          : `mints open, supply ${supply}, bucket ${available}${queue}`,
       );
     });
   }
