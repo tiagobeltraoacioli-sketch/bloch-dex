@@ -59,6 +59,11 @@ RELAYER_KEY=$(key 17); RELAYER=$(addr 17)
 FUNDED=("$BOOT" "$DEPLOYER" "$SEEDER" "$GRIEFER" "$KEEPER" "$THIEF" "$SIGNER" "$GUARDIAN" "${SIGNERS[1]}" "${SIGNERS[2]}" "${GUARDIANS[1]}" "${GUARDIANS[2]}" "$RELAYER")
 IS_V3=$(node -e 'const a=require(require("path").resolve(process.argv[1]));console.log(a.abi.some((f)=>f.name==="slotFor")?1:0)' "$BUSDC_ARTIFACT")
 TOKEN_KIND=$([ "$IS_V3" = 1 ] && echo BridgedStablecoinV3 || echo BridgedStablecoinV2)
+if [ "$MODE" = anvil ]; then MINT_DELAY_S=${MINT_DELAY_S:-43200}; else MINT_DELAY_S=${MINT_DELAY_S:-30}; fi
+# The planners' deadlines are wall-clock times, so a V3 anvil starts one mint delay (plus 10 min) in the past: after
+# the first mints' delay passes, the chain clock is back near the wall clock.
+ANVIL_TS=()
+[ "$IS_V3" = 1 ] && ANVIL_TS=(--timestamp $(( $(date +%s) - MINT_DELAY_S - 600 )))
 
 PIDS=()
 cleanup() {
@@ -71,7 +76,7 @@ trap 'exit 143' TERM INT
 forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
 case "$MODE" in
   anvil)
-    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 --silent > "$WORK/anvil.log" 2>&1 &
+    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 "${ANVIL_TS[@]}" --silent > "$WORK/anvil.log" 2>&1 &
     PIDS+=($!)
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
@@ -168,7 +173,6 @@ SAFE=$(jsonget "$EV/blochinc.json" address)
 
 USD_BUCKET=10000000000
 if [ "$IS_V3" = 1 ]; then
-  if [ "$MODE" = anvil ]; then MINT_DELAY_S=${MINT_DELAY_S:-43200}; else MINT_DELAY_S=${MINT_DELAY_S:-30}; fi
   SORTED_SIGNERS=$(printf '%s\n' "${SIGNERS[@]}" | sort | paste -sd, -)
   SORTED_GUARDIANS=$(printf '%s\n' "${GUARDIANS[@]}" | sort | paste -sd, -)
   CTOR=$(cast abi-encode "c(string,string,uint256,address,bytes32,address[],uint256,(uint256,uint256,uint256,uint256,uint256,uint256),(address[],uint256,uint256),(uint256,uint64))" \
@@ -208,7 +212,8 @@ pending_amount() { cast call "$USD" "pendingMints(bytes32)(address,uint64,uint64
 DEP_NONCE=$([ "$IS_V3" = 1 ] && echo -1 || echo 0)
 QUEUED=()
 queue_usd() { # RECIPIENT AMOUNT: signed by the throwaway committee; V3 queues it (T = 0)
-  DEP_NONCE=$((DEP_NONCE + 1))
+  # V3: the next slot is read from the chain, since a snapshot restore rewinds it.
+  if [ "$IS_V3" = 1 ]; then DEP_NONCE=$(view "$USD" "nextSlot()(uint64)"); else DEP_NONCE=$((DEP_NONCE + 1)); fi
   local id digest
   if [ "$IS_V3" = 1 ]; then id=$(dep_id "$DEP_NONCE"); else id=$(cast keccak "deposit-$DEP_NONCE"); fi
   digest=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$id" "$DEP_NONCE" "$2" "$1" --rpc-url "$RPC")
