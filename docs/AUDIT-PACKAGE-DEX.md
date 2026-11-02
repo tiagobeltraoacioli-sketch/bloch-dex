@@ -267,7 +267,7 @@ takes anyone to call `skim`, and LPs could always exit.
 | ID | Sev. | Limit | Status |
 |---|---|---|---|
 | L1 | High if the key is not single-purpose | `tx.origin`: one call by the depositor EOA to hostile code spends the first-deposit rule | Accepted; fresh EOA, nonce-0 and no-code checks in planner, gate, `preflight` and `DeployMainnet.s.sol`; a Safe owner as depositor is refused, a Safe depositor is unsupported. Not closable by a read check for a pre-signed or stolen key |
-| L2, L2a | Medium | At the ceiling LPs and the Safe earn no fee; anyone can force the ceiling and collect fees by skimming; the fee is optional (swap + skim) | **Accepted by the owner** for the guarded launch; documented in `OPS-OPENING-KIT.md`. No design fix exists |
+| L2, L2a | Medium | At the ceiling LPs and the Safe earn no fee; anyone can force the ceiling and collect fees by skimming; the fee is optional (swap + skim) | **Accepted by the owner for launch, with no contract change, and an explicit audit item (DEX-4, round 10; section 8 item 8).** Launch mitigations off chain: seed limit 7,000 bps, keeper ceiling floor (`codex/dex-r10-decisions-20261102`). Measured by agent 177. No design fix exists |
 | L2b | Low-Medium | Standing excess fills the next trade with reserves unmoved; the skimmer keeps the input | Accepted; user still gets the quote |
 | L3 | Medium | Excess past both rooms closes both directions until `skim` | Accepted (DEX-02 form); keeper and monitor `closed_by_excess` |
 | L4 | Low | A pre-seed donation over half a cap reverts the seed until the seeder skims | Accepted; planner skims first |
@@ -293,10 +293,10 @@ No fund-loss finding.
 | A98-8 | Info | WBLCH withdraw latch is global, not per caller | Fails closed; not in RC docs; listed here |
 | A98-9 | Info | `WBLCH.transferFrom(self, …)` needs an allowance, unlike WETH9 | Fails closed; not in RC docs; listed here |
 | A98-OPS-1 | Medium (ops) | Depositor approve and seed were not built or checked by the kit | Fixed (`plan --write-txs` + `sign-and-publish.sh`, `811a29e`) |
-| A98-OPS-2 | Low | `--fraction-bps` above 8,000 reverted at the ceiling | Fixed (refused above 8,000) |
+| A98-OPS-2 | Low | `--fraction-bps` above 8,000 reverted at the ceiling | Fixed (refused above 8,000); lowered to 7,000 by owner decision DEX-4 (round 10): 8,000 sits exactly on the ceiling at P = 50, 80, 100 |
 | A98-OPS-3, -4, -5 | Info | Pending-nonce blindness; rehearsals sign with chain 700770 on anvil; history check is shape-only | Documented; keys are throwaway and unfunded |
 
-### 7.5 Other known items (agents 96, 113, 139)
+### 7.5 Other known items (agents 96, 113, 139, 180)
 
 | Item | Status |
 |---|---|
@@ -304,6 +304,7 @@ No fund-loss finding.
 | A third party knowing size and direction can bracket a swap by tip (L2 ordering) | Sequencer ordering; slippage defaults; out of contract scope |
 | `approve` storage inflation against the pair or tokens | An L2 prover-cost issue, resolved by the sparse guest (agent 113); out of contract scope |
 | bUSDC V3 effects (section 5) | Documented and monitored |
+| Agent 180 (independent V3 review, tests `test/V3Interaction*.t.sol`): L-1 a bridge deposit whose L2 recipient is the pair, router, WBLCH or token is lost to the depositor and can be captured by any skimmer or flash borrower; L-2 after a token migration a pair of the new token in the launch factory is uncapped with no k ceiling; L-3 the gate's code-hash pin does not pin signer or guardian sets | L-1: bridge page tooling (separate frontend line) and incident doc; L-2: policy, a migration means a new DEX factory; L-3: addresses and code hashes only from the bridge deployment record. No contract change |
 
 ## 8. Areas where we most want the auditor's attention
 
@@ -314,6 +315,7 @@ No fund-loss finding.
 5. Router recipient guards, fee-on-transfer variants with standing pair or router balances, native refunds.
 6. Lens parity with execution (it is what the UI uses for availability).
 7. Tier B: whether a tampered or stale config, plan or raw-tx file can deploy something other than the reviewed code, or seed at another price or recipient, without a refusal.
+8. **Swap fees at the k ceiling (owner decision DEX-4, accepted for launch, explicit audit item).** At the ceiling `_applyCeiling` records the side that grew as `C / other`, so the 0.3% fee stays outside the reserves: LPs and the protocol fee get nothing, and any caller takes it with `skim`, with a `swap` that sends nothing (inputs are inferred from balance growth, `UniswapV2Pair.sol:376-377`), or with `mint` as shares. Arbitrage becomes fee-free (swap plus skim). Agent 177 measured it (`test/Cap*.t.sol` on `codex/dex-cap-math-r10-20261102`): below the ceiling LPs get 5/6 and the Safe 1/6 of the fee, exactly; at the ceiling both get 0, a skimmer takes about 99% and never LP principal (fuzz, 512 runs); restricting `skim` does not help because of the `swap` path. We ask the auditor to assess the candidate fix "at the ceiling, transfer the clamped amount to `feeTo` inside `swap`" (not written or tested; it changes the init code hash) and to propose a better one if it exists. Until then the off-chain mitigations are a 7,000 bps seed limit and a keeper that skims ceiling excess to the Safe from 0.00104 BLCH; against a bot that skims every block the Safe still collects only about a quarter, and nobody can collect arbitrage fees.
 
 ## 9. Static analysis already run
 
@@ -340,6 +342,12 @@ FOUNDRY_INVARIANT_FAILURE_PERSIST_DIR=$(mktemp -d) forge test --offline
 
 Expected: **27 suites, 206 tests passed, 0 failed** (reproduced for this package
 on macOS with `--fuzz-seed 0x179`, 52 s wall).
+
+The integrated DEX release line `codex/dex-rc-r10-20261102` has the same contracts
+(`git diff 86c6f2c6 HEAD -- contracts foundry.toml` is empty, same init code hash) and
+more tests: **32 suites, 227 passed, 0 failed** (adds agents 139, 180 and
+`SeederExitReprice`). `V3TokenInvariant` returns at once unless `V3_INITCODE` holds the
+bridge V3 creation code; with it, run at `--evm-version shanghai`, 5 passed.
 
 Use a fresh `FOUNDRY_INVARIANT_FAILURE_PERSIST_DIR` per run: forge otherwise replays
 a cached invariant counterexample from `cache/invariant/` on every later run,

@@ -93,7 +93,7 @@ The launch token is `BridgedStablecoinV3` with T = 0: every mint queues for 12 h
 
 | Token state | Pool, router, keeper, monitor |
 |---|---|
-| A mint queued with the pair as recipient | Nothing moves until it credits. Then it is excess: the monitor reports `pending_excess`, the keeper skims it to the Safe like any donation. A user who bridges to the pair address loses the deposit to the Safe |
+| A mint queued with the pair as recipient | Nothing moves until it credits. Then it is excess: the monitor reports `pending_excess`, the keeper skims it to the Safe like any donation. A user who bridges to the pair address loses the deposit: after 12 h **anyone** may credit it, with a `skim` in the same transaction or inside a flash-swap callback where it pays the swap's input, so the Safe gets it only when the keeper wins the race (agent 180, L-1, `test/V3Interaction.t.sol`). **It cannot be reminted to the depositor**: the mint chain binds the recipient, and changing it would hold every later exit. A refund is the Safe's discretion, and only for what the Safe received. The same holds for the router, WBLCH and the token address |
 | A queued mint cancelled by the guardians | The pair never sees it. Later deposits wait behind the freed slot (`executeMint` reverts `NotReady`) until a remint or the real deposit fills it, so new bUSDC stops arriving while swaps and exits go on |
 | Paused with mints due | `executeMint` and `drain` hold; swaps, LP exits, transfers, burns and skims work |
 | Mint chain | Swaps, donations, skims and LP exits do not change `mintHead`, `mintCount` or `mintedTotal`; only credits do. A burn of LP proceeds states the same chain as any other burn |
@@ -106,6 +106,10 @@ The monitor's `bridge_token` line on V3 shows the slots opened and not credited,
 - On a hold or a forged credit: the depeg steps below. Moving our own liquidity out works, but the bUSDC we receive is held like everyone's.
 - On a cancel: tell users that deposits after the cancelled one wait for its remint; nothing to do on the DEX.
 - After the switch: nothing changes for the DEX; note in the incident text that a pause cannot be ended early.
+
+**Token migration (BR-2) means a new DEX deployment.** The launch factory fixes caps per token address in its constructor. A pair of a migrated bUSDC in the launch factory has no bUSDC cap and no k ceiling (`_applyCeiling` returns early when a cap is 0; agent 180, L-2, `test_migratedTokenInLaunchFactoryIsUncapped`). If the bridge migrates the token, deploy a new factory, router and pair with fresh caps, list only that pair, and never use the old factory's first-depositor key again. The old pair keeps working and its LPs can exit.
+
+**Token identity at the gate.** The gate pins the bUSDC address and runtime code hash. The signer and guardian sets are storage and are not covered by the code hash (agent 180, L-3): fill `token` and `codeHash` only from the bridge's own verified deployment record, never from an RPC answer. A gate check of `signers()`, `guardians()`, thresholds, `sourceVault()` and `largeMintThreshold()` (must be 0) against that record is proposed tooling, not in this release.
 
 **Do not:** execute a queued mint from the first depositor's key before the seed. Any transaction from that key spends it (`OPS-INITIAL-LIQUIDITY.md`, L1); leave execution to the relayer or another account.
 
