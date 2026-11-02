@@ -76,7 +76,7 @@ trap 'exit 143' TERM INT
 forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
 case "$MODE" in
   anvil)
-    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 "${ANVIL_TS[@]}" --silent > "$WORK/anvil.log" 2>&1 &
+    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 ${ANVIL_TS[@]+"${ANVIL_TS[@]}"} --silent > "$WORK/anvil.log" 2>&1 &
     PIDS+=($!)
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
