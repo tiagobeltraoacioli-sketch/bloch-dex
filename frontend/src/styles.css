@@ -2191,7 +2191,20 @@
   }
 }
 
-.qr-wallet-option{padding:16px;border:1px solid #526941;border-radius:16px;background:linear-gradient(120deg,#26382055,transparent);margin:18px 0}.qr-wallet-option .wallet-option{width:100%;margin:0}.qr-wallet-option .microcopy{margin-bottom:0}
+.qr-wallet-option {
+  padding: 16px;
+  border: 1px solid #526941;
+  border-radius: 16px;
+  background: linear-gradient(120deg, #26382055, transparent);
+  margin: 18px 0;
+}
+.qr-wallet-option .wallet-option {
+  width: 100%;
+  margin: 0;
+}
+.qr-wallet-option .microcopy {
+  margin-bottom: 0;
+}
 
 @layer components {
   /* Live routes (#/mainnet, #/devnet4): plain cards and definition lists. */
@@ -2300,4 +2313,16 @@
   .mainnet-page .devnet4-pools td {
     overflow-wrap: anywhere;
   }
+}
+
+/* bUSDC exits held or paused: page banner and pre-send acknowledgement. */
+.mainnet-hold {
+  overflow-wrap: anywhere;
+}
+.checkbox-label {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  min-height: 44px;
 }

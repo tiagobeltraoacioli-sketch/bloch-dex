@@ -6,6 +6,7 @@ import {
   ABI, CRIT, CallReverted, OK, RpcError, UNKNOWN, WARN, classifyExcess, closureOf, createRequest, excessFloor, isAtKCeiling, isBricked, isClosedByExcess, keccak256, parseUnits, formatUnits, worst,
 } from "./dex-ops-lib.mjs";
 import { checkKeeperState, runMonitor } from "./dex-monitor.mjs";
+import { withBridgeExit } from "./dex-skim-keeper.mjs";
 import { DEFAULTS, nextTip, runKeeper } from "./dex-skim-keeper.mjs";
 import { checkNotedTxs, holdsSeed, planOpening, priceGapBps } from "./dex-seed-plan.mjs";
 import { assembleSignatures, redemptionMinimums, safeTxHash, safeTxTypedData } from "./dex-fee-redeem.mjs";
@@ -774,4 +775,82 @@ test("N2: the seed is ours only if the recipient holds nearly all the shares", (
   assert.equal(holdsSeed({ held: 0n, totalSupply: 10n ** 18n }), false);
   assert.equal(holdsSeed({ held: 0n, totalSupply: 0n }), false);
   assert.equal(holdsSeed({ held: 0n, totalSupply: 1000n }), false);
+});
+
+// bUSDC exit status (agent 144): the token's mint chain on the L2 against the vault's deposit chain on Ethereum.
+const VAULT = address(0xb01);
+const H = (n) => `0x${n.toString(16).padStart(64, "0")}`;
+function fakeBridge({ mintCount = 3n, mintHead = H(3), latestCount, latestHead, deposits = 3n, heads = [H(0), H(1), H(2), H(3)], paused = false, releasesEnabled = true, mode = 1, ethDown = false } = {}) {
+  const l2 = fakeNode();
+  const inner = l2.request;
+  const l2request = async (method, params) => {
+    if (method === "eth_call") {
+      const { functionName } = decodeFunctionData({ abi: ABI, data: params[0].data });
+      const latest = params[1] === "latest";
+      if (functionName === "mintCount") return encodeFunctionResult({ abi: ABI, functionName, result: latest && latestCount !== undefined ? latestCount : mintCount });
+      if (functionName === "mintHead") return encodeFunctionResult({ abi: ABI, functionName, result: latest && latestHead ? latestHead : mintHead });
+    }
+    return inner(method, params);
+  };
+  const eth = async (method, params) => {
+    if (ethDown) throw new RpcError("eth: connection refused");
+    if (method === "eth_getBlockByNumber") return { number: "0x64", hash: "0xE", timestamp: "0x1", baseFeePerGas: "0x1" };
+    if (method === "eth_getCode") return "0x6009";
+    const { functionName, args } = decodeFunctionData({ abi: ABI, data: params[0].data });
+    const value = { provenanceMode: mode, depositCount: deposits, paused, pausedUntil: 2_000_100_000n, releasesEnabled }[functionName] ?? (functionName === "chainHeadAt" ? heads[Number(args[0])] : undefined);
+    if (value === undefined) throw new Error(`fake eth: ${functionName}`);
+    return encodeFunctionResult({ abi: ABI, functionName, result: value });
+  };
+  return { l2: { ...l2, request: l2request }, eth };
+}
+const exitCheck = async (b, extra = {}) => {
+  const r = await runMonitor(gate, { ethRequest: b.eth, bridgeVault: VAULT, ...extra }, b.l2.request, monitorDeps(b.l2));
+  return r.checks.filter((c) => c.name === "bridge_exit[bUSDC]");
+};
+
+test("monitor: bUSDC exits open, held (CRIT), held at latest only (CRIT), paused (WARN), unreadable (UNKNOWN)", async () => {
+  let [c] = await exitCheck(fakeBridge());
+  assert.equal(c.level, OK, c.detail);
+  assert.match(c.detail, /exits open/);
+  [c] = await exitCheck(fakeBridge({ mintHead: H(99) }));
+  assert.equal(c.level, CRIT);
+  assert.match(c.detail, /EXITS HELD.*including bUSDC LPs take out of the pool/);
+  // a forged credit not final yet: the latest token is ahead of every vault deposit
+  [c] = await exitCheck(fakeBridge({ latestCount: 4n, latestHead: H(98) }));
+  assert.equal(c.level, CRIT);
+  assert.match(c.detail, /latest blocks only, not final yet/);
+  [c] = await exitCheck(fakeBridge({ paused: true }));
+  assert.equal(c.level, WARN);
+  assert.match(c.detail, /guardian pause until 2000100000/);
+  [c] = await exitCheck(fakeBridge({ releasesEnabled: false }));
+  assert.equal(c.level, WARN);
+  assert.match(c.detail, /releases disabled/);
+  [c] = await exitCheck(fakeBridge({ ethDown: true }));
+  assert.equal(c.level, UNKNOWN);
+  [c] = await exitCheck(fakeBridge({ mode: 0 }));
+  assert.equal(c.level, CRIT);
+  [c] = await exitCheck(fakeBridge(), { bridgeVaultCodeHash: hashOf("0x6010") });
+  assert.equal(c.level, CRIT);
+  assert.match(c.detail, /differs from the pin/);
+  // a finalized token ahead of the finalized vault is a lagging Ethereum view, not a hold, while latest matches
+  [c] = await exitCheck(fakeBridge({ mintCount: 3n, deposits: 2n, latestCount: 2n, latestHead: H(2) }));
+  assert.equal(c.level, OK);
+  // without --eth-rpc nothing is checked (rehearsals and older units)
+  const plain = fakeNode();
+  const r = await runMonitor(gate, {}, plain.request, monitorDeps(plain));
+  assert.equal(r.checks.filter((x) => x.name.startsWith("bridge_exit")).length, 0);
+});
+
+test("keeper: bUSDC exit status is reported and never changes the action", async () => {
+  const deployment = { tokens: [{ token: T0, symbol: "bUSDC" }] };
+  const base = { level: OK, action: "nothing-to-do" };
+  const ok = await withBridgeExit(base, fakeBridge().eth, fakeBridge().l2.request, { vault: VAULT }, deployment);
+  assert.deepEqual([ok.level, ok.action, ok.bridgeExit], [OK, "nothing-to-do", "normal"]);
+  const b = fakeBridge({ mintHead: H(99) });
+  const held = await withBridgeExit(base, b.eth, b.l2.request, { vault: VAULT }, deployment);
+  assert.deepEqual([held.level, held.action, held.bridgeExit], [WARN, "nothing-to-do", "held"]);
+  const d = fakeBridge({ ethDown: true });
+  const down = await withBridgeExit(base, d.eth, d.l2.request, { vault: VAULT }, deployment);
+  assert.equal(down.level, OK);
+  assert.match(down.bridgeExit, /^unknown: /);
 });

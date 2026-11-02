@@ -84,6 +84,11 @@ export const ABI = parseAbi([
   "function nextSlot() view returns (uint64)",
   "function mintCount() view returns (uint64)",
   "function verifier() view returns (address)",
+  "function mintHead() view returns (bytes32)",
+  "function provenanceMode() view returns (uint8)",
+  "function depositCount() view returns (uint64)",
+  "function chainHeadAt(uint64) view returns (bytes32)",
+  "function releasesEnabled() view returns (bool)",
   "function position(address pair, address owner) view returns ((uint256 liquidity, uint256 pendingProtocolLiquidity, uint256 dilutedSupply, uint256 reserveShare0, uint256 reserveShare1))",
   "function skim(address to)",
   "function approve(address spender, uint256 value) returns (bool)",
@@ -96,6 +101,42 @@ export const ABI = parseAbi([
   "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, uint256 nonce) view returns (bytes32)",
   "function execTransaction(address to, uint256 value, bytes data, uint8 operation, uint256 safeTxGas, uint256 baseGas, uint256 gasPrice, address gasToken, address refundReceiver, bytes signatures) payable returns (bool)",
 ]);
+
+/// Whether bUSDC exits to Ethereum are held or paused (agent 139 finding 1), read as the bridge's reservas
+/// monitor and bridge page read it: BridgedStablecoinV3 mintHead()/mintCount() on the L2 against the
+/// ProvenanceSourceVault's chainHeadAt(mintCount) on Ethereum, at both finalized blocks and at both latest
+/// blocks, plus the vault's pause and releasesEnabled at latest. A difference means a credited mint with no deposit:
+/// the vault refuses every burn made from then on, including bUSDC an LP takes out of a pool. Read errors throw
+/// (the caller reports UNKNOWN); nothing here can report "normal" on a failed read.
+export async function readBridgeExit(ethRequest, l2Request, { vault, token, vaultCodeHash }, l2Finalized) {
+  const ethFinal = await readBlock(ethRequest, "finalized");
+  if (!ethFinal) throw new RpcError("Ethereum serves no finalized block");
+  if (vaultCodeHash) {
+    const observed = await codeHash(ethRequest, vault, blockRef(ethFinal));
+    if (observed !== vaultCodeHash.toLowerCase()) throw new CallReverted(`vault ${vault} code ${observed} differs from the pin`);
+  }
+  const side = async (ethAt, l2At) => {
+    const [mintCount, mintHead, depositCount, mode] = await Promise.all([
+      call(l2Request, token, "mintCount", [], l2At),
+      call(l2Request, token, "mintHead", [], l2At),
+      call(ethRequest, vault, "depositCount", [], ethAt),
+      call(ethRequest, vault, "provenanceMode", [], ethAt),
+    ]);
+    if (Number(mode) !== 1) throw new CallReverted("the vault is not in mint-chain mode (provenanceMode != 1)");
+    const vaultHead = mintCount > depositCount ? null : (await call(ethRequest, vault, "chainHeadAt", [mintCount], ethAt)).toLowerCase();
+    return { mintCount, depositCount, mintHead: mintHead.toLowerCase(), vaultHead, clean: vaultHead === null ? null : vaultHead === mintHead.toLowerCase() };
+  };
+  const [final, latest] = await Promise.all([side(blockRef(ethFinal), blockRef(l2Finalized)), side("latest", "latest")]);
+  const [paused, pausedUntil, releasesEnabled] = await Promise.all([
+    call(ethRequest, vault, "paused", [], "latest"),
+    call(ethRequest, vault, "pausedUntil", [], "latest"),
+    call(ethRequest, vault, "releasesEnabled", [], "latest"),
+  ]);
+  const heldFinal = final.clean === false;
+  const heldLatest = latest.clean !== true;
+  const state = heldFinal || heldLatest ? "held" : paused || !releasesEnabled ? "paused" : "normal";
+  return { state, heldFinal, heldLatest, final, latest, paused, pausedUntil, releasesEnabled, ethFinalized: ethFinal.number };
+}
 
 export const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
 export const encode = (functionName, args = []) => encodeFunctionData({ abi: ABI, functionName, args });
