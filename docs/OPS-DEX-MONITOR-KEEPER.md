@@ -119,7 +119,7 @@ Unrecorded balance can stop swaps both ways until someone calls `skim`. A swap i
 | Closure | What it takes | What stops | Monitor | Keeper |
 |---|---|---|---|---|
 | Soft | About 1 USD when a side's reserve already sits at its cap: 0.0397 WBLCH at a pool price of 25 | Swaps smaller than the excess, and the full side's inflow, which its cap already stopped | WARN, names the size that passes | Cooldown and backoff apply, a quarter of the count |
-| Hard | An excess of at least the floor, 1% of a cap. About 2 WBLCH + 200 bUSDC from a pool at the ceiling, which go to whoever skims | Ordinary swaps | CRIT at latest and at finalized | First, skips backoff and cooldown. If it stops at a limit its exit is CRIT |
+| Hard | An excess of at least the floor, 1% of a cap, on a side at its cap. From a pool with room on both sides, about 2 WBLCH + 200 bUSDC. It goes to whoever skims | Ordinary swaps | CRIT at latest and at finalized | First, skips backoff and cooldown. If it stops at a limit its exit is CRIT |
 
 The closed test is a swap of 0.1% of a cap reverting both ways; the floor sets soft or hard.
 
@@ -158,7 +158,7 @@ The settlement guest loads the complete storage of every account a block touches
 node scripts/ops/dex-storage-footprint.mjs --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --state /var/lib/bloch-dex-keeper/footprint.json
 ```
 
-Exit status as the monitor. WARN at 37.5% and CRIT at 62.5% of the capacity at that height. It matched anvil's state dump exactly at 1,543 slots.
+Exit status as the monitor. WARN at 37.5% and CRIT at 62.5% of the capacity at that height. It matched anvil's state dump exactly at 1,545 slots. Before the first swap in a later second the two price accumulators are still zero, so it can read up to 2 high on a new pair.
 
 | Action | Pair | WBLCH | bUSDC |
 |---|---:|---:|---:|

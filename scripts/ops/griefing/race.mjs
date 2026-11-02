@@ -366,7 +366,28 @@ async function footprintTool() {
   out("footprint-tool", { output: r.slice(0, 900) });
 }
 
-const SCENES = { raceWin, raceLose, bundle, bracket, ceiling, raceTiers, footprintTool };
+// The monitor's new checks read from the real RPC. No Safe here, so its gate and Safe checks are stubbed.
+async function monitorReal() {
+  const { runMonitor } = await import("../dex-monitor.mjs");
+  const { readGate } = await import("../dex-ops-lib.mjs");
+  const show = async (label, w) => {
+    const gate = join(work, "gate-mon.json");
+    await w.gate(gate);
+    const request = createRequest(net.url);
+    const r = await runMonitor(readGate(gate), { expectSeeded: false }, request, { evaluateGate: async () => ({ decision: "stub", finalized: { number: 0 } }), verifySafe: async () => {} });
+    out("monitor", { label, level: r.level, checks: r.checks.filter((c) => /closed_by_excess|k_ceiling/.test(c.name)).map((c) => ({ name: c.name.replace(/\[.*/, ""), status: c.status, detail: c.detail })) });
+  };
+  const a = await newWorld();
+  const s = await atWCap(a);
+  await net.must(await A.griefer.send(a.w, data("transfer", [a.pair, minClose(s, a, "w") + 10n ** 15n]), { tip: 2, gas: 100_000n }));
+  await show("soft closure", a);
+  await net.must(await A.griefer.send(a.w, data("transfer", [a.pair, a.capW / 50n]), { tip: 2, gas: 100_000n }));
+  await show("hard closure", a);
+  const b = await newWorld(8n * BLCH, 800n * USD);
+  await show("exactly at the ceiling", b);
+}
+
+const SCENES = { raceWin, raceLose, bundle, bracket, ceiling, raceTiers, footprintTool, monitorReal };
 try {
   for (const name of wanted.length ? wanted : Object.keys(SCENES)) {
     const t = Date.now();
