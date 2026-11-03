@@ -175,10 +175,14 @@ cannot disagree.
 
 ## L2 binaries
 
-`deployments/mainnet/700770/pins.json` records the v2.1 release
-`bloch-l2-2026-10-30-v21-native-78d4921c` with `status: unsigned`: the release
-awaits the owner's signature. No tool reads `l2Release` to select a binary; an operator
-compares the hashes with `sha256sum`.
+`deployments/mainnet/700770/pins.json` records the final L2 deposit-only launch
+release `bloch-l2-2026-11-03-next-native-78d4921c` (build commit `926d2cf`, native
+`78d4921c`), with `status: unsigned`: the release awaits the owner's signature,
+and `sha256sums` is the hash of its `SHA256SUMS` file, the owner's signing target
+(`6d3bd628…`). It replaces the v2.1 release (`c18752fd…`, `fb0d5313…`,
+`18be911a…`) and the superseded 17383fe candidate (settled RPC `e5754d05…`). The
+bridge signers pin the same three binaries (`l2_finality.MAINNET_V2`). No tool reads
+`l2Release` to select a binary; an operator compares the hashes with `sha256sum`.
 
 ## Post-deployment verification (`verify-deployment.mjs`)
 
