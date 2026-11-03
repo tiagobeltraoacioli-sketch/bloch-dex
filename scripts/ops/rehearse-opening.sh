@@ -14,6 +14,11 @@
 # from snapshots: full exit, repricing the dust, a donation fill, the same with a floor kept, and
 # the owner's reopening after a full exit.
 #
+# Agent 227: with the bridge RC (eb5c981 or later) the vault takes the decided 5/5 bps fee to a throwaway
+# recipient (minDeposit 11 USDC; the L2 mints the net amount), and the token is the rebuilt V3 (T = 0 rule,
+# MAX_PENDING). The gate and the monitor check the token against a bridge plan and record in the shape of the
+# bridge's deploy_pontes.py (agent 180 L-3), and refuse a look-alike's record and a record with other signers.
+#
 #   SAFE_ARTIFACTS=<safe 1.4.1 build/artifacts> BRIDGE_OUT=<bridge forge out/ with BridgedStablecoinV3,
 #   ProvenanceSourceVault, MockUsdcA178> scripts/ops/rehearse-opening.sh [port] [work]
 set -euo pipefail
@@ -46,7 +51,7 @@ BOOT_KEY=$(key 0); BOOT=$(addr 0); INFRA_KEY=$(key 1); INFRA=$(addr 1); DEPLOYER
 DEPOSITOR_KEY=$(key 3); DEPOSITOR=$(addr 3); LP_KEY=$(key 4); LP=$(addr 4); KEEPER_KEY=$(key 5); KEEPER=$(addr 5)
 RELAYER_KEY=$(key 6); RELAYER=$(addr 6); STRANGER_KEY=$(key 7); STRANGER=$(addr 7)
 OWNERS=("$(addr 8)" "$(addr 9)" "$(addr 10)" "$(addr 11)" "$(addr 12)")
-EUSER_KEY=$(key 17); EUSER=$(addr 17); L2G=$(addr 16); EGUARD=$(addr 21)
+EUSER_KEY=$(key 17); EUSER=$(addr 17); L2G=$(addr 16); EGUARD=$(addr 21); FEE_TO=$(addr 22)
 for i in 13 14 15; do echo "$(addr $i) $(key $i)"; done | sort > "$WORK/l2-signers.txt"
 for i in 18 19 20; do echo "$(addr $i) $(key $i)"; done | sort > "$WORK/eth-signers.txt"
 FUNDED=("$BOOT" "$INFRA" "$DEPLOYER" "$DEPOSITOR" "$LP" "$KEEPER" "$RELAYER" "$STRANGER")
@@ -153,9 +158,19 @@ ecreate() { # KEY ARTIFACT CTOR_HEX -> address on Ethereum
 USDC=$(ecreate "$EUSER_KEY" "$BRIDGE_OUT/MockUsdcA178.sol/MockUsdcA178.json" "")
 ESIGNERS="[$(awk '{print $1}' "$WORK/eth-signers.txt" | paste -sd, -)]"
 LSIGNERS="[$(awk '{print $1}' "$WORK/l2-signers.txt" | paste -sd, -)]"
-VCTOR=$(cast abi-encode "c(bytes32,bytes32,bytes32,address,uint64,uint8,address[],uint8,(uint64,uint64,uint8,uint64,uint64,uint64),(address[],uint64,uint64),(uint8,uint64,address))" \
-  "$(cast keccak ethereum-mainnet)" "$(cast keccak bloch-l2-700770)" "$(cast keccak USDC)" "$USDC" 100000000000 0 "$ESIGNERS" 2 "(10000000000,86400,3,1209600,10000000,10000000)" "([$EGUARD],259200,259200)" "(1,0,0x0000000000000000000000000000000000000000)" | cut -c3-)
-VAULT=$(ecreate "$EUSER_KEY" "$BRIDGE_OUT/ProvenanceSourceVault.sol/ProvenanceSourceVault.json" "$VCTOR")
+VAULT_ART="$BRIDGE_OUT/ProvenanceSourceVault.sol/ProvenanceSourceVault.json"
+HAS_FEE=$(node -e 'const a=require(process.argv[1]);console.log(a.abi.some((f)=>f.name==="depositFeeBps")?1:0)' "$VAULT_ART")
+if [ "$HAS_FEE" = 1 ]; then
+  # The decided launch fee (agent 197, owner 2026-11-02): 5 bps on deposit and on release, minDeposit 11 USDC.
+  FEE_BPS=5
+  VCTOR=$(cast abi-encode "c(bytes32,bytes32,bytes32,address,uint64,uint8,address[],uint8,(uint64,uint64,uint8,uint64,uint64,uint64),(address[],uint64,uint64),(uint8,uint64,address,(address,uint16,uint16)))" \
+    "$(cast keccak ethereum-mainnet)" "$(cast keccak bloch-l2-700770)" "$(cast keccak USDC)" "$USDC" 100000000000 0 "$ESIGNERS" 2 "(10000000000,86400,3,1209600,11000000,10000000)" "([$EGUARD],259200,259200)" "(1,0,0x0000000000000000000000000000000000000000,($FEE_TO,$FEE_BPS,$FEE_BPS))" | cut -c3-)
+else
+  FEE_BPS=0
+  VCTOR=$(cast abi-encode "c(bytes32,bytes32,bytes32,address,uint64,uint8,address[],uint8,(uint64,uint64,uint8,uint64,uint64,uint64),(address[],uint64,uint64),(uint8,uint64,address))" \
+    "$(cast keccak ethereum-mainnet)" "$(cast keccak bloch-l2-700770)" "$(cast keccak USDC)" "$USDC" 100000000000 0 "$ESIGNERS" 2 "(10000000000,86400,3,1209600,10000000,10000000)" "([$EGUARD],259200,259200)" "(1,0,0x0000000000000000000000000000000000000000)" | cut -c3-)
+fi
+VAULT=$(ecreate "$EUSER_KEY" "$VAULT_ART" "$VCTOR")
 ROUTE=$(cast call "$VAULT" "routeId()(bytes32)" --rpc-url "$ETH")
 VALID=$(( $(date +%s) + 3600 ))
 DIG=$(cast call "$VAULT" "controlDigest(bool,bool,uint64,uint256)(bytes32)" true true 0 "$VALID" --rpc-url "$ETH")
@@ -166,16 +181,65 @@ USD_BUCKET=10000000000
 TCTOR=$(cast abi-encode "c(string,string,uint256,address,bytes32,address[],uint256,(uint256,uint256,uint256,uint256,uint256,uint256),(address[],uint256,uint256),(uint256,uint64))" \
   "Bridged USDC" bUSDC 1 "$VAULT" "$ROUTE" "$LSIGNERS" 2 "(100000000000,$USD_BUCKET,115740,0,$MINT_DELAY_S,10000000)" "([$L2G],259200,259200)" "(3,1209600)" | cut -c3-)
 TOKEN_INIT=$(node -e 'console.log(require(process.argv[1]).bytecode.object)' "$BRIDGE_OUT/BridgedStablecoinV3.sol/BridgedStablecoinV3.json")$TCTOR
-USD=$(must "$RELAYER_KEY" create "$TOKEN_INIT" 0 5000000 | awk '{print tolower($2)}')
+USD_TX=$(must "$RELAYER_KEY" create "$TOKEN_INIT" 0 5000000)
+USD=$(echo "$USD_TX" | awk '{print tolower($2)}')
 USD_CODE=$(cast keccak "$(cast code "$USD" --rpc-url "$RPC")")
+[ "$(cast call "$USD" "MAX_PENDING()(uint256)" --rpc-url "$RPC" 2>/dev/null | awk '{print $1}')" = 2048 ] || die "BRIDGE_OUT is not the rebuilt V3 token (no MAX_PENDING = 2048)"
+# A V3 token at T > 0 is refused by its own constructor (owner decision 2026-11-02).
+TCTOR_T=$(cast abi-encode "c(string,string,uint256,address,bytes32,address[],uint256,(uint256,uint256,uint256,uint256,uint256,uint256),(address[],uint256,uint256),(uint256,uint64))" \
+  "Bridged USDC" bUSDC 1 "$VAULT" "$ROUTE" "$LSIGNERS" 2 "(100000000000,$USD_BUCKET,115740,1000000000,$MINT_DELAY_S,10000000)" "([$L2G],259200,259200)" "(3,1209600)" | cut -c3-)
+must_fail "$RELAYER_KEY" create "$(node -e 'console.log(require(process.argv[1]).bytecode.object)' "$BRIDGE_OUT/BridgedStablecoinV3.sol/BridgedStablecoinV3.json")$TCTOR_T" 0 5000000 > /dev/null
+pass "bridge: the rebuilt V3 refuses T = 1,000 USDC in its constructor; MAX_PENDING() = 2048"
+# bridge_plan_record TOKEN TX_HASH SIGNERS_FILE OUT_PREFIX: the token's plan and record in the shape deploy_pontes.py writes
+# (plan --write, record --write). On mainnet these come from the bridge deployment itself; here they are made from the
+# rehearsal's own constructor values, so the gate can compare the chain with them.
+bridge_plan_record() {
+  local token=$1 tx=$2 signers=$3 out=$4 receipt code
+  receipt=$(cast rpc eth_getTransactionReceipt "$tx" --rpc-url "$RPC")
+  code=$(cast code "$token" --rpc-url "$RPC")
+  node -e '
+const fs = require("fs");
+const [art, token, receipt, code, signers, guardian, vault, route, delay, genesis, initHash, out] = process.argv.slice(1);
+const a = JSON.parse(fs.readFileSync(art, "utf8")); const r = JSON.parse(receipt);
+const { keccak256 } = require(require("path").resolve("frontend/node_modules/viem"));
+const configSha256 = keccak256(Buffer.from(`rehearsal ${token}`));
+const runtimeCodeHash = keccak256(code);
+const plan = { domain: "bloch.bridge.mainnet-deploy.v1", bridge: "stable", configSha256, chain: { id: 700770, genesisHash: genesis, rehearsal: true },
+  source: { revision: "rehearsal", compiler: { solc: a.metadata.compiler.version, optimizer: a.metadata.settings.optimizer, evmVersion: a.metadata.settings.evmVersion } },
+  contract: { name: "BridgedStablecoinV3", source: "contracts/stable/BridgedStablecoinV3.sol", address: token, initCodeHash: initHash, runtimeCodeHash },
+  expected: { name: "Bridged USDC", symbol: "bUSDC", decimals: 6, threshold: 2, signers: fs.readFileSync(signers, "utf8").trim().split(/\n/).map((l) => l.split(" ")[0].toLowerCase()),
+    guardians: [guardian], pauseDuration: 259200, pauseCooldown: 259200, supplyCap: 100000000000, bucketCapacity: 10000000000, refillPerSecond: 115740,
+    largeMintThreshold: 0, largeMintDelay: Number(delay), minBurn: 10000000, sourceChainId: 1, sourceVault: vault, sourceRoute: route,
+    switchThreshold: 3, switchDelay: 1209600, cancelQuorum: 1 } };
+const record = { domain: plan.domain, bridge: "stable", configSha256, chainId: 700770, genesisHash: genesis, contract: "BridgedStablecoinV3", address: token,
+  runtimeCodeHash, initCodeHash: initHash, transactionHash: r.transactionHash, blockNumber: Number(BigInt(r.blockNumber)), blockHash: r.blockHash };
+fs.writeFileSync(`${out}.plan.json`, JSON.stringify(plan, null, 2)); fs.writeFileSync(`${out}.record.json`, JSON.stringify(record, null, 2));
+' "$BRIDGE_OUT/BridgedStablecoinV3.sol/BridgedStablecoinV3.json" "$token" "$receipt" "$code" "$signers" "$L2G" "$VAULT" "$ROUTE" "$MINT_DELAY_S" "$GENESIS" "${5}" "$out"
+}
+bridge_plan_record "$USD" "${USD_TX##* }" "$WORK/l2-signers.txt" "$EV/busdc" "$(cast keccak "$TOKEN_INIT")"
+BRIDGE_ARGS=(--bridge-plan "$EV/busdc.plan.json" --bridge-record "$EV/busdc.record.json")
+# A look-alike: the same constructor except the committee (3 other keys). Same code hash as the real token.
+for i in 22 23 18; do echo "$(addr $i) $(key $i)"; done | sort > "$WORK/fake-signers.txt"
+FSIGNERS="[$(awk '{print $1}' "$WORK/fake-signers.txt" | paste -sd, -)]"
+FAKE_INIT=$(node -e 'console.log(require(process.argv[1]).bytecode.object)' "$BRIDGE_OUT/BridgedStablecoinV3.sol/BridgedStablecoinV3.json")$(cast abi-encode "c(string,string,uint256,address,bytes32,address[],uint256,(uint256,uint256,uint256,uint256,uint256,uint256),(address[],uint256,uint256),(uint256,uint64))" \
+  "Bridged USDC" bUSDC 1 "$VAULT" "$ROUTE" "$FSIGNERS" 2 "(100000000000,$USD_BUCKET,115740,0,$MINT_DELAY_S,10000000)" "([$L2G],259200,259200)" "(3,1209600)" | cut -c3-)
+FAKE_TX=$(must "$STRANGER_KEY" create "$FAKE_INIT" 0 5000000)
+FAKE=$(echo "$FAKE_TX" | awk '{print tolower($2)}')
+[ "$(cast keccak "$(cast code "$FAKE" --rpc-url "$RPC")")" = "$USD_CODE" ] || die "the look-alike should have the real token's code hash"
+bridge_plan_record "$FAKE" "${FAKE_TX##* }" "$WORK/fake-signers.txt" "$WORK/fake" "$(cast keccak "$FAKE_INIT")"
+pass "bridge: a look-alike bUSDC with another committee has the same runtime code hash ($USD_CODE)"
 note "mock USDC $USDC, vault $VAULT (code $VAULT_CODE), BridgedStablecoinV3 $USD (code $USD_CODE)"
 l2sigs() { local out=0x; while read -r _ k; do out+=$(cast wallet sign --no-hash "$1" --private-key "$k" | cut -c3-); done < <(head -n 2 "$WORK/l2-signers.txt"); echo "$out"; }
-bridge_in() { # AMOUNT L2RECIPIENT: a real vault deposit, the committee's mint, the relayer's execute after the delay
-  cast send "$USDC" "mintTo(address,uint256)" "$EUSER" "$1" --private-key "$EUSER_KEY" --rpc-url "$ETH" > /dev/null
-  cast send "$USDC" "approve(address,uint256)" "$VAULT" "$1" --private-key "$EUSER_KEY" --rpc-url "$ETH" > /dev/null
+gross_for() { # NET: the smallest deposit whose net after the vault's deposit fee is NET
+  node -e 'const [n,b]=process.argv.slice(1).map(BigInt);let g=b===0n?n:(n*10000n+9999n-b)/(10000n-b);while(g-(g*b)/10000n>n)g--;while(g-(g*b)/10000n<n)g++;if(g-(g*b)/10000n!==n)process.exit(1);console.log(g.toString())' "$1" "$FEE_BPS"
+}
+bridge_in() { # NET L2RECIPIENT: a real vault deposit (gross, less the fee), the committee's mint of the net, the relayer's execute after the delay
+  local gross; gross=$(gross_for "$1")
+  cast send "$USDC" "mintTo(address,uint256)" "$EUSER" "$gross" --private-key "$EUSER_KEY" --rpc-url "$ETH" > /dev/null
+  cast send "$USDC" "approve(address,uint256)" "$VAULT" "$gross" --private-key "$EUSER_KEY" --rpc-url "$ETH" > /dev/null
   local nonce id dig
   nonce=$(cast call "$VAULT" "depositCount()(uint64)" --rpc-url "$ETH")
-  cast send "$VAULT" "deposit(uint64,bytes32)" "$1" "0x000000000000000000000000${2#0x}" --private-key "$EUSER_KEY" --rpc-url "$ETH" > /dev/null
+  cast send "$VAULT" "deposit(uint64,bytes32)" "$gross" "0x000000000000000000000000${2#0x}" --private-key "$EUSER_KEY" --rpc-url "$ETH" > /dev/null
   id=$(cast call "$VAULT" "depositId(uint64,address,uint64,bytes32)(bytes32)" "$nonce" "$EUSER" "$1" "0x000000000000000000000000${2#0x}" --rpc-url "$ETH")
   dig=$(cast call "$USD" "mintDigest(bytes32,uint64,uint64,address)(bytes32)" "$id" "$nonce" "$1" "$2" --rpc-url "$RPC")
   must "$RELAYER_KEY" "$USD" "$(cast calldata "mint(bytes32,uint64,uint64,address,bytes)" "$id" "$nonce" "$1" "$2" "$(l2sigs "$dig")")" 0 400000 > /dev/null
@@ -193,6 +257,17 @@ must "$RELAYER_KEY" "$USD" "$(cast calldata "executeMint(bytes32)" "$SEED_ID")" 
 [ "$(view "$USD" "$BAL" "$DEPOSITOR")" = 600000000 ] || die "the seed bUSDC did not credit"
 [ "$(cast nonce "$DEPOSITOR" --rpc-url "$RPC")" = 0 ] || die "the depositor key was used"
 pass "bridge: 600 bUSDC credited to the first depositor by the relayer after the 12 h delay; depositor nonce still 0"
+if [ "$HAS_FEE" = 1 ]; then
+  FEES=$(( $(gross_for 600000000) - 600000000 + $(gross_for 2000000000) - 2000000000 ))
+  ev() { cast call "$VAULT" "$1" --rpc-url "$ETH" | awk '{print $1}'; }
+  [ "$(ev "feesAccrued()(uint64)")" = "$FEES" ] || die "vault fees $(ev "feesAccrued()(uint64)") != $FEES"
+  [ "$(ev "totalLocked()(uint64)")" = 2600000000 ] || die "the vault does not lock the net amounts"
+  [ "$(cast call "$USDC" "balanceOf(address)(uint256)" "$VAULT" --rpc-url "$ETH" | awk '{print $1}')" = $((2600000000 + FEES)) ] || die "vault USDC != locked + fees"
+  [ "$(view "$USD" "totalSupply()(uint256)")" = 2600000000 ] || die "the L2 minted more than the net"
+  cast send "$VAULT" "sweepFees()" --private-key "$EUSER_KEY" --rpc-url "$ETH" > /dev/null
+  [ "$(cast call "$USDC" "balanceOf(address)(uint256)" "$FEE_TO" --rpc-url "$ETH" | awk '{print $1}')" = "$FEES" ] || die "sweepFees did not pay the recipient"
+  pass "bridge fee: 5 bps of each deposit kept by the vault ($FEES units), the L2 minted the net (2600 bUSDC), sweepFees paid the immutable recipient"
+fi
 
 # ---------------------------------------------------------------- 2 the owner's form
 log "2 the opening form, filled with example values"
@@ -240,12 +315,24 @@ ROUTER=$(jsonget "$EV/dex.plan.json" contracts.router.address); WRAPPED=$(jsonge
 note "pair $PAIR router $ROUTER WBLCH $WRAPPED"
 
 log "4 finality gate (generic gate behind the anvil shim; anvil genesis is not the mainnet pin)"
-expect 1 gate-before-finality node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM"
+expect 1 gate-before-finality node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" "${BRIDGE_ARGS[@]}"
 cast rpc anvil_mine 0x80 --rpc-url "$RPC" > /dev/null
-expect 0 gate-after-finality node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM"
+expect 0 gate-after-finality node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" "${BRIDGE_ARGS[@]}"
+node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const b=r.bridgeTokens[0];console.log("     bridge token", b.address, "template", b.template, "threshold", b.threshold, "of", b.signers.length, "switch", b.switchThreshold, "guardians", b.guardians.length, "T", b.largeMintThreshold, "MAX_PENDING", b.maxPending)' "$EV/gate-after-finality.out" | tee -a "$EV/steps.log"
+# L-3: the record of a look-alike (same code hash, other committee) does not match the gate's token ...
+expect 1 gate-lookalike-record node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/fake.plan.json" --bridge-record "$WORK/fake.record.json"
+grep -q 'does not pin the recorded token' "$EV/gate-lookalike-record.out" || die "look-alike record not named"
+# ... and a record whose committee differs from the token on chain is refused at the finalized block.
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1]));p.expected.signers=fs.readFileSync(process.argv[2],"utf8").trim().split("\n").map((l)=>l.split(" ")[0].toLowerCase());fs.writeFileSync(process.argv[3],JSON.stringify(p))' "$EV/busdc.plan.json" "$WORK/fake-signers.txt" "$WORK/other-signers.plan.json"
+expect 1 gate-other-signers node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/other-signers.plan.json" --bridge-record "$EV/busdc.record.json"
+grep -q 'signers() differ from the bridge plan' "$EV/gate-other-signers.out" || die "other signers not named"
+node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1]));p.expected.largeMintThreshold=1000000000;fs.writeFileSync(process.argv[2],JSON.stringify(p))' "$EV/busdc.plan.json" "$WORK/t-plan.json"
+expect 1 gate-t-above-zero node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/t-plan.json" --bridge-record "$EV/busdc.record.json"
+grep -q 'must be 0' "$EV/gate-t-above-zero.out" || die "T > 0 not named"
+pass "L-3: the gate takes the token's identity from the bridge record: a look-alike's record, other signers and T > 0 are refused"
 expect 0 verify-deployment-finalized "${VD[@]}" --at finalized
 
-MON=(node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$SHIM" --rehearsal --eth-rpc "$ETH" --bridge-vault "$VAULT" --bridge-vault-code-hash "$VAULT_CODE" --bridge-token "$USD")
+MON=(node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$SHIM" --rehearsal "${BRIDGE_ARGS[@]}" --eth-rpc "$ETH" --bridge-vault "$VAULT" --bridge-vault-code-hash "$VAULT_CODE" --bridge-token "$USD")
 SEEDED=(--expect-seeded --lp-recipient "$LP" --lp-min-shares "$FLOOR")
 expect 0 monitor-preseed "${MON[@]}"
 
