@@ -167,6 +167,22 @@ no signed checkpoints, cap approvals or reviewer quorums: trust roots are set
 once. The frontend reads balances and caps at `finalized` and compares with
 `latest` (out of scope).
 
+**Bridge token identity (agent 227, release line `codex/dex-rc-r11-20261103`, closes
+agent 180 L-3).** `scripts/staging/bridge-token-identity.mjs` takes the bUSDC identity
+from the bridge's own `deploy_pontes.py` plan and record. Before any RPC call it
+checks that they agree with each other and with the gate file, that the plan's
+compiler and contract are the reviewed build and that T is 0. At `finalized` it
+checks the deployment block, the recorded runtime code, the reviewed build (runtime
+code with the 51 immutable slots zeroed hashes to `0x405c2834…9ca7`, pinned in
+`deployments/mainnet/bridge-token.pin.json` for bridge RC `eb5c981`), and
+`signers()`, `guardians()`, `threshold()`, `switchThreshold()`, `unpauseThreshold()`,
+`cancelQuorum()`, the six limits (`largeMintThreshold()` = 0), `instantCapacity()` = 0,
+`MAX_PENDING()` = 2,048, `sourceVault()`, `sourceRoute()`, `sourceChainId()` and the
+pause policy against the plan. The mainnet wrapper requires one record per bridged
+token and the launch shape (5 of 7, 6 for switch and unpause, 3 guardians, no
+rehearsal plan). Auditors: the trust in the pin file is the same as in the
+repository's other pins; review its offsets against the bridge's forge artifact.
+
 ### 3.7 LP token and WBLCH
 
 - `UniswapV2ERC20.sol:38-44`: `DOMAIN_SEPARATOR()` is computed from the live `block.chainid`. `:110`: `permit` requires `v ∈ {27, 28}` and low-s; the recovered signer must be nonzero.
@@ -304,7 +320,7 @@ No fund-loss finding.
 | A third party knowing size and direction can bracket a swap by tip (L2 ordering) | Sequencer ordering; slippage defaults; out of contract scope |
 | `approve` storage inflation against the pair or tokens | An L2 prover-cost issue, resolved by the sparse guest (agent 113); out of contract scope |
 | bUSDC V3 effects (section 5) | Documented and monitored |
-| Agent 180 (independent V3 review, tests `test/V3Interaction*.t.sol`): L-1 a bridge deposit whose L2 recipient is the pair, router, WBLCH or token is lost to the depositor and can be captured by any skimmer or flash borrower; L-2 after a token migration a pair of the new token in the launch factory is uncapped with no k ceiling; L-3 the gate's code-hash pin does not pin signer or guardian sets | L-1: bridge page tooling (separate frontend line) and incident doc; L-2: policy, a migration means a new DEX factory; L-3: addresses and code hashes only from the bridge deployment record. No contract change |
+| Agent 180 (independent V3 review, tests `test/V3Interaction*.t.sol`): L-1 a bridge deposit whose L2 recipient is the pair, router, WBLCH or token is lost to the depositor and can be captured by any skimmer or flash borrower; L-2 after a token migration a pair of the new token in the launch factory is uncapped with no k ceiling; L-3 the gate's code-hash pin does not pin signer or guardian sets | L-1: bridge page tooling (separate frontend line) and incident doc; L-2: policy, a migration means a new DEX factory; L-3: addresses and code hashes only from the bridge deployment record; since agent 227 the gate also compares signers, guardians, thresholds, T and the reviewed build with that record (section 3.6). No contract change |
 
 ## 8. Areas where we most want the auditor's attention
 
@@ -348,6 +364,20 @@ The integrated DEX release line `codex/dex-rc-r10-20261102` has the same contrac
 more tests: **32 suites, 227 passed, 0 failed** (adds agents 139, 180 and
 `SeederExitReprice`). `V3TokenInvariant` returns at once unless `V3_INITCODE` holds the
 bridge V3 creation code; with it, run at `--evm-version shanghai`, 5 passed.
+
+Release line `codex/dex-rc-r11-20261103` (agent 227), same contracts again: **33 suites,
+233 passed, 0 failed** (adds `V3NewTokenR227` and a `pendingCount` invariant in
+`V3TokenInvariant`, against the rebuilt bridge V3 token of bridge RC `eb5c981`). With
+`V3_INITCODE` set to that token's creation code (keccak `0xe560441f…1de7`) and
+`--evm-version shanghai`, every `test/V3*.t.sol` suite, agent 180's scenarios included,
+runs on the deployed bytecode: 5 suites, 26 passed. SHA-256 of the gate files on that line:
+
+```
+73ba1a3ee7058a992d11fbd3795abc6c6479a3c26b1765caea59d271c4ce020b  scripts/staging/finality-gate.mjs
+447847df90e0635dcbe3b7d262520cdf356f24f52281982dce7a36420c761577  scripts/staging/check-finality-gate-mainnet.mjs
+9fe96dc5fdfbbee3cba383fc6e6018d209b8b8970058d654a2ca27901b75b55d  scripts/staging/bridge-token-identity.mjs
+de19b5b9a7d652a014db339e2fa694328c5091e41e7bee51066132cc3e1bd5e4  deployments/mainnet/bridge-token.pin.json
+```
 
 Use a fresh `FOUNDRY_INVARIANT_FAILURE_PERSIST_DIR` per run: forge otherwise replays
 a cached invariant counterexample from `cache/invariant/` on every later run,
