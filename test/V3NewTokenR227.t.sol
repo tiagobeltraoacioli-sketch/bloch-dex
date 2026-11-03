@@ -11,7 +11,7 @@ import {BridgedStablecoinV3} from "./vendor/bridge-v3/stable/BridgedStablecoinV3
 ///         `V3_INITCODE` set the token is the bridge's own shanghai creation code.
 contract V3NewTokenR227Test is V3Fixture {
     /// The reviewed creation code (no constructor arguments) of the rebuilt BridgedStablecoinV3: bridge RC, shanghai,
-    /// optimizer runs 1, bytecode_hash none (agent 194's 8d988ce; unchanged by agent 200's integration).
+    /// optimizer runs 1, bytecode_hash none (agent 194's 8d988ce; unchanged in agent 200's RC eb5c981).
     bytes32 internal constant REVIEWED_INITCODE_KECCAK = 0xe560441f37e247e387cebd23bb3dd798a29d34174a9fb19a4bb3877c6c721de7;
 
     event log_string(string);
