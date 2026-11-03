@@ -7,11 +7,19 @@
 // call; the RPC must then serve the pinned genesis and a `finalized` block
 // that contains every deployment transaction.
 //
+// Every capped token other than the wrapper must also come with its bridge
+// deployment (deploy_pontes.py plan and record, agent 180 L-3): the token on
+// chain must be that deployment, in the reviewed build pinned by
+// deployments/mainnet/bridge-token.pin.json, with the owner's launch policy
+// (5 of 7 signers, 6 for the switch and unpause, 3 guardians, T = 0).
+//
 //   node scripts/staging/check-finality-gate-mainnet.mjs --config <gate.json>
-//        --safe-plan <safe.plan.json> --rpc <own-node-url>
+//        --safe-plan <safe.plan.json> --bridge-plan <busdc.plan.json>
+//        --bridge-record <busdc.record.json> --rpc <own-node-url>
 
 import { readFile } from "node:fs/promises";
 import { createJsonRpcRequest, evaluateFinalityGate } from "./finality-gate.mjs";
+import { checkBridgeRecord, checkMainnetPolicy } from "./bridge-token-identity.mjs";
 import { SAFE_V141, stableJson } from "./dex-deploy-config.mjs";
 
 export const PINS = Object.freeze(
@@ -39,23 +47,58 @@ export function checkPinned(gate, safePlan, pins = PINS) {
   return true;
 }
 
-export async function evaluateMainnetGate(gate, safePlan, request, pins = PINS) {
+/// Static checks of the bridge deployments: one per capped token other than the
+/// wrapper, each matching the gate file, the reviewed build and the launch policy.
+export function checkBridgePinned(gate, bridgeTokens) {
+  refuse(Array.isArray(bridgeTokens), "the bridge deployment records are required");
+  const identities = bridgeTokens.map((b) => checkBridgeRecord(gate, b));
+  identities.forEach(checkMainnetPolicy);
+  const covered = new Set(identities.map((i) => i.address));
+  for (const { token, symbol } of gate.deployment.tokens) {
+    refuse(covered.has(token), `token ${symbol} ${token} has no bridge deployment record: its signers, guardians and T are not checked`);
+  }
+  refuse(covered.size === identities.length && covered.size === gate.deployment.tokens.length, "the bridge records do not match the gate's tokens one to one");
+  return identities;
+}
+
+export async function evaluateMainnetGate(gate, safePlan, request, bridgeTokens, pins = PINS) {
   checkPinned(gate, safePlan, pins);
-  const report = await evaluateFinalityGate(gate, request);
+  checkBridgePinned(gate, bridgeTokens);
+  const report = await evaluateFinalityGate(gate, request, { bridgeTokens });
   refuse(report.chainId === pins.l2.chainId && report.genesisHash === pins.l2.genesisHash, "the RPC is not the pinned chain");
+  refuse(report.bridgeTokens?.length === gate.deployment.tokens.length, "a bridge token was not checked on chain");
   return { ...report, pinned: { chainId: pins.l2.chainId, genesisHash: pins.l2.genesisHash, safe: safePlan.contracts.proxy.address } };
+}
+
+/// `--bridge-plan P --bridge-record R`, once per bridged token, in pairs.
+export async function readBridgeArgs(pairs) {
+  const out = [];
+  for (const [plan, record] of pairs) {
+    out.push({ plan: JSON.parse(await readFile(plan, "utf8")), record: JSON.parse(await readFile(record, "utf8")) });
+  }
+  return out;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
-  if (args.length !== 6 || args[0] !== "--config" || args[2] !== "--safe-plan" || args[4] !== "--rpc") {
-    console.error("Usage: node scripts/staging/check-finality-gate-mainnet.mjs --config <gate.json> --safe-plan <safe.plan.json> --rpc <url>");
+  const usage = "Usage: node scripts/staging/check-finality-gate-mainnet.mjs --config <gate.json> --safe-plan <safe.plan.json> --bridge-plan <plan.json> --bridge-record <record.json> [--bridge-plan … --bridge-record …] --rpc <url>";
+  const named = { config: [], "safe-plan": [], "bridge-plan": [], "bridge-record": [], rpc: [] };
+  let ok = args.length % 2 === 0;
+  for (let i = 0; ok && i < args.length; i += 2) {
+    const k = args[i].startsWith("--") ? args[i].slice(2) : "";
+    if (!Object.hasOwn(named, k) || args[i + 1] === undefined || args[i + 1].startsWith("--")) ok = false;
+    else named[k].push(args[i + 1]);
+  }
+  if (!ok || named.config.length !== 1 || named["safe-plan"].length !== 1 || named.rpc.length !== 1 ||
+      named["bridge-plan"].length === 0 || named["bridge-plan"].length !== named["bridge-record"].length) {
+    console.error(usage);
     process.exit(2);
   }
   try {
-    const gate = JSON.parse(await readFile(args[1], "utf8"));
-    const safePlan = JSON.parse(await readFile(args[3], "utf8"));
-    console.log(JSON.stringify(await evaluateMainnetGate(gate, safePlan, createJsonRpcRequest(args[5])), null, 2));
+    const gate = JSON.parse(await readFile(named.config[0], "utf8"));
+    const safePlan = JSON.parse(await readFile(named["safe-plan"][0], "utf8"));
+    const bridgeTokens = await readBridgeArgs(named["bridge-plan"].map((p, i) => [p, named["bridge-record"][i]]));
+    console.log(JSON.stringify(await evaluateMainnetGate(gate, safePlan, createJsonRpcRequest(named.rpc[0]), bridgeTokens), null, 2));
   } catch (error) {
     console.error(error instanceof Error ? error.message : "mainnet gate: refused");
     process.exitCode = 1;

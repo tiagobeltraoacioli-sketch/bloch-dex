@@ -5,6 +5,7 @@
 // pinned genesis. Reserve caps are the factory's constructor-fixed values.
 
 import { createRequire } from "node:module";
+import { checkBridgeRecord, verifyBridgeToken } from "./bridge-token-identity.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, toFunctionSelector } = requireFromFrontend("viem");
@@ -131,10 +132,17 @@ export function validateGateConfig(config) {
 
 /// Evaluate the gate against `request(method, params)`. Throws on any refusal;
 /// returns the observation that enabled liquidity otherwise.
-export async function evaluateFinalityGate(config, request) {
+/// `options.bridgeTokens` (schema 2): a list of `{plan, record}` from the
+/// bridge's deploy_pontes.py; each token is then checked against its bridge
+/// deployment at the finalized block (bridge-token-identity.mjs, agent 180 L-3).
+export async function evaluateFinalityGate(config, request, options = {}) {
   validateGateConfig(config);
   refuse(typeof request === "function", "RPC request function is required");
-  if (config.schemaVersion === 2) return evaluateFinalityGateV2(config, request);
+  const bridgeTokens = options.bridgeTokens ?? [];
+  refuse(Array.isArray(bridgeTokens), "bridgeTokens must be a list");
+  // `options.bridgePin` is for tests only; the mainnet wrapper always uses the repository pin.
+  if (config.schemaVersion === 2) return evaluateFinalityGateV2(config, request, bridgeTokens, options.bridgePin);
+  refuse(bridgeTokens.length === 0, "bridge token records need a schema-2 gate");
   const { chain, deployment, limits } = config;
 
   refuse(quantity(await request("eth_chainId", []), "chain ID") === BigInt(chain.id), "chain ID does not match");
@@ -442,8 +450,11 @@ export async function verifyDepositorHistory({ depositor, count, transactions, r
   return Number(count);
 }
 
-async function evaluateFinalityGateV2(config, request) {
+async function evaluateFinalityGateV2(config, request, bridgeTokens = [], bridgePin = undefined) {
   const { chain, deployment, limits } = config;
+  // Static first, before any RPC call: each bridge record must match this gate file.
+  const identities = bridgeTokens.map((b) => checkBridgeRecord(config, b, bridgePin));
+  refuse(new Set(identities.map((i) => i.address)).size === identities.length, "a bridge token is listed twice");
   refuse(quantity(await request("eth_chainId", []), "chain ID") === BigInt(chain.id), "chain ID does not match");
   const genesis = block(await request("eth_getBlockByNumber", ["0x0", false]), "genesis block");
   refuse(genesis.number === 0n && genesis.hash === chain.genesisHash, "genesis hash does not match the pinned value");
@@ -496,6 +507,8 @@ async function evaluateFinalityGateV2(config, request) {
     const bucket = word(await call(token, SELECTORS.bucketCapacity, `${symbol}.bucketCapacity`), 0, `${symbol}.bucketCapacity`);
     refuse(bucket === BigInt(bridgeBucketCapacity), `${symbol} bridge bucket capacity differs from the plan`);
   }
+  const bridged = [];
+  for (const identity of identities) bridged.push(await verifyBridgeToken(identity, request, at, finalized.number));
 
   const factory = contracts.factory.address;
   const wrapped = contracts.wrappedNative.address;
@@ -566,6 +579,7 @@ async function evaluateFinalityGateV2(config, request) {
     wrappedReserveCap: wrappedCap.toString(),
     feeTo,
     ...(safe ? { blochIncSafe: safe } : {}),
+    ...(bridged.length ? { bridgeTokens: Object.freeze(bridged) } : {}),
     pairs: Object.freeze(pairs),
     transactions: Object.freeze(included),
   });

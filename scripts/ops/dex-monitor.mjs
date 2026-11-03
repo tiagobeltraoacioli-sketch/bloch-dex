@@ -360,20 +360,29 @@ function finish(checks, facts) {
   return { level: worst(checks.map((c) => c.level)), checks, facts };
 }
 
-/// The mainnet gate wrapper, or the generic gate on a rehearsal chain.
+/// The bUSDC bridge deployment (deploy_pontes.py plan and record), when given.
+function bridgeTokensFrom(args) {
+  if (!args["bridge-plan"] && !args["bridge-record"]) return [];
+  return [{ plan: JSON.parse(readFileSync(args["bridge-plan"], "utf8")), record: JSON.parse(readFileSync(args["bridge-record"], "utf8")) }];
+}
+
+/// The mainnet gate wrapper (bridge records required), or the generic gate on a
+/// rehearsal chain (bridge records checked when given).
 async function gateFor(args) {
-  if (args.rehearsal) return evaluateFinalityGate;
+  const bridgeTokens = bridgeTokensFrom(args);
+  if (args.rehearsal) return (gate, request) => evaluateFinalityGate(gate, request, { bridgeTokens });
   const { evaluateMainnetGate } = await import("../staging/check-finality-gate-mainnet.mjs");
   const safePlan = JSON.parse(readFileSync(args["safe-plan"], "utf8"));
-  return (gate, request) => evaluateMainnetGate(gate, safePlan, request);
+  return (gate, request) => evaluateMainnetGate(gate, safePlan, request, bridgeTokens);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ["rehearsal", "json", "expect-seeded"] });
     // Written by the skim keeper. Optional: the monitor can run on a host with no keeper.
-    if (!args.config || !args.rpc || (!args.rehearsal && !args["safe-plan"]) || (args["expect-seeded"] && !args["lp-recipient"])) {
-      console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --rpc <url> [--expect-seeded --lp-recipient 0x<address> [--lp-min-bps 5000] [--lp-min-shares N]] [--ref-price P] [--rehearsal] [--json]");
+    const bridgeArgs = Boolean(args["bridge-plan"]) + Boolean(args["bridge-record"]);
+    if (!args.config || !args.rpc || (!args.rehearsal && (!args["safe-plan"] || bridgeArgs !== 2)) || bridgeArgs === 1 || (args["expect-seeded"] && !args["lp-recipient"])) {
+      console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --bridge-plan <busdc.plan.json> --bridge-record <busdc.record.json> --rpc <url> [--expect-seeded --lp-recipient 0x<address> [--lp-min-bps 5000] [--lp-min-shares N]] [--ref-price P] [--rehearsal] [--json]");
       process.exit(UNKNOWN);
     }
     const request = createRequest(args.rpc);

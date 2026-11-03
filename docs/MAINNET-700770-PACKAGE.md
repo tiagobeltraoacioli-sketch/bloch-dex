@@ -290,7 +290,11 @@ The sequence:
    forge dry run), then `txs`, then `sign-and-publish.sh`, then `record
    --tx-hashes`.
 7. Run `verify-deployment.mjs --infra-plan … --infra-hashes … --expect-empty`.
-8. After L1 finality, run `check-finality-gate-mainnet.mjs`. Only
+8. After L1 finality, run `check-finality-gate-mainnet.mjs` with
+   `--bridge-plan` and `--bridge-record`: the bUSDC plan and record written by
+   the bridge's `deploy_pontes.py` (copied, never retyped). The gate compares the
+   token's signers, guardians, thresholds and T with them and checks the
+   reviewed build in `deployments/mainnet/bridge-token.pin.json`. Only
    `liquidity-enabled` allows the seeding ceremony (≤ 50% of the tighter
    cap).
 

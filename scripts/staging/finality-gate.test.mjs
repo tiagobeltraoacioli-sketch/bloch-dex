@@ -493,3 +493,42 @@ test("N1: the gate accepts a used key only with a checked history", async () => 
   assert.equal((await evaluateFinalityGate(listed, wrap(seedInput))).decision, "liquidity-enabled");
   await assert.rejects(evaluateFinalityGate(listed, wrap("0x12345678")), /not a planned approve or seed/);
 });
+
+// ---- agent 227: the bridge token against its own deployment record (agent 180 L-3) ----
+const { planAndRecord, testPin, tokenCode, tokenRpc, tokenViews } = await import("./bridge-token-identity.fixture.mjs");
+
+function bridgeCase({ planChange = () => {}, viewOverrides = {} } = {}) {
+  const code = tokenCode();
+  const { plan, record } = planAndRecord({ token: V2.asset, genesisHash: hash("9"), blockNumber: 300, blockHash: hash("b"), bucket: Number(BUSDC_BUCKET), code });
+  planChange(plan, record);
+  const inner = rpcV2({ code: { ...CODE, [V2.asset]: code } });
+  const token = tokenRpc({ token: V2.asset, code, views: tokenViews(plan.expected, viewOverrides) });
+  const request = async (method, params) => token(method, params) ?? inner(method, params);
+  const config = configV2((c) => (c.deployment.tokens[1].codeHash = keccak256(code)));
+  return { config, request, bridgeTokens: [{ plan, record }] };
+}
+
+test("L-3: the schema-2 gate checks the bridged token against the bridge deployment record", async () => {
+  const { config, request, bridgeTokens } = bridgeCase();
+  const report = await evaluateFinalityGate(config, request, { bridgeTokens, bridgePin: testPin() });
+  assert.equal(report.decision, "liquidity-enabled");
+  assert.equal(report.bridgeTokens.length, 1);
+  assert.equal(report.bridgeTokens[0].address, V2.asset);
+  assert.equal(report.bridgeTokens[0].threshold, 5);
+  assert.equal(report.bridgeTokens[0].largeMintThreshold, "0");
+  // without records the gate behaves as before (the mainnet wrapper requires them)
+  assert.equal((await evaluateFinalityGate(config, request)).bridgeTokens, undefined);
+});
+
+test("L-3: a look-alike bUSDC (other signers, same code) or T > 0 closes the gate", async () => {
+  const lookAlike = bridgeCase({ viewOverrides: { signers: [addr("6"), addr("7"), addr("8"), addr("9"), addr("a"), addr("b"), addr("c")] } });
+  await assert.rejects(evaluateFinalityGate(lookAlike.config, lookAlike.request, { bridgeTokens: lookAlike.bridgeTokens, bridgePin: testPin() }), /signers\(\) differ/);
+  const otherGuardians = bridgeCase({ viewOverrides: { guardians: [addr("6"), addr("7"), addr("8")] } });
+  await assert.rejects(evaluateFinalityGate(otherGuardians.config, otherGuardians.request, { bridgeTokens: otherGuardians.bridgeTokens, bridgePin: testPin() }), /guardians\(\) differ/);
+  const t = bridgeCase({ planChange: (p) => (p.expected.largeMintThreshold = 1) });
+  await assert.rejects(evaluateFinalityGate(t.config, t.request, { bridgeTokens: t.bridgeTokens, bridgePin: testPin() }), /must be 0/);
+  const s1 = bridgeCase();
+  await assert.rejects(evaluateFinalityGate(config(), rpc().request, { bridgeTokens: s1.bridgeTokens }), /need a schema-2 gate/);
+  const twice = bridgeCase();
+  await assert.rejects(evaluateFinalityGate(twice.config, twice.request, { bridgeTokens: [...twice.bridgeTokens, ...twice.bridgeTokens], bridgePin: testPin() }), /listed twice/);
+});

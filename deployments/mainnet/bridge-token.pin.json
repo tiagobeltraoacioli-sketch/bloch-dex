@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.bridge-token-pin.v1",
+  "notes": [
+    "The reviewed bridge token builds the DEX finality gate accepts (agent 180 L-3, agent 227). A token is accepted only if its runtime code, with every immutable slot zeroed, hashes to runtimeTemplateKeccak, and its identity (address, code hash, signers, guardians, thresholds, T, vault, route) matches the bridge's own deploy_pontes.py plan and record.",
+    "Source: bridge repo, branch codex/bridge-rc-r10-20261102 (agent 200), freeze commit eb5c981; the token sources are identical to 8d988ce (agent 194). initCodeKeccak is the creation code without constructor arguments, runtimeTemplateKeccak the runtime code with immutables zeroed, both from forge (solc 0.8.24, shanghai, optimizer runs 1, bytecode_hash none).",
+    "mainnetPolicy is the owner's launch decision of 2026-11-02: 5 of 7 signers, 6 of 7 for the unpause, the verifier switch and the locked remint, 3 guardians (cancel quorum 2), T = 0. The mainnet gate refuses any other token shape."
+  ],
+  "tokens": {
+    "bUSDC": {
+      "contract": "BridgedStablecoinV3",
+      "source": "contracts/stable/BridgedStablecoinV3.sol",
+      "bridgeRevision": "eb5c981b61cbd6a9668bed8651fbfb839dd00e18",
+      "compiler": {
+        "solc": "0.8.24+commit.e11b9ed9",
+        "optimizer": {
+          "enabled": true,
+          "runs": 1
+        },
+        "evmVersion": "shanghai"
+      },
+      "initCodeKeccak": "0xe560441f37e247e387cebd23bb3dd798a29d34174a9fb19a4bb3877c6c721de7",
+      "runtimeTemplateKeccak": "0x405c2834bea460d321d8a0590ad4189b19238fd0a96c23297667892f51da9ca7",
+      "runtimeLength": 18859,
+      "immutableOffsets": [
+        1150,
+        1208,
+        1489,
+        1657,
+        1714,
+        1856,
+        2045,
+        2418,
+        2561,
+        2796,
+        2892,
+        2990,
+        3083,
+        3190,
+        3229,
+        3287,
+        3426,
+        3484,
+        4722,
+        4862,
+        4946,
+        5474,
+        5684,
+        6502,
+        6540,
+        7027,
+        7220,
+        7680,
+        7752,
+        7797,
+        7839,
+        7911,
+        7956,
+        8400,
+        11022,
+        11081,
+        11129,
+        11169,
+        12386,
+        12717,
+        12762,
+        12889,
+        12934,
+        13550,
+        14139,
+        14289,
+        14387,
+        15039,
+        15354,
+        16255,
+        16288
+      ],
+      "maxPending": 2048,
+      "mainnetPolicy": {
+        "signers": 7,
+        "threshold": 5,
+        "switchThreshold": 6,
+        "guardians": 3
+      }
+    }
+  }
+}

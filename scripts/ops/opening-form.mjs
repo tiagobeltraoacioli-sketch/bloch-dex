@@ -235,6 +235,8 @@ function envFile(v) {
     "DEX_OPS_ROOT=/opt/bloch/postern-dex",
     "DEX_GATE=/etc/bloch-dex-ops/finality-gate.mainnet.json",
     "DEX_SAFE_PLAN=/etc/bloch-dex-ops/safe.plan.json",
+    "DEX_BUSDC_BRIDGE_PLAN=/etc/bloch-dex-ops/busdc.plan.json",
+    "DEX_BUSDC_BRIDGE_RECORD=/etc/bloch-dex-ops/busdc.record.json",
     "DEX_RPC=http://127.0.0.1:18955",
     `DEX_ETH_RPC=${v.status.ethRpcUrl}`,
     `DEX_BUSDC_VAULT=${v.status.vault}`,
@@ -256,6 +258,9 @@ const fmt = (x, d) => {
 function commandsFile(v) {
   const G = "deployments/mainnet/finality-gate.mainnet.json";
   const R = "http://127.0.0.1:18955";
+  // The bridge's own deployment files for bUSDC (deploy_pontes.py), copied next to the gate file.
+  const BP = "deployments/mainnet/busdc.plan.json";
+  const BR = "deployments/mainnet/busdc.record.json";
   const block = (cmd) => `\`\`\`\n${cmd}\n\`\`\`\n`;
   return [
     "# Opening commands with the owner's values",
@@ -268,6 +273,9 @@ function commandsFile(v) {
     `- Seeder exit: ${v.policy === "keep-floor" ? `keep a floor of ${Number(v.floorBps) / 100}% of the seed position, ${v.floorShares} shares (monitor \`--lp-min-shares\`)` : "a full exit is allowed (no floor; after it anyone can reprice and fill the pair, A98-5)"}.`,
     `- First depositor ${v.depositor} needs ${fmt(v.seed.wrapped, 18)} BLCH plus gas, and ${fmt(v.seed.quote, 6)} bUSDC credited before the plan (bridged a day ahead, executed by the relayer, never by this key).`,
     "",
+    "0. The finality gate, with the bridge's own deployment files for bUSDC (it compares the token's signers, guardians, thresholds and T with them):",
+    "",
+    block(`node scripts/staging/check-finality-gate-mainnet.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R}`),
     "1. Check the depositor is fresh (nonce 0) and funded:",
     "",
     block(`cast nonce ${v.depositor} --rpc-url ${R}`),
@@ -283,7 +291,7 @@ function commandsFile(v) {
     block(`node scripts/ops/dex-seed-plan.mjs verify --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp}`),
     "5. Monitor (the unit runs the same with `dex-ops.env`):",
     "",
-    block(`node scripts/ops/dex-monitor.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${v.status.ethRpcUrl} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
+    block(`node scripts/ops/dex-monitor.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${v.status.ethRpcUrl} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
     "6. Any later removal by the LP recipient goes through the planner, which refuses to go below the floor (the same shares as the monitor's `--lp-min-shares`). Example, half of the position:",
     "",
     block(`node scripts/ops/dex-seed-plan.mjs remove --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp} --bps 5000 --fraction-bps ${v.fractionBps} --floor-shares ${v.floorShares}`),
