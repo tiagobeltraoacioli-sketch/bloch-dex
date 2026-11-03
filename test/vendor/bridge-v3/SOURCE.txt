@@ -1,3 +1,7 @@
 Verbatim copies of the bridge V3 token sources, TEST ONLY, for DEX interaction tests.
-Source: codex/bridge-v3-r7-20261102 @ 5fb9cf06927a99aec297d43d29446278880d8333 (token identical at 9f91a56 and d0ce589).
+Source: codex/bridge-rc-r10-20261102 @ a44f632 (agent 200's bridge release line; the token sources are identical to
+codex/bridge-v3-decisions-r10-20261102 @ 8d988ce, agent 194: T = 0 constructor rule, MAX_PENDING = 2,048, F171-4).
+Previous copy: codex/bridge-v3-r7-20261102 @ 5fb9cf06927a99aec297d43d29446278880d8333 (agent 180).
 Compiled here with the DEX compiler settings, not the bridge's (optimizer_runs 1); behaviour, not bytecode, is under test.
+For the deployed bytecode, set V3_INITCODE to the bridge's own creation code and run with --evm-version shanghai
+(test/V3Interaction.t.sol `_newToken`, test/V3TokenInvariant.t.sol).

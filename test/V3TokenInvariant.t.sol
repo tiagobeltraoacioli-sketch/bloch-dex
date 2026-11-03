@@ -5,7 +5,8 @@ import {TestBase, TestToken} from "./TestBase.sol";
 import {UniswapV2Factory} from "../contracts/UniswapV2Factory.sol";
 import {UniswapV2Pair} from "../contracts/UniswapV2Pair.sol";
 
-/// The pair against the real launch token, BridgedStablecoinV3 (bridge `codex/bridge-v3-r7-20261102` 9f91a56), in the
+/// The pair against the real launch token, BridgedStablecoinV3 (bridge `codex/bridge-v3-r7-20261102` 9f91a56; agent 227
+/// reran it on the rebuilt token of the bridge RC, with the T = 0 constructor rule and MAX_PENDING), in the
 /// mainnet shape: T = 0, slots by deposit nonce, 2-of-3 committee with a 3-signature unpause, 3 guardians.
 /// The token is compiled in the bridge repo (shanghai, optimizer runs 1), so its creation code comes from the
 /// environment: `V3_INITCODE=$(jq -r .bytecode.object BridgedStablecoinV3.json) forge test --match-contract V3Token`.
@@ -537,6 +538,22 @@ contract V3TokenInvariantTest is TestBase {
         bool outIs0 = pair.token0() == address(sellW ? address(q) : address(w));
         pair.swap(outIs0 ? out : 0, outIs0 ? 0 : out, address(0xBEEF), "");
         revert("PROBE_OK");
+    }
+
+    /// Agent 227: the rebuilt token (agent 194, F129-B) counts its queued mints and caps them at MAX_PENDING. The count
+    /// is exactly the live queue after any mix of pair and token actions. A token without the counter skips this.
+    function invariant_pendingCountIsTheLiveQueue() public view {
+        if (skip) return;
+        (bool ok, bytes memory ret) = address(q).staticcall(abi.encodeWithSignature("pendingCount()"));
+        if (!ok || ret.length != 32) return;
+        uint256 live;
+        uint256 n = handler.idCount();
+        for (uint256 i; i < n; ++i) {
+            (, uint64 a,) = q.pendingMints(handler.ids(i));
+            if (a != 0) ++live;
+        }
+        require(abi.decode(ret, (uint256)) == live, "pendingCount is not the live queue");
+        require(live <= 2048, "queue above MAX_PENDING");
     }
 
     /// Whatever the token's state (paused, queued, cancelled, contested slots), every LP can leave in full.

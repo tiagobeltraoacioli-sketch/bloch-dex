@@ -15,10 +15,11 @@ import {BridgedStablecoinV3} from "./vendor/bridge-v3/stable/BridgedStablecoinV3
 interface VmExtra {
     function prank(address sender, address origin) external;
     function expectRevert(bytes4 selector) external;
+    function envOr(string calldata name, bytes calldata defaultValue) external view returns (bytes memory);
 }
 
 /// @notice Agent 180 (round 10): the DEX RC 86c6f2c6 against the real bridge V3 token
-///         (codex/bridge-v3-r7-20261102 5fb9cf0, copied verbatim under test/vendor/bridge-v3) with the
+///         (copied verbatim under test/vendor/bridge-v3, see SOURCE.txt; or the bridge's creation code via V3_INITCODE) with the
 ///         mainnet bUSDC limits (T = 0, 12 h delay, 10,000 bucket) and the mainnet DEX caps (10 WBLCH, 1,000 bUSDC).
 abstract contract V3Fixture is TestBase {
     VmExtra internal constant vmx = VmExtra(address(uint160(uint256(keccak256("hevm cheat code")))));
@@ -71,25 +72,65 @@ abstract contract V3Fixture is TestBase {
         }
         address[] memory signers = new address[](7);
         for (uint256 i; i < 7; ++i) signers[i] = vm.addr(signerKeys[i]);
-        t = new BridgedStablecoinV3(
-            "Bloch Bridged USDC",
-            "bUSDC",
-            1,
-            vault,
-            route,
-            signers,
-            5,
-            SignerMintedToken.Limits({
-                supplyCap: 100_000e6,
-                bucketCapacity: 10_000e6,
-                refillPerSecond: 115_740,
-                largeMintThreshold: 0,
-                largeMintDelay: DELAY,
-                minBurn: 10e6
-            }),
-            SignerMintedToken.Guard({guardians: guardianSet, pauseDuration: 3 days, pauseCooldown: 3 days}),
-            BridgedStablecoinV2.MintSwitch({threshold: 6, delay: 14 days})
+        t = _newToken(vault, route, signers, guardianSet, 0);
+    }
+
+    /// Agent 227 (round 11): with `V3_INITCODE` set (the bridge's own creation code, built at shanghai with optimizer
+    /// runs 1, as deployed), every token here is created from that bytecode; run with `--evm-version shanghai`.
+    /// Without it, the vendored source under test/vendor/bridge-v3 is compiled with the DEX settings.
+    struct CtorArgs {
+        string name;
+        string symbol;
+        uint256 sourceChainId;
+        address vault;
+        bytes32 route;
+        address[] signers;
+        uint256 threshold;
+        SignerMintedToken.Limits limits;
+        SignerMintedToken.Guard guard;
+        BridgedStablecoinV2.MintSwitch mintSwitch;
+    }
+
+    function _newToken(address vault, bytes32 route, address[] memory signers, address[] memory g, uint256 largeMintThreshold)
+        internal
+        returns (BridgedStablecoinV3 t)
+    {
+        CtorArgs memory c;
+        (c.name, c.symbol, c.sourceChainId, c.vault, c.route, c.signers, c.threshold) =
+            ("Bloch Bridged USDC", "bUSDC", 1, vault, route, signers, 5);
+        c.limits = SignerMintedToken.Limits({
+            supplyCap: 100_000e6,
+            bucketCapacity: 10_000e6,
+            refillPerSecond: 115_740,
+            largeMintThreshold: largeMintThreshold,
+            largeMintDelay: DELAY,
+            minBurn: 10e6
+        });
+        c.guard = SignerMintedToken.Guard({guardians: g, pauseDuration: 3 days, pauseCooldown: 3 days});
+        c.mintSwitch = BridgedStablecoinV2.MintSwitch({threshold: 6, delay: 14 days});
+        bytes memory init = vmx.envOr("V3_INITCODE", bytes(""));
+        if (init.length == 0) return _newVendored(c);
+        // abi.encode of the struct is one offset word followed by the constructor's own argument encoding
+        bytes memory enc = abi.encode(c);
+        bytes memory code = new bytes(init.length + enc.length - 32);
+        for (uint256 i; i < init.length; ++i) code[i] = init[i];
+        for (uint256 i = 32; i < enc.length; ++i) code[init.length + i - 32] = enc[i];
+        address a;
+        assembly {
+            a := create(0, add(code, 32), mload(code))
+        }
+        require(a != address(0), "V3 creation failed");
+        t = BridgedStablecoinV3(a);
+    }
+
+    function _newVendored(CtorArgs memory c) internal returns (BridgedStablecoinV3) {
+        return new BridgedStablecoinV3(
+            c.name, c.symbol, c.sourceChainId, c.vault, c.route, c.signers, c.threshold, c.limits, c.guard, c.mintSwitch
         );
+    }
+
+    function _realBytecode() internal view returns (bool) {
+        return vmx.envOr("V3_INITCODE", bytes("")).length != 0;
     }
 
     function _sign(bytes32 digest, uint256 k) internal returns (bytes memory sigs) {
@@ -347,25 +388,7 @@ contract V3InteractionTest is V3Fixture {
         // keep ascending order irrelevant: the constructor does not require it
         address[] memory g = new address[](3);
         (g[0], g[1], g[2]) = (address(0xBAD1), address(0xBAD2), address(0xBAD3));
-        BridgedStablecoinV3 b = new BridgedStablecoinV3(
-            "Bloch Bridged USDC",
-            "bUSDC",
-            1,
-            VAULT,
-            bytes32("route-1"),
-            signers,
-            5,
-            SignerMintedToken.Limits({
-                supplyCap: 100_000e6,
-                bucketCapacity: 10_000e6,
-                refillPerSecond: 115_740,
-                largeMintThreshold: 0,
-                largeMintDelay: DELAY,
-                minBurn: 10e6
-            }),
-            SignerMintedToken.Guard({guardians: g, pauseDuration: 3 days, pauseCooldown: 3 days}),
-            BridgedStablecoinV2.MintSwitch({threshold: 6, delay: 14 days})
-        );
+        BridgedStablecoinV3 b = _newToken(VAULT, bytes32("route-1"), signers, g, 0);
         assertEq(address(a).codehash, address(b).codehash);
         assertEq(address(busdc).codehash, address(a).codehash);
         assertTrue(a.signers()[0] != b.signers()[0] || a.signers()[1] != b.signers()[1]);
