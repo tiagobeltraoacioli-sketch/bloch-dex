@@ -5,6 +5,7 @@ on:
     paths:
       - "deployments/**"
       - "scripts/staging/**"
+      - "scripts/ops/**"
       - "frontend/package.json"
       - "frontend/package-lock.json"
       - ".github/workflows/staging-gates.yml"
@@ -12,6 +13,7 @@ on:
     paths:
       - "deployments/**"
       - "scripts/staging/**"
+      - "scripts/ops/**"
       - "frontend/package.json"
       - "frontend/package-lock.json"
       - ".github/workflows/staging-gates.yml"
@@ -35,5 +37,5 @@ jobs:
       - name: Install locked RPC codec dependencies
         working-directory: frontend
         run: npm ci --ignore-scripts
-      - name: Staging gate tests
-        run: node --test scripts/staging/*.test.mjs
+      - name: Staging gate and operations tests
+        run: node --test scripts/staging/*.test.mjs scripts/ops/*.test.mjs

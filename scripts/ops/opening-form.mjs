@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createRequest, isqrt, parseArgs, parseUnits } from "./dex-ops-lib.mjs";
+import { createRequest, encodeFunctionData, isqrt, keccak256, parseAbi, parseArgs, parseUnits } from "./dex-ops-lib.mjs";
 import { PENDING, configSha256, validateDeployConfig } from "../staging/dex-deploy-config.mjs";
 import { MAX_FRACTION_BPS, SEEDER_FLOOR_BPS } from "./dex-seed-plan.mjs";
 
@@ -35,6 +35,11 @@ const HASH = /^0x[0-9a-f]{64}$/;
 const ZERO = `0x${"0".repeat(40)}`;
 const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?(\/.*)?$/;
 const EXIT_POLICIES = ["keep-floor", "full-exit"];
+const BRIDGE_VIEWS = parseAbi([
+  "function bucketCapacity() view returns (uint256)",
+  "function sourceChainId() view returns (uint256)",
+  "function sourceVault() view returns (address)",
+]);
 
 const pending = (v) => v === undefined || v === null || (typeof v === "string" && v.startsWith(PENDING));
 
@@ -190,21 +195,50 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
 /// its code on Ethereum, and the token bound to that vault. Returns a list of problems.
 export async function checkChain(values, { l2, eth }) {
   const problems = [];
+  const inspect = async (label, action) => {
+    try { await action(); } catch (error) { problems.push(`${label}: ${error.message}`); }
+  };
+  const checkCode = async (request, address, expected) => {
+    const code = await request("eth_getCode", [address, "latest"]);
+    if (typeof code !== "string" || !/^0x(?:[0-9a-fA-F]{2})+$/.test(code)) {
+      throw new Error(`no valid runtime code at ${address}`);
+    }
+    if (expected && keccak256(code) !== expected) throw new Error(`code hash differs from the form's ${expected}`);
+  };
+  const tokenWord = async (functionName) => {
+    const data = encodeFunctionData({ abi: BRIDGE_VIEWS, functionName });
+    const result = await l2("eth_call", [{ to: values.token, data }, "latest"]);
+    if (typeof result !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(result)) {
+      throw new Error("returned malformed ABI data (expected exactly one word)");
+    }
+    return BigInt(result);
+  };
   if (l2) {
-    const code = await l2("eth_getCode", [values.token, "latest"]);
-    const { keccak256 } = await import("./dex-ops-lib.mjs");
-    if (code === "0x") problems.push(`no code at bUSDC ${values.token} on the L2`);
-    else if (keccak256(code) !== values.tokenCodeHash) problems.push(`bUSDC code hash on the L2 is ${keccak256(code)}, the form says ${values.tokenCodeHash}`);
-    const bucket = BigInt(await l2("eth_call", [{ to: values.token, data: "0xc7eba00f" }, "latest"]).catch(() => "0x0"));
-    if (bucket !== 0n && bucket !== values.bucket) problems.push(`bUSDC bucketCapacity() is ${bucket}, the form says ${values.bucket}`);
+    await inspect("bUSDC runtime on the L2", () => checkCode(l2, values.token, values.tokenCodeHash));
+    await inspect("bUSDC bucketCapacity()", async () => {
+      const bucket = await tokenWord("bucketCapacity");
+      if (bucket <= 0n || bucket !== values.bucket) throw new Error(`is ${bucket}, the form says ${values.bucket}`);
+    });
+    if (values.status) {
+      await inspect("bUSDC sourceChainId()", async () => {
+        const chain = await tokenWord("sourceChainId");
+        if (chain !== 1n) throw new Error(`is ${chain}, expected Ethereum chain 1`);
+      });
+      await inspect("bUSDC sourceVault()", async () => {
+        const vault = await tokenWord("sourceVault");
+        if (vault !== BigInt(values.status.vault)) throw new Error("does not match bridgeStatus.vault");
+      });
+    }
   }
   if (eth && values.status) {
-    const code = await eth("eth_getCode", [values.status.vault, "latest"]);
-    const { keccak256 } = await import("./dex-ops-lib.mjs");
-    if (code === "0x") problems.push(`no code at vault ${values.status.vault} on Ethereum`);
-    else if (values.status.vaultCodeHash && keccak256(code) !== values.status.vaultCodeHash) problems.push(`vault code hash is ${keccak256(code)}, the form says ${values.status.vaultCodeHash}`);
-    const finalized = await eth("eth_getBlockByNumber", ["finalized", false]).catch(() => null);
-    if (!finalized) problems.push("the Ethereum RPC does not serve the finalized tag (the page and the monitor need it)");
+    await inspect("vault runtime on Ethereum", () => checkCode(eth, values.status.vault, values.status.vaultCodeHash));
+    await inspect("Ethereum finalized block", async () => {
+      const finalized = await eth("eth_getBlockByNumber", ["finalized", false]);
+      if (!finalized || typeof finalized.number !== "string" || !/^0x[1-9a-f][0-9a-f]{0,63}$/.test(finalized.number) ||
+          typeof finalized.hash !== "string" || !HASH.test(finalized.hash) || finalized.hash === `0x${"0".repeat(64)}`) {
+        throw new Error("the RPC does not serve a valid finalized block beyond genesis (the page and the monitor need it)");
+      }
+    });
   }
   return problems;
 }

@@ -45,3 +45,10 @@ node scripts/ops/opening-form.mjs apply --form deployments/mainnet/opening-form.
 ```
 
 Then: `opening-out/dex-mainnet.config.json` goes to `deploy-dex.mjs validate`, `plan`, `txs`; `frontend.network.json` and `_headers` replace the committed ones before the site build; `dex-ops.env` is `/etc/bloch-dex-ops/env`; `OPENING-COMMANDS.md` lists the seed, verify, monitor and keeper commands with your values. Exit 2 lists every problem; nothing is sent either way.
+
+With `--rpc`, the checker requires the exact positive `bucketCapacity()` and
+the token's Ethereum `sourceChainId()` and `sourceVault()` to match the form.
+A reverted, unavailable, zero or malformed capacity read is a refusal. With
+`--eth-rpc`, it requires vault code and a valid finalized block beyond genesis;
+the optional vault code hash is checked when supplied. These are read-only
+opening checks, not the finality gate or permission to seed the pool.
