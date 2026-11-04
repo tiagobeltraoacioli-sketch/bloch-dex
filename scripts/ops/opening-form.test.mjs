@@ -1,7 +1,10 @@
 // node --test scripts/ops/opening-form.test.mjs
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { checkForm, seedAmounts } from "./opening-form.mjs";
 import { MAX_FRACTION_BPS, planOpening, seedFloorShares } from "./dex-seed-plan.mjs";
 
@@ -107,4 +110,52 @@ test("fraction above 7000 bps is refused, as by the planner (round 10, DEX-4)", 
   const ok = filled(); ok.seed.fractionBps = 7000;
   assert.deepEqual(check(ok).problems, []);
   assert.equal(MAX_FRACTION_BPS, 7000n);
+});
+
+test("URLs and keeper paths refuse multiline and invalid environment text", () => {
+  for (const suffix of ["\nDEX_KEEPER=changed", "\r", "\t", "\0", "\ufeff", "\ud800", "\uffff"]) {
+    const path = filled(); path.keeper.keystore += suffix;
+    assert.ok(check(path).problems.some((p) => /keeper.keystore/.test(p)), JSON.stringify(suffix));
+    const password = filled(); password.keeper.passwordFile += suffix;
+    assert.ok(check(password).problems.some((p) => /keeper.passwordFile/.test(p)), JSON.stringify(suffix));
+    const rpc = filled(); rpc.bridgeStatus.ethRpcUrl += suffix;
+    assert.ok(check(rpc).problems.some((p) => /bridgeStatus.ethRpcUrl/.test(p)), JSON.stringify(suffix));
+    const site = filled(); site.site.rpcUrl += suffix;
+    assert.ok(check(site).problems.some((p) => /site.rpcUrl/.test(p)), JSON.stringify(suffix));
+  }
+});
+
+test("generated environment and commands retain literal paths and URL query arguments", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "dex-opening-output-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  const form = filled();
+  form.keeper.keystore = "/etc/key files/keeper 'quote' \"double\" $VALUE `printf-executed` \\ key";
+  form.keeper.passwordFile = "/etc/key files/pass $(printf-executed)";
+  form.bridgeStatus.ethRpcUrl = "https://eth.example.org/rpc?key=one&name='quoted'&dollar=$(printf-executed)&tick=`printf-executed`";
+  assert.deepEqual(check(form).problems, []);
+  const formPath = join(directory, "form.json");
+  const safePath = join(directory, "safe.json");
+  const output = join(directory, "output");
+  writeFileSync(formPath, JSON.stringify(form));
+  writeFileSync(safePath, JSON.stringify(blochInc));
+  const result = spawnSync(process.execPath, [
+    new URL("./opening-form.mjs", import.meta.url).pathname, "apply", "--form", formPath,
+    "--bloch-inc", safePath, "--out", output,
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  // The generated subset uses double-quoted POSIX escape rules, also understood
+  // by systemd EnvironmentFile; shell expansion must remain inert as well.
+  const environment = spawnSync("/bin/sh", ["-c", '. "$1"; printf "%s\\0" "$DEX_ETH_RPC" "$DEX_KEEPER_KEYSTORE" "$DEX_KEEPER_PASSWORD_FILE"', "opening-test", join(output, "dex-ops.env")], { encoding: "utf8" });
+  assert.equal(environment.status, 0, environment.stderr);
+  assert.equal(environment.stderr, "");
+  assert.deepEqual(environment.stdout.split("\0").slice(0, -1), [form.bridgeStatus.ethRpcUrl, form.keeper.keystore, form.keeper.passwordFile]);
+  const commands = readFileSync(join(output, "OPENING-COMMANDS.md"), "utf8");
+  for (const line of commands.split("\n").filter((line) => /^node .+--eth-rpc /.test(line))) {
+    // Replace node with an argument dumper: no RPC or operation is executed.
+    const args = spawnSync("/bin/sh", ["-c", `node() { printf '%s\\0' "$@"; };\n${line}`], { encoding: "utf8" });
+    assert.equal(args.status, 0, args.stderr);
+    assert.equal(args.stderr, "");
+    const words = args.stdout.split("\0").slice(0, -1);
+    assert.equal(words[words.indexOf("--eth-rpc") + 1], form.bridgeStatus.ethRpcUrl);
+  }
 });

@@ -52,3 +52,9 @@ A reverted, unavailable, zero or malformed capacity read is a refusal. With
 `--eth-rpc`, it requires vault code and a valid finalized block beyond genesis;
 the optional vault code hash is checked when supplied. These are read-only
 opening checks, not the finality gate or permission to seed the pool.
+
+The generator quotes RPC URLs in shell commands and quotes paths and URLs in
+the systemd environment file. Query parameters, spaces and quote characters
+remain literal; multiline values and invalid environment text are refused.
+The environment output follows the double-quoted
+[`EnvironmentFile` rules](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#EnvironmentFile=).

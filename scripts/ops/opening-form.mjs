@@ -43,10 +43,26 @@ const BRIDGE_VIEWS = parseAbi([
 
 const pending = (v) => v === undefined || v === null || (typeof v === "string" && v.startsWith(PENDING));
 
+// Keep generated files on one line per field. EnvironmentFile also excludes
+// noncharacters, NUL and BOM; reject these before rendering any output.
+function singleLineText(value) {
+  return typeof value === "string" && value.length <= 4096 && value.isWellFormed() &&
+    !/[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/u.test(value) &&
+    [...value].every((character) => {
+      const point = character.codePointAt(0);
+      return !(point >= 0xfdd0 && point <= 0xfdef) && (point & 0xfffe) !== 0xfffe;
+    });
+}
+
+const shellArgument = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
+// systemd.exec EnvironmentFile double-quote escapes also keep this subset
+// literal if an operator reads it with a POSIX shell.
+const environmentValue = (value) => `"${String(value).replace(/[\\"$`]/g, "\\$&")}"`;
+
 /// https without credentials or fragment; plain http only on loopback (a local check).
 /// The same rule as frontend/src/mainnet/config.ts safeUrl.
 function urlProblem(value, field, { allowLoopback }) {
-  if (typeof value !== "string" || value.length > 200) return `${field} is not a URL`;
+  if (!singleLineText(value) || value.length > 200 || /\s/u.test(value)) return `${field} is not a single-line URL`;
   let url;
   try { url = new URL(value); } catch { return `${field} is not a URL`; }
   const ok = (url.protocol === "https:" || (allowLoopback && LOOPBACK.test(value))) && !url.username && !url.password && !url.hash;
@@ -137,8 +153,8 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
 
   // 4. Keeper.
   const keystore = form.keeper?.keystore; const passwordFile = form.keeper?.passwordFile;
-  need(!pending(keystore) && typeof keystore === "string" && keystore.startsWith("/"), "keeper.keystore must be an absolute path on the keeper host");
-  need(!pending(passwordFile) && typeof passwordFile === "string" && passwordFile.startsWith("/"), "keeper.passwordFile must be an absolute path on the keeper host");
+  need(!pending(keystore) && singleLineText(keystore) && keystore.startsWith("/"), "keeper.keystore must be a single-line absolute path on the keeper host");
+  need(!pending(passwordFile) && singleLineText(passwordFile) && passwordFile.startsWith("/"), "keeper.passwordFile must be a single-line absolute path on the keeper host");
   const budgetWei = BigInt(form.keeper?.budgetWei ?? "50000000000000000");
   const maxTx = Number(form.keeper?.maxTx ?? 48);
   need(budgetWei > 0n && Number.isInteger(maxTx) && maxTx > 0, "keeper.budgetWei and keeper.maxTx must be positive");
@@ -272,13 +288,13 @@ function envFile(v) {
     "DEX_BUSDC_BRIDGE_PLAN=/etc/bloch-dex-ops/busdc.plan.json",
     "DEX_BUSDC_BRIDGE_RECORD=/etc/bloch-dex-ops/busdc.record.json",
     "DEX_RPC=http://127.0.0.1:18955",
-    `DEX_ETH_RPC=${v.status.ethRpcUrl}`,
+    `DEX_ETH_RPC=${environmentValue(v.status.ethRpcUrl)}`,
     `DEX_BUSDC_VAULT=${v.status.vault}`,
     `DEX_LP_RECIPIENT=${v.lp}`,
     `DEX_LP_MIN_SHARES=${v.floorShares}`,
     `DEX_KEEPER=${v.keeper}`,
-    `DEX_KEEPER_KEYSTORE=${v.keystore}`,
-    `DEX_KEEPER_PASSWORD_FILE=${v.passwordFile}`,
+    `DEX_KEEPER_KEYSTORE=${environmentValue(v.keystore)}`,
+    `DEX_KEEPER_PASSWORD_FILE=${environmentValue(v.passwordFile)}`,
     "",
   ].join("\n");
 }
@@ -325,13 +341,13 @@ function commandsFile(v) {
     block(`node scripts/ops/dex-seed-plan.mjs verify --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp}`),
     "5. Monitor (the unit runs the same with `dex-ops.env`):",
     "",
-    block(`node scripts/ops/dex-monitor.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${v.status.ethRpcUrl} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
+    block(`node scripts/ops/dex-monitor.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${shellArgument(v.status.ethRpcUrl)} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
     "6. Any later removal by the LP recipient goes through the planner, which refuses to go below the floor (the same shares as the monitor's `--lp-min-shares`). Example, half of the position:",
     "",
     block(`node scripts/ops/dex-seed-plan.mjs remove --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp} --bps 5000 --fraction-bps ${v.fractionBps} --floor-shares ${v.floorShares}`),
     "7. Keeper, dry run first:",
     "",
-    block(`node scripts/ops/dex-skim-keeper.mjs --config ${G} --rpc ${R} --keeper ${v.keeper} --state /var/lib/bloch-dex-keeper/state.json --budget-wei ${v.budgetWei} --max-tx ${v.maxTx} --eth-rpc ${v.status.ethRpcUrl} --bridge-vault ${v.status.vault}`),
+    block(`node scripts/ops/dex-skim-keeper.mjs --config ${G} --rpc ${R} --keeper ${v.keeper} --state /var/lib/bloch-dex-keeper/state.json --budget-wei ${v.budgetWei} --max-tx ${v.maxTx} --eth-rpc ${shellArgument(v.status.ethRpcUrl)} --bridge-vault ${v.status.vault}`),
     "",
   ].join("\n");
 }
