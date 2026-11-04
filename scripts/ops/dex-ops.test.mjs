@@ -397,6 +397,18 @@ test("keeper: it sends skim(Safe) to the pinned pair, and saves state before pub
   assert.equal(tx.gas, 96_000n);
 });
 
+test("keeper: failure to persist its signed reservation prevents publication", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  let saves = 0, signs = 0;
+  await assert.rejects(runKeeper(gate, keeperOptions(), emptyKeeperState(), {
+    ...keeperDeps(node),
+    sign: async (tx) => { signs++; return signer(tx); },
+    save: () => { if (++saves === 2) throw new Error("reservation flush failed"); },
+  }), /reservation flush failed/);
+  assert.equal(signs, 1);
+  assert.equal(node.chain.sent.length, 0);
+});
+
 test("keeper: one transaction in flight, then a cooldown", async () => {
   const node = fakeNode({ balances: ABOVE_CAP });
   const state = emptyKeeperState();

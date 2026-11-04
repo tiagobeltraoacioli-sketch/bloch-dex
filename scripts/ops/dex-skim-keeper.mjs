@@ -39,12 +39,13 @@
 
 import { execFile } from "node:child_process";
 import { randomInt } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { sequencerFeeRequirement } from "../staging/sequencer-fee-error.mjs";
 import { KEEPER_PENDING_TIMEOUT_SECONDS, keeperNeedsReconciliation, keeperWindow as windowTxs, keeperWindowSpend as windowSpend } from "./keeper-accounting.mjs";
+import { acquireLock, saveState } from "./keeper-state-store.mjs";
+export { acquireLock, saveState } from "./keeper-state-store.mjs";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
   blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, isAtKCeiling, keccak256,
@@ -109,27 +110,6 @@ export function loadState(path) {
     // A damaged budget file must stop the keeper, not reset its budget.
     throw new Error(`keeper state ${path} is unreadable: ${error.message}`);
   }
-}
-
-export function saveState(path, state) {
-  mkdirSync(dirname(path), { recursive: true });
-  const temp = `${path}.tmp`;
-  writeFileSync(temp, JSON.stringify(state, null, 2), { mode: 0o600 });
-  renameSync(temp, path);
-}
-
-/// Exclusive lock, so an overlapping timer run cannot share a budget or a nonce.
-function acquireLock(path, now) {
-  const lock = `${path}.lock`;
-  mkdirSync(dirname(path), { recursive: true });
-  try {
-    closeSync(openSync(lock, "wx", 0o600));
-  } catch {
-    if (now - statSync(lock).mtimeMs / 1000 < 600) throw new Error("another keeper run holds the lock");
-    rmSync(lock);
-    closeSync(openSync(lock, "wx", 0o600));
-  }
-  return () => rmSync(lock, { force: true });
 }
 
 /// The tip of the next skim: uniform between tipWei and tipWei * 2^(wasted + 1), capped at
@@ -411,7 +391,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       pendingTimeoutSeconds: Number(args["pending-timeout-s"] ?? DEFAULTS.pendingTimeoutSeconds),
     };
     const now = Math.floor(Date.now() / 1000);
-    release = acquireLock(args.state, now);
+    release = acquireLock(args.state);
     const allowed = args.execute ? [...READ_ONLY_METHODS, "eth_sendRawTransaction"] : READ_ONLY_METHODS;
     const outcome = await runKeeper(readGate(args.config), options, loadState(args.state), {
       request: createRequest(args.rpc, { allowed }),

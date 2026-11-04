@@ -122,6 +122,19 @@ When the keeper stops at a limit the pool is not at risk; swaps on that side sta
 
 The state file is the budget. If it is damaged the keeper refuses to run; it does not reset. Inspect it and move it away only when you have decided to.
 
+Each update writes a unique exclusive temporary file with mode `0600`, flushes
+that file, atomically renames it and flushes the containing directory before
+publication can proceed. Newly created state directories are persisted too.
+A write or flush failure stops publication. This is an application-level
+durability guarantee using the filesystem's `fsync`; the rehearsal does not
+simulate a power loss or validate storage hardware.
+
+The exclusive `.lock` records its process ID and start time. Its age never
+authorizes another process to take it over. If a lock remains after a crash,
+check for a live keeper and reconcile recorded transactions before manually
+removing it. A process also refuses to remove a lock whose ownership changed
+while it was running.
+
 ### Crash behaviour
 
 State is written before publishing. A crash after that leaves a `pending` entry.
