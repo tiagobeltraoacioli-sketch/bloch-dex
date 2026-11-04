@@ -183,8 +183,18 @@ try {
     [1n, [wrapped, token], account.address, deadline, BigInt(anchor.number), "0x" + "ee".repeat(32)], 10n ** 15n, "0x0");
   const afterRevert = await read(pair, pairA, "getReserves");
   assert.deepEqual(afterRevert, afterSwap, "reverted swap leaves reserves unchanged");
-  await invoke("donate synthetic token", token, tokenA, "transfer", [pair, 10n ** 18n]);
+  const donated = 10n ** 18n;
+  const recipientBeforeDonation = await read(token, tokenA, "balanceOf", [account.address]);
+  const pairBeforeDonation = await read(token, tokenA, "balanceOf", [pair]);
+  await invoke("donate synthetic token", token, tokenA, "transfer", [pair, donated]);
+  assert.equal(await read(token, tokenA, "balanceOf", [pair]), pairBeforeDonation + donated,
+    "the donation reaches the pair as token excess");
+  assert.equal(await read(token, tokenA, "balanceOf", [account.address]), recipientBeforeDonation - donated);
   await invoke("skim excess", pair, pairA, "skim", [account.address]);
+  assert.equal(await read(token, tokenA, "balanceOf", [pair]), pairBeforeDonation,
+    "skim removes exactly the donated excess from the pair");
+  assert.equal(await read(token, tokenA, "balanceOf", [account.address]), recipientBeforeDonation,
+    "skim returns exactly the donated excess to the recipient");
   assert.deepEqual(await read(pair, pairA, "getReserves"), afterSwap);
   const liquidity = await read(pair, pairA, "balanceOf", [account.address]);
   await invoke("approve LP removal", pair, pairA, "approve", [router, liquidity / 2n]);
@@ -207,7 +217,7 @@ try {
   for (const address of [token, wrapped, factory, router, pair]) codeHashes[address] = keccak256(await rpc("eth_getCode", [address, "latest"]));
   evidence.contracts = { token, wrapped, factory, router, pair, codeHashes };
   evidence.assertions.push("deployments", "approve", "native-wrapping", "anchored-swap", "wrong-anchor-reverts",
-    "constant-product", "skim", "liquidity-removal", "native-unwrapping");
+    "constant-product", "skim", "skim-exact-excess-returned", "liquidity-removal", "native-unwrapping");
   await stop();
   await start(false);
   assert.deepEqual(await read(pair, pairA, "getReserves"), remaining, "reopen preserves reserves");

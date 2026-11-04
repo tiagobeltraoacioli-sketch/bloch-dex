@@ -25,7 +25,8 @@ directory after reviewing the recorded hashes.
 The rehearsal checks deployment of TestToken, WBLCH, Factory and Router;
 approval and liquidity provision with native wrapping; a swap bound to the
 real preceding block hash; rejection of an incorrect anchor without reserve
-changes; the constant-product lower bound; donation and skim; LP approval;
+changes; the constant-product lower bound; donation and skim with exact token
+balance changes at both the pair and recipient (and unchanged reserves); LP approval;
 liquidity removal with native unwrapping; and database re-opening with the
 same code, reserves and canonical receipts.
 
