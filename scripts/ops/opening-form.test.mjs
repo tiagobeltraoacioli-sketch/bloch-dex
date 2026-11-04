@@ -76,6 +76,24 @@ test("the depositor must be its own key", () => {
   assert.ok(check(f).problems.some((p) => p.includes("keeper.address")));
 });
 
+test("opening owners are five distinct Safe owners and match the supplied Safe pin", () => {
+  for (const owners of [[], [a(0x101)], Array(5).fill(a(0x101)), [1, 2, 3, 4, 6].map((i) => a(0x100 + i))]) {
+    const f = filled(); f.fromEarlierSteps.safeOwners = owners;
+    assert.ok(check(f).problems.some((p) => /safeOwners/.test(p)), JSON.stringify(owners));
+  }
+  const reordered = filled(); reordered.fromEarlierSteps.safeOwners.reverse();
+  assert.deepEqual(check(reordered).problems, [], "owner order is not authority");
+});
+
+test("a substituted owner list cannot hide keeper reuse of an actual Safe owner", () => {
+  const f = filled();
+  f.keeper.address = blochInc.safe.owners[0];
+  f.fromEarlierSteps.safeOwners = [6, 7, 8, 9, 10].map((i) => a(0x100 + i));
+  const { problems } = check(f);
+  assert.ok(problems.some((p) => /safeOwners/.test(p)));
+  assert.ok(problems.some((p) => /keeper.address/.test(p)));
+});
+
 test("exit policy: the floor in shares, at least 10%, and no full exit (round 10)", () => {
   const keep = check(filled()).values;
   assert.equal(keep.floorShares, keep.seed.shares / 10n);

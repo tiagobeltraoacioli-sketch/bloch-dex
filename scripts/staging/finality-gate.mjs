@@ -347,7 +347,7 @@ export async function verifySafe(safe, address, request, at) {
   refuse(threshold === BigInt(safe.threshold), "Bloch Inc Safe threshold differs from the pin");
   const owners = dynamicAddresses(await call(SAFE.selectors.getOwners, "getOwners"), 0, "getOwners");
   refuse(
-    owners.length === safe.owners.length && owners.every((o) => safe.owners.includes(o)),
+    owners.length === safe.owners.length && new Set(owners).size === owners.length && owners.every((o) => safe.owners.includes(o)),
     "Bloch Inc Safe owners differ from the pin",
   );
   const modules = await call(
@@ -355,6 +355,7 @@ export async function verifySafe(safe, address, request, at) {
     "getModulesPaginated",
   );
   refuse(dynamicAddresses(modules, 0, "getModulesPaginated").length === 0, "Bloch Inc Safe has an enabled module");
+  refuse(wordAddress(modules, 1, "getModulesPaginated next") === SAFE.sentinel, "Bloch Inc Safe module page is incomplete");
   refuse(dynamicString(await call(SAFE.selectors.VERSION, "VERSION"), "VERSION") === SAFE.version, "Bloch Inc Safe is not version 1.4.1");
   return Object.freeze({ address, threshold: safe.threshold, owners: Object.freeze([...safe.owners]), singleton: safe.singleton.address });
 }

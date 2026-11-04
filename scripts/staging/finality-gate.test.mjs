@@ -245,6 +245,7 @@ function rpcV2(change = {}) {
     safeThreshold: 3n,
     safeOwners: [...OWNERS].reverse(),
     safeModules: [],
+    safeModuleNext: 1n,
     safeVersion: "1.4.1",
     ...change,
   };
@@ -287,7 +288,7 @@ function rpcV2(change = {}) {
             [sel("getThreshold()")]: `0x${word(state.safeThreshold)}`,
             [sel("getOwners()")]: `0x${word(32)}${word(state.safeOwners.length)}${state.safeOwners.map(pad).join("")}`,
             [`${sel("getModulesPaginated(address,uint256)")}${pad(addr("0").replace(/0$/, "1"))}${word(10)}`]:
-              `0x${word(64)}${word(1)}${word(state.safeModules.length)}${state.safeModules.map(pad).join("")}`,
+              `0x${word(64)}${word(state.safeModuleNext)}${word(state.safeModules.length)}${state.safeModules.map(pad).join("")}`,
             [sel("VERSION()")]: `0x${word(32)}${word(state.safeVersion.length)}${text}`,
           }[data];
           if (safeReply === undefined) throw new Error(`unexpected Safe call ${data}`);
@@ -421,7 +422,9 @@ test("schema 2 pins the Bloch Inc Safe at the finalized block", async () => {
     [{ safeThreshold: 5n }, /threshold differs/],
     [{ safeOwners: [...OWNERS.slice(0, 4), addr("6")] }, /owners differ/],
     [{ safeOwners: [...OWNERS, addr("6")] }, /owners differ/],
+    [{ safeOwners: Array(OWNERS.length).fill(OWNERS[0]) }, /owners differ/],
     [{ safeModules: [addr("6")] }, /enabled module/],
+    [{ safeModuleNext: 2n }, /module page is incomplete/],
     [{ safeVersion: "1.3.0" }, /not version 1.4.1/],
   ]) {
     await assert.rejects(evaluateFinalityGate(configV2(), rpcV2(change)), pattern, Object.keys(change).join(","));

@@ -126,17 +126,25 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   const tokenCodeHash = pending(earlier.busdcCodeHash) ? (problems.push("fromEarlierSteps.busdcCodeHash is not filled"), null)
     : (need(HASH.test(earlier.busdcCodeHash), "fromEarlierSteps.busdcCodeHash must be a lowercase 32-byte hash") ? earlier.busdcCodeHash : null);
   const owners = Array.isArray(earlier.safeOwners) ? earlier.safeOwners.map((o, i) => addr(o, `fromEarlierSteps.safeOwners[${i}]`)) : (problems.push("fromEarlierSteps.safeOwners must list the 5 Safe owners"), []);
+  need(owners.length === 5 && new Set(owners).size === 5 && owners.every(Boolean), "fromEarlierSteps.safeOwners must list exactly 5 distinct nonzero Safe owners");
+  const pinnedOwners = Array.isArray(blochInc?.safe?.owners) ? blochInc.safe.owners.map((o) => typeof o === "string" ? o.toLowerCase() : null) : [];
+  if (blochInc) {
+    need(pinnedOwners.length === owners.length && owners.every((o) => pinnedOwners.includes(o)), "fromEarlierSteps.safeOwners differs from the owners in --bloch-inc");
+  }
+  // A typo or substituted copy in the form must not hide reuse of an owner
+  // named by the independently supplied Safe deployment pin.
+  const authorityOwners = [...new Set([...owners, ...pinnedOwners])];
   const safe = blochInc?.address ? blochInc.address.toLowerCase() : null;
   if (!blochInc) notes.push("no --bloch-inc file: the Safe address is not checked against the other keys");
   if (depositor) {
     // L1 (OPS-INITIAL-LIQUIDITY.md): a single-purpose key, nothing else may share it.
     const clash = [["lpRecipient", lp], ["keeper.address", keeper], ["fromEarlierSteps.dexDeployer", deployer], ["the Bloch Inc Safe", safe], ["fromEarlierSteps.busdcToken", token],
-      ...owners.map((o, i) => [`Safe owner ${i + 1}`, o])].filter(([, a]) => a === depositor);
+      ...authorityOwners.map((o, i) => [`Safe owner ${i + 1}`, o])].filter(([, a]) => a === depositor);
     for (const [name] of clash) problems.push(`firstDepositor equals ${name}: the depositor must be a new key that sends only the approve and the seed`);
   }
-  if (keeper && (keeper === lp || keeper === safe || owners.includes(keeper))) problems.push("keeper.address must be its own hot key (not the LP recipient, the Safe or a Safe owner)");
+  if (keeper && (keeper === lp || keeper === safe || authorityOwners.includes(keeper))) problems.push("keeper.address must be its own hot key (not the LP recipient, the Safe or a Safe owner)");
   if (lp && safe && lp === safe) notes.push("lpRecipient is the Safe: allowed, but the kit recommends a separate address (principal and protocol fee mix, every exit needs 3 of 5)");
-  if (lp && owners.includes(lp)) notes.push("lpRecipient is a Safe owner key: allowed, but that key then holds the seed position alone");
+  if (lp && authorityOwners.includes(lp)) notes.push("lpRecipient is a Safe owner key: allowed, but that key then holds the seed position alone");
 
   // 3. Seed, exit policy, floor.
   const fractionBps = BigInt(form.seed?.fractionBps ?? 5000);

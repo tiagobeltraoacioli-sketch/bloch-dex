@@ -21,6 +21,13 @@ Optional: `seed.fractionBps` (default 5000, at most 7000, the planner's limit: a
 
 `fromEarlierSteps.dexDeployer` (kit item 8), `safeOwners` (items 1-5, for the key-reuse check), `busdcToken` and `busdcCodeHash` (bridge deployment), `busdcBucketCapacity` (`10000000000`). The Safe address comes from `deploy-safe.mjs blochinc`.
 
+`safeOwners` must contain exactly five distinct addresses and match the owner
+set in `--bloch-inc`, irrespective of order. The keeper and first depositor
+are checked against that supplied Safe pin as well as the copied list.
+Omitting an owner from the form cannot bypass key separation. This offline
+comparison does not prove the Safe's current on-chain state; the deployment
+and finality gates independently verify its owners and threshold on chain.
+
 ## C. What "full exit" means (decision 5)
 
 The first-deposit rule only protects a pair with no shares. After the seed, 1,000 shares stay locked forever, so it never comes back. If the LP recipient removes everything (rehearsed, `scripts/ops/rehearse-opening.sh` section X):
