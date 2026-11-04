@@ -15,7 +15,7 @@ never settled a block, and its head is still the genesis `0x632e45ae…f468`.
 | `deployments/mainnet/dex-mainnet.config.json` | DEX: genesis pinned; caps; the pilot pair WBLCH/bUSDC. `source.revision` is `d18ab04`, the commit with the F1 fix; later commits change no contract (check with `git diff d18ab04 -- contracts foundry.toml`). `deployer.address`, `blochInc`, and the bUSDC `token`/`codeHash` are `TBD-owner` |
 | `scripts/staging/deploy-safe.mjs` (+ `safe-deploy-config.mjs`) | `validate`, `pending`, `plan`, `preflight`, `txs`, `blochinc` |
 | `scripts/staging/deploy-dex.mjs` | Existing `validate`/`plan`/`run`/`record`, plus `pending`, `preflight`, `txs` and `record --tx-hashes` |
-| `scripts/staging/sign-and-publish.sh` | Signs each planned transaction offline with `cast mktx` (explicit nonce, gas limit and fees; `--ledger` or any cast signer), publishes it with `cast publish`, and waits for the receipt |
+| `scripts/staging/sign-and-publish.sh` | Signs each planned transaction offline with `cast mktx` (explicit nonce, gas limit and fees; `--ledger` or any cast signer), journals its public fields before publication with `publish-recorded.mjs`, and waits for the receipt |
 | `scripts/staging/verify-deployment.mjs` | Post-deployment verification (details below) |
 | `scripts/staging/check-finality-gate-mainnet.mjs` | The schema-2 finality gate, with chain 700770, the genesis and the reviewed Safe plan pinned by the repository |
 | `scripts/staging/private-l2.sh`, `scripts/staging/rehearse-mainnet-package.sh` | Full dry run on anvil (chain 700770) or on a private L2 built from the v2.1 binaries at the real genesis |

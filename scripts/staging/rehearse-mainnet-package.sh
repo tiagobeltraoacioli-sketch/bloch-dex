@@ -363,6 +363,12 @@ EMPTY=$(must "$ISSUER_KEY" "$FACTORY" "$(cast calldata "createPair(address,addre
 must_fail "$ISSUER_KEY" "$EMPTY" "$(cast calldata "sync()")" 0 150000
 echo "sync refused on the empty pair $EMPTY" | tee -a "$EV/steps.log"
 
+if [ "$MODE" = anvil ]; then
+  log "4 publication journal: an accepted transaction with a lost response cannot be resubmitted"
+  node scripts/fixtures/rehearse-publication-journal.mjs "$RPC" "$WORK" > "$EV/response-lost.json"
+  echo "lost response retained its durable hash and nonce; no resubmission" | tee -a "$EV/steps.log"
+fi
+
 if [ -n "${RENDER_HOOK:-}" ]; then
   if [ "$MODE" = private-l2 ]; then
     FINALIZE_CMD="scripts/staging/private-l2.sh finalize $WORK/l2 $PORT"

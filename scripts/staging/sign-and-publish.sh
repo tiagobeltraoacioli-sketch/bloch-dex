@@ -2,7 +2,7 @@
 # Sign each transaction of an unsigned-transaction file (domain
 # postern.dex.raw-txs.v1, written by `deploy-safe.mjs txs` or
 # `deploy-dex.mjs txs`) offline with `cast mktx`, publish it with
-# `cast publish` (eth_sendRawTransaction) and wait for its receipt before the
+# `publish-recorded.mjs` (eth_sendRawTransaction) and wait for its receipt before the
 # next one. Nonce, gas limit and fees are explicit, so nothing depends on the
 # RPC's `pending` view or on gas estimation.
 #
@@ -16,6 +16,8 @@
 # transaction its latest nonce equals the transaction's nonce and a planned
 # creation address is still empty. After each receipt: status 1 and, for a
 # creation, the planned address. Hashes are appended to H in nonce order.
+# Public signed fields are durably recorded in H.journal.json before sending;
+# an existing journal or its lock requires inspection, never an automatic retry.
 #
 # With --plan, a createPair that reverts is accepted only if `deploy-dex.mjs
 # check-pair` finds the identical planned pair already there (front-run). Its
@@ -44,6 +46,10 @@ for v in TXS RPC CONFIRM MAXFEE TIP OUT; do [ -n "${!v}" ] || { echo "missing --
 [[ "$MAXFEE" =~ ^[1-9][0-9]*$ && "$TIP" =~ ^[0-9]+$ ]] || { echo "fees must be decimal wei" >&2; exit 2; }
 [ "$TIP" -le "$MAXFEE" ] || { echo "the priority fee exceeds the max fee" >&2; exit 2; }
 [ -e "$OUT" ] && { echo "$OUT exists; refusing to append to an old run" >&2; exit 1; }
+JOURNAL=$OUT.journal.json
+if [ -e "$JOURNAL" ] || [ -e "$JOURNAL.lock" ]; then
+  echo "$JOURNAL or its lock exists; inspect the recorded hashes before starting a new run" >&2; exit 1
+fi
 
 field() { node -e 'const t=require(require("path").resolve(process.argv[1]));const v=process.argv[2].split(".").reduce((o,k)=>o[k],t);console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$TXS" "$1"; }
 [ "$(field domain)" = postern.dex.raw-txs.v1 ] || { echo "not a raw transaction file" >&2; exit 1; }
@@ -68,7 +74,8 @@ for i in $(seq 0 $((COUNT - 1))); do
     RAW=$(cast mktx --chain "$CHAIN" --nonce "$NONCE" --gas-limit "$GAS" --gas-price "$MAXFEE" --priority-gas-price "$TIP" --value "$VALUE" "${SIGNER[@]}" "$TO" "$DATA")
   fi
   HASH=$(cast keccak "$RAW")
-  cast publish --rpc-url "$RPC" "$RAW" > /dev/null
+  printf '%s\n' "$RAW" | node "$(dirname "$0")/publish-recorded.mjs" --rpc "$RPC" --journal "$JOURNAL" \
+    --chain-id "$CHAIN" --genesis "$(field genesisHash)" --from "$FROM" --confirm "$CONFIRM" --label "$LABEL" > /dev/null
   echo "$LABEL nonce $NONCE published $HASH" >&2
   START=$(date +%s)
   while :; do

@@ -76,6 +76,19 @@ scripts/staging/sign-and-publish.sh --txs <file> --rpc http://127.0.0.1:18955 --
 
 It checks chain, genesis, signer and each nonce. Do not change the steps. Send them as soon as you have the plan: the plan is good only for the state it read. If only the approve landed, run `note-tx` with its hash and plan again; the new plan skips the approve.
 
+Before each publication, `<hashes-out>.journal.json` durably records the signed
+transaction's hash, nonce, destination, calldata, value, gas and fees, together
+with the plan's chain ID, genesis, sender and confirmation hash. The journal is
+mode `0600`; it contains no private key or signed raw transaction. `hashes-out`
+still contains only transactions whose receipts passed the script's checks.
+`published` in the journal means the RPC returned the expected hash, not that
+the transaction is mined or finalized. A lost response reports
+`publish-unconfirmed`; the transaction may already be accepted or mined.
+Inspect its recorded hash and the account nonce on the pinned chain before
+preparing another plan. An existing journal or lock stops a new run, and an
+unresolved journal entry prevents further publication. No nonce replacement,
+resubmission or fee increase happens automatically.
+
 On an L2 with the optional admission preflight enabled, the first `approve`
 can be refused before entering the spool when its new allowance slot needs a
 higher transaction-specific priority fee. Error `-32000` with
