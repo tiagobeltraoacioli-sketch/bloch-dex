@@ -19,7 +19,6 @@ import {
   ensureChain,
   sendTransaction,
   swapTransaction,
-  waitForReceipt,
 } from './devnet4/swap';
 import {
   quoteExactInput,
@@ -175,6 +174,7 @@ export default function MainnetLive({
   const pendingSwap = usePendingSwap({
     rpc,
     chainId: network.chainId,
+    deployment: state?.status === 'live' ? state.deployment : undefined,
     account: wallet.account?.address.toLowerCase() as Address | undefined,
     enabled: live && !!snapshot,
     now,
@@ -519,7 +519,11 @@ function PendingExcess({
         ...skimTransaction(pool.address, to),
         chainId: network.chainId,
       };
-      intentId = pendingSwap.reserve({ label: 'Skim to my wallet', deadline: 0n, sentAtMs: now() }, 'skim', tx);
+      intentId = pendingSwap.reserve(
+        { label: 'Skim to my wallet', deadline: 0n, sentAtMs: now() },
+        'skim',
+        tx,
+      );
       hash = await sendTransaction(wallet.provider, tx);
       pendingSwap.updateSubmission(intentId, hash);
       setNote('Skim submitted. Its outcome is tracked below; do not repeat it.');
@@ -553,7 +557,11 @@ function PendingExcess({
         : blocked && 'Swaps and deposits on that side revert until someone calls skim. '}
       Anyone can call <code>skim</code> on this pool; the caller receives the excess.{' '}
       {wallet.account && (
-        <button className="button secondary" disabled={busy || pendingSwap.open} onClick={() => void skim()}>
+        <button
+          className="button secondary"
+          disabled={busy || pendingSwap.open}
+          onClick={() => void skim()}
+        >
           Skim to my wallet
         </button>
       )}
@@ -709,9 +717,6 @@ function SwapPanel({
   const [reconfirmed, setReconfirmed] = useState(false);
   const [balances, setBalances] = useState<Balances | null>(null);
   const [allowance, setAllowance] = useState<bigint | null>(null);
-  // Allowance this session approved in a mined transaction that the finalized
-  // block may not include yet, per token.
-  const [approved, setApproved] = useState<Record<string, bigint>>({});
   const [steps, setSteps] = useState<Step[]>([]);
   const [busy, setBusy] = useState(false);
   const tracked = pendingSwap.tracked;
@@ -903,31 +908,35 @@ function SwapPanel({
       if (generation !== formGeneration.current)
         throw new Error('The form changed, so nothing was sent. Get a new quote.');
       const tx = { ...build(), chainId: network.chainId };
-      intentId = pendingSwap.reserve({ label, deadline: swapInfo?.deadline ?? 0n, sentAtMs: now(), ...(swapInfo ? { retry: swapInfo.retry } : {}) }, swapInfo ? 'swap' : 'approval', tx);
+      intentId = pendingSwap.reserve(
+        {
+          label,
+          deadline: swapInfo?.deadline ?? 0n,
+          sentAtMs: now(),
+          ...(swapInfo ? { retry: swapInfo.retry } : {}),
+        },
+        swapInfo ? 'swap' : 'approval',
+        tx,
+      );
       hash = await sendTransaction(provider, tx);
       pendingSwap.updateSubmission(intentId, hash);
-      if (swapInfo) {
-        setSteps((all) => all.slice(0, index));
-        return false;
-      }
-      update({ label, hash, state: 'pending', detail: 'Waiting for the next L2 block.' });
-      const receipt = await waitForReceipt(rpc, hash);
-      const ok = receipt.status === 'success';
-      update({
-        label,
-        hash,
-        state: 'pending',
-        detail: `Included in block ${receipt.blockNumber}; waiting for the canonical finalized outcome below.`,
-      });
-      return ok;
+      setSteps((all) => all.slice(0, index));
+      // The shared tracker authenticates the call and its finalized receipt.
+      // Approval allowance is reread from finalized state after settlement.
+      return false;
     } catch (error) {
       if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
         pendingSwap.rejected(intentId);
-        update({ label, state: 'failed', detail: 'The wallet request was rejected by you. Nothing was sent.' });
+        update({
+          label,
+          state: 'failed',
+          detail: 'The wallet request was rejected by you. Nothing was sent.',
+        });
       } else if (intentId) {
         pendingSwap.updateSubmission(intentId, hash);
         setSteps((all) => all.slice(0, index));
-      } else update({ label, state: 'failed', detail: message(error, 'No wallet request was sent.') });
+      } else
+        update({ label, state: 'failed', detail: message(error, 'No wallet request was sent.') });
       return false;
     } finally {
       setBusy(false);
@@ -992,13 +1001,7 @@ function SwapPanel({
       ? retryOffer(tracked.retry, tracked.cause)
       : null;
 
-  const effectiveAllowance =
-    input && !input.native
-      ? (allowance ?? 0n) > (approved[input.key] ?? 0n)
-        ? (allowance ?? 0n)
-        : (approved[input.key] ?? 0n)
-      : 0n;
-  const needsApproval = !!quote && !!input && !input.native && effectiveAllowance < quote.amountIn;
+  const needsApproval = !!quote && !!input && !input.native && (allowance ?? 0n) < quote.amountIn;
   const balanceIn =
     balances && input
       ? input.native
@@ -1221,9 +1224,7 @@ function SwapPanel({
                 void run(
                   `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`,
                   () => approveTransaction(d, input.token.address, account!, quote.amountIn),
-                ).then((ok) => {
-                  if (ok) setApproved((all) => ({ ...all, [input.key]: quote.amountIn }));
-                })
+                )
               }
             >
               Approve {formatAmount(quote.amountIn, input.token.decimals)} {input.label}
@@ -1249,7 +1250,14 @@ function SwapPanel({
           </button>
         </div>
       )}
-      {pendingSwap.storageProblem && <p role="alert" className="form-error">{pendingSwap.storageProblem} No new transaction can be sent.</p>}
+      {pendingSwap.storageProblem && (
+        <p role="alert" className="form-error">
+          {pendingSwap.storageProblem} No new transaction can be sent.
+        </p>
+      )}
+      {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
+        <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
+      )}
       {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
         <ol className="devnet4-steps" aria-label="Earlier transactions">
           {history
@@ -1303,6 +1311,58 @@ function SwapPanel({
           )}
         </ol>
       )}
+    </div>
+  );
+}
+
+function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof usePendingSwap> }) {
+  const [hash, setHash] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const recover = async () => {
+    if (busy) return;
+    setBusy(true);
+    setNote('Checking the saved transaction against the RPC…');
+    try {
+      await pendingSwap.recover(hash);
+      setNote(
+        'The transaction matches the saved intent. Waiting for its canonical finalized receipt.',
+      );
+    } catch (error) {
+      setNote(
+        message(error, 'The transaction could not be verified. The submission hold remains.'),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="notice" aria-label="Recover transaction tracking">
+      <p>
+        Check your wallet activity on this chain and copy the transaction hash. This check only
+        restores tracking after matching the saved sender, destination, call and value. It never
+        sends or replaces a transaction. Time passing or an empty explorer result cannot clear the
+        hold.
+      </p>
+      <label>
+        Transaction hash from wallet activity
+        <input
+          value={hash}
+          onChange={(event) => setHash(event.target.value)}
+          placeholder="0x…"
+          maxLength={66}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </label>
+      <button
+        className="button secondary"
+        disabled={busy || !hash.trim() || !!pendingSwap.storageProblem}
+        onClick={() => void recover()}
+      >
+        Check transaction hash
+      </button>
+      {note && <p role="status">{note}</p>}
     </div>
   );
 }

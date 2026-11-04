@@ -51,6 +51,7 @@ const GSMH_PAIR = '0xd71fc81263ba585561ad4d784a4bc096739927b4' as Address;
 const USD_PAIR = '0xd98230d9a13cb72f6d75e3bf46c01415027c8033' as Address;
 const ACCOUNT = '0x72dc623d4c03c996a3d20ed2674f24570e8acf44' as Address;
 const FINALIZED = { number: '0x1b8', hash: `0x${'f'.repeat(64)}`, timestamp: '0x6ad1a000' };
+const INCLUDED = { ...FINALIZED, number: '0x1ba', hash: `0x${'b'.repeat(64)}` };
 const NOW_MS = 1_792_200_000_000;
 const PLANNED = { caps: plannedCaps(), pairs: plannedPairs() };
 const norm = (value: unknown): unknown =>
@@ -129,6 +130,8 @@ type ChainState = {
   >;
   reserves: Record<string, [bigint, bigint, number]>;
   sent: { method: string; params: unknown[] }[];
+  transactions: Map<string, Record<string, unknown>>;
+  receiptSeen?: boolean;
 };
 
 const fakeState: { current: ChainState | null } = { current: null };
@@ -142,6 +145,7 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
       [USD_PAIR]: [5_571_215n, 272_177_475_029_800_010n, 1],
     },
     sent: [],
+    transactions: new Map(),
     ...change,
   };
   fakeState.current = state;
@@ -167,14 +171,36 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
         return params[0] === '0x0'
           ? { number: '0x0', hash: deployment.genesisHash }
           : params[0] === 'finalized'
-            ? FINALIZED
-            : null;
+            ? state.receiptSeen
+              ? INCLUDED
+              : FINALIZED
+            : params[0] === INCLUDED.number
+              ? INCLUDED
+              : params[0] === FINALIZED.number
+                ? FINALIZED
+                : null;
       case 'eth_getCode':
         return fakeCode.get(params[0] as Address) ?? '0x';
       case 'eth_getBalance':
         return '0xde0b6b3a7640000';
-      case 'eth_getTransactionReceipt':
-        return { status: '0x1', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
+      case 'eth_getTransactionByHash':
+        return state.transactions.get(String(params[0])) ?? null;
+      case 'eth_getTransactionReceipt': {
+        const tx = state.transactions.get(String(params[0]));
+        if (tx?.to === BUSDC) {
+          const decoded = decodeFunctionData({ abi: ERC20_ABI, data: tx.input as Hex });
+          if (decoded.functionName === 'approve')
+            state.allowance = (decoded.args as readonly [Address, bigint])[1];
+        }
+        state.receiptSeen = true;
+        return {
+          transactionHash: params[0],
+          blockHash: INCLUDED.hash,
+          status: '0x1',
+          blockNumber: INCLUDED.number,
+          gasUsed: '0x2a50a',
+        };
+      }
       case 'eth_call': {
         const { to, data } = params[0] as { to: Address; data: Hex };
         if (params[1] === 'latest' && state.latestDown) throw new Error('RPC down');
@@ -256,7 +282,16 @@ function fakeWallet(chain?: ChainState, connected = true) {
       if (method === 'eth_sendTransaction') {
         const tx = params![0] as { to: Address };
         if (chain && tx.to === BUSDC) chain.allowance = 0n; // the finalized block lags
-        return `0x${String(requests.length).padStart(64, '0')}`;
+        const hash = `0x${String(requests.length).padStart(64, '0')}`;
+        const body = params![0] as Record<string, unknown>;
+        chain?.transactions.set(hash, {
+          ...body,
+          hash,
+          input: body.data,
+          blockNumber: INCLUDED.number,
+          blockHash: INCLUDED.hash,
+        });
+        return hash;
       }
       throw new Error(`unexpected wallet call ${method}`);
     },
@@ -616,6 +651,16 @@ describe('mainnet route', () => {
       1_000_000n,
     ]);
 
+    // Finalized approval refreshes the pool snapshot and form. The next quote
+    // must use the finalized allowance, not a session-only receipt shortcut.
+    await screen.findByText(/Pools at finalized block 442/);
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'wGSMH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.clear(screen.getByLabelText('Deadline (minutes)'));
+    await user.type(screen.getByLabelText('Deadline (minutes)'), '60');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
     await user.click(screen.getByRole('button', { name: 'Swap' }));
     await waitFor(() =>
       expect(requests.filter((r) => r.method === 'eth_sendTransaction')).toHaveLength(2),
@@ -1118,14 +1163,29 @@ describe('swap panel safety fixes', () => {
     await waitFor(() => expect(swapButton().disabled).toBe(false));
   };
   /** Receipt replies under test control; everything else goes to the fake chain. */
-  const withReceipts =
-    (rpc: Rpc, reply: () => unknown, head?: () => unknown): Rpc =>
-    (m, p) => {
-      if (m === 'eth_getTransactionReceipt') return Promise.resolve().then(reply);
-      if (m === 'eth_getBlockByNumber' && p[0] === 'latest')
-        return Promise.resolve().then(head ?? (() => null));
+  const withReceipts = (rpc: Rpc, reply: () => unknown, head?: () => unknown): Rpc => {
+    let included = false;
+    let finalized = FINALIZED;
+    return async (m, p) => {
+      if (m === 'eth_getTransactionReceipt') {
+        const r = await reply();
+        if (r && typeof r === 'object') {
+          included = true;
+          return { transactionHash: p[0], blockHash: INCLUDED.hash, ...r };
+        }
+        return r;
+      }
+      if (m === 'eth_getBlockByNumber' && p[0] === 'latest') return head?.() ?? null;
+      if (m === 'eth_getBlockByNumber' && p[0] === 'finalized') {
+        const current = (await rpc(m, p)) as typeof FINALIZED;
+        finalized =
+          included && BigInt(current.number) < BigInt(INCLUDED.number) ? INCLUDED : current;
+        return finalized;
+      }
+      if (m === 'eth_getBlockByNumber' && p[0] === finalized.number) return finalized;
       return rpc(m, p);
     };
+  };
   const MINED = { status: '0x1', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
   const REVERTED = { status: '0x0', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
   const pause = (ms = 40) => new Promise((r) => setTimeout(r, ms));
@@ -1224,13 +1284,25 @@ describe('swap panel safety fixes', () => {
     it('retains an unknown wallet submission without a hash across reload', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
       let sends = 0;
-      const mounted = await mount(withReceipts(rpc, () => null), state, (wallet) => {
-        const request = wallet.provider!.request.bind(wallet.provider);
-        return { ...wallet, provider: { request: async (args) => {
-          if (args.method === 'eth_sendTransaction') { sends++; throw new Error('Response lost after submission'); }
-          return request(args);
-        } } };
-      });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction') {
+                  sends++;
+                  throw new Error('Response lost after submission');
+                }
+                return request(args);
+              },
+            },
+          };
+        },
+      );
       await quoted(mounted.user);
       await mounted.user.click(swapButton());
       await waitFor(() => expect(steps()).toContain('unknown'));
@@ -1238,7 +1310,10 @@ describe('swap panel safety fixes', () => {
       expect(swapButton().disabled).toBe(true);
       expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).not.toBeNull();
       mounted.view.unmount();
-      const again = await mount(withReceipts(rpc, () => null), state);
+      const again = await mount(
+        withReceipts(rpc, () => null),
+        state,
+      );
       await again.user.type(screen.getByLabelText('Amount'), '1');
       await again.user.click(screen.getByRole('button', { name: 'Get quote' }));
       await screen.findByLabelText('Quote');
@@ -1250,16 +1325,27 @@ describe('swap panel safety fixes', () => {
     it('persists the submission intent before the wallet can accept a request', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
       let savedBeforeWallet: string | null = null;
-      const mounted = await mount(withReceipts(rpc, () => null), state, (wallet) => {
-        const request = wallet.provider!.request.bind(wallet.provider);
-        return { ...wallet, provider: { request: async (args) => {
-          if (args.method === 'eth_sendTransaction') {
-            savedBeforeWallet = localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT));
-            throw new Error('Wallet disconnected');
-          }
-          return request(args);
-        } } };
-      });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction') {
+                  savedBeforeWallet = localStorage.getItem(
+                    pendingSwapKey(network.chainId, ACCOUNT),
+                  );
+                  throw new Error('Wallet disconnected');
+                }
+                return request(args);
+              },
+            },
+          };
+        },
+      );
       await quoted(mounted.user);
       await mounted.user.click(swapButton());
       await waitFor(() => expect(savedBeforeWallet).not.toBeNull());
@@ -1269,25 +1355,42 @@ describe('swap panel safety fixes', () => {
 
     it('refuses to call the wallet when the intent cannot be stored', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
-      const mounted = await mount(withReceipts(rpc, () => null), state);
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+      );
       await quoted(mounted.user);
-      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage denied'); });
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new Error('storage denied');
+      });
       try {
         await mounted.user.click(swapButton());
         await waitFor(() => expect(steps()).toContain('could not save'));
         expect(mounted.sends()).toHaveLength(0);
-      } finally { setItem.mockRestore(); }
+      } finally {
+        setItem.mockRestore();
+      }
     });
 
     it('clears the intent only for explicit wallet user rejection', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
-      const mounted = await mount(withReceipts(rpc, () => null), state, (wallet) => {
-        const request = wallet.provider!.request.bind(wallet.provider);
-        return { ...wallet, provider: { request: async (args) => {
-          if (args.method === 'eth_sendTransaction') throw Object.assign(new Error('User rejected request'), { code: 4001 });
-          return request(args);
-        } } };
-      });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction')
+                  throw Object.assign(new Error('User rejected request'), { code: 4001 });
+                return request(args);
+              },
+            },
+          };
+        },
+      );
       await quoted(mounted.user);
       await mounted.user.click(swapButton());
       await waitFor(() => expect(steps()).toContain('rejected by you'));
@@ -1297,13 +1400,23 @@ describe('swap panel safety fixes', () => {
 
     it('a rejected-looking message without code 4001 cannot clear the hold', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
-      const mounted = await mount(withReceipts(rpc, () => null), state, (wallet) => {
-        const request = wallet.provider!.request.bind(wallet.provider);
-        return { ...wallet, provider: { request: async (args) => {
-          if (args.method === 'eth_sendTransaction') throw new Error('User rejected request; transaction underpriced');
-          return request(args);
-        } } };
-      });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction')
+                  throw new Error('User rejected request; transaction underpriced');
+                return request(args);
+              },
+            },
+          };
+        },
+      );
       await quoted(mounted.user);
       await mounted.user.click(swapButton());
       await waitFor(() => expect(steps()).toContain('unknown'));
@@ -1313,20 +1426,34 @@ describe('swap panel safety fixes', () => {
 
     it('an approval with a lost reply blocks every later wallet step after reload', async () => {
       const { rpc, state } = fakeChain();
-      const mounted = await mount(withReceipts(rpc, () => null), state, (wallet) => {
-        const request = wallet.provider!.request.bind(wallet.provider);
-        return { ...wallet, provider: { request: async (args) => {
-          if (args.method === 'eth_sendTransaction') throw new Error('RPC response lost');
-          return request(args);
-        } } };
-      });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction') throw new Error('RPC response lost');
+                return request(args);
+              },
+            },
+          };
+        },
+      );
       await mounted.user.type(screen.getByLabelText('Amount'), '1');
       await mounted.user.click(screen.getByRole('button', { name: 'Get quote' }));
       await mounted.user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
       await waitFor(() => expect(steps()).toContain('unknown'));
-      expect(JSON.parse(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))!).intent.kind).toBe('approval');
+      expect(
+        JSON.parse(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))!).intent.kind,
+      ).toBe('approval');
       mounted.view.unmount();
-      const again = await mount(withReceipts(rpc, () => null), state);
+      const again = await mount(
+        withReceipts(rpc, () => null),
+        state,
+      );
       await again.user.type(screen.getByLabelText('Amount'), '1');
       await again.user.click(screen.getByRole('button', { name: 'Get quote' }));
       const approve = await screen.findByRole('button', { name: 'Approve 1 bUSDC' });
@@ -1335,22 +1462,41 @@ describe('swap panel safety fixes', () => {
     });
 
     it('an unknown skim shares the same durable hold as swaps and approvals', async () => {
-      const { rpc, state } = fakeChain({ allowance: 10n ** 12n, excess: {
-        [USD_PAIR]: { excess0: 10n, excess1: 0n, blocksInflow0: false, blocksInflow1: false },
-      } });
-      const mounted = await mount(withReceipts(rpc, () => null), state, (wallet) => {
-        const request = wallet.provider!.request.bind(wallet.provider);
-        return { ...wallet, provider: { request: async (args) => {
-          if (args.method === 'eth_sendTransaction') throw new Error('RPC response lost');
-          return request(args);
-        } } };
+      const { rpc, state } = fakeChain({
+        allowance: 10n ** 12n,
+        excess: {
+          [USD_PAIR]: { excess0: 10n, excess1: 0n, blocksInflow0: false, blocksInflow1: false },
+        },
       });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction') throw new Error('RPC response lost');
+                return request(args);
+              },
+            },
+          };
+        },
+      );
       await mounted.user.click(screen.getByRole('button', { name: 'Skim to my wallet' }));
       await waitFor(() => expect(steps()).toContain('unknown'));
-      expect(JSON.parse(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))!).intent.kind).toBe('skim');
+      expect(
+        JSON.parse(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))!).intent.kind,
+      ).toBe('skim');
       mounted.view.unmount();
-      await mount(withReceipts(rpc, () => null), state);
-      expect((screen.getByRole('button', { name: 'Skim to my wallet' }) as HTMLButtonElement).disabled).toBe(true);
+      await mount(
+        withReceipts(rpc, () => null),
+        state,
+      );
+      expect(
+        (screen.getByRole('button', { name: 'Skim to my wallet' }) as HTMLButtonElement).disabled,
+      ).toBe(true);
       expect(swapButton().disabled).toBe(true);
     });
 
@@ -1445,8 +1591,13 @@ describe('swap panel safety fixes', () => {
     it('keeps the original durable intent if saving the returned hash fails', async () => {
       const original = Storage.prototype.setItem;
       let writes = 0;
-      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key, value) {
-        if (key === pendingSwapKey(network.chainId, ACCOUNT) && ++writes > 1) throw new Error('blocked');
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key,
+        value,
+      ) {
+        if (key === pendingSwapKey(network.chainId, ACCOUNT) && ++writes > 1)
+          throw new Error('blocked');
         original.call(this, key, value);
       });
       try {
@@ -1455,12 +1606,99 @@ describe('swap panel safety fixes', () => {
           withReceipts(rpc, () => null),
           state,
         );
-        await waitFor(() => expect(steps()).toContain('earlier submission hold remains after reload'));
-        expect(parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))?.hash).toBeUndefined();
+        await waitFor(() =>
+          expect(steps()).toContain('earlier submission hold remains after reload'),
+        );
+        expect(
+          parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))?.hash,
+        ).toBeUndefined();
         expect(swapButton().disabled).toBe(true);
       } finally {
         setItem.mockRestore();
       }
+    });
+
+    it('settles the original intent even if every returned-hash write failed', async () => {
+      const original = Storage.prototype.setItem;
+      let writes = 0;
+      const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key,
+        value,
+      ) {
+        if (key === pendingSwapKey(network.chainId, ACCOUNT) && ++writes > 1)
+          throw new Error('quota');
+        original.call(this, key, value);
+      });
+      try {
+        const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+        let receipt: unknown = null;
+        await sendOne(
+          withReceipts(rpc, () => receipt),
+          state,
+        );
+        await waitFor(() =>
+          expect(steps()).toContain('earlier submission hold remains after reload'),
+        );
+        receipt = MINED;
+        await waitFor(() => expect(steps()).toContain('verified canonical and finalized'));
+        expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+      } finally {
+        setItem.mockRestore();
+      }
+    });
+
+    it('never overwrites a newer durable hold with a delayed recovery response', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let delayed = false;
+      let release: () => void = () => {};
+      const pending = withReceipts(rpc, () => null);
+      const chain: Rpc = async (m, p) => {
+        if (m === 'eth_getTransactionByHash' && delayed) {
+          delayed = false;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        return pending(m, p);
+      };
+      const { user, sends } = await mount(chain, state, (wallet) => {
+        const original = wallet.provider!;
+        return {
+          ...wallet,
+          provider: {
+            async request(args) {
+              const result = await original.request(args);
+              if (args.method === 'eth_sendTransaction') throw new Error('reply lost');
+              return result;
+            },
+          },
+        };
+      });
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(steps()).toContain('no transaction hash was returned'));
+      const key = pendingSwapKey(network.chainId, ACCOUNT);
+      const old = JSON.parse(localStorage.getItem(key)!);
+      const next = JSON.stringify({
+        ...old,
+        hash: undefined,
+        label: 'Newer submission',
+        intent: { ...old.intent, id: '87654321-4321-4321-4321-cba987654321' },
+      });
+      await user.type(
+        screen.getByLabelText('Transaction hash from wallet activity'),
+        [...state.transactions.keys()][0],
+      );
+      delayed = true;
+      await user.click(screen.getByRole('button', { name: 'Check transaction hash' }));
+      await waitFor(() => expect(delayed).toBe(false));
+      localStorage.setItem(key, next);
+      release();
+      await screen.findByText(/saved submission hold changed/);
+      expect(localStorage.getItem(key)).toBe(next);
+      expect(swapButton().disabled).toBe(true);
+      expect(sends()).toHaveLength(1);
     });
 
     it('holds a record stored by another tab when Swap is pressed', async () => {
@@ -1475,7 +1713,7 @@ describe('swap panel safety fixes', () => {
         JSON.stringify({ hash: HASH, label: 'Other tab', deadline: '9', sentAtMs: NOW_MS }),
       );
       await user.click(swapButton());
-      await waitFor(() => expect(steps()).toContain('Other tab: pending'));
+      await waitFor(() => expect(screen.getByText(/This older submission/)).toBeTruthy());
       expect(sends()).toHaveLength(0);
       expect(swapButton().disabled).toBe(true);
     });
@@ -1504,28 +1742,121 @@ describe('swap panel safety fixes', () => {
       expect(sends()).toHaveLength(1);
     });
 
-    it('releases only when the latest block is past the deadline and no receipt exists', async () => {
-      const swap = { hash: HASH, label: 'x', deadline: 1_000n, sentAtMs: 0 };
-      const after = 1_001_000;
-      const fake =
-        (receipt: () => unknown, head: () => unknown): Rpc =>
-        async (m) =>
-          m === 'eth_getTransactionReceipt' ? receipt() : head();
-      const past = () => ({ timestamp: '0x3e9' });
-      const atDeadline = () => ({ timestamp: '0x3e8' });
-      const fail = () => {
-        throw new Error('HTTP 502');
+    it('restores a lost wallet reply only after matching the supplied hash to the saved call', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let acceptedHash = '';
+      let receipt: unknown = null;
+      const chain = withReceipts(rpc, () => receipt);
+      const first = await mount(chain, state, (wallet) => {
+        const original = wallet.provider!;
+        return {
+          ...wallet,
+          provider: {
+            async request(args) {
+              const result = await original.request(args);
+              if (args.method === 'eth_sendTransaction') {
+                acceptedHash = String(result);
+                throw new Error('wallet disconnected after acceptance');
+              }
+              return result;
+            },
+          },
+        };
+      });
+      await quoted(first.user);
+      await first.user.click(swapButton());
+      await waitFor(() => expect(steps()).toContain('no transaction hash was returned'));
+      first.view.unmount();
+      const again = await mount(chain, state);
+      const recovery = await screen.findByLabelText('Recover transaction tracking');
+      const input = within(recovery).getByLabelText('Transaction hash from wallet activity');
+      const check = within(recovery).getByRole('button', { name: 'Check transaction hash' });
+      state.transactions.set(HASH, {
+        ...state.transactions.get(acceptedHash)!,
+        hash: HASH,
+        input: '0x0000',
+      });
+      await again.user.type(input, HASH);
+      await again.user.click(check);
+      await within(recovery).findByText(/does not match the saved sender/);
+      expect(
+        parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))?.hash,
+      ).toBeUndefined();
+      expect(swapButton().disabled).toBe(true);
+      await again.user.clear(input);
+      await again.user.type(input, acceptedHash);
+      await again.user.click(check);
+      await within(recovery).findByText(/matches the saved intent/);
+      expect(
+        parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))?.hash,
+      ).toBe(acceptedHash);
+      expect(swapButton().disabled).toBe(true);
+      receipt = MINED;
+      await waitFor(() => expect(steps()).toContain('verified canonical and finalized'));
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+      expect(first.sends()).toHaveLength(1);
+      expect(again.sends()).toHaveLength(0);
+    });
+
+    it('does not release a wallet-returned hash for another call or before canonical finality', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let bodyMatches = false;
+      let final = false;
+      const receipts = withReceipts(rpc, () => MINED);
+      const chain: Rpc = async (method, params) => {
+        if (method === 'eth_getTransactionByHash') {
+          const body = (await rpc(method, params)) as Record<string, unknown>;
+          return bodyMatches ? body : { ...body, input: '0x0000' };
+        }
+        if (method === 'eth_getBlockByNumber' && params[0] === 'finalized')
+          return final ? INCLUDED : FINALIZED;
+        return receipts(method, params);
       };
-      const none = () => null;
-      const poll = (r: Rpc, at = after) => pollPendingSwap(r, swap, at);
-      expect((await poll(fake(none, past), 1_000_000)).kind).toBe('waiting');
-      expect((await poll(fake(none, past))).kind).toBe('expired');
-      // The router accepts deadline >= block.timestamp.
-      expect((await poll(fake(none, atDeadline))).kind).toBe('waiting');
-      expect((await poll(fake(none, none))).kind).toBe('waiting');
-      expect((await poll(fake(fail, past))).kind).toBe('unreachable');
-      expect((await poll(fake(none, fail))).kind).toBe('unreachable');
-      expect((await poll(fake(() => MINED, past))).kind).toBe('receipt');
+      const { sends } = await sendOne(chain, state);
+      await waitFor(() => expect(steps()).toContain('outcome is unknown'));
+      expect(swapButton().disabled).toBe(true);
+      bodyMatches = true;
+      await waitFor(() => expect(steps()).toContain('Waiting for the next L2 block'));
+      await pause();
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).not.toBeNull();
+      expect(swapButton().disabled).toBe(true);
+      final = true;
+      await waitFor(() => expect(steps()).toContain('verified canonical and finalized'));
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+      expect(sends()).toHaveLength(1);
+    });
+
+    it('keeps a saved intent blocked when the verified deployment changes after reload', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const chain = withReceipts(rpc, () => null);
+      const first = await sendOne(chain, state);
+      const key = pendingSwapKey(network.chainId, ACCOUNT);
+      const saved = localStorage.getItem(key);
+      first.view.unmount();
+      const { wallet, requests } = fakeWallet(state);
+      render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment: { ...deployment, feeTo: ACCOUNT } })}
+          rpc={chain}
+          wallet={wallet}
+          planned={PLANNED}
+          now={() => NOW_MS}
+          receiptPollMs={5}
+        />,
+      );
+      await screen.findByText(
+        /saved submission belongs to a different chain, genesis, deployment or account/,
+      );
+      expect(localStorage.getItem(key)).toBe(saved);
+      expect(swapButton().disabled).toBe(true);
+      expect(requests.filter((r) => r.method === 'eth_sendTransaction')).toHaveLength(0);
+    });
+
+    it('retains an older record without verifiable intent even after its deadline', async () => {
+      const swap = { hash: HASH, label: 'x', deadline: 1_000n, sentAtMs: 0 };
+      const { rpc } = fakeChain();
+      expect((await pollPendingSwap(rpc, swap, 2_000_000)).kind).toBe('unreachable');
     });
 
     it('marks a swap with no receipt after an hour as unknown and keeps holding', async () => {
@@ -1694,6 +2025,7 @@ describe('swap panel safety fixes', () => {
       'function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)',
     ]);
     const BLOCK = {
+      number: '0x1ba',
       hash: `0x${'b'.repeat(64)}`,
       parentHash: `0x${'c'.repeat(64)}`,
       timestamp: `0x${(NOW_MS / 1000 + 600).toString(16)}`,
