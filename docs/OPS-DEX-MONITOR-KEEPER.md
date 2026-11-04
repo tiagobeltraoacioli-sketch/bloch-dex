@@ -132,6 +132,19 @@ reservation. Errors such as `nonce too low` or `already known` do not establish
 that the transaction was rejected before publication. The keeper waits for
 reconciliation instead of treating those errors as zero spend.
 
+An optional L2 admission preflight can return error code `-32000` with
+`data.kind = "sequencer-fee-underpriced"` before writing the transaction to its
+spool. The keeper accepts that as `publish-refused` only when the correlated
+response identifies its exact signed transaction and contains consistent fee,
+gas, storage-slot and head fields. It reports `feeRequirement` using decimal
+integer strings; fee fields are wei per gas, and `freshSlotPriceWei` is wei per
+new storage slot. Review `requiredPriorityFeePerGas` and `requiredMaxFeePerGas`
+against the existing fee ceiling and budget before signing again. The keeper
+does not raise its limits or retry publication in response to the quote. The
+quote applies to `latest-state-next-block` at the reported head; changed state
+or policy can change it, and inclusion is not guaranteed. Future nonces are not
+simulated by this preflight and can remain pending.
+
 ## Both directions closed by excess
 
 Unrecorded balance can stop swaps both ways until someone calls `skim`. A swap into a full side reverts at any size. A swap out of an overfull side passes if it takes out at least that side's balance above its cap, so a closure is only as wide as the donation.

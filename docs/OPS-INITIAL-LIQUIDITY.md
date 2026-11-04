@@ -76,6 +76,17 @@ scripts/staging/sign-and-publish.sh --txs <file> --rpc http://127.0.0.1:18955 --
 
 It checks chain, genesis, signer and each nonce. Do not change the steps. Send them as soon as you have the plan: the plan is good only for the state it read. If only the approve landed, run `note-tx` with its hash and plan again; the new plan skips the approve.
 
+On an L2 with the optional admission preflight enabled, the first `approve`
+can be refused before entering the spool when its new allowance slot needs a
+higher transaction-specific priority fee. Error `-32000` with
+`data.kind = "sequencer-fee-underpriced"` identifies the transaction and head,
+and provides `requiredPriorityFeePerGas` and `requiredMaxFeePerGas` as hex wei
+quantities. Review both against your limits before signing again with explicit
+`--priority-fee-wei` and `--max-fee-wei` values. This quote does not guarantee
+inclusion or apply to other transactions; a different head or policy can change
+it. Future nonces are not simulated by this preflight. Do not record a refused,
+unmined hash with `note-tx`; a generic error or timeout does not prove refusal.
+
 Record a sent approve or seed if you need to plan again: after the approve, or after a failed seed. It writes `deployment.depositorTransactions` in the gate file, only if the whole history checks out:
 
 The account nonce is read at a hash-pinned block. Every recorded transaction

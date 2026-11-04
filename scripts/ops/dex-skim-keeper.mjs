@@ -43,6 +43,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statS
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { sequencerFeeRequirement } from "../staging/sequencer-fee-error.mjs";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
   blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, isAtKCeiling, keccak256,
@@ -319,6 +320,16 @@ export async function runKeeper(gate, options, state, deps) {
       const publishedHash = await request("eth_sendRawTransaction", [raw]);
       if (publishedHash !== hash) throw new RpcError("eth_sendRawTransaction returned a different transaction hash");
     } catch (error) {
+      const feeRequirement = sequencerFeeRequirement(error, hash);
+      if (feeRequirement) {
+        // This specific admission response is emitted before the node's spool
+        // write. Never infer rejection from a generic error message or code.
+        entry.status = "refused";
+        entry.spentWei = "0";
+        state.nextAllowedAt = now + options.cooldownSeconds;
+        save(state);
+        return result(CRIT, "publish-refused", { hash, detail: error.message, feeRequirement });
+      }
       // A lost response, a malformed reply, or a generic RPC error can arrive
       // after acceptance. Even "nonce too low" can mean this transaction landed.
       // Keep the saved reservation; a later pass reconciles its hash and nonce.

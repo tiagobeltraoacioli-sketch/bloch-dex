@@ -584,6 +584,49 @@ for (const [name, reply] of [
 
 // ---- seed plan
 
+for (const valid of [true, false]) test(`keeper: ${valid ? "verified" : "unrelated"} sequencer fee refusal ${valid ? "reports explicit fees without retrying" : "keeps its pending reservation"}`, async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  let signs = 0, publishes = 0;
+  const publish = createRequest("http://unused", {
+    allowed: ["eth_sendRawTransaction"],
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      publishes++;
+      return Response.json({ jsonrpc: "2.0", id: body.id, error: {
+        code: -32000, message: "transaction underpriced for sequencer policy",
+        data: {
+          kind: "sequencer-fee-underpriced", scope: "latest-state-next-block",
+          transactionHash: valid ? keccak256(body.params[0]) : blockHash(99n),
+          headHash: blockHash(10n), headNumber: "0xa", baseFeePerGas: "0x3b9aca00",
+          requiredPriorityFeePerGas: "0x77359400", requiredMaxFeePerGas: "0xb2d05e00",
+          effectivePriorityFeePerGas: "0x3b9aca00", gasUsed: "0x13880", freshSlots: "0x1",
+          chargedFreshSlots: "0x1", freshSlotPriceWei: "0x5af3107a4000",
+        },
+      } });
+    },
+  });
+  const request = (method, params) => method === "eth_sendRawTransaction" ? publish(method, params) : node.request(method, params);
+  const options = keeperOptions();
+  const original = { ...options };
+  const deps = { ...keeperDeps(node), request, sign: async (tx) => { signs++; return signer(tx); } };
+  const outcome = await runKeeper(gate, options, state, deps);
+  assert.equal(outcome.action, valid ? "publish-refused" : "publish-unconfirmed");
+  assert.equal(outcome.level, valid ? CRIT : WARN);
+  assert.equal(state.txs[0].status, valid ? "refused" : "pending");
+  assert.equal(state.txs[0].spentWei, valid ? "0" : undefined);
+  if (valid) {
+    assert.equal(outcome.feeRequirement.requiredPriorityFeePerGas, "2000000000");
+    assert.equal(outcome.feeRequirement.requiredMaxFeePerGas, "3000000000");
+    assert.equal(outcome.feeRequirement.transactionHash, state.txs[0].hash);
+    assert.equal(state.nextAllowedAt, deps.now + options.cooldownSeconds);
+  } else assert.equal(outcome.feeRequirement, undefined);
+  assert.equal(signs, 1);
+  assert.equal(publishes, 1);
+  assert.deepEqual(options, original);
+  assert.equal(JSON.parse(deps.saves.at(-1)).txs[0].status, state.txs[0].status);
+});
+
 const WAD = 10n ** 18n;
 const side = (reserve, cap, balance = reserve) => ({ reserve, balance, cap });
 const QUOTE_CAP = 1_000_000_000n;
