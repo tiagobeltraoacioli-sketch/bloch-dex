@@ -121,7 +121,8 @@ async function receipt(hash) {
 }
 
 async function send(label, { to, data, value = 0n, gas = 5_000_000n }, expectedStatus = "0x1") {
-  const nonce = BigInt(await rpc("eth_getTransactionCount", [account.address, "latest"]));
+  const head = await rpc("eth_getBlockByNumber", ["latest", false]);
+  const nonce = BigInt(await rpc("eth_getTransactionCount", [account.address, { blockHash: head.hash, requireCanonical: true }]));
   assert.ok(nonce <= BigInt(Number.MAX_SAFE_INTEGER));
   const raw = await account.signTransaction({ type: "eip1559", chainId: CHAIN_ID, nonce: Number(nonce),
     ...(to ? { to } : {}), data, value, gas, maxFeePerGas: MAX_FEE, maxPriorityFeePerGas: TIP });
