@@ -1,23 +1,31 @@
-// Tracks a sent swap until its outcome is known. A failed receipt poll says
-// nothing about the swap, so the Swap button stays disabled through RPC errors,
-// a remount of the panel and, through localStorage, a page reload.
-//
-// A swap with no receipt is released in one case only: the latest block is past
-// the swap's deadline and the receipt read after it is still empty. Any later
-// inclusion then reverts with BDEX: EXPIRED, so a new swap cannot be a double.
+// One durable wallet-submission hold per chain/account, shared by swaps,
+// approvals and skims. The intent exists before the wallet is called; losing
+// the reply does not establish that no transaction was sent.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Address, Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
-import { RECEIPT_TIMEOUT_MS, parseReceipt, type Receipt } from '../devnet4/swap';
+import { RECEIPT_TIMEOUT_MS, parseReceipt, type Receipt, type TransactionRequest } from '../devnet4/swap';
 import type { RevertCause, SwapRetryInfo } from './retry';
 
 export type PendingSwap = {
-  hash: Hex;
+  hash?: Hex;
   label: string;
   deadline: bigint;
   sentAtMs: number;
   /** What a revert explanation and the one retry need (DEX-5). Absent in older records. */
   retry?: SwapRetryInfo;
+  intent?: SubmissionIntent;
+  note?: string;
+};
+export type SubmissionIntent = {
+  id: string;
+  kind: 'swap' | 'approval' | 'skim';
+  chainId: number;
+  from: Address;
+  to: Address;
+  data: Hex;
+  value: string;
+  gas: string;
 };
 export type TrackedSwap = PendingSwap & {
   state: 'pending' | 'unknown' | 'mined' | 'failed' | 'expired';
@@ -42,6 +50,17 @@ export const pendingSwapKey = (chainId: number, account: Address) =>
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const UINT = /^[0-9]{1,78}$/;
+
+function parseIntent(value: unknown): SubmissionIntent | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.id !== 'string' || !/^[0-9a-f-]{36}$/.test(v.id) ||
+      !['swap', 'approval', 'skim'].includes(String(v.kind)) || !Number.isSafeInteger(v.chainId) || Number(v.chainId) <= 0 ||
+      typeof v.from !== 'string' || !ADDRESS.test(v.from) || typeof v.to !== 'string' || !ADDRESS.test(v.to) ||
+      typeof v.data !== 'string' || !/^0x(?:[0-9a-f]{2}){0,65536}$/.test(v.data) ||
+      typeof v.value !== 'string' || !UINT.test(v.value) || typeof v.gas !== 'string' || !UINT.test(v.gas)) return undefined;
+  return v as SubmissionIntent;
+}
 
 /** The stored retry fields; anything malformed drops only these fields. */
 function parseRetry(v: unknown): SwapRetryInfo | undefined {
@@ -80,9 +99,10 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as Record<string, unknown>;
+    const intent = parseIntent(v.intent);
     if (
-      typeof v.hash !== 'string' ||
-      !/^0x[0-9a-f]{64}$/.test(v.hash) ||
+      (v.hash === undefined ? !intent : typeof v.hash !== 'string' || !/^0x[0-9a-f]{64}$/.test(v.hash)) ||
+      (v.intent !== undefined && !intent) ||
       typeof v.label !== 'string' ||
       typeof v.deadline !== 'string' ||
       !/^[0-9]{1,20}$/.test(v.deadline) ||
@@ -92,11 +112,13 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
       return null;
     const retry = parseRetry(v.retry);
     return {
-      hash: v.hash as Hex,
+      ...(v.hash ? { hash: v.hash as Hex } : {}),
       label: v.label,
       deadline: BigInt(v.deadline),
       sentAtMs: v.sentAtMs,
       ...(retry ? { retry } : {}),
+      ...(intent ? { intent } : {}),
+      ...(typeof v.note === 'string' ? { note: v.note.slice(0, 500) } : {}),
     };
   } catch {
     return null;
@@ -104,11 +126,10 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
 }
 
 function readStored(key: string): PendingSwap | null {
-  try {
-    return parsePendingSwap(localStorage.getItem(key));
-  } catch {
-    return null;
-  }
+  const raw = localStorage.getItem(key);
+  const parsed = parsePendingSwap(raw);
+  if (raw !== null && !parsed) throw new Error('The saved submission record is unreadable. Check wallet activity before using this page again.');
+  return parsed;
 }
 
 function writeStored(key: string, swap: PendingSwap): boolean {
@@ -118,21 +139,24 @@ function writeStored(key: string, swap: PendingSwap): boolean {
       amountIn: swap.retry.amountIn.toString(),
       minimumOut: swap.retry.minimumOut.toString(),
     };
-    localStorage.setItem(
-      key,
-      JSON.stringify({ ...swap, deadline: swap.deadline.toString(), ...(retry ? { retry } : {}) }),
-    );
-    return true;
+    const encoded = JSON.stringify({ ...swap, deadline: swap.deadline.toString(), ...(retry ? { retry } : {}) });
+    localStorage.setItem(key, encoded);
+    return localStorage.getItem(key) === encoded;
   } catch {
     return false;
   }
 }
 
-function removeStored(key: string) {
+const identityOf = (swap: PendingSwap) => swap.intent?.id ?? swap.hash;
+
+function removeStored(key: string, swap: PendingSwap): boolean {
   try {
+    const retained = readStored(key);
+    if (retained && identityOf(retained) !== identityOf(swap)) return false;
     localStorage.removeItem(key);
+    return localStorage.getItem(key) === null;
   } catch {
-    // Nothing was stored, or storage is blocked.
+    return false;
   }
 }
 
@@ -142,10 +166,11 @@ export async function pollPendingSwap(
   swap: PendingSwap,
   nowMs: number,
 ): Promise<SwapPoll> {
+  if (!swap.hash) return { kind: 'waiting' };
   try {
     // The head is read before the receipt, so an empty receipt covers that head.
     let pastDeadline = false;
-    if (BigInt(Math.floor(nowMs / 1000)) > swap.deadline) {
+    if ((!swap.intent || swap.intent.kind === 'swap') && BigInt(Math.floor(nowMs / 1000)) > swap.deadline) {
       const head = (await rpc('eth_getBlockByNumber', ['latest', false])) as {
         timestamp?: string;
       } | null;
@@ -168,13 +193,18 @@ function describeOpen(
   saved: boolean,
 ): TrackedSwap {
   const late = nowMs - swap.sentAtMs >= RECEIPT_TIMEOUT_MS;
+  if (!swap.hash) return {
+    ...swap,
+    state: 'unknown',
+    detail: `Wallet submission outcome unknown: no transaction hash was returned. ${DO_NOT_RESEND} Check your wallet activity and explorer; a timeout or fee error does not prove that nothing was sent.${swap.note ? ` ${swap.note}` : ''}`,
+  };
   const what =
     poll === 'unreachable'
       ? 'The RPC did not answer the last receipt check, so the swap may still be pending.'
       : late
         ? 'No receipt after an hour, so the outcome is unknown.'
         : 'Waiting for the next L2 block.';
-  const lost = saved ? '' : ' This browser could not save it, so a reload loses this hold.';
+  const lost = saved ? '' : ' The hash update could not be saved; the earlier submission hold remains after reload.';
   return {
     ...swap,
     state: late ? 'unknown' : 'pending',
@@ -207,6 +237,9 @@ export function usePendingSwap({
 }) {
   const key = account ? pendingSwapKey(chainId, account) : null;
   const [tracked, setTracked] = useState<TrackedSwap | null>(null);
+  const [storageProblem, setStorageProblem] = useState<string | null>(null);
+  const activeKey = useRef(key);
+  activeKey.current = key;
   // Holds what localStorage may refuse, so a blocked browser keeps the hold until reload.
   const memory = useRef(new Map<string, { swap: PendingSwap; saved: boolean }>());
   const latest = useRef({ now, onMined, explain });
@@ -220,8 +253,13 @@ export function usePendingSwap({
   }, []);
 
   useEffect(() => {
-    const held = enabled && key ? recall(key) : null;
-    setTracked(held ? describeOpen(held.swap, 'waiting', latest.current.now(), held.saved) : null);
+    try {
+      const held = enabled && key ? recall(key) : null;
+      setStorageProblem(null);
+      setTracked(held ? describeOpen(held.swap, 'waiting', latest.current.now(), held.saved) : null);
+    } catch (error) {
+      setStorageProblem(error instanceof Error ? error.message : 'Saved submissions are unavailable.');
+    }
   }, [enabled, key, recall]);
 
   const openHash = isOpen(tracked) ? tracked!.hash : null;
@@ -237,8 +275,9 @@ export function usePendingSwap({
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const forget = () => {
+      if (!removeStored(key, swap)) return false;
       memory.current.delete(key);
-      removeStored(key);
+      return true;
     };
     const tick = async () => {
       const poll = await pollPendingSwap(rpc, swap, latest.current.now());
@@ -246,7 +285,10 @@ export function usePendingSwap({
       if (poll.kind === 'receipt') {
         const { status, blockNumber, gasUsed } = poll.receipt;
         const ok = status === 'success';
-        forget();
+        if (!forget()) {
+          setStorageProblem('The receipt was found, but the saved submission hold could not be cleared.');
+          return;
+        }
         setTracked({
           ...swap,
           state: ok ? 'mined' : 'failed',
@@ -259,12 +301,12 @@ export function usePendingSwap({
         if (!ok && swap.retry && why) {
           const cause = await why(swap, poll.receipt).catch((): RevertCause => 'unknown');
           // Not gated on `live`: this effect ends as soon as the swap is no longer open.
-          setTracked((t) => (t?.hash === swap.hash && t.state === 'failed' ? { ...t, cause } : t));
+          setTracked((t) => (t && t.hash === swap.hash && t.state === 'failed' ? { ...t, cause } : t));
         }
         return;
       }
       if (poll.kind === 'expired') {
-        forget();
+        if (!forget()) return;
         setTracked({
           ...swap,
           state: 'expired',
@@ -283,29 +325,60 @@ export function usePendingSwap({
     };
   }, [enabled, key, openHash, rpc, intervalMs, recall]);
 
-  /** Start holding a swap the wallet has just sent. */
-  const begin = useCallback(
-    (swap: PendingSwap) => {
-      if (!key) return;
-      const saved = writeStored(key, swap);
-      memory.current.set(key, { swap, saved });
-      setTracked(describeOpen(swap, 'waiting', swap.sentAtMs, saved));
+  /** Persist before invoking eth_sendTransaction. A storage failure prevents sending. */
+  const reserve = useCallback(
+    (swap: Omit<PendingSwap, 'hash' | 'intent'>, kind: SubmissionIntent['kind'], tx: TransactionRequest) => {
+      if (!key || !account) throw new Error('Connect the wallet before submitting.');
+      if (recall(key)) throw new Error('Another submission is unresolved. Do not resend.');
+      const intent: SubmissionIntent = {
+        id: crypto.randomUUID(), kind, chainId, from: tx.from.toLowerCase() as Address,
+        to: tx.to.toLowerCase() as Address, data: tx.data.toLowerCase() as Hex,
+        value: tx.value.toString(), gas: tx.gas.toString(),
+      };
+      if (intent.from !== account.toLowerCase() || tx.chainId !== chainId || !parseIntent(intent)) throw new Error('The transaction does not match the connected account and chain.');
+      const held = { ...swap, intent };
+      if (!writeStored(key, held)) throw new Error('This browser could not save the submission intent. Nothing was sent. Enable storage before trying again.');
+      memory.current.set(key, { swap: held, saved: true });
+      setTracked(describeOpen(held, 'waiting', swap.sentAtMs, true));
+      return intent.id;
     },
-    [key],
+    [key, account, chainId, recall],
   );
+
+  const updateSubmission = useCallback((id: string, hash?: Hex, note?: string) => {
+    if (!key) return;
+    const held = recall(key);
+    if (!held || held.swap.intent?.id !== id) throw new Error('The submission hold changed. Do not resend.');
+    const swap = { ...held.swap, ...(hash ? { hash } : {}), ...(note ? { note } : {}) };
+    const saved = writeStored(key, swap);
+    memory.current.set(key, { swap, saved });
+    if (activeKey.current === key) setTracked(describeOpen(swap, 'waiting', latest.current.now(), saved));
+  }, [key, recall]);
+
+  const rejected = useCallback((id: string) => {
+    if (!key) return;
+    const held = recall(key);
+    if (!held || held.swap.intent?.id !== id || held.swap.hash || !removeStored(key, held.swap)) return;
+    memory.current.delete(key);
+    if (activeKey.current === key) setTracked(null);
+  }, [key, recall]);
 
   /** True when a swap is open, including one sent from another tab since this one loaded. */
   const holds = useCallback(() => {
     if (!key) return false;
-    const held = recall(key);
+    let held;
+    try { held = recall(key); } catch (error) {
+      setStorageProblem(error instanceof Error ? error.message : 'Saved submissions are unavailable.');
+      return true;
+    }
     if (!held) return false;
     setTracked((t) =>
-      t?.hash === held.swap.hash && isOpen(t)
+      t && identityOf(t) === identityOf(held.swap) && isOpen(t)
         ? t
         : describeOpen(held.swap, 'waiting', latest.current.now(), held.saved),
     );
     return true;
   }, [key, recall]);
 
-  return { tracked, open: isOpen(tracked), begin, holds };
+  return { tracked, storageProblem, open: isOpen(tracked) || storageProblem !== null, reserve, updateSubmission, rejected, holds };
 }

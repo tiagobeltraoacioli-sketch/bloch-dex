@@ -17,7 +17,6 @@ import {
   approveTransaction,
   deadlineFrom,
   ensureChain,
-  ReceiptUnknownError,
   sendTransaction,
   swapTransaction,
   waitForReceipt,
@@ -240,7 +239,8 @@ export default function MainnetLive({
             network={network}
             rpc={rpc}
             wallet={wallet}
-            onMined={() => setGeneration((g) => g + 1)}
+            pendingSwap={pendingSwap}
+            now={now}
             heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
           />
           <SwapPanel
@@ -481,13 +481,15 @@ function PendingExcess({
   network,
   rpc,
   wallet,
-  onMined,
+  pendingSwap,
+  now,
 }: {
   pool: LivePool;
   network: MainnetNetwork;
   rpc: Rpc;
   wallet: Devnet4Wallet;
-  onMined: () => void;
+  pendingSwap: ReturnType<typeof usePendingSwap>;
+  now: () => number;
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -504,25 +506,31 @@ function PendingExcess({
     [e.excess1, pool.token1],
   ] as const;
   async function skim() {
-    if (!wallet.provider || !wallet.account) return;
+    if (!wallet.provider || !wallet.account || pendingSwap.holds()) return;
     setBusy(true);
     setNote('Confirm in your wallet.');
+    let intentId: string | undefined;
+    let hash: Hex | undefined;
     try {
       await ensureChain(wallet.provider, addChainParameters(network));
+      await requireFinality(rpc);
       const to = wallet.account.address.toLowerCase() as Address;
-      const hash = await sendTransaction(wallet.provider, {
+      const tx = {
         ...skimTransaction(pool.address, to),
         chainId: network.chainId,
-      });
-      const receipt = await waitForReceipt(rpc, hash);
-      setNote(
-        receipt.status === 'success'
-          ? `Skim mined in block ${receipt.blockNumber}. The pool updates once that block is finalized.`
-          : `Skim reverted in block ${receipt.blockNumber}.`,
-      );
-      if (receipt.status === 'success') onMined();
+      };
+      intentId = pendingSwap.reserve({ label: 'Skim to my wallet', deadline: 0n, sentAtMs: now() }, 'skim', tx);
+      hash = await sendTransaction(wallet.provider, tx);
+      pendingSwap.updateSubmission(intentId, hash);
+      setNote('Skim submitted. Its outcome is tracked below; do not repeat it.');
     } catch (error) {
-      setNote(message(error, 'Rejected.'));
+      if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
+        pendingSwap.rejected(intentId);
+        setNote('The wallet request was rejected by you. Nothing was sent.');
+      } else if (intentId) {
+        pendingSwap.updateSubmission(intentId, hash);
+        setNote('Skim submission outcome unknown. Check wallet activity; do not repeat it.');
+      } else setNote(message(error, 'No wallet request was sent.'));
     } finally {
       setBusy(false);
     }
@@ -545,7 +553,7 @@ function PendingExcess({
         : blocked && 'Swaps and deposits on that side revert until someone calls skim. '}
       Anyone can call <code>skim</code> on this pool; the caller receives the excess.{' '}
       {wallet.account && (
-        <button className="button secondary" disabled={busy} onClick={() => void skim()}>
+        <button className="button secondary" disabled={busy || pendingSwap.open} onClick={() => void skim()}>
           Skim to my wallet
         </button>
       )}
@@ -559,14 +567,16 @@ function PoolsTable({
   network,
   rpc,
   wallet,
-  onMined,
+  pendingSwap,
+  now,
   heldToken,
 }: {
   snapshot: Snapshot;
   network: MainnetNetwork;
   rpc: Rpc;
   wallet: Devnet4Wallet;
-  onMined: () => void;
+  pendingSwap: ReturnType<typeof usePendingSwap>;
+  now: () => number;
   /** The bUSDC token while its exits to Ethereum are held or paused. */
   heldToken?: Address;
 }) {
@@ -617,7 +627,8 @@ function PoolsTable({
                   network={network}
                   rpc={rpc}
                   wallet={wallet}
-                  onMined={onMined}
+                  pendingSwap={pendingSwap}
+                  now={now}
                 />
                 {heldToken &&
                   [p.token0, p.token1].some(
@@ -866,17 +877,16 @@ function SwapPanel({
   }, [requote]);
 
   /**
-   * One wallet step. With `onSent` the caller takes over the transaction once it
-   * has a hash. Without it, this waits for the receipt here. Only a failure before
-   * there is a hash means the transaction failed.
+   * Persist the intent before calling the wallet. A missing hash after that
+   * boundary is an unknown outcome, unless the user explicitly rejected it.
    */
   async function run(
     label: string,
     build: () => Parameters<typeof sendTransaction>[1],
-    onSent?: (hash: Hex) => void,
+    swapInfo?: { deadline: bigint; retry: SwapRetryInfo },
   ) {
     const provider = wallet.provider;
-    if (!provider) return false;
+    if (!provider || pendingSwap.holds()) return false;
     const generation = formGeneration.current;
     setBusy(true);
     const index = steps.length;
@@ -886,14 +896,17 @@ function SwapPanel({
     };
     update({ label, state: 'waiting', detail: 'Confirm in your wallet.' });
     let hash: Hex | undefined;
+    let intentId: string | undefined;
     try {
       await ensureChain(provider, addChainParameters(network));
       await requireFinality(rpc);
       if (generation !== formGeneration.current)
         throw new Error('The form changed, so nothing was sent. Get a new quote.');
-      hash = await sendTransaction(provider, { ...build(), chainId: network.chainId });
-      if (onSent) {
-        onSent(hash);
+      const tx = { ...build(), chainId: network.chainId };
+      intentId = pendingSwap.reserve({ label, deadline: swapInfo?.deadline ?? 0n, sentAtMs: now(), ...(swapInfo ? { retry: swapInfo.retry } : {}) }, swapInfo ? 'swap' : 'approval', tx);
+      hash = await sendTransaction(provider, tx);
+      pendingSwap.updateSubmission(intentId, hash);
+      if (swapInfo) {
         setSteps((all) => all.slice(0, index));
         return false;
       }
@@ -903,23 +916,18 @@ function SwapPanel({
       update({
         label,
         hash,
-        state: ok ? 'mined' : 'failed',
-        detail: ok
-          ? `Mined in block ${receipt.blockNumber}. Balances update once that block is finalized.`
-          : `Reverted in block ${receipt.blockNumber} (gas ${receipt.gasUsed}).`,
+        state: 'pending',
+        detail: `Included in block ${receipt.blockNumber}; waiting for the canonical finalized outcome below.`,
       });
       return ok;
     } catch (error) {
-      update(
-        hash && error instanceof ReceiptUnknownError
-          ? {
-              label,
-              hash,
-              state: 'unknown',
-              detail: 'No receipt after an hour; check the explorer before you repeat this step.',
-            }
-          : { label, hash, state: 'failed', detail: message(error, 'Rejected.') },
-      );
+      if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
+        pendingSwap.rejected(intentId);
+        update({ label, state: 'failed', detail: 'The wallet request was rejected by you. Nothing was sent.' });
+      } else if (intentId) {
+        pendingSwap.updateSubmission(intentId, hash);
+        setSteps((all) => all.slice(0, index));
+      } else update({ label, state: 'failed', detail: message(error, 'No wallet request was sent.') });
       return false;
     } finally {
       setBusy(false);
@@ -959,7 +967,7 @@ function SwapPanel({
             account!,
             deadline,
           ),
-        (hash) => pendingSwap.begin({ hash, label, deadline, sentAtMs: now(), retry }),
+        { deadline, retry },
       );
     } finally {
       setBusy(false);
@@ -1208,7 +1216,7 @@ function SwapPanel({
           {needsApproval && quote && input && (
             <button
               className="button primary"
-              disabled={busy || staleForm}
+              disabled={busy || staleForm || pendingSwap.open}
               onClick={() =>
                 void run(
                   `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`,
@@ -1241,6 +1249,7 @@ function SwapPanel({
           </button>
         </div>
       )}
+      {pendingSwap.storageProblem && <p role="alert" className="form-error">{pendingSwap.storageProblem} No new transaction can be sent.</p>}
       {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
         <ol className="devnet4-steps" aria-label="Earlier transactions">
           {history
@@ -1271,7 +1280,7 @@ function SwapPanel({
           {tracked && (
             <li data-state={tracked.state}>
               <strong>{tracked.label}</strong>: {tracked.state}{' '}
-              <ExplorerLink network={network} kind="tx" value={tracked.hash} />
+              {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
               <span className="muted"> {tracked.detail}</span>
               {tracked.state === 'failed' && tracked.retry && tracked.cause && (
                 <p className="notice" role="status" aria-label="Why the swap reverted">
