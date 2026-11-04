@@ -283,17 +283,13 @@ export async function runKeeper(gate, options, state, deps) {
     state.txs = [...windowTxs(state, now), entry];
     save(state); // Before publishing: a crash after this point cannot overspend.
     try {
-      await request("eth_sendRawTransaction", [raw]);
+      const publishedHash = await request("eth_sendRawTransaction", [raw]);
+      if (publishedHash !== hash) throw new RpcError("eth_sendRawTransaction returned a different transaction hash");
     } catch (error) {
-      if (error instanceof RpcError && /eth_sendRawTransaction at /.test(error.message)) {
-        // Transport failure: it may have arrived. Stay in flight; reconcile decides.
-        return result(WARN, "publish-unconfirmed", { hash, detail: error.message });
-      }
-      entry.status = "refused";
-      entry.spentWei = "0";
-      state.nextAllowedAt = now + options.cooldownSeconds;
-      save(state);
-      return result(CRIT, "publish-refused", { hash, detail: error.message });
+      // A lost response, a malformed reply, or a generic RPC error can arrive
+      // after acceptance. Even "nonce too low" can mean this transaction landed.
+      // Keep the saved reservation; a later pass reconciles its hash and nonce.
+      return result(WARN, "publish-unconfirmed", { hash, detail: error.message });
     }
     return result(OK, "sent", { hash, ...plan });
   } catch (error) {

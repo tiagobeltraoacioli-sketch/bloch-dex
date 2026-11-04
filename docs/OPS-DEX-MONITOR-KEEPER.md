@@ -126,6 +126,12 @@ The state file is the budget. If it is damaged the keeper refuses to run; it doe
 
 State is written before publishing. A crash after that leaves a `pending` entry; the next run reconciles it by receipt, then by nonce, then by timeout. A transaction whose fate is unknown keeps its reservation until it leaves the 24 h window. The keeper also waits for `latest` to reach a receipt's block, since the settled RPC can serve a receipt first.
 
+A publication timeout, HTTP failure, malformed response, different result hash,
+or generic JSON-RPC error reports `publish-unconfirmed` and keeps that same
+reservation. Errors such as `nonce too low` or `already known` do not establish
+that the transaction was rejected before publication. The keeper waits for
+reconciliation instead of treating those errors as zero spend.
+
 ## Both directions closed by excess
 
 Unrecorded balance can stop swaps both ways until someone calls `skim`. A swap into a full side reverts at any size. A swap out of an overfull side passes if it takes out at least that side's balance above its cap, so a closure is only as wide as the donation.

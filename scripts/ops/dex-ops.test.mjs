@@ -480,16 +480,38 @@ test("keeper: refuses on a changed pair, a failed simulation, the wrong signer, 
   assert.equal(dead.level, UNKNOWN);
 });
 
-test("keeper: a transport failure on publish stays in flight and keeps the reservation", async () => {
+for (const [name, reply] of [
+  ["lost response", () => { throw new Error("ECONNRESET"); }],
+  ["timeout", () => new Promise(() => {})],
+  ["HTTP failure", () => Response.json({ error: "upstream failed" }, { status: 502 })],
+  ["truncated body", () => new Response('{"jsonrpc":"2.0",', { headers: { "content-type": "application/json" } })],
+  ["wrong response ID", (body) => Response.json({ jsonrpc: "2.0", id: body.id + 1, error: { code: -32000, message: "refused" } })],
+  ["malformed error", (body) => Response.json({ jsonrpc: "2.0", id: body.id, error: { code: "-32000", message: "refused" } })],
+  ["generic node error", (body) => Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32603, message: "internal failure after publication" } })],
+  ["nonce too low", (body) => Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32000, message: "nonce too low" } })],
+  ["already known", (body) => Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32000, message: "already known" } })],
+  ["unrelated result hash", (body) => Response.json({ jsonrpc: "2.0", id: body.id, result: `0x${"99".repeat(32)}` })],
+]) test(`keeper: ${name} on publish keeps the reservation and waits for reconciliation`, async () => {
   const node = fakeNode({ balances: ABOVE_CAP });
   const state = emptyKeeperState();
+  let published = 0;
+  const publish = createRequest("http://unused", {
+    allowed: ["eth_sendRawTransaction"], timeoutMs: 15,
+    fetchImpl: async (_url, options) => { published++; return reply(JSON.parse(options.body)); },
+  });
   const request = async (m, p) => {
-    if (m === "eth_sendRawTransaction") throw new RpcError("eth_sendRawTransaction at http://x: timeout");
+    if (m === "eth_sendRawTransaction") return publish(m, p);
     return node.request(m, p);
   };
-  const outcome = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node), request });
+  const deps = { ...keeperDeps(node), request };
+  const outcome = await runKeeper(gate, keeperOptions(), state, deps);
   assert.equal(outcome.action, "publish-unconfirmed");
+  assert.equal(outcome.level, WARN);
+  assert.equal(published, 1);
   assert.equal(state.txs[0].status, "pending");
+  assert.ok(BigInt(state.txs[0].reservedWei) > 0n);
+  assert.equal(state.txs[0].spentWei, undefined);
+  assert.equal(JSON.parse(deps.saves.at(-1)).txs[0].status, "pending");
   assert.equal((await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100))).action, "wait-in-flight");
   assert.equal(node.chain.sent.length, 0);
 });
