@@ -187,8 +187,18 @@ try {
   assert.deepEqual(await read(pair, pairA, "getReserves"), afterSwap);
   const liquidity = await read(pair, pairA, "balanceOf", [account.address]);
   await invoke("approve LP removal", pair, pairA, "approve", [router, liquidity / 2n]);
-  await invoke("remove liquidity and unwrap", router, routerA, "removeLiquidityBLCH",
+  const nativeBefore = BigInt(await rpc("eth_getBalance", [account.address, "latest"]));
+  const supplyBefore = await read(wrapped, wrappedA, "totalSupply");
+  const tokensBefore = await read(token, tokenA, "balanceOf", [account.address]);
+  const removal = await invoke("remove liquidity and unwrap", router, routerA, "removeLiquidityBLCH",
     [token, liquidity / 2n, 1n, 1n, account.address, deadline]);
+  const returnedNative = BigInt(await rpc("eth_getBalance", [account.address, "latest"])) - nativeBefore +
+    BigInt(removal.gasUsed) * BigInt(removal.effectiveGasPrice);
+  assert.ok(returnedNative > 0n);
+  assert.equal(supplyBefore - await read(wrapped, wrappedA, "totalSupply"), returnedNative,
+    "burned wrapped supply reaches the recipient as native currency after gas");
+  assert.ok(await read(token, tokenA, "balanceOf", [account.address]) > tokensBefore);
+  assert.equal(await read(pair, pairA, "balanceOf", [account.address]), liquidity - liquidity / 2n);
   const remaining = await read(pair, pairA, "getReserves");
   assert.ok(remaining[0] > 0n && remaining[1] > 0n);
   assert.ok(remaining[0] < afterSwap[0] && remaining[1] < afterSwap[1]);
