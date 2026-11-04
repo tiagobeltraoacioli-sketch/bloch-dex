@@ -6,6 +6,7 @@
 
 import { createRequire } from "node:module";
 import { checkBridgeRecord, verifyBridgeToken } from "./bridge-token-identity.mjs";
+import { createRpcTransport } from "./rpc-transport.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, toFunctionSelector } = requireFromFrontend("viem");
@@ -617,17 +618,9 @@ async function evaluateFinalityGateV2(config, request, bridgeTokens = [], bridge
 }
 
 export function createJsonRpcRequest(url, { fetchImpl = fetch, timeoutMs = 30_000 } = {}) {
-  let id = 0;
+  const request = createRpcTransport(url, { fetchImpl, timeoutMs });
   return async (method, params) => {
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    refuse(response.ok, `${method} returned HTTP ${response.status}`);
-    const body = await response.json();
-    refuse(!body.error, `${method} failed: ${body.error?.message ?? "error"}`);
-    return body.result;
+    try { return await request(method, params); }
+    catch (error) { throw new Error(`finality gate: ${error.message}`, { cause: error }); }
   };
 }

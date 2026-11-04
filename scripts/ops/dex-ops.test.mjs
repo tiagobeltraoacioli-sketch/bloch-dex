@@ -206,7 +206,7 @@ test("createRequest refuses a method outside its list before any request", async
 test("createRequest separates node failures from reverts", async () => {
   const fail = createRequest("http://x", { fetchImpl: async () => { throw new Error("ECONNREFUSED"); } });
   await assert.rejects(fail("eth_call", []), RpcError);
-  const revert = createRequest("http://x", { fetchImpl: async () => ({ ok: true, json: async () => ({ error: { message: "execution reverted", data: "0x" } }) }) });
+  const revert = createRequest("http://x", { fetchImpl: async (_url, options) => Response.json({ jsonrpc: "2.0", id: JSON.parse(options.body).id, error: { code: 3, message: "execution reverted", data: "0x" } }) });
   await assert.rejects(revert("eth_call", []), CallReverted);
 });
 

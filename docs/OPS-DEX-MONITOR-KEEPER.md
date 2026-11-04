@@ -3,6 +3,15 @@
 Tools: `scripts/ops/dex-monitor.mjs`, `scripts/ops/dex-skim-keeper.mjs`, example units in `scripts/ops/systemd/`.
 Both read the schema-2 gate file written by `deploy-dex.mjs record`, so they have no second list of addresses. Node 24 and `frontend/node_modules` (for viem) are required.
 
+The gate and operations clients require a JSON-RPC 2.0 response with the exact
+request ID and either a result or a valid error, following the
+[response specification](https://www.jsonrpc.org/specification#response_object).
+They refuse redirects and non-JSON responses, cap streamed bodies at 4 MiB,
+and bound the complete request (including body reads) to 30 seconds for the
+gate or 20 seconds for operations. Protocol/transport failures remain UNKNOWN
+in the monitor; explicit execution-revert errors remain CRIT. For a storage
+log scan exceeding the response bound, reduce `--log-range` and retry.
+
 ## Monitor
 
 Read-only: it holds no key and its RPC client refuses any method outside a read list. Run it against your own settled RPC.

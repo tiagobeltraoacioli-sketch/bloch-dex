@@ -4,6 +4,7 @@
 
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { createRpcTransport, JsonRpcResponseError } from "../staging/rpc-transport.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const viem = requireFromFrontend("viem");
@@ -41,28 +42,18 @@ export class RpcError extends Error {}
 export class CallReverted extends Error {}
 
 export function createRequest(url, { allowed = READ_ONLY_METHODS, timeoutMs = 20_000, fetchImpl = fetch } = {}) {
-  let id = 0;
+  const methods = new Set(allowed);
+  const request = createRpcTransport(url, { fetchImpl, timeoutMs });
   return async (method, params) => {
-    if (!allowed.includes(method)) throw new Error(`refused: ${method} is not on this tool's method list`);
-    let body;
+    if (!methods.has(method)) throw new Error(`refused: ${method} is not on this tool's method list`);
     try {
-      const response = await fetchImpl(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      body = await response.json();
+      return await request(method, params);
     } catch (error) {
-      throw new RpcError(`${method} at ${url}: ${error.message}`);
+      if (error instanceof JsonRpcResponseError && (error.rpcError.code === 3 || /revert/i.test(error.rpcError.message))) {
+        throw new CallReverted(error.message, { cause: error });
+      }
+      throw new RpcError(error.message, { cause: error });
     }
-    if (body.error) {
-      const message = String(body.error.message ?? "error");
-      if (body.error.data !== undefined || /revert/i.test(message)) throw new CallReverted(`${method}: ${message}`);
-      throw new RpcError(`${method}: ${message}`);
-    }
-    return body.result;
   };
 }
 
