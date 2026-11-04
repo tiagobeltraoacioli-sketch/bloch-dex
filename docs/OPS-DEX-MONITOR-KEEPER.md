@@ -37,7 +37,7 @@ Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means 
 | `pending_excess[finalized]` | finalized | material | blocking: it has stood about 100 minutes, so the keeper did not clear it |
 | `closed_by_excess` | latest, finalized | soft: only swaps below the floor stop | hard: an excess at or above the floor closes the pair |
 | `k_ceiling` | latest | at the ceiling: swap fees reach neither LPs nor the Safe | |
-| `keeper_budget` | keeper state file, with `--keeper-state` | 3 or more skims that moved nothing in 24 h, or half the count used | count used up, or the state file is unreadable |
+| `keeper_budget` | keeper state file, with `--keeper-state` | 3 or more skims that moved nothing in 24 h, half the count used, or unresolved publication older than 2 h | count used up, or the state file is unreadable |
 | `price_drift` | both | 10% between finalized and latest | 50% |
 | `fee_accrued` | finalized | | facts only: minted LP, pending LP, reserve share |
 | `fee_tracking` | finalized | | `kLast` is zero on a seeded pair |
@@ -90,8 +90,8 @@ Signing goes through `cast mktx`; the keeper never sees the key. Use a fresh add
 
 | Limit | Option | Default |
 |---|---|---|
-| Budget, rolling 24 h, worst case reserved before signing | `--budget-wei` | 0.05 BLCH |
-| Transactions per 24 h | `--max-tx` | 48 |
+| Budget, rolling 24 h from canonical inclusion, plus unresolved reservations | `--budget-wei` | 0.05 BLCH |
+| Included transactions per 24 h, plus unresolved and recently refused attempts | `--max-tx` | 48 |
 | Share of the count a soft closure may use | `--soft-share-bps` | 2,500 |
 | Share of the count kept for a hard closure | `--hard-reserve-bps` | 2,500 |
 | Lowest tip, and the top of the climbing range | `--tip-wei`, `--max-tip-wei` | 1 gwei, 8 gwei |
@@ -100,7 +100,7 @@ Signing goes through `cast mktx`; the keeper never sees the key. Use a fresh add
 | Floor | `--floor-bps` | 100 |
 | Floor at the k ceiling, in wei of the wrapped token at the pool price | `--ceiling-floor-wei` | `--budget-wei` / `--max-tx` = 0.00104 BLCH |
 | Time between transactions | `--cooldown-s` | 1,800 s |
-| Unconfirmed transaction expiry | `--pending-timeout-s` | 7,200 s |
+| Unconfirmed transaction warning threshold; never expires its reservation | `--pending-timeout-s` | 7,200 s |
 
 Exit status: 0 nothing needed, sent, waiting or cooling down; 1 needs attention (budget, count, fee, gas, funding, backoff); 2 refused (identity, code hash, simulation, publication); 3 the node did not answer.
 
@@ -124,7 +124,30 @@ The state file is the budget. If it is damaged the keeper refuses to run; it doe
 
 ### Crash behaviour
 
-State is written before publishing. A crash after that leaves a `pending` entry; the next run reconciles it by receipt, then by nonce, then by timeout. A transaction whose fate is unknown keeps its reservation until it leaves the 24 h window. A receipt stays pending until both `latest` and `finalized` reach its block. Before reducing the reservation to actual gas spent, the keeper verifies the receipt's transaction hash, sender, pair, status, gas accounting and canonical inclusion, then rechecks the finalized checkpoint. Missing finality retains the reservation; inconsistent receipt data reports `rpc-failed` without releasing it.
+State is written before publishing. A crash after that leaves a `pending` entry.
+Every unresolved transaction keeps its full reservation and blocks a new nonce,
+even after 24 hours. `--pending-timeout-s` raises `wait-in-flight` to WARN; it
+does not expire the transaction or authorize a replacement. A higher account
+nonce without the recorded hash's receipt reports `nonce-used-without-receipt`
+and requires investigation. The keeper never bumps fees, cancels or submits a
+new nonce to resolve this uncertainty.
+
+A receipt stays pending until both `latest` and `finalized` reach its block.
+Before reducing the reservation to actual gas spent, the keeper verifies the
+receipt's transaction hash, sender, pair, status, gas accounting and canonical
+inclusion, then rechecks the finalized checkpoint. It records `includedAt`,
+`includedBlockNumber` and `includedBlockHash`; the rolling budget and count use
+that block's timestamp, so a delayed inclusion cannot spend an old day's budget
+in the current day. Missing finality retains the reservation; inconsistent
+receipt data reports `rpc-failed` without releasing it.
+
+Older `expired` or `replaced` entries, refusals without the verified preflight
+kind, and settled entries without canonical inclusion metadata are unresolved
+on upgrade. They are rechecked one per pass and block publication until the
+history is resolved. Preserve the state file while investigating; resetting it
+would discard outstanding reservations. The monitor uses the same accounting
+rules and warns about unresolved entries older than its default two-hour
+threshold.
 
 A publication timeout, HTTP failure, malformed response, different result hash,
 or generic JSON-RPC error reports `publish-unconfirmed` and keeps that same

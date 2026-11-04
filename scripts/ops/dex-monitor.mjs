@@ -25,6 +25,7 @@
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { evaluateFinalityGate, verifySafe } from "../staging/finality-gate.mjs";
+import { KEEPER_PENDING_TIMEOUT_SECONDS, keeperCharge, keeperNeedsReconciliation, keeperWindow } from "./keeper-accounting.mjs";
 import {
   CRIT, CallReverted, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN,
   blockRef, call, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, excessFloor,
@@ -222,12 +223,18 @@ export function checkKeeperState(path, now, add, maxTx = 48) {
     if (error.code === "ENOENT") return add("keeper_budget", OK, "no keeper transaction recorded yet");
     return add("keeper_budget", CRIT, `keeper state ${path} is unreadable: ${error.message}`);
   }
-  const txs = (state.txs ?? []).filter((t) => Number(now) - t.at < 86_400);
-  const wasted = txs.filter((t) => t.status === "wasted" || t.status === "reverted").length;
-  const used = txs.length;
-  const spent = txs.reduce((sum, t) => sum + BigInt(t.spentWei ?? t.reservedWei ?? 0), 0n);
-  const level = used >= maxTx ? CRIT : wasted >= 3 || used * 2 >= maxTx ? WARN : OK;
-  add("keeper_budget", level, `${used} of ${maxTx} transactions in 24 h, ${wasted} moved nothing, ${spent} wei spent${wasted >= 3 ? "; someone is winning skims against the keeper, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}`);
+  try {
+    const txs = keeperWindow({ txs: state.txs ?? [] }, now);
+    const unresolved = txs.filter(keeperNeedsReconciliation);
+    const overdue = unresolved.some((tx) => Number(now) - tx.at > KEEPER_PENDING_TIMEOUT_SECONDS);
+    const wasted = txs.filter((t) => t.status === "wasted" || t.status === "reverted").length;
+    const used = txs.length;
+    const charged = txs.reduce((sum, t) => sum + keeperCharge(t), 0n);
+    const level = used >= maxTx ? CRIT : overdue || wasted >= 3 || used * 2 >= maxTx ? WARN : OK;
+    add("keeper_budget", level, `${used} of ${maxTx} transactions counted (24 h inclusion window plus ${unresolved.length} unresolved), ${wasted} moved nothing, ${charged} wei spent or reserved${overdue ? "; unresolved publication needs reconciliation; no new nonce is allowed" : ""}${wasted >= 3 ? "; someone is winning skims against the keeper, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}`);
+  } catch (error) {
+    add("keeper_budget", CRIT, `keeper accounting is unreadable: ${error.message}`);
+  }
 }
 
 async function checkPair({ pair, deployment, latest, finalized, add, facts, options }, request) {

@@ -55,6 +55,7 @@ function fakeNode(overrides = {}) {
     now,
     baseFee: 1_000_000_000n,
     finalizedNumber: 5n,
+    blockTimestamps: {},
     reserves: [500_000_000n, 5n * 10n ** 18n],
     balances: [500_000_000n, 5n * 10n ** 18n],
     finalizedReserves: null,
@@ -109,7 +110,7 @@ function fakeNode(overrides = {}) {
         if (tag === "0x0") return { hash: GENESIS };
         if (tag === "finalized" && chain.noFinalized) return null;
         const number = tag === "finalized" ? chain.finalizedNumber : tag === "latest" ? 10n : BigInt(tag);
-        return { number: `0x${number.toString(16)}`, hash: blockHash(number), timestamp: `0x${(now - (tag === "finalized" ? 6000n : 300n)).toString(16)}`, baseFeePerGas: `0x${chain.baseFee.toString(16)}` };
+        return { number: `0x${number.toString(16)}`, hash: blockHash(number), timestamp: `0x${(chain.blockTimestamps[number] ?? now - (tag === "finalized" ? 6000n : 300n)).toString(16)}`, baseFeePerGas: `0x${chain.baseFee.toString(16)}` };
       }
       case "eth_getCode": {
         const [a] = params;
@@ -164,8 +165,10 @@ function keeperDeps(node, now = 1_000_000) {
   return { request: node.request, sign: signer, now, save: (s) => saves.push(JSON.stringify(s)), saves, random: () => 0n };
 }
 const ABOVE_CAP = [CAP0 + 1n, 5n * 10n ** 18n];
+const settledFields = (at) => ({ includedAt: at, includedBlockNumber: "9", includedBlockHash: blockHash(9n) });
 function keeperReceipt(node, hash, changes = {}) {
   node.chain.finalizedNumber = 9n;
+  node.chain.blockTimestamps[9n] ??= 1_000_100n;
   return {
     transactionHash: hash, from: account.address.toLowerCase(), to: PAIR,
     status: "0x1", blockNumber: "0x9", blockHash: blockHash(9n),
@@ -488,6 +491,89 @@ test("keeper: a changed finality checkpoint cannot release the receipt reservati
   assert.equal(state.txs[0].spentWei, undefined);
 });
 
+for (const status of ["pending", "expired", "replaced", "refused"]) test(`keeper: unresolved ${status} reservation survives timeout and the 24-hour window`, async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  state.txs[0].status = status;
+  if (status === "refused") state.txs[0].spentWei = "0"; // Legacy generic-error refusal is not proof.
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_086_401));
+  assert.equal(outcome.action, "wait-in-flight");
+  assert.equal(outcome.level, WARN);
+  assert.equal(outcome.reason, "pending-timeout");
+  assert.equal(state.txs.length, 1);
+  assert.ok(BigInt(state.txs[0].reservedWei) > 0n);
+  assert.equal(node.chain.sent.length, 1);
+});
+
+test("keeper: a used nonce without a canonical receipt cannot open another nonce", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  node.chain.nonce = 1n;
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
+  assert.equal(outcome.action, "wait-in-flight");
+  assert.equal(outcome.level, WARN);
+  assert.equal(outcome.reason, "nonce-used-without-receipt");
+  assert.equal(node.chain.sent.length, 1);
+});
+
+test("keeper: delayed inclusion charges the current daily budget using its canonical block timestamp", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  const options = keeperOptions({ budgetWei: 300_000_000_000_000n, cooldownSeconds: 0 });
+  await runKeeper(gate, options, state, keeperDeps(node));
+  const hash = state.txs[0].hash;
+  node.chain.receipts[hash] = keeperReceipt(node, hash, { logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01" }] });
+  node.chain.blockTimestamps[9n] = 1_086_450n;
+  node.chain.nonce = 1n;
+  const outcome = await runKeeper(gate, options, state, keeperDeps(node, 1_086_500));
+  assert.equal(outcome.action, "budget-exhausted");
+  assert.equal(outcome.spentWei, 65_536_000_000_000n);
+  assert.equal(state.txs[0].includedAt, 1_086_450);
+  assert.equal(state.txs[0].includedBlockHash, blockHash(9n));
+  assert.equal(state.txs[0].includedBlockNumber, "9");
+  assert.equal(node.chain.sent.length, 1);
+  const afterWindow = await runKeeper(gate, options, state, keeperDeps(node, 1_086_450 + 86_401));
+  assert.equal(afterWindow.action, "sent");
+  assert.equal(node.chain.sent.length, 2);
+});
+
+test("keeper: resolving one legacy entry cannot bypass another unresolved nonce", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  state.txs[0].status = "expired";
+  state.txs.push({ ...state.txs[0], hash: blockHash(123n), nonce: "1", status: "replaced" });
+  const hash = state.txs[0].hash;
+  node.chain.receipts[hash] = keeperReceipt(node, hash);
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_086_500));
+  assert.equal(outcome.action, "wait-in-flight");
+  assert.equal(outcome.reason, "legacy-history");
+  assert.equal(outcome.hash, state.txs[1].hash);
+  assert.equal(state.txs[0].includedAt, 1_000_100);
+  assert.equal(node.chain.sent.length, 1);
+});
+
+test("keeper: a missing canonical inclusion timestamp cannot release an old reservation", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  const hash = state.txs[0].hash;
+  node.chain.receipts[hash] = keeperReceipt(node, hash);
+  const request = async (method, params) => {
+    const result = await node.request(method, params);
+    if (method === "eth_getBlockByNumber" && params[0] === "0x9") delete result.timestamp;
+    return result;
+  };
+  const outcome = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node, 1_086_500), request });
+  assert.equal(outcome.action, "rpc-failed");
+  assert.equal(state.txs[0].includedAt, undefined);
+  assert.equal(state.txs[0].spentWei, undefined);
+  assert.equal(state.txs[0].status, "pending");
+  assert.equal(node.chain.sent.length, 1);
+});
+
 test("keeper: under sustained griefing it stops at the count and the budget", async () => {
   const node = fakeNode({ balances: ABOVE_CAP });
   const state = emptyKeeperState();
@@ -509,6 +595,10 @@ test("keeper: under sustained griefing it stops at the count and the budget", as
   const options = keeperOptions({ budgetWei: 300_000_000_000_000n, cooldownSeconds: 0 });
   assert.equal((await runKeeper(gate, options, budgetState, keeperDeps(small, now))).action, "sent");
   budgetState.txs[0].status = "expired";
+  const smallHash = budgetState.txs[0].hash;
+  small.chain.receipts[smallHash] = keeperReceipt(small, smallHash, { gasUsed: "0x17700", effectiveGasPrice: "0xb2d05e00", logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01" }] });
+  small.chain.blockTimestamps[9n] = BigInt(now);
+  small.chain.nonce = 1n;
   const refused = await runKeeper(gate, options, budgetState, keeperDeps(small, now + 1));
   assert.equal(refused.action, "budget-exhausted");
   assert.equal(refused.level, WARN);
@@ -791,7 +881,7 @@ test("keeper: a soft closure takes the backoff and a small share; a hard one doe
 
   const soft = emptyKeeperState();
   const used = Number((BigInt(DEFAULTS.maxTx) * DEFAULTS.softShareBps) / 10_000n);
-  soft.txs = Array.from({ length: used }, (_, i) => ({ at: 990_000, hash: `0x${i}`, nonce: "0", status: "wasted", kind: "soft", spentWei: "1" }));
+  soft.txs = Array.from({ length: used }, (_, i) => ({ at: 990_000, ...settledFields(990_000), hash: `0x${i}`, nonce: "0", status: "wasted", kind: "soft", spentWei: "1" }));
   const stop = await runKeeper(gate, keeperOptions(), soft, keeperDeps(fakeNode(SOFT)));
   assert.equal(stop.action, "soft-closure-share-used");
   assert.equal(stop.level, WARN);
@@ -800,7 +890,7 @@ test("keeper: a soft closure takes the backoff and a small share; a hard one doe
 test("keeper: ordinary excess cannot spend the reserve, a hard closure can, and an exhausted hard closure is CRIT", async () => {
   const full = (n) => {
     const state = emptyKeeperState();
-    state.txs = Array.from({ length: n }, (_, i) => ({ at: 990_000, hash: `0x${i}`, nonce: "0", status: "effective", kind: "excess", spentWei: "1" }));
+    state.txs = Array.from({ length: n }, (_, i) => ({ at: 990_000, ...settledFields(990_000), hash: `0x${i}`, nonce: "0", status: "effective", kind: "excess", spentWei: "1" }));
     return state;
   };
   const reserved = DEFAULTS.maxTx - Number((BigInt(DEFAULTS.maxTx) * DEFAULTS.hardReserveBps) / 10_000n);
@@ -858,13 +948,19 @@ test("monitor: keeper budget levels, from the keeper's own state file", async ()
     checkKeeperState(path, 1_000_000, (name, level, detail) => checks.push({ name, level, detail }));
     return checks[0];
   };
-  const tx = (status) => ({ at: 999_000, status, spentWei: "100" });
+  const tx = (status) => ({ at: 999_000, ...settledFields(999_000), status, spentWei: "100" });
   assert.equal(levelOf([tx("effective")]).level, OK);
   const raced = levelOf([tx("wasted"), tx("wasted"), tx("wasted")]);
   assert.equal(raced.level, WARN);
   assert.match(raced.detail, /winning skims/);
   assert.equal(levelOf(Array.from({ length: 48 }, () => tx("effective"))).level, CRIT);
-  assert.equal(levelOf([{ at: 1, status: "wasted" }]).level, OK);
+  assert.equal(levelOf([{ at: 1, ...settledFields(1), status: "wasted" }]).level, OK);
+  const unresolved = levelOf([{ at: 1, status: "expired", reservedWei: "1234" }]);
+  assert.equal(unresolved.level, WARN);
+  assert.match(unresolved.detail, /1234 wei spent or reserved/);
+  assert.match(unresolved.detail, /1 unresolved/);
+  const includedLate = levelOf([{ at: 1, ...settledFields(999_000), status: "effective", spentWei: "5678" }]);
+  assert.match(includedLate.detail, /5678 wei spent or reserved/);
   const checks = [];
   checkKeeperState(`${path}.missing`, 1_000_000, (name, level) => checks.push(level));
   assert.equal(checks[0], OK);
@@ -1117,7 +1213,7 @@ test("r10 DEX-4: ceiling skims keep the cooldown and never use the count kept fo
   assert.equal(soon.action, "cooldown");
   const full = emptyKeeperState();
   const reserved = Number((BigInt(DEFAULTS.maxTx) * DEFAULTS.hardReserveBps) / 10_000n);
-  full.txs = Array.from({ length: DEFAULTS.maxTx - reserved }, (_, i) => ({ at: 990_000 + i, hash: `0x${i}`, nonce: String(i), pair: PAIR, reservedWei: "1", spentWei: "1", kind: "ceiling", status: "effective" }));
+  full.txs = Array.from({ length: DEFAULTS.maxTx - reserved }, (_, i) => ({ at: 990_000 + i, ...settledFields(990_000 + i), hash: `0x${i}`, nonce: String(i), pair: PAIR, reservedWei: "1", spentWei: "1", kind: "ceiling", status: "effective" }));
   const fresh = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n], nonce: BigInt(DEFAULTS.maxTx) });
   assert.equal((await runKeeper(gate, keeperOptions(), full, keeperDeps(fresh, 1_000_000))).action, "reserved-for-hard-closure");
 });

@@ -44,13 +44,13 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { sequencerFeeRequirement } from "../staging/sequencer-fee-error.mjs";
+import { KEEPER_PENDING_TIMEOUT_SECONDS, keeperNeedsReconciliation, keeperWindow as windowTxs, keeperWindowSpend as windowSpend } from "./keeper-accounting.mjs";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
   blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, isAtKCeiling, keccak256,
   parseArgs, readBlock, readBridgeExit, readGate, readPair, recoverTransactionAddress, stringify,
 } from "./dex-ops-lib.mjs";
 
-const DAY = 86_400;
 export const DEFAULTS = Object.freeze({
   // 0.05 BLCH per 24 h: about 70 skims at the top of the tip range. A griefer who wins a
   // round pays about 1.7x the keeper's gas in the same fee market, and loses its donation when
@@ -72,7 +72,7 @@ export const DEFAULTS = Object.freeze({
   // about 1 bps of the 10 WBLCH cap, against 100 bps (0.1 BLCH) for ordinary excess.
   ceilingFloorWei: null,
   cooldownSeconds: 1_800, // a little over two L2 blocks at 12-15 min
-  pendingTimeoutSeconds: 7_200,
+  pendingTimeoutSeconds: KEEPER_PENDING_TIMEOUT_SECONDS,
   backoffCapSeconds: 6 * 3_600,
 });
 /// Value of a pair's unrecorded balance, in wei of the wrapped token at the pool's own
@@ -132,9 +132,6 @@ function acquireLock(path, now) {
   return () => rmSync(lock, { force: true });
 }
 
-const windowTxs = (state, now) => state.txs.filter((t) => now - t.at < DAY);
-const windowSpend = (state, now) => windowTxs(state, now).reduce((sum, t) => sum + BigInt(t.spentWei ?? t.reservedWei), 0n);
-
 /// The tip of the next skim: uniform between tipWei and tipWei * 2^(wasted + 1), capped at
 /// maxTipWei. It varies even with no waste, because a known tip tells a griefer exactly how
 /// low its re-donation has to go to stay behind the keeper's skim.
@@ -163,12 +160,20 @@ async function requireCanonicalReceiptBlock(request, number, hash) {
   if (!block || receiptQuantity(block.number, "checkpoint number") !== number || block.hash !== hash) {
     throw new RpcError("keeper receipt checkpoint is not canonical");
   }
+  return block;
 }
 
-/// Settle the transaction in flight. Returns true when it is still in flight.
+/// Resolve at most one old entry per pass. Every unresolved entry blocks new
+/// publication, including entries expired/replaced by earlier keeper versions.
 async function reconcile(state, keeper, deployment, request, now, options) {
-  const open = state.txs.find((t) => t.status === "pending");
-  if (!open) return false;
+  const open = state.txs.find(keeperNeedsReconciliation);
+  if (!open) return null;
+  const pending = (reason = "awaiting-receipt", entry = open) => {
+    const ageSeconds = Math.max(0, now - entry.at);
+    const overdue = ageSeconds > options.pendingTimeoutSeconds;
+    return { hash: entry.hash, ageSeconds, reason: reason === "awaiting-receipt" && overdue ? "pending-timeout" : reason,
+      level: overdue || reason === "nonce-used-without-receipt" || reason === "legacy-history" ? WARN : OK };
+  };
   const receipt = await request("eth_getTransactionReceipt", [open.hash]);
   if (receipt) {
     if (receipt.transactionHash !== open.hash || String(receipt.from).toLowerCase() !== keeper ||
@@ -185,14 +190,19 @@ async function reconcile(state, keeper, deployment, request, now, options) {
     const latest = await readBlock(request, "latest");
     // The settled RPC can serve a receipt before its `latest` view reaches that
     // block; reading reserves now would see the excess again and pay twice.
-    if (!latest || latest.number < blockNumber) return true;
+    if (!latest || latest.number < blockNumber) return pending("awaiting-latest");
     const finalized = await readBlock(request, "finalized");
-    if (!finalized || finalized.number < blockNumber) return true;
+    if (!finalized || finalized.number < blockNumber) return pending("awaiting-finality");
     // Do not reduce the reservation for a receipt that can still be orphaned.
-    await requireCanonicalReceiptBlock(request, blockNumber, receipt.blockHash);
+    const included = await requireCanonicalReceiptBlock(request, blockNumber, receipt.blockHash);
+    const includedAt = receiptQuantity(included.timestamp, "block timestamp");
+    if (includedAt > BigInt(Number.MAX_SAFE_INTEGER)) throw new RpcError("keeper receipt timestamp cannot be recorded exactly");
     await requireCanonicalReceiptBlock(request, finalized.number, finalized.hash);
     const moved = (receipt.logs ?? []).some((log) => log.topics?.[0] === TRANSFER_TOPIC && BigInt(log.data || "0x0") > 0n);
     open.spentWei = spentWei.toString();
+    open.includedAt = Number(includedAt);
+    open.includedBlockNumber = blockNumber.toString();
+    open.includedBlockHash = receipt.blockHash;
     if (receipt.status !== "0x1" || !moved) {
       open.status = receipt.status === "0x1" ? "wasted" : "reverted";
       state.consecutiveWasted += 1;
@@ -202,18 +212,14 @@ async function reconcile(state, keeper, deployment, request, now, options) {
       open.status = "effective";
       state.consecutiveWasted = 0;
     }
-    return false;
+    const next = state.txs.find(keeperNeedsReconciliation);
+    return next ? pending("legacy-history", next) : null;
   }
   const nonce = BigInt(await request("eth_getTransactionCount", [keeper, "latest"]));
   if (nonce > BigInt(open.nonce)) {
-    open.status = "replaced"; // The nonce was used by something else. The reservation stands.
-    return false;
+    return pending("nonce-used-without-receipt");
   }
-  if (now - open.at > options.pendingTimeoutSeconds) {
-    open.status = "expired"; // Same: the reservation stays charged until it leaves the window.
-    return false;
-  }
-  return true;
+  return pending();
 }
 
 /// One keeper pass. `deps`: {request, sign(tx) -> rawHex, now}. Writes state
@@ -228,7 +234,7 @@ export async function runKeeper(gate, options, state, deps) {
     await checkIdentity(request, deployment);
     const inFlight = await reconcile(state, keeper, deployment, request, now, options);
     save(state);
-    if (inFlight) return result(OK, "wait-in-flight", { hash: state.txs.find((t) => t.status === "pending").hash });
+    if (inFlight) return result(inFlight.level, "wait-in-flight", inFlight);
 
     const latest = await readBlock(request, "latest");
     const at = blockRef(latest);
@@ -325,6 +331,7 @@ export async function runKeeper(gate, options, state, deps) {
         // This specific admission response is emitted before the node's spool
         // write. Never infer rejection from a generic error message or code.
         entry.status = "refused";
+        entry.refusalKind = feeRequirement.kind;
         entry.spentWei = "0";
         state.nextAllowedAt = now + options.cooldownSeconds;
         save(state);
