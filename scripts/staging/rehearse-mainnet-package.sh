@@ -72,8 +72,9 @@ forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; 
 case "$MODE" in
   anvil)
     # HOLD_TOKEN (agent 144): the V3 token's 12 h mint delay passes on the chain clock, so the chain starts that far back.
-    ANVIL_TS=(); [ -n "${HOLD_TOKEN:-}" ] && ANVIL_TS=(--timestamp $(( $(date +%s) - 43900 )))
-    anvil --chain-id 700770 --port "$PORT" --host 127.0.0.1 "${ANVIL_TS[@]}" --silent > "$WORK/anvil.log" 2>&1 &
+    ANVIL_ARGS=(--chain-id 700770 --port "$PORT" --host 127.0.0.1)
+    [ -n "${HOLD_TOKEN:-}" ] && ANVIL_ARGS+=(--timestamp $(( $(date +%s) - 43900 )))
+    anvil "${ANVIL_ARGS[@]}" --silent > "$WORK/anvil.log" 2>&1 &
     PIDS+=($!)
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
