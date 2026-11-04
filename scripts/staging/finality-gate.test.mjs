@@ -538,10 +538,13 @@ test("N1: a depositor history passes only with every nonce a planned approve or 
   const token = V2.asset;
   const approve = (spender) => `${sel("approve(address,uint256)")}${pad(spender)}${"0".repeat(63)}1`;
   const seed = (t) => `${sel("addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)")}${pad(t)}${"0".repeat(320)}`;
+  const checkpoint = { number: 300n, hash: hash("b") };
   const check = (txs, count = BigInt(txs.length)) =>
-    verifyDepositorHistory({ depositor, count, transactions: txs.map((_, i) => hash(String(i + 1))), router, tokens: [token] }, async (method, [h]) => {
+    verifyDepositorHistory({ depositor, count, transactions: txs.map((_, i) => hash(String(i + 1))), router, tokens: [token], checkpoint }, async (method, [h]) => {
+      if (method === "eth_getBlockByNumber") return { number: h, hash: checkpoint.hash };
       const tx = txs[Number(h.slice(-1)) - 1];
-      return method === "eth_getTransactionByHash" ? tx : tx.mined === false ? null : { status: "0x0" };
+      const inclusion = { blockNumber: "0x12c", blockHash: checkpoint.hash, from: tx.from, to: tx.to };
+      return method === "eth_getTransactionByHash" ? { ...inclusion, ...tx, hash: h } : tx.mined === false ? null : { ...inclusion, status: "0x0", transactionHash: h };
     });
   const tx = (nonce, to, input, from = depositor) => ({ nonce: `0x${nonce.toString(16)}`, to, input, from });
   assert.equal(await check([tx(0, token, approve(router)), tx(1, router, seed(token)), tx(2, router, seed(token))]), 3);
@@ -560,8 +563,9 @@ test("N1: the gate accepts a used key only with a checked history", async () => 
   const H = hash("7");
   const inner = rpcV2({ depositorNonce: "0x1" });
   const wrap = (input) => async (method, params) => {
-    if (method === "eth_getTransactionByHash") return { from: V2.depositor, nonce: "0x0", to: V2.router, input };
-    if (method === "eth_getTransactionReceipt" && params[0] === H) return { status: "0x0", transactionHash: H };
+    const inclusion = { from: V2.depositor, to: V2.router, blockNumber: "0x12c", blockHash: hash("b") };
+    if (method === "eth_getTransactionByHash") return { ...inclusion, hash: H, nonce: "0x0", input };
+    if (method === "eth_getTransactionReceipt" && params[0] === H) return { ...inclusion, status: "0x0", transactionHash: H };
     return inner(method, params);
   };
   await assert.rejects(evaluateFinalityGate(configV2(), inner), /not single-purpose/);

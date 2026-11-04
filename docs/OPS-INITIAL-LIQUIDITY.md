@@ -78,6 +78,13 @@ It checks chain, genesis, signer and each nonce. Do not change the steps. Send t
 
 Record a sent approve or seed if you need to plan again: after the approve, or after a failed seed. It writes `deployment.depositorTransactions` in the gate file, only if the whole history checks out:
 
+The account nonce is read at a hash-pinned block. Every recorded transaction
+must have a matching receipt and canonical inclusion at or below that block;
+the checkpoint is checked again after the reads. Orphaned receipts, substituted
+hashes, inconsistent participants and duplicate hashes/nonces are refused.
+Reverted planned calls remain recordable because they consumed a nonce. A chain
+change during `note-tx` is refused before rewriting the gate file.
+
 ```
 node scripts/ops/dex-seed-plan.mjs note-tx --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --tx TBD-hash
 ```

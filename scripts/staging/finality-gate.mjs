@@ -463,13 +463,31 @@ const SEED_SELECTOR = toFunctionSelector("addLiquidityBLCH(address,uint256,uint2
 /// the router on a planned token or a router seed of a planned token. Hashes come from
 /// the operator and prove nothing by themselves. A nonce gap, another sender, another
 /// target or calldata refuses. A signed transaction that is not yet mined cannot be seen.
-export async function verifyDepositorHistory({ depositor, count, transactions, router, tokens }, request) {
+/// Every receipt is bound to its transaction and canonical inclusion no later
+/// than `checkpoint`, the same block used to read the account nonce.
+export async function verifyDepositorHistory({ depositor, count, transactions, router, tokens, checkpoint }, request) {
+  refuse(typeof count === "bigint" && count >= 0n, "depositor history nonce count is invalid");
+  refuse(checkpoint && typeof checkpoint.number === "bigint" && checkpoint.number >= 0n && HASH.test(checkpoint.hash) && checkpoint.hash !== ZERO_HASH, "depositor history needs the nonce checkpoint");
+  refuse(Array.isArray(transactions) && transactions.every((hash) => HASH.test(hash)), "depositor history transaction hashes are invalid");
+  refuse(new Set(transactions).size === transactions.length, "depositor history repeats a transaction hash");
   const byNonce = new Map();
-  for (const hash of transactions ?? []) {
+  for (const hash of transactions) {
     const tx = await request("eth_getTransactionByHash", [hash]);
-    refuse(tx && (await request("eth_getTransactionReceipt", [hash])), `depositor transaction ${hash} is not mined`);
+    const receipt = await request("eth_getTransactionReceipt", [hash]);
+    refuse(tx && receipt && tx.blockNumber !== null && tx.blockHash !== null, `depositor transaction ${hash} is not mined`);
+    refuse(tx.hash === hash && receipt.transactionHash === hash, `depositor transaction ${hash} identity differs from its receipt`);
     refuse(String(tx.from).toLowerCase() === depositor, `transaction ${hash} was not sent by the first depositor`);
-    byNonce.set(BigInt(tx.nonce), tx);
+    refuse(String(receipt.from).toLowerCase() === depositor && String(receipt.to).toLowerCase() === String(tx.to).toLowerCase(), `depositor transaction ${hash} receipt participants differ`);
+    refuse(receipt.status === "0x0" || receipt.status === "0x1", `depositor transaction ${hash} receipt status is invalid`);
+    const number = quantity(tx.blockNumber, `depositor transaction ${hash} blockNumber`);
+    refuse(number <= checkpoint.number, `depositor transaction ${hash} is newer than the nonce checkpoint`);
+    refuse(quantity(receipt.blockNumber, `depositor receipt ${hash} blockNumber`) === number &&
+      HASH.test(tx.blockHash) && receipt.blockHash === tx.blockHash, `depositor transaction ${hash} inclusion differs from its receipt`);
+    await requireCanonicalBlock(request, { number, hash: tx.blockHash }, `depositor transaction ${hash}`);
+    const nonce = quantity(tx.nonce, `depositor transaction ${hash} nonce`);
+    refuse(nonce < count, `depositor transaction ${hash} nonce is outside the checkpoint history`);
+    refuse(!byNonce.has(nonce), `depositor history repeats nonce ${nonce}`);
+    byNonce.set(nonce, tx);
   }
   const words = (input) => input.slice(10).match(/.{64}/g) ?? [];
   const addressWord = (word) => `0x${word.slice(24)}`.toLowerCase();
@@ -485,6 +503,7 @@ export async function verifyDepositorHistory({ depositor, count, transactions, r
         (to === router && input.startsWith(SEED_SELECTOR) && tokens.includes(addressWord(first))));
     refuse(planned, `the first depositor's transaction at nonce ${nonce} is not a planned approve or seed: its key is not single-purpose`);
   }
+  await requireCanonicalBlock(request, checkpoint, "depositor nonce checkpoint");
   return Number(count);
 }
 
@@ -590,7 +609,7 @@ async function evaluateFinalityGateV2(config, request, bridgeTokens = [], bridge
       if (used !== 0n) {
         refuse(deployment.depositorTransactions, `the first depositor ${depositor} has sent ${used} transaction(s) before the seed: its key is not single-purpose`);
         await verifyDepositorHistory(
-          { depositor, count: used, transactions: deployment.depositorTransactions, router, tokens: deployment.tokens.map((t) => t.token) },
+          { depositor, count: used, transactions: deployment.depositorTransactions, router, tokens: deployment.tokens.map((t) => t.token), checkpoint: finalized },
           request,
         );
       }

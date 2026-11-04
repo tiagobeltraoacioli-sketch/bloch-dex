@@ -228,14 +228,18 @@ export function priceGapBps({ wrapped, quote, price }) {
 /// unlisted and be refused.
 export async function checkNotedTxs(gate, txArg, request) {
   const deployment = deploymentFromGate(gate);
+  await checkIdentity(request, deployment);
   const given = txArg.toLowerCase().split(",");
   for (const hash of given) if (!/^0x[0-9a-f]{64}$/.test(hash)) throw new Error(`--tx: ${hash} is not a transaction hash`);
   const listed = [...new Set([...deployment.depositorTransactions, ...given])];
-  const count = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
+  const checkpoint = await readBlock(request, "latest");
+  if (!checkpoint) throw new RpcError("latest block is unavailable for depositor history");
+  const count = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, blockRef(checkpoint)]));
   await verifyDepositorHistory(
-    { depositor: deployment.firstDepositor, count, transactions: listed, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token) },
+    { depositor: deployment.firstDepositor, count, transactions: listed, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token), checkpoint },
     request,
   );
+  await checkIdentity(request, deployment);
   return { listed, count };
 }
 
@@ -337,13 +341,13 @@ async function main() {
 
   // F1, limit L1: before the seed the depositor's key must be untouched and an EOA.
   if (state.totalSupply === 0n) {
-    const used = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, "latest"]));
-    const depositorCode = await request("eth_getCode", [deployment.firstDepositor, "latest"]);
+    const used = BigInt(await request("eth_getTransactionCount", [deployment.firstDepositor, blockRef(latest)]));
+    const depositorCode = await request("eth_getCode", [deployment.firstDepositor, blockRef(latest)]);
     let historyProblem = depositorCode === "0x" ? null : "the first depositor has code";
     if (!historyProblem && used !== 0n) {
       try {
         await verifyDepositorHistory(
-          { depositor: deployment.firstDepositor, count: used, transactions: deployment.depositorTransactions, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token) },
+          { depositor: deployment.firstDepositor, count: used, transactions: deployment.depositorTransactions, router: deployment.router.address, tokens: deployment.tokens.map((t) => t.token), checkpoint: latest },
           request,
         );
       } catch (error) {

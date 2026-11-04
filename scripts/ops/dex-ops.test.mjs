@@ -755,9 +755,19 @@ test("note-tx: an unrecorded approve and seed pass only together, and bad hashes
     [hashB]: { from: depositor, nonce: "0x1", to: router, input: `${viem.toFunctionSelector("addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)")}${pad(token)}` },
   };
   const request = async (method, params) => {
-    if (method === "eth_getTransactionCount") return "0x2";
-    if (method === "eth_getTransactionByHash") return txs[params[0]] ?? null;
-    if (method === "eth_getTransactionReceipt") return { status: "0x0" };
+    const checkpointHash = `0x${"c".repeat(64)}`;
+    if (method === "eth_chainId") return "0x1";
+    if (method === "eth_getBlockByNumber") return params[0] === "0x0"
+      ? { number: "0x0", hash: `0x${"2".repeat(64)}`, timestamp: "0x0" }
+      : { number: "0xa", hash: checkpointHash, timestamp: "0x1" };
+    if (method === "eth_getTransactionCount") {
+      assert.deepEqual(params[1], { blockHash: checkpointHash, requireCanonical: true });
+      return "0x2";
+    }
+    const tx = txs[params[0]];
+    const inclusion = { blockNumber: "0xa", blockHash: checkpointHash, from: tx?.from, to: tx?.to };
+    if (method === "eth_getTransactionByHash") return tx ? { ...inclusion, ...tx, hash: params[0] } : null;
+    if (method === "eth_getTransactionReceipt") return tx ? { ...inclusion, transactionHash: params[0], status: "0x0" } : null;
     throw new Error(`unexpected ${method}`);
   };
   const record = (listed) => ({

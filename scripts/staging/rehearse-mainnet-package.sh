@@ -111,6 +111,7 @@ send() {
       # Wait until `latest` reaches the receipt's block (the settled RPC's view can lag its receipts).
       local block; block=$(node -e 'console.log(BigInt(JSON.parse(process.argv[1]).blockNumber).toString())' "$receipt")
       until [ "$(cast block-number --rpc-url "$RPC")" -ge "$block" ]; do sleep 1; done
+      if [ "$(echo "$from" | tr 'A-F' 'a-f')" = "$DEPOSITOR" ]; then echo "$hash" >> "$EV/depositor.hashes.txt"; fi
       node -e 'const r=JSON.parse(process.argv[1]);console.log(r.status, r.contractAddress ?? "")' "$receipt"; return
     fi
     sleep 1
@@ -278,6 +279,24 @@ echo "a first deposit by anyone but the first depositor is refused" | tee -a "$E
 must "$ISSUER_KEY" "$ASSET" "$(cast calldata "transfer(address,uint256)" "$DEPOSITOR" 500000000)" 0 100000 > /dev/null
 [ "$(cast nonce "$DEPOSITOR" --rpc-url "$RPC")" = 0 ] || { echo "FAIL: the first depositor is not fresh"; exit 1; }
 must "$DEPOSITOR_KEY" "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" 500000000)" 0 100000 > /dev/null
+if [ "$MODE" = anvil ]; then
+  log "3 depositor history: a canonical reverted seed is retained; an orphaned retry is refused"
+  APPROVE_HASH=$(tail -n 1 "$EV/depositor.hashes.txt")
+  SNAP=$(cast rpc evm_snapshot --rpc-url "$RPC" | tr -d '"')
+  must_fail "$DEPOSITOR_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 600000000 0 0 "$ISSUER" 99999999999)" 5000000000000000000 1000000
+  RETRY_HASH=$(tail -n 1 "$EV/depositor.hashes.txt")
+  cp "$EV/gate.json" "$EV/depositor-history-gate.json"
+  node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/depositor-history-gate.json" --rpc "$RPC" \
+    --tx "$APPROVE_HASH,$RETRY_HASH" > "$EV/depositor-history-verified.json"
+  [ "$(jsonget "$EV/depositor-history-verified.json" nonce)" = 2 ] || { echo "FAIL: reverted retry was not recorded"; exit 1; }
+  [ "$(cast rpc evm_revert "$SNAP" --rpc-url "$RPC")" = true ] || { echo "FAIL: history snapshot did not revert"; exit 1; }
+  if node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/depositor-history-gate.json" --rpc "$RPC" \
+      --tx "$APPROVE_HASH,$RETRY_HASH" > "$EV/depositor-history-orphan.txt" 2>&1; then
+    echo "FAIL: orphaned retry was recorded"; exit 1
+  fi
+  grep -q 'not mined' "$EV/depositor-history-orphan.txt" || { echo "FAIL: unexpected orphan refusal"; exit 1; }
+  echo "canonical reverted retry accepted; orphaned retry refused" | tee -a "$EV/steps.log"
+fi
 must "$DEPOSITOR_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 500000000 0 0 "$ISSUER" 99999999999)" 5000000000000000000 1000000 > /dev/null
 [ "$(cast nonce "$DEPOSITOR" --rpc-url "$RPC")" = 2 ] || { echo "FAIL: the first depositor must send exactly two transactions"; exit 1; }
 must_fail "$ISSUER_KEY" "$ROUTER" "$(cast calldata "$ADD" "$ASSET" 600000000 0 0 "$ISSUER" 99999999999)" 6000000000000000000 1000000
