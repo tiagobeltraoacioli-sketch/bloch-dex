@@ -33,6 +33,8 @@ const swap: PendingSwap = {
 };
 const receipt = {
   transactionHash: HASH,
+  from: FROM,
+  to: TO,
   status: '0x1',
   blockNumber: BLOCK.number,
   blockHash: BLOCK.hash,
@@ -159,6 +161,10 @@ describe('wallet submission settlement', () => {
     ['blockNumber', '0x010'],
     ['gasUsed', '-1'],
     ['gasUsed', undefined],
+    ['from', TO],
+    ['to', FROM],
+    ['from', undefined],
+    ['to', undefined],
   ])('retains the hold for malformed receipt %s', async (field, value) => {
     expect(
       (

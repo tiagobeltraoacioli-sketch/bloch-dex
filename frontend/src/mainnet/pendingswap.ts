@@ -278,6 +278,8 @@ export function usePendingSwap({
   );
   const contextKey = `${key}:${context?.genesisHash}:${context?.deploymentId}`;
   const [tracked, setTracked] = useState<TrackedSwap | null>(null);
+  const [trackedContextKey, setTrackedContextKey] = useState(contextKey);
+  const visibleTracked = trackedContextKey === contextKey ? tracked : null;
   const [storageProblem, setStorageProblem] = useState<string | null>(null);
   const activeKey = useRef(contextKey);
   activeKey.current = contextKey;
@@ -309,6 +311,7 @@ export function usePendingSwap({
   );
 
   useEffect(() => {
+    setTrackedContextKey(contextKey);
     try {
       const held = enabled && key ? recall(key) : null;
       setTracked(
@@ -328,9 +331,9 @@ export function usePendingSwap({
         error instanceof Error ? error.message : 'Saved submissions are unavailable.',
       );
     }
-  }, [enabled, key, recall, checkContext]);
+  }, [enabled, key, recall, checkContext, contextKey]);
 
-  const openHash = isOpen(tracked) ? tracked!.hash : null;
+  const openHash = isOpen(visibleTracked) ? visibleTracked!.hash : null;
   useEffect(() => {
     if (!enabled || !key || !openHash) return;
     let held;
@@ -393,7 +396,13 @@ export function usePendingSwap({
           const cause = await why(swap, poll.receipt).catch((): RevertCause => 'unknown');
           // Not gated on `live`: this effect ends as soon as the swap is no longer open.
           setTracked((t) =>
-            t && t.hash === swap.hash && t.state === 'failed' ? { ...t, cause } : t,
+            activeKey.current === contextKey &&
+            t &&
+            t.intent?.id === swap.intent?.id &&
+            t.hash === swap.hash &&
+            t.state === 'failed'
+              ? { ...t, cause }
+              : t,
           );
         }
         return;
@@ -584,9 +593,10 @@ export function usePendingSwap({
   }, [key, recall, checkContext]);
 
   return {
-    tracked,
+    tracked: visibleTracked,
+    contextKey,
     storageProblem,
-    open: isOpen(tracked) || storageProblem !== null,
+    open: isOpen(visibleTracked) || storageProblem !== null,
     reserve,
     updateSubmission,
     rejected,

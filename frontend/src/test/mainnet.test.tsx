@@ -13,6 +13,7 @@ import {
   type Hex,
 } from 'viem';
 import { browserLocksForTest } from './browser-locks';
+import { historyKey } from '../mainnet/txhistory';
 import MainnetLive from '../MainnetLive';
 import type { Devnet4Wallet } from '../Devnet4Live';
 import { ERC20_ABI, LENS_ABI, PAIR_ABI, type LivePool, type Rpc } from '../devnet4/chain';
@@ -206,6 +207,8 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
         state.receiptSeen = true;
         return {
           transactionHash: params[0],
+          from: tx?.from,
+          to: tx?.to,
           blockHash: INCLUDED.hash,
           status: '0x1',
           blockNumber: INCLUDED.number,
@@ -1183,7 +1186,14 @@ describe('swap panel safety fixes', () => {
         const r = await reply();
         if (r && typeof r === 'object') {
           included = true;
-          return { transactionHash: p[0], blockHash: INCLUDED.hash, ...r };
+          const tx = fakeState.current?.transactions.get(String(p[0]));
+          return {
+            transactionHash: p[0],
+            from: tx?.from,
+            to: tx?.to,
+            blockHash: INCLUDED.hash,
+            ...r,
+          };
         }
         return r;
       }
@@ -1201,6 +1211,100 @@ describe('swap panel safety fixes', () => {
   const MINED = { status: '0x1', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
   const REVERTED = { status: '0x0', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
   const pause = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+
+  it('ignores an allowance reply for the previous input token', async () => {
+    const { rpc, state } = fakeChain({ allowance: 0n });
+    let release: () => void = () => {};
+    let waiting = false;
+    const delayed: Rpc = async (method, params) => {
+      const call = params[0] as { to?: string; data?: string };
+      if (method === 'eth_call' && call.to === BUSDC && call.data?.startsWith('0xdd62ed3e')) {
+        waiting = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return encodeFunctionResult({
+          abi: ERC20_ABI,
+          functionName: 'allowance',
+          result: 10n ** 12n,
+        });
+      }
+      return rpc(method, params);
+    };
+    const { user } = await mount(delayed, state);
+    await waitFor(() => expect(waiting).toBe(true));
+    await user.selectOptions(screen.getByLabelText('You pay'), 'wGSMH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByRole('button', { name: 'Approve 1 wGSMH' });
+    await act(async () => {
+      release();
+    });
+    expect(screen.getByRole('button', { name: 'Approve 1 wGSMH' })).toBeTruthy();
+    expect(swapButton().disabled).toBe(true);
+  });
+
+  it('does not show another account transaction history after switching wallets', async () => {
+    const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+    localStorage.setItem(
+      historyKey(network.chainId, ACCOUNT),
+      JSON.stringify([{ label: 'Account A transaction', hash: HASH, state: 'mined' }]),
+    );
+    const first = await mount(rpc, state);
+    await screen.findByText('Account A transaction');
+    const other: Address = `0x${'a'.repeat(40)}`;
+    first.view.rerender(
+      app(rpc, { ...first.wallet, account: { ...first.wallet.account!, address: other } }),
+    );
+    await waitFor(() => expect(screen.queryByText('Account A transaction')).toBeNull());
+    expect(localStorage.getItem(historyKey(network.chainId, other))).toBeNull();
+  });
+
+  it('does not copy a tracked result into another account history during a context change', async () => {
+    const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+    const chain = withReceipts(rpc, () => {
+      throw new Error('receipt unavailable');
+    });
+    const first = await mount(chain, state);
+    await quoted(first.user);
+    await first.user.click(swapButton());
+    await waitFor(() =>
+      expect(screen.getByLabelText('Transactions').textContent).toContain('did not answer'),
+    );
+    const other: Address = `0x${'a'.repeat(40)}`;
+    first.view.rerender(
+      app(chain, { ...first.wallet, account: { ...first.wallet.account!, address: other } }),
+    );
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'Transactions' })).toBeNull());
+    expect(screen.queryByRole('list', { name: 'Earlier transactions' })).toBeNull();
+    expect(localStorage.getItem(historyKey(network.chainId, other))).toBeNull();
+    expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).not.toBeNull();
+  });
+
+  it('withholds a tradable snapshot while a different RPC is still being verified', async () => {
+    const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+    const first = await mount(rpc, state);
+    await quoted(first.user);
+    let waiting = false;
+    let release: () => void = () => {};
+    const nextRpc: Rpc = async (method, params) => {
+      if (method === 'eth_getBlockByNumber' && params[0] === 'finalized' && !waiting) {
+        waiting = true;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return rpc(method, params);
+    };
+    first.view.rerender(app(nextRpc, first.wallet));
+    await waitFor(() => expect(waiting).toBe(true));
+    expect(screen.queryByRole('button', { name: 'Swap' })).toBeNull();
+    expect(first.sends()).toHaveLength(0);
+    await act(async () => {
+      release();
+    });
+    await screen.findByRole('table');
+  });
 
   describe('F3: the signed minimum follows a better latest price', () => {
     const base = { amountIn: 1n, amounts: [], executionLossBps: [], blockNumber: 1n };

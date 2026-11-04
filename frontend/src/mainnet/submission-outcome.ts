@@ -184,10 +184,14 @@ function block(value: unknown) {
   return { number: quantity(b.number), hash: b.hash as Hex };
 }
 
-function receipt(value: unknown, hash: Hex) {
+function receipt(value: unknown, hash: Hex, intent: SubmissionIntent) {
   const r = object(value);
   assert(
     r.transactionHash === hash &&
+      typeof r.from === 'string' &&
+      r.from.toLowerCase() === intent.from &&
+      typeof r.to === 'string' &&
+      r.to.toLowerCase() === intent.to &&
       isSubmissionHash(r.blockHash) &&
       (r.status === '0x0' || r.status === '0x1'),
     'The RPC returned an invalid receipt identity or status.',
@@ -225,7 +229,7 @@ export async function finalizedSubmissionReceipt(
   afterSubmission(tx, intent);
   const raw = await rpc('eth_getTransactionReceipt', [hash]);
   if (raw === null) return null;
-  const r = receipt(raw, hash);
+  const r = receipt(raw, hash, intent);
   assert(
     tx.blockHash === r.blockHash && quantity(tx.blockNumber) === r.blockNumber,
     'The transaction body and receipt disagree about inclusion.',
@@ -237,7 +241,7 @@ export async function finalizedSubmissionReceipt(
   await canonical(rpc, boundary);
   await canonical(rpc, included);
   await canonical(rpc, finalized);
-  const again = receipt(await rpc('eth_getTransactionReceipt', [hash]), hash);
+  const again = receipt(await rpc('eth_getTransactionReceipt', [hash]), hash, intent);
   assert(
     again.blockHash === r.blockHash &&
       again.blockNumber === r.blockNumber &&

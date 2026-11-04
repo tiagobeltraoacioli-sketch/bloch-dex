@@ -9,7 +9,7 @@
 // tightens the signed minimum after a better one (mainnet/quotecheck.ts); a
 // worse price needs an explicit reconfirmation. A sent swap holds the Swap button
 // until its outcome is known (mainnet/pendingswap.ts).
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
@@ -55,6 +55,7 @@ import {
   type RouteCheck,
 } from './mainnet/caps';
 import { submissionFeeNote } from './mainnet/submission-fees';
+import { submissionContext } from './mainnet/submission-outcome';
 import { usePendingSwap } from './mainnet/pendingswap';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
@@ -133,7 +134,9 @@ export default function MainnetLive({
     () => ethRpc ?? (holdSource ? httpRpc(holdSource.ethRpcUrl) : null),
     [ethRpc, holdSource],
   );
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [observedSnapshot, setSnapshot] = useState<
+    (Snapshot & { rpc: Rpc; deploymentId: Hex }) | null
+  >(null);
   const [failure, setFailure] = useState('');
   const [generation, setGeneration] = useState(0);
 
@@ -148,7 +151,13 @@ export default function MainnetLive({
         if (s.status !== 'live') return;
         const snap = await readSnapshot(rpc, s.deployment, 'mainnet');
         const pools = await readExcess(rpc, snap.finalized.hash, s.deployment.lens, snap.pools);
-        if (current) setSnapshot({ ...snap, pools });
+        if (current)
+          setSnapshot({
+            ...snap,
+            pools,
+            rpc,
+            deploymentId: submissionContext(s.deployment).deploymentId,
+          });
         const known = snap.tokens.some(
           (t) => t.address.toLowerCase() === holdSource?.token.toLowerCase(),
         );
@@ -171,6 +180,15 @@ export default function MainnetLive({
   }, [load, rpc, generation]);
 
   const live = state?.status === 'live';
+  const snapshot = useMemo(
+    () =>
+      state?.status === 'live' &&
+      observedSnapshot?.rpc === rpc &&
+      observedSnapshot.deploymentId === submissionContext(state.deployment).deploymentId
+        ? observedSnapshot
+        : null,
+    [state, observedSnapshot, rpc],
+  );
   // Lives above SwapPanel, which remounts on every new finalized block.
   const pendingSwap = usePendingSwap({
     rpc,
@@ -245,7 +263,7 @@ export default function MainnetLive({
             heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
           />
           <SwapPanel
-            key={snapshot.finalized.hash}
+            key={`${snapshot.finalized.hash}:${pendingSwap.contextKey}`}
             network={network}
             deployment={state.deployment}
             multicall3={state.multicall3}
@@ -798,14 +816,21 @@ function SwapPanel({
     };
   }, [rpc, at, account, snapshot, multicall3]);
 
-  const refreshAllowance = useCallback(async () => {
-    if (account && input && !input.native)
-      setAllowance(await readAllowance(rpc, at, input.token.address, account, d.router));
-    else setAllowance(null);
-  }, [account, input, rpc, at, d]);
   useEffect(() => {
-    void refreshAllowance().catch(() => setAllowance(null));
-  }, [refreshAllowance]);
+    let current = true;
+    setAllowance(null);
+    if (account && input && !input.native)
+      void readAllowance(rpc, at, input.token.address, account, d.router)
+        .then((value) => {
+          if (current) setAllowance(value);
+        })
+        .catch(() => {
+          if (current) setAllowance(null);
+        });
+    return () => {
+      current = false;
+    };
+  }, [account, input, rpc, at, d.router]);
 
   const clear = () => (
     formGeneration.current++,
