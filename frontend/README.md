@@ -401,11 +401,12 @@ an error, never a fallback. URLs must be `https` without credentials.
   without that capability blocks the request rather than falling back to a height.
   Swap, approval and skim share one hold per chain/account. A missing wallet reply
   is an unknown outcome, even for a timeout or fee error, and survives a reload.
-  Only an explicit wallet rejection (`4001`) clears a hashless request. Neither
+  Only an explicit wallet rejection (`4001`) of the initial request clears its
+  hashless hold. Cancelling a later review never clears an earlier attempt. Neither
   time passing nor a missing receipt establishes that no transaction executed.
   Structured `sequencer-fee-underpriced` errors may display validated integer fee
   diagnostics. Their reported hash is never attached to the intent: the wallet's
-  signed hash is unknown, so the hold remains and no retry or fee change occurs.
+  signed hash is unknown, so the hold remains and no automatic retry or fee change occurs.
   A wallet-returned or manually supplied hash must match the saved transaction
   body, including that exact nonce, and be included after the saved head, which
   must remain canonical. A
@@ -413,11 +414,36 @@ an error, never a fallback. URLs must be `https` without credentials.
   Settlement requires a strict receipt, matching canonical inclusion and a
   canonical finalized checkpoint, rechecked for changes before clearing the hold.
   The recovery form accepts a transaction hash from wallet activity and only
-  restores tracking; it cannot resend, replace or raise fees. Incompatible
+  restores tracking; checking a hash cannot send a transaction or raise fees. Incompatible
   deployment contexts, malformed records and older records without a verifiable
   intent or fixed nonce remain blocked and require independent reconciliation. Do not clear
   browser storage to bypass an unresolved submission. Browser storage belongs to
   this origin/profile; it does not coordinate other devices or unrelated apps.
+- **Explicit review of the same nonce.** A separate “Review same nonce in wallet”
+  action checks canonical state and opens a new wallet confirmation for the
+  original sender, destination, calldata, value, gas limit and nonce. It never
+  sends automatically, chooses a new nonce, adopts a fee diagnostic or extends
+  the original swap deadline. The user can review fees in their wallet. Before
+  opening it, the page reconstructs an allowed exact approval, swap or self-skim
+  from the verified deployment and shows details decoded from those bytes; stored
+  labels and retry metadata cannot authorize a call. Unlimited approvals and
+  expired swaps are refused. The original boundary, chain/genesis/deployment,
+  current hash-pinned account nonce and canonical finality must still verify.
+  Pending nonce may already include this original request and is not evidence
+  of rejection. An advanced canonical nonce blocks review and requires hash
+  recovery. Finality is checked strictly before both initial and repeated requests.
+  A second Web Lock remains held throughout the wallet interaction, while the
+  journal lock only protects storage mutations. Concurrent clicks in this origin
+  are refused with `ifAvailable`, never queued. A durable attempt marker is saved
+  before the wallet opens; a crashed tab releases its native lock, but elapsed
+  time or a stored marker never establishes transaction failure. Every returned
+  hash is retained (up to 32; reaching that limit requires existing-hash recovery).
+  Any matching same-nonce candidate may settle the hold after canonical finality,
+  including one returned by an earlier attempt. Cancelling or losing a repeated
+  wallet reply preserves every earlier candidate and the original hold. Storage
+  updates that fail preserve the prior durable hold and keep new hashes in memory
+  while the page remains open. Browser/extension and native Web Locks behavior
+  still require separate browser validation; jsdom exercises a FIFO lock model.
 - **Reserve caps.** The pools table shows each cap, how much of it is used and
   how much more can flow in ("inflow paused" at the cap). When the lens finds no
   route, `src/mainnet/caps.ts` replays the route on the finalized reserves and

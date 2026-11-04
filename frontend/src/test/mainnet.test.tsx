@@ -60,6 +60,7 @@ const USD_PAIR = '0xd98230d9a13cb72f6d75e3bf46c01415027c8033' as Address;
 const ACCOUNT = '0x72dc623d4c03c996a3d20ed2674f24570e8acf44' as Address;
 const FINALIZED = { number: '0x1b8', hash: `0x${'f'.repeat(64)}`, timestamp: '0x6ad1a000' };
 const INCLUDED = { ...FINALIZED, number: '0x1ba', hash: `0x${'b'.repeat(64)}` };
+const NEXT_INCLUDED = { ...FINALIZED, number: '0x1bc', hash: `0x${'d'.repeat(64)}` };
 const NOW_MS = 1_792_200_000_000;
 const PLANNED = { caps: plannedCaps(), pairs: plannedPairs() };
 const norm = (value: unknown): unknown =>
@@ -140,7 +141,7 @@ type ChainState = {
   reserves: Record<string, [bigint, bigint, number]>;
   sent: { method: string; params: unknown[] }[];
   transactions: Map<string, Record<string, unknown>>;
-  receiptSeen?: boolean;
+  finalizedBlock?: typeof FINALIZED;
 };
 
 const fakeState: { current: ChainState | null } = { current: null };
@@ -177,18 +178,18 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
       case 'eth_getBlockByNumber':
         if (params[0] === 'finalized' && state.finalityDown)
           throw Object.assign(new Error('finality unavailable'), { code: -32001 });
-        if (params[0] === 'latest') return FINALIZED;
+        if (params[0] === 'latest') return state.finalizedBlock ?? FINALIZED;
         return params[0] === '0x0'
           ? { number: '0x0', hash: deployment.genesisHash }
           : params[0] === 'finalized'
-            ? state.receiptSeen
-              ? INCLUDED
-              : FINALIZED
-            : params[0] === INCLUDED.number
-              ? INCLUDED
-              : params[0] === FINALIZED.number
-                ? FINALIZED
-                : null;
+            ? (state.finalizedBlock ?? FINALIZED)
+            : params[0] === NEXT_INCLUDED.number
+              ? NEXT_INCLUDED
+              : params[0] === INCLUDED.number
+                ? INCLUDED
+                : params[0] === FINALIZED.number
+                  ? FINALIZED
+                  : null;
       case 'eth_getCode':
         return fakeCode.get(params[0] as Address) ?? '0x';
       case 'eth_getBalance':
@@ -204,14 +205,14 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
           if (decoded.functionName === 'approve')
             state.allowance = (decoded.args as readonly [Address, bigint])[1];
         }
-        state.receiptSeen = true;
+        state.finalizedBlock = tx?.blockNumber === NEXT_INCLUDED.number ? NEXT_INCLUDED : INCLUDED;
         return {
           transactionHash: params[0],
           from: tx?.from,
           to: tx?.to,
-          blockHash: INCLUDED.hash,
+          blockHash: state.finalizedBlock.hash,
           status: '0x1',
-          blockNumber: INCLUDED.number,
+          blockNumber: state.finalizedBlock.number,
           gasUsed: '0x2a50a',
         };
       }
@@ -298,12 +299,13 @@ function fakeWallet(chain?: ChainState, connected = true) {
         if (chain && tx.to === BUSDC) chain.allowance = 0n; // the finalized block lags
         const hash = `0x${String(requests.length).padStart(64, '0')}`;
         const body = params![0] as Record<string, unknown>;
+        const included = chain?.transactions.size ? NEXT_INCLUDED : INCLUDED;
         chain?.transactions.set(hash, {
           ...body,
           hash,
           input: body.data,
-          blockNumber: INCLUDED.number,
-          blockHash: INCLUDED.hash,
+          blockNumber: included.number,
+          blockHash: included.hash,
         });
         return hash;
       }
@@ -1179,29 +1181,34 @@ describe('swap panel safety fixes', () => {
   };
   /** Receipt replies under test control; everything else goes to the fake chain. */
   const withReceipts = (rpc: Rpc, reply: () => unknown, head?: () => unknown): Rpc => {
-    let included = false;
+    let included: typeof INCLUDED | null = null;
     let finalized = FINALIZED;
     return async (m, p) => {
       if (m === 'eth_getTransactionReceipt') {
         const r = await reply();
         if (r && typeof r === 'object') {
-          included = true;
+          const evidence = r as { blockNumber?: string; blockHash?: string };
+          included = {
+            ...INCLUDED,
+            number: evidence.blockNumber ?? INCLUDED.number,
+            hash: evidence.blockHash ?? INCLUDED.hash,
+          };
           const tx = fakeState.current?.transactions.get(String(p[0]));
           return {
             transactionHash: p[0],
             from: tx?.from,
             to: tx?.to,
-            blockHash: INCLUDED.hash,
+            blockHash: included.hash,
             ...r,
           };
         }
         return r;
       }
-      if (m === 'eth_getBlockByNumber' && p[0] === 'latest') return head?.() ?? FINALIZED;
+      if (m === 'eth_getBlockByNumber' && p[0] === 'latest') return head?.() ?? finalized;
       if (m === 'eth_getBlockByNumber' && p[0] === 'finalized') {
         const current = (await rpc(m, p)) as typeof FINALIZED;
         finalized =
-          included && BigInt(current.number) < BigInt(INCLUDED.number) ? INCLUDED : current;
+          included && BigInt(current.number) < BigInt(included.number) ? included : current;
         return finalized;
       }
       if (m === 'eth_getBlockByNumber' && p[0] === finalized.number) return finalized;
@@ -1211,6 +1218,52 @@ describe('swap panel safety fixes', () => {
   const MINED = { status: '0x1', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
   const REVERTED = { status: '0x0', blockNumber: '0x1ba', gasUsed: '0x2a50a' };
   const pause = (ms = 40) => new Promise((r) => setTimeout(r, ms));
+
+  it('lets a hashless first approval be explicitly reviewed with its exact original nonce and body', async () => {
+    const { rpc, state } = fakeChain();
+    const attempted: Record<string, unknown>[] = [];
+    const { user } = await mount(
+      withReceipts(rpc, () => null),
+      state,
+      (wallet) => {
+        const original = wallet.provider!;
+        return {
+          ...wallet,
+          provider: {
+            async request(args) {
+              if (args.method === 'eth_sendTransaction') {
+                attempted.push(args.params![0] as Record<string, unknown>);
+                if (attempted.length === 1) throw feeRefusal.error;
+              }
+              return original.request(args);
+            },
+          },
+        };
+      },
+    );
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
+    await screen.findByText(/no transaction hash was returned/);
+    const recovery = screen.getByLabelText('Recover transaction tracking');
+    await user.click(within(recovery).getByText('Review the original request in your wallet'));
+    const details = within(recovery).getByLabelText('Validated original transaction');
+    expect(details.textContent).toContain('Exact allowance (base units)1000000');
+    expect(details.textContent).toContain(`Spender${ROUTER}`);
+    expect(details.textContent).toContain('Nonce0');
+    expect(attempted).toHaveLength(1);
+    await user.click(within(recovery).getByRole('button', { name: 'Review same nonce in wallet' }));
+    await waitFor(() => expect(attempted).toHaveLength(2));
+    expect(attempted[1]).toEqual(attempted[0]);
+    expect(attempted[1]).not.toHaveProperty('maxPriorityFeePerGas');
+    await waitFor(() =>
+      expect(
+        parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))
+          ?.candidateHashes,
+      ).toHaveLength(1),
+    );
+    expect(swapButton().disabled).toBe(true);
+  });
 
   it('ignores an allowance reply for the previous input token', async () => {
     const { rpc, state } = fakeChain({ allowance: 0n });
@@ -2327,6 +2380,8 @@ describe('swap panel safety fixes', () => {
       const base = withReceipts(rpc, receipt);
       return (m, p) => {
         if (m === 'eth_getBlockByNumber' && p[0] === '0x1ba') return Promise.resolve(block);
+        if (m === 'eth_getBlockByNumber' && p[0] === NEXT_INCLUDED.number)
+          return Promise.resolve({ ...block, ...NEXT_INCLUDED, parentHash: INCLUDED.hash });
         if (m === 'eth_call') {
           const { to, data } = p[0] as { to: Address; data: Hex };
           if (to === deployment.router) {
@@ -2407,7 +2462,11 @@ describe('swap panel safety fixes', () => {
       expect(
         parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))?.retry,
       ).toMatchObject({ slippageBps: 100, attempt: 2 });
-      receipt = () => REVERTED;
+      receipt = () => ({
+        ...REVERTED,
+        blockNumber: NEXT_INCLUDED.number,
+        blockHash: NEXT_INCLUDED.hash,
+      });
       await waitFor(async () =>
         expect((await why()).textContent).toContain('This was the one retry the page offers'),
       );

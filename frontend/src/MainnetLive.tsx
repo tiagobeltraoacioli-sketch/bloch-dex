@@ -55,7 +55,7 @@ import {
   type RouteCheck,
 } from './mainnet/caps';
 import { submissionFeeNote } from './mainnet/submission-fees';
-import { submissionContext } from './mainnet/submission-outcome';
+import { requireFinality, submissionContext } from './mainnet/submission-outcome';
 import { usePendingSwap } from './mainnet/pendingswap';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
@@ -194,6 +194,7 @@ export default function MainnetLive({
     rpc,
     chainId: network.chainId,
     deployment: state?.status === 'live' ? state.deployment : undefined,
+    provider: wallet.provider ?? undefined,
     account: wallet.account?.address.toLowerCase() as Address | undefined,
     enabled: live && !!snapshot,
     now,
@@ -397,22 +398,6 @@ function NotLive({
 }
 
 /**
- * The settled RPC answers `finalized` with -32001 when its follower status is lost
- * or invalid. This page was read at a finalized block that may be old by then, so
- * nothing is sent until finality is back. Unlike a failed `latest` read, this blocks.
- */
-async function requireFinality(rpc: Rpc): Promise<void> {
-  let block: unknown;
-  try {
-    block = await rpc('eth_getBlockByNumber', ['finalized', false]);
-  } catch {
-    block = null;
-  }
-  if (!block)
-    throw new Error('L2 finality is unavailable, so nothing was sent. Refresh when it is back.');
-}
-
-/**
  * How old the finalized block behind every figure on this page is. Past the
  * monitor's warning age it says so: nothing else on the page changes during a
  * finality stall, because every read is pinned to that block.
@@ -535,45 +520,54 @@ function PendingExcess({
   ] as const;
   async function skim() {
     if (!wallet.provider || !wallet.account || pendingSwap.holds()) return;
+    const { provider, account } = wallet;
     setBusy(true);
     setNote('Confirm in your wallet.');
     let intentId: string | undefined;
     let hash: Hex | undefined;
     try {
-      await ensureChain(wallet.provider, addChainParameters(network));
-      await requireFinality(rpc);
-      const to = wallet.account.address.toLowerCase() as Address;
-      const tx = {
-        ...skimTransaction(pool.address, to),
-        chainId: network.chainId,
-      };
-      const reservation = await pendingSwap.reserve(
-        { label: 'Skim to my wallet', deadline: 0n, sentAtMs: now() },
-        'skim',
-        tx,
-      );
-      intentId = reservation.id;
-      if (
-        !mounted.current ||
-        currentWallet.current.provider !== wallet.provider ||
-        currentWallet.current.account?.address !== wallet.account.address ||
-        !pendingSwap.ready(intentId)
-      ) {
-        await pendingSwap.rejected(intentId);
-        intentId = undefined;
-        throw new Error('The wallet or page context changed before the request. Nothing was sent.');
-      }
-      hash = await sendTransaction(wallet.provider, { ...tx, nonce: reservation.nonce });
-      await pendingSwap.updateSubmission(intentId, hash);
-      setNote('Skim submitted. Its outcome is tracked below; do not repeat it.');
+      await pendingSwap.withWalletRequest(async () => {
+        try {
+          await ensureChain(provider, addChainParameters(network));
+          await requireFinality(rpc);
+          const to = account.address.toLowerCase() as Address;
+          const tx = {
+            ...skimTransaction(pool.address, to),
+            chainId: network.chainId,
+          };
+          const reservation = await pendingSwap.reserve(
+            { label: 'Skim to my wallet', deadline: 0n, sentAtMs: now() },
+            'skim',
+            tx,
+          );
+          intentId = reservation.id;
+          if (
+            !mounted.current ||
+            currentWallet.current.provider !== provider ||
+            currentWallet.current.account?.address !== account.address ||
+            !pendingSwap.ready(intentId)
+          ) {
+            await pendingSwap.rejected(intentId);
+            intentId = undefined;
+            throw new Error(
+              'The wallet or page context changed before the request. Nothing was sent.',
+            );
+          }
+          hash = await sendTransaction(provider, { ...tx, nonce: reservation.nonce });
+          await pendingSwap.updateSubmission(intentId, hash);
+          setNote('Skim submitted. Its outcome is tracked below; do not repeat it.');
+        } catch (error) {
+          if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
+            await pendingSwap.rejected(intentId);
+            setNote('The wallet request was rejected by you. Nothing was sent.');
+          } else if (intentId) {
+            await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));
+            setNote('Skim submission outcome unknown. Check wallet activity; do not repeat it.');
+          } else setNote(message(error, 'No wallet request was sent.'));
+        }
+      });
     } catch (error) {
-      if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
-        await pendingSwap.rejected(intentId);
-        setNote('The wallet request was rejected by you. Nothing was sent.');
-      } else if (intentId) {
-        await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));
-        setNote('Skim submission outcome unknown. Check wallet activity; do not repeat it.');
-      } else setNote(message(error, 'No wallet request was sent.'));
+      setNote(message(error, 'No wallet request was sent.'));
     } finally {
       setBusy(false);
     }
@@ -957,53 +951,64 @@ function SwapPanel({
     let hash: Hex | undefined;
     let intentId: string | undefined;
     try {
-      await ensureChain(provider, addChainParameters(network));
-      await requireFinality(rpc);
-      if (generation !== formGeneration.current)
-        throw new Error('The form changed, so nothing was sent. Get a new quote.');
-      const tx = { ...build(), chainId: network.chainId };
-      const reservation = await pendingSwap.reserve(
-        {
-          label,
-          deadline: swapInfo?.deadline ?? 0n,
-          sentAtMs: now(),
-          ...(swapInfo ? { retry: swapInfo.retry } : {}),
-        },
-        swapInfo ? 'swap' : 'approval',
-        tx,
-      );
-      intentId = reservation.id;
-      if (
-        generation !== formGeneration.current ||
-        currentWallet.current.provider !== provider ||
-        currentWallet.current.account?.address !== wallet.account?.address ||
-        !pendingSwap.ready(intentId)
-      ) {
-        await pendingSwap.rejected(intentId);
-        intentId = undefined;
-        throw new Error(
-          'The form or wallet context changed before the wallet request. Nothing was sent. Get a new quote.',
-        );
-      }
-      hash = await sendTransaction(provider, { ...tx, nonce: reservation.nonce });
-      await pendingSwap.updateSubmission(intentId, hash);
-      setSteps((all) => all.slice(0, index));
-      // The shared tracker authenticates the call and its finalized receipt.
-      // Approval allowance is reread from finalized state after settlement.
-      return false;
+      return await pendingSwap.withWalletRequest(async () => {
+        try {
+          await ensureChain(provider, addChainParameters(network));
+          await requireFinality(rpc);
+          if (generation !== formGeneration.current)
+            throw new Error('The form changed, so nothing was sent. Get a new quote.');
+          const tx = { ...build(), chainId: network.chainId };
+          const reservation = await pendingSwap.reserve(
+            {
+              label,
+              deadline: swapInfo?.deadline ?? 0n,
+              sentAtMs: now(),
+              ...(swapInfo ? { retry: swapInfo.retry } : {}),
+            },
+            swapInfo ? 'swap' : 'approval',
+            tx,
+          );
+          intentId = reservation.id;
+          if (
+            generation !== formGeneration.current ||
+            currentWallet.current.provider !== provider ||
+            currentWallet.current.account?.address !== wallet.account?.address ||
+            !pendingSwap.ready(intentId)
+          ) {
+            await pendingSwap.rejected(intentId);
+            intentId = undefined;
+            throw new Error(
+              'The form or wallet context changed before the wallet request. Nothing was sent. Get a new quote.',
+            );
+          }
+          hash = await sendTransaction(provider, { ...tx, nonce: reservation.nonce });
+          await pendingSwap.updateSubmission(intentId, hash);
+          setSteps((all) => all.slice(0, index));
+          // The shared tracker authenticates the call and its finalized receipt.
+          // Approval allowance is reread from finalized state after settlement.
+          return false;
+        } catch (error) {
+          if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
+            await pendingSwap.rejected(intentId);
+            update({
+              label,
+              state: 'failed',
+              detail: 'The wallet request was rejected by you. Nothing was sent.',
+            });
+          } else if (intentId) {
+            await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));
+            setSteps((all) => all.slice(0, index));
+          } else
+            update({
+              label,
+              state: 'failed',
+              detail: message(error, 'No wallet request was sent.'),
+            });
+          return false;
+        }
+      });
     } catch (error) {
-      if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
-        await pendingSwap.rejected(intentId);
-        update({
-          label,
-          state: 'failed',
-          detail: 'The wallet request was rejected by you. Nothing was sent.',
-        });
-      } else if (intentId) {
-        await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));
-        setSteps((all) => all.slice(0, index));
-      } else
-        update({ label, state: 'failed', detail: message(error, 'No wallet request was sent.') });
+      update({ label, state: 'failed', detail: message(error, 'No wallet request was sent.') });
       return false;
     } finally {
       setBusy(false);
@@ -1403,6 +1408,23 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       setBusy(false);
     }
   };
+  const reviewInWallet = async () => {
+    if (busy || pendingSwap.walletBusy) return;
+    setBusy(true);
+    setNote('Checking the original nonce, call and deadline before opening the wallet…');
+    try {
+      const candidate = await pendingSwap.reviewInWallet();
+      setNote(
+        `Wallet returned ${candidate}. All known candidates remain tracked until one is canonically finalized.`,
+      );
+    } catch (error) {
+      setNote(
+        message(error, 'The review outcome is unknown. The original submission hold remains.'),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div className="notice" aria-label="Recover transaction tracking">
       <p>
@@ -1429,6 +1451,35 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       >
         Check transaction hash
       </button>
+      {pendingSwap.review?.details && (
+        <details>
+          <summary>Review the original request in your wallet</summary>
+          <p>
+            If no hash is available, you can explicitly ask your wallet to review this same nonce
+            and unchanged call. An earlier attempt may still execute; only one transaction at this
+            nonce can execute on the canonical chain. This never chooses a new nonce or extends the
+            deadline. Review the decoded amounts, addresses and gas limit below. If needed, adjust
+            fees yourself in the wallet; this page does not apply a fee quote. Cancelling this
+            review keeps the hold. A swap deadline can still expire while the wallet is open.
+          </p>
+          <dl aria-label="Validated original transaction">
+            {pendingSwap.review.details.map(([name, value]) => (
+              <div key={name}>
+                <dt>{name}</dt>
+                <dd style={{ overflowWrap: 'anywhere' }}>{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <button
+            className="button secondary"
+            disabled={busy || pendingSwap.walletBusy || !!pendingSwap.storageProblem}
+            onClick={() => void reviewInWallet()}
+          >
+            Review same nonce in wallet
+          </button>
+        </details>
+      )}
+      {pendingSwap.review?.problem && <p>{pendingSwap.review.problem}</p>}
       {note && <p role="status">{note}</p>}
     </div>
   );

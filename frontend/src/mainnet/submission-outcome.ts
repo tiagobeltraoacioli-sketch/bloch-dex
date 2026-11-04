@@ -111,6 +111,7 @@ function matchTransaction(value: unknown, hash: Hex, intent: SubmissionIntent) {
 /** Observe a canonical head before the wallet request, excluding historical hashes. */
 export async function submissionBoundary(rpc: Rpc, context: SubmissionContext, account: Address) {
   await checkChain(rpc, context);
+  const finalized = await requireFinality(rpc);
   const head = block(await rpc('eth_getBlockByNumber', ['latest', false]));
   let pinnedNonce: unknown;
   try {
@@ -140,11 +141,53 @@ export async function submissionBoundary(rpc: Rpc, context: SubmissionContext, a
     again.number === head.number && again.hash === head.hash,
     'The canonical head changed while preparing the wallet request. Nothing was sent. Refresh and review again.',
   );
+  await recheckFinality(rpc, finalized, head);
   return {
     afterBlockNumber: head.number.toString(),
     afterBlockHash: head.hash,
     nonce: nonce.toString(),
   };
+}
+
+/** A user-requested review keeps the original nonce, body and boundary. Pending
+ * nonce may include this same transaction; only canonical state resolves it. */
+export async function verifySameNonceReview(
+  rpc: Rpc,
+  intent: SubmissionIntent,
+  context: SubmissionContext,
+  deadline: bigint,
+): Promise<void> {
+  assertSubmissionContext(intent, context);
+  await checkChain(rpc, context);
+  const finalized = await requireFinality(rpc);
+  const boundary = { number: BigInt(intent.afterBlockNumber), hash: intent.afterBlockHash };
+  await canonical(rpc, boundary);
+  const rawHead = object(await rpc('eth_getBlockByNumber', ['latest', false]));
+  const head = block(rawHead);
+  assert(head.number >= boundary.number, 'The RPC head is behind the saved submission boundary.');
+  const nonce = quantity(
+    await rpc('eth_getTransactionCount', [
+      intent.from,
+      { blockHash: head.hash, requireCanonical: true },
+    ]),
+  );
+  assert(
+    nonce === BigInt(intent.nonce),
+    'The canonical account nonce no longer matches this request. Recover its transaction hash from wallet activity; no new nonce or wallet request was created.',
+  );
+  assert(
+    deadline === 0n || quantity(rawHead.timestamp) < deadline,
+    'The saved swap deadline has passed at the canonical head. Repeating its unchanged call would revert. Recover the original outcome; its deadline was not extended.',
+  );
+  await canonical(rpc, head);
+  await checkChain(rpc, context);
+  const again = block(await rpc('eth_getBlockByNumber', ['latest', false]));
+  assert(
+    again.number === head.number && again.hash === head.hash,
+    'The head changed during review. Nothing was sent; review the same request again.',
+  );
+  await canonical(rpc, boundary);
+  await recheckFinality(rpc, finalized, head);
 }
 
 function afterSubmission(tx: Record<string, unknown>, intent: SubmissionIntent) {
@@ -211,6 +254,33 @@ async function canonical(rpc: Rpc, expected: { number: bigint; hash: Hex }) {
     current.number === expected.number && current.hash === expected.hash,
     'The receipt or finality checkpoint is no longer canonical. The submission hold remains.',
   );
+}
+
+/** A truthy response is insufficient: follower status can be lost or malformed
+ * after the page snapshot. Every wallet preparation needs current canonical finality. */
+export async function requireFinality(rpc: Rpc) {
+  try {
+    const finalized = block(await rpc('eth_getBlockByNumber', ['finalized', false]));
+    await canonical(rpc, finalized);
+    return finalized;
+  } catch {
+    throw new Error('L2 finality is unavailable, so nothing was sent. Refresh when it is back.');
+  }
+}
+
+async function recheckFinality(
+  rpc: Rpc,
+  earlier: { number: bigint; hash: Hex },
+  head: { number: bigint; hash: Hex },
+) {
+  const final = await requireFinality(rpc);
+  assert(
+    final.number >= earlier.number &&
+      final.number <= head.number &&
+      (final.number !== earlier.number || final.hash === earlier.hash),
+    'L2 finality moved backwards, changed or exceeded the canonical head. No wallet request was made.',
+  );
+  await canonical(rpc, earlier);
 }
 
 /** Null means still unresolved. Missing/malformed/moving evidence never frees a hold. */
