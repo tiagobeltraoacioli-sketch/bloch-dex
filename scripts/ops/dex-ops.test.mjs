@@ -19,6 +19,7 @@ const { privateKeyToAccount } = createRequire(new URL("../../frontend/package.js
 const { encodeFunctionResult, decodeFunctionData } = viem;
 
 const address = (n) => `0x${n.toString(16).padStart(40, "0")}`;
+const blockHash = (n) => `0x${n.toString(16).padStart(64, "0")}`;
 const CODE = { pair: "0x6001", token0: "0x6002", token1: "0x6003", factory: "0x6004", router: "0x6005", lens: "0x6006", safe: "0x6007" };
 const hashOf = (code) => keccak256(code);
 const [T0, T1, PAIR, FACTORY, ROUTER, LENS, SAFE, KEEPER] = [1, 2, 3, 4, 5, 6, 7, 8].map((n) => address(0xa00 + n));
@@ -53,6 +54,7 @@ function fakeNode(overrides = {}) {
   const chain = {
     now,
     baseFee: 1_000_000_000n,
+    finalizedNumber: 5n,
     reserves: [500_000_000n, 5n * 10n ** 18n],
     balances: [500_000_000n, 5n * 10n ** 18n],
     finalizedReserves: null,
@@ -106,8 +108,8 @@ function fakeNode(overrides = {}) {
         const [tag] = params;
         if (tag === "0x0") return { hash: GENESIS };
         if (tag === "finalized" && chain.noFinalized) return null;
-        const hash = tag === "finalized" ? "0xF" : "0xL";
-        return { number: tag === "finalized" ? "0x5" : "0xa", hash, timestamp: `0x${(now - (tag === "finalized" ? 6000n : 300n)).toString(16)}`, baseFeePerGas: `0x${chain.baseFee.toString(16)}` };
+        const number = tag === "finalized" ? chain.finalizedNumber : tag === "latest" ? 10n : BigInt(tag);
+        return { number: `0x${number.toString(16)}`, hash: blockHash(number), timestamp: `0x${(now - (tag === "finalized" ? 6000n : 300n)).toString(16)}`, baseFeePerGas: `0x${chain.baseFee.toString(16)}` };
       }
       case "eth_getCode": {
         const [a] = params;
@@ -117,7 +119,7 @@ function fakeNode(overrides = {}) {
         const [{ to, data }, at] = params;
         if (chain.revertSim && data.startsWith("0xbc25cf77")) throw new CallReverted("eth_call: execution reverted");
         const { functionName, args } = decodeFunctionData({ abi: ABI, data });
-        const blockTag = at?.blockHash === "0xF" ? "F" : "L";
+        const blockTag = at?.blockHash === blockHash(chain.finalizedNumber) ? "F" : "L";
         let value;
         if (functionName === "skim") return "0x";
         if (functionName === "balanceOf") {
@@ -162,6 +164,14 @@ function keeperDeps(node, now = 1_000_000) {
   return { request: node.request, sign: signer, now, save: (s) => saves.push(JSON.stringify(s)), saves, random: () => 0n };
 }
 const ABOVE_CAP = [CAP0 + 1n, 5n * 10n ** 18n];
+function keeperReceipt(node, hash, changes = {}) {
+  node.chain.finalizedNumber = 9n;
+  return {
+    transactionHash: hash, from: account.address.toLowerCase(), to: PAIR,
+    status: "0x1", blockNumber: "0x9", blockHash: blockHash(9n),
+    gasUsed: "0x10000", effectiveGasPrice: "0x3b9aca00", logs: [], ...changes,
+  };
+}
 
 // ---- helpers
 
@@ -390,10 +400,9 @@ test("keeper: one transaction in flight, then a cooldown", async () => {
   await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
   const second = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
   assert.equal(second.action, "wait-in-flight");
-  node.chain.receipts[state.txs[0].hash] = {
-    status: "0x1", blockNumber: "0x9", gasUsed: "0x10000", effectiveGasPrice: "0x3b9aca00",
+  node.chain.receipts[state.txs[0].hash] = keeperReceipt(node, state.txs[0].hash, {
     logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01" }],
-  };
+  });
   const third = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_200));
   assert.equal(third.action, "cooldown");
   assert.equal(state.txs[0].status, "effective");
@@ -404,7 +413,7 @@ test("keeper: it does not act on a receipt until latest has reached that block",
   const node = fakeNode({ balances: ABOVE_CAP });
   const state = emptyKeeperState();
   await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
-  node.chain.receipts[state.txs[0].hash] = { status: "0x1", blockNumber: "0xff", gasUsed: "0x1", effectiveGasPrice: "0x1", logs: [] };
+  node.chain.receipts[state.txs[0].hash] = keeperReceipt(node, state.txs[0].hash, { blockNumber: "0xff", blockHash: blockHash(255n) });
   assert.equal((await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100))).action, "wait-in-flight");
 });
 
@@ -413,7 +422,7 @@ test("keeper: griefing by front-running its skim backs off exponentially", async
   const state = emptyKeeperState();
   await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
   // The skim landed after someone else's: no Transfer moved a value.
-  node.chain.receipts[state.txs[0].hash] = { status: "0x1", blockNumber: "0x9", gasUsed: "0x10000", effectiveGasPrice: "0x1", logs: [] };
+  node.chain.receipts[state.txs[0].hash] = keeperReceipt(node, state.txs[0].hash, { effectiveGasPrice: "0x1" });
   const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
   assert.equal(outcome.action, "backoff");
   assert.equal(outcome.level, WARN);
@@ -422,10 +431,67 @@ test("keeper: griefing by front-running its skim backs off exponentially", async
   assert.equal(node.chain.sent.length, 1);
 });
 
+for (const [name, changes] of [
+  ["another transaction", { transactionHash: blockHash(99n) }],
+  ["another sender", { from: SAFE }],
+  ["another target", { to: SAFE }],
+  ["orphan inclusion", { blockHash: blockHash(99n) }],
+  ["missing block hash", { blockHash: undefined }],
+  ["malformed status", { status: "success" }],
+  ["missing gas price", { effectiveGasPrice: undefined }],
+  ["noncanonical gas quantity", { gasUsed: "0x00" }],
+  ["negative gas price", { effectiveGasPrice: "-1" }],
+  ["cost above the signed reservation", { gasUsed: "0xffffffff" }],
+]) test(`keeper: receipt with ${name} cannot release the pending reservation`, async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  const hash = state.txs[0].hash;
+  node.chain.receipts[hash] = keeperReceipt(node, hash, changes);
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
+  assert.equal(outcome.action, "rpc-failed");
+  assert.equal(outcome.level, UNKNOWN);
+  assert.equal(state.txs[0].status, "pending");
+  assert.equal(state.txs[0].spentWei, undefined);
+  assert.equal(node.chain.sent.length, 1);
+});
+
+for (const unavailable of [false, true]) test(`keeper: ${unavailable ? "missing" : "lagging"} finality retains a mined transaction's reservation`, async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  const hash = state.txs[0].hash;
+  node.chain.receipts[hash] = keeperReceipt(node, hash);
+  node.chain.finalizedNumber = 8n;
+  node.chain.noFinalized = unavailable;
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
+  assert.equal(outcome.action, "wait-in-flight");
+  assert.equal(state.txs[0].status, "pending");
+  assert.equal(state.txs[0].spentWei, undefined);
+  assert.equal(node.chain.sent.length, 1);
+});
+
+test("keeper: a changed finality checkpoint cannot release the receipt reservation", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  const hash = state.txs[0].hash;
+  node.chain.receipts[hash] = keeperReceipt(node, hash);
+  node.chain.finalizedNumber = 10n;
+  const request = async (method, params) => {
+    if (method === "eth_getBlockByNumber" && params[0] === "0xa") return { number: "0xa", hash: blockHash(99n) };
+    return node.request(method, params);
+  };
+  const outcome = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node, 1_000_100), request });
+  assert.equal(outcome.action, "rpc-failed");
+  assert.equal(state.txs[0].status, "pending");
+  assert.equal(state.txs[0].spentWei, undefined);
+});
+
 test("keeper: under sustained griefing it stops at the count and the budget", async () => {
   const node = fakeNode({ balances: ABOVE_CAP });
   const state = emptyKeeperState();
-  const mined = (hash) => { node.chain.receipts[hash] = { status: "0x1", blockNumber: "0x9", gasUsed: "0x10000", effectiveGasPrice: "0x3b9aca00", logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01" }] }; };
+  const mined = (hash) => { node.chain.receipts[hash] = keeperReceipt(node, hash, { logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01" }] }); };
   let now = 1_000_000;
   const actions = [];
   for (let i = 0; i < 12; i++) {
@@ -1002,7 +1068,7 @@ test("r10 DEX-4: ceiling skims keep the cooldown and never use the count kept fo
   const node = fakeNode({ reserves: AT_CEILING, balances: [800_110_000n, 8n * 10n ** 18n] });
   const state = emptyKeeperState();
   await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
-  node.chain.receipts[state.txs[0].hash] = { status: "0x1", blockNumber: "0x9", gasUsed: "0x12c00", effectiveGasPrice: "0x77359400", logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01adb0" }] };
+  node.chain.receipts[state.txs[0].hash] = keeperReceipt(node, state.txs[0].hash, { gasUsed: "0x12c00", effectiveGasPrice: "0x77359400", logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01adb0" }] });
   node.chain.nonce = 1n;
   const soon = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_100));
   assert.equal(soon.action, "cooldown");

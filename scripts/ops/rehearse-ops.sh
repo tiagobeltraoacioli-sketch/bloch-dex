@@ -558,6 +558,10 @@ if [ "$MODE" = anvil ]; then
   cast rpc evm_mine --rpc-url "$RPC" > /dev/null
   cast rpc evm_setAutomine true --rpc-url "$RPC" > /dev/null
   [ "$(view "$USD" "$BAL" "$GRIEFER")" = "$GRIEFER_USD" ] || die "the griefer should have recovered the donation"
+  expect 0 keeper-before-finality keeper_run --state "$STATE" --cooldown-s 60 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"wait-in-flight"' "$EV/keeper-before-finality.out" || die "the unfinalized receipt released the reservation"
+  node -e 'const t=require(process.argv[1]).txs.at(-1);if(t.status!=="pending"||t.spentWei!==undefined)process.exit(1)' "$STATE"
+  settle
   expect 0 keeper-after-frontrun keeper_run --state "$STATE" --cooldown-s 60 --execute -- --private-key "$KEEPER_KEY"
   node -e 'const s=require(process.argv[1]);const t=s.txs.at(-1);if(t.status!=="wasted"||s.consecutiveWasted!==1)process.exit(1);console.log("wasted skim cost",t.spentWei,"wei; next allowed in",s.nextAllowedAt-t.at,"s")' "$STATE" | tee -a "$EV/steps.log"
   must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" "$DONATE")" 0 100000 > /dev/null
@@ -591,6 +595,7 @@ if [ "$MODE" = anvil ]; then
   must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000 > /dev/null
   pass "l3: the griefer won the race and took its donation back, which reopened the pair; its only cost was gas"
   fill_both
+  settle
   SAFE_USD=$(view "$USD" "$BAL" "$SAFE")
   expect 0 l3-keeper-wins keeper_run --state "$STATE" --cooldown-s 60 --execute -- --private-key "$KEEPER_KEY"
   grep -q '"sent"' "$EV/l3-keeper-wins.out" || { cat "$EV/l3-keeper-wins.out"; die "the keeper did not clear the closed pair"; }

@@ -147,18 +147,51 @@ export function nextTip(state, options, random = (n) => BigInt(randomInt(Number(
   return options.tipWei + random(steps + 1n) * 1_000_000n;
 }
 
+function receiptQuantity(value, field) {
+  if (typeof value !== "string" || !/^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/.test(value)) {
+    throw new RpcError(`keeper receipt ${field} is not an Ethereum quantity`);
+  }
+  return BigInt(value);
+}
+
+async function requireCanonicalReceiptBlock(request, number, hash) {
+  if (typeof hash !== "string" || !/^0x[0-9a-f]{64}$/.test(hash) || /^0x0+$/.test(hash)) {
+    throw new RpcError("keeper receipt checkpoint hash is invalid");
+  }
+  const block = await request("eth_getBlockByNumber", [`0x${number.toString(16)}`, false]);
+  if (!block || receiptQuantity(block.number, "checkpoint number") !== number || block.hash !== hash) {
+    throw new RpcError("keeper receipt checkpoint is not canonical");
+  }
+}
+
 /// Settle the transaction in flight. Returns true when it is still in flight.
 async function reconcile(state, keeper, deployment, request, now, options) {
   const open = state.txs.find((t) => t.status === "pending");
   if (!open) return false;
   const receipt = await request("eth_getTransactionReceipt", [open.hash]);
   if (receipt) {
+    if (receipt.transactionHash !== open.hash || String(receipt.from).toLowerCase() !== keeper ||
+      String(receipt.to).toLowerCase() !== open.pair || !["0x0", "0x1"].includes(receipt.status)) {
+      throw new RpcError("keeper receipt identity or status differs from the published transaction");
+    }
+    const blockNumber = receiptQuantity(receipt.blockNumber, "blockNumber");
+    const gasUsed = receiptQuantity(receipt.gasUsed, "gasUsed");
+    const gasPrice = receiptQuantity(receipt.effectiveGasPrice, "effectiveGasPrice");
+    const spentWei = gasUsed * gasPrice;
+    if (gasUsed === 0n || spentWei > BigInt(open.reservedWei) || !Array.isArray(receipt.logs)) {
+      throw new RpcError("keeper receipt cost or logs are invalid");
+    }
     const latest = await readBlock(request, "latest");
     // The settled RPC can serve a receipt before its `latest` view reaches that
     // block; reading reserves now would see the excess again and pay twice.
-    if (latest.number < BigInt(receipt.blockNumber)) return true;
-    open.spentWei = (BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice ?? 0)).toString();
+    if (!latest || latest.number < blockNumber) return true;
+    const finalized = await readBlock(request, "finalized");
+    if (!finalized || finalized.number < blockNumber) return true;
+    // Do not reduce the reservation for a receipt that can still be orphaned.
+    await requireCanonicalReceiptBlock(request, blockNumber, receipt.blockHash);
+    await requireCanonicalReceiptBlock(request, finalized.number, finalized.hash);
     const moved = (receipt.logs ?? []).some((log) => log.topics?.[0] === TRANSFER_TOPIC && BigInt(log.data || "0x0") > 0n);
+    open.spentWei = spentWei.toString();
     if (receipt.status !== "0x1" || !moved) {
       open.status = receipt.status === "0x1" ? "wasted" : "reverted";
       state.consecutiveWasted += 1;

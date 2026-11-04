@@ -124,7 +124,7 @@ The state file is the budget. If it is damaged the keeper refuses to run; it doe
 
 ### Crash behaviour
 
-State is written before publishing. A crash after that leaves a `pending` entry; the next run reconciles it by receipt, then by nonce, then by timeout. A transaction whose fate is unknown keeps its reservation until it leaves the 24 h window. The keeper also waits for `latest` to reach a receipt's block, since the settled RPC can serve a receipt first.
+State is written before publishing. A crash after that leaves a `pending` entry; the next run reconciles it by receipt, then by nonce, then by timeout. A transaction whose fate is unknown keeps its reservation until it leaves the 24 h window. A receipt stays pending until both `latest` and `finalized` reach its block. Before reducing the reservation to actual gas spent, the keeper verifies the receipt's transaction hash, sender, pair, status, gas accounting and canonical inclusion, then rechecks the finalized checkpoint. Missing finality retains the reservation; inconsistent receipt data reports `rpc-failed` without releasing it.
 
 A publication timeout, HTTP failure, malformed response, different result hash,
 or generic JSON-RPC error reports `publish-unconfirmed` and keeps that same
