@@ -327,6 +327,79 @@ function rpcV2(change = {}) {
   };
 }
 
+for (const scenario of [
+  { name: "schema 1", config: () => config(), rpc: () => rpc().request, height: 214 },
+  { name: "schema 2", config: () => configV2(), rpc: () => rpcV2(), height: 300 },
+]) {
+  const wrap = (mutate) => {
+    const base = scenario.rpc();
+    let stateRead = false;
+    return async (method, params) => {
+      if (method === "eth_call" || method === "eth_getCode") stateRead = true;
+      const changed = mutate(method, params, stateRead);
+      return changed === undefined ? base(method, params) : changed;
+    };
+  };
+  for (const [name, mutate, expected] of [
+    ["same-height finalized disagreement", (m) => m === "bloch_finality" ? { finalized: { number: hex(scenario.height), hash: hash("c") } } : undefined, /conflicts/],
+    ["higher reported checkpoint outside the canonical chain", (m, p) => {
+      if (m === "bloch_finality") return { finalized: { number: hex(scenario.height + 1), hash: hash("c") } };
+      if (m === "eth_getBlockByNumber" && p[0] === hex(scenario.height + 1)) return { number: p[0], hash: hash("d") };
+    }, /canonical/],
+    ["wrong number in a canonical block response", (m, p) => m === "eth_getBlockByNumber" && p[0] === hex(scenario.height) ? { number: hex(scenario.height - 1), hash: hash("b") } : undefined, /canonical/],
+    ["chain change during state reads", (m, _p, read) => read && m === "eth_chainId" ? "0x1" : undefined, /chain ID changed/],
+    ["genesis change during state reads", (m, p, read) => read && m === "eth_getBlockByNumber" && p[0] === "0x0" ? { number: "0x0", hash: hash("c") } : undefined, /genesis changed/],
+    ["finality regression during state reads", (m, p, read) => {
+      if (!read) return;
+      if (m === "eth_getBlockByNumber" && p[0] === "finalized") return { number: hex(scenario.height - 1), hash: hash("c") };
+      if (m === "eth_getBlockByNumber" && p[0] === hex(scenario.height - 1)) return { number: p[0], hash: hash("c") };
+    }, /regressed/],
+    ["finalized checkpoint rewrite during state reads", (m, p, read) => {
+      if (!read) return;
+      if (m === "eth_getBlockByNumber" && ["finalized", hex(scenario.height)].includes(p[0])) return { number: hex(scenario.height), hash: hash("c") };
+      if (m === "bloch_finality") return { finalized: { number: hex(scenario.height), hash: hash("c") } };
+    }, /changed|canonical/],
+    ["opening canonical checkpoint disappears during state reads", (m, p, read) => read && m === "eth_getBlockByNumber" && p[0] === hex(scenario.height) ? null : undefined, /unavailable/],
+    ["reported finalized checkpoint regresses independently", (m, p, read) => {
+      if (!read && m === "bloch_finality") return { finalized: { number: hex(scenario.height + 1), hash: hash("c") } };
+      if (m === "eth_getBlockByNumber" && p[0] === hex(scenario.height + 1)) return { number: p[0], hash: hash("c") };
+    }, /regressed/],
+    ["an older opening checkpoint rewrites when finality advances", (m, p, read) => {
+      if (!read) return;
+      if (m === "eth_getBlockByNumber" && ["finalized", hex(scenario.height + 1)].includes(p[0])) return { number: hex(scenario.height + 1), hash: hash("c") };
+      if (m === "bloch_finality") return { finalized: { number: hex(scenario.height + 1), hash: hash("c") } };
+      if (m === "eth_getBlockByNumber" && p[0] === hex(scenario.height)) return { number: p[0], hash: hash("d") };
+    }, /canonical/],
+  ]) {
+    test(`${scenario.name} refuses ${name}`, async () => {
+      await assert.rejects(evaluateFinalityGate(scenario.config(), wrap(mutate)), expected);
+    });
+  }
+  test(`${scenario.name} keeps the checked snapshot when finality advances`, async () => {
+    let closingObserved = false;
+    const request = wrap((method, params, read) => {
+      if (!read) return;
+      if (method === "eth_getBlockByNumber" && params[0] === "finalized") {
+        closingObserved = true;
+        return { number: hex(scenario.height + 1), hash: hash("c") };
+      }
+      if (method === "bloch_finality") return { finalized: { number: hex(scenario.height + 1), hash: hash("c") } };
+      if (method === "eth_getBlockByNumber" && params[0] === hex(scenario.height + 1)) return { number: params[0], hash: hash("c") };
+    });
+    const report = await evaluateFinalityGate(scenario.config(), request);
+    assert.deepEqual(report.finalized, { number: String(scenario.height), hash: hash("b") });
+    assert.equal(closingObserved, true);
+  });
+  test(`${scenario.name} accepts a later consistent bloch_finality checkpoint`, async () => {
+    const request = wrap((method, params) => {
+      if (method === "bloch_finality") return { finalized: { number: hex(scenario.height + 1), hash: hash("c") } };
+      if (method === "eth_getBlockByNumber" && params[0] === hex(scenario.height + 1)) return { number: params[0], hash: hash("c") };
+    });
+    const report = await evaluateFinalityGate(scenario.config(), request);
+    assert.deepEqual(report.finalized, { number: String(scenario.height), hash: hash("b") });
+  });
+}
+
 test("schema 2 enables liquidity only for the exact planned deployment", async () => {
   const report = await evaluateFinalityGate(configV2(), rpcV2());
   assert.equal(report.decision, "liquidity-enabled");

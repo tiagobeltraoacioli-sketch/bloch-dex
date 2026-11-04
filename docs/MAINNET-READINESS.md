@@ -366,6 +366,10 @@ deployer's current nonce, re-plan and re-review.
 
 - chain ID and genesis hash equal the pinned values; `bloch_finality` is not
   behind the `finalized` tag;
+- both finality views identify the same hash at the same height and resolve to
+  canonical blocks with the requested numbers. The gate repeats these checks,
+  chain ID and genesis after its state reads, refuses regressions or rewritten
+  checkpoints, and retains the opening checkpoints when finality advances;
 - every deployment transaction: status 1, sent by the deployer, finalized and
   canonical;
 - runtime code hash of WBLCH, factory, router, lens, both pairs, both bridged

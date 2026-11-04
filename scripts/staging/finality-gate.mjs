@@ -87,6 +87,47 @@ function block(value, field) {
   return Object.freeze({ number: quantity(value.number, `${field}.number`), hash: value.hash });
 }
 
+function sameBlock(left, right) {
+  return left.number === right.number && left.hash === right.hash;
+}
+
+async function requireCanonicalBlock(request, expected, field) {
+  const canonical = block(await request("eth_getBlockByNumber", [`0x${expected.number.toString(16)}`, false]), field);
+  refuse(sameBlock(canonical, expected), `${field} is not the expected canonical block`);
+}
+
+async function readFinality(request, genesisHash) {
+  const finalized = block(await request("eth_getBlockByNumber", ["finalized", false]), "finalized block");
+  refuse(finalized.number > 0n && finalized.hash !== genesisHash, "nothing beyond genesis is finalized");
+  const finality = await request("bloch_finality", []);
+  refuse(finality && typeof finality === "object" && finality.finalized, "bloch_finality is unavailable");
+  const reported = block(finality.finalized, "bloch_finality.finalized");
+  refuse(reported.number >= finalized.number, "bloch_finality reports an older finalized block than eth_getBlockByNumber");
+  refuse(reported.number !== finalized.number || reported.hash === finalized.hash, "bloch_finality conflicts with the finalized block at the same height");
+  await requireCanonicalBlock(request, finalized, "finalized checkpoint");
+  if (!sameBlock(reported, finalized)) await requireCanonicalBlock(request, reported, "reported finalized checkpoint");
+  return { finalized, finality, reported };
+}
+
+async function verifyClosingFinality(request, chain, opening) {
+  const closing = await readFinality(request, chain.genesisHash);
+  for (const field of ["finalized", "reported"]) {
+    const before = opening[field], after = closing[field];
+    refuse(after.number >= before.number, `${field} checkpoint regressed during verification`);
+    refuse(after.number !== before.number || after.hash === before.hash, `${field} checkpoint changed during verification`);
+  }
+  // When finality advances, retain both earlier observations as canonical too.
+  const retained = new Map([opening.finalized, opening.reported].map((checkpoint) => [checkpoint.number, checkpoint]));
+  for (const before of retained.values()) {
+    if (![closing.finalized, closing.reported].some((after) => sameBlock(before, after))) {
+      await requireCanonicalBlock(request, before, "opening finalized checkpoint");
+    }
+  }
+  refuse(quantity(await request("eth_chainId", []), "closing chain ID") === BigInt(chain.id), "chain ID changed during verification");
+  const genesis = block(await request("eth_getBlockByNumber", ["0x0", false]), "closing genesis block");
+  refuse(genesis.number === 0n && genesis.hash === chain.genesisHash, "genesis changed during verification");
+}
+
 function word(data, index, field) {
   refuse(typeof data === "string" && /^0x(?:[0-9a-f]{64})+$/.test(data), `${field} returned malformed data`);
   const start = 2 + index * 64;
@@ -149,15 +190,8 @@ export async function evaluateFinalityGate(config, request, options = {}) {
   const genesis = block(await request("eth_getBlockByNumber", ["0x0", false]), "genesis block");
   refuse(genesis.number === 0n && genesis.hash === chain.genesisHash, "genesis hash does not match the pinned value");
 
-  const finalized = block(await request("eth_getBlockByNumber", ["finalized", false]), "finalized block");
-  refuse(finalized.number > 0n, "nothing beyond genesis is finalized");
-  const finality = await request("bloch_finality", []);
-  refuse(finality && typeof finality === "object" && finality.finalized, "bloch_finality is unavailable");
-  const reported = block(finality.finalized, "bloch_finality.finalized");
-  refuse(
-    reported.number >= finalized.number,
-    "bloch_finality reports an older finalized block than eth_getBlockByNumber",
-  );
+  const opening = await readFinality(request, genesis.hash);
+  const { finalized, finality } = opening;
 
   const included = [];
   for (const hash of deployment.transactions) {
@@ -170,7 +204,7 @@ export async function evaluateFinalityGate(config, request, options = {}) {
       await request("eth_getBlockByNumber", [`0x${number.toString(16)}`, false]),
       `block ${number}`,
     );
-    refuse(canonical.hash === receipt.blockHash, `transaction ${hash} is not on the canonical chain`);
+    refuse(canonical.number === number && canonical.hash === receipt.blockHash, `transaction ${hash} is not on the canonical chain`);
     included.push(Object.freeze({ hash, blockNumber: number.toString(), blockHash: receipt.blockHash }));
   }
 
@@ -200,6 +234,8 @@ export async function evaluateFinalityGate(config, request, options = {}) {
   const caps = await call(pair, SELECTORS.reserveCaps, "reserveCaps");
   const pairCap = word(caps, token0 === wrappedNative ? 0 : 1, "reserveCaps");
   refuse(pairCap === cap, "the pair's wrapped native cap differs from the factory's");
+
+  await verifyClosingFinality(request, chain, opening);
 
   return Object.freeze({
     domain: GATE_DOMAIN,
@@ -459,15 +495,8 @@ async function evaluateFinalityGateV2(config, request, bridgeTokens = [], bridge
   const genesis = block(await request("eth_getBlockByNumber", ["0x0", false]), "genesis block");
   refuse(genesis.number === 0n && genesis.hash === chain.genesisHash, "genesis hash does not match the pinned value");
 
-  const finalized = block(await request("eth_getBlockByNumber", ["finalized", false]), "finalized block");
-  refuse(finalized.number > 0n, "nothing beyond genesis is finalized");
-  const finality = await request("bloch_finality", []);
-  refuse(finality && typeof finality === "object" && finality.finalized, "bloch_finality is unavailable");
-  const reported = block(finality.finalized, "bloch_finality.finalized");
-  refuse(
-    reported.number >= finalized.number,
-    "bloch_finality reports an older finalized block than eth_getBlockByNumber",
-  );
+  const opening = await readFinality(request, genesis.hash);
+  const { finalized, finality } = opening;
 
   const included = [];
   for (const hash of deployment.transactions) {
@@ -484,7 +513,7 @@ async function evaluateFinalityGateV2(config, request, bridgeTokens = [], bridge
       await request("eth_getBlockByNumber", [`0x${number.toString(16)}`, false]),
       `block ${number}`,
     );
-    refuse(canonical.hash === receipt.blockHash, `transaction ${hash} is not on the canonical chain`);
+    refuse(canonical.number === number && canonical.hash === receipt.blockHash, `transaction ${hash} is not on the canonical chain`);
     included.push(Object.freeze({ hash, blockNumber: number.toString(), blockHash: receipt.blockHash }));
   }
 
@@ -567,6 +596,8 @@ async function evaluateFinalityGateV2(config, request, bridgeTokens = [], bridge
     }
     pairs.push(Object.freeze({ address: pair, token0, token1 }));
   }
+
+  await verifyClosingFinality(request, chain, opening);
 
   return Object.freeze({
     domain: GATE_DOMAIN,
