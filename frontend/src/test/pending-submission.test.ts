@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
-import { submissionBoundary, verifySubmissionHash } from '../mainnet/submission-outcome';
+import {
+  finalizedReplacementReceipt,
+  submissionBoundary,
+  verifySubmissionHash,
+} from '../mainnet/submission-outcome';
 import { pollPendingSwap, type PendingSwap } from '../mainnet/pendingswap';
 
 const hash = (digit: string) => `0x${digit.repeat(64)}` as Hex;
@@ -387,5 +391,183 @@ describe('wallet submission settlement', () => {
       /canonical hash-pinned nonce read is required/,
     );
     expect(calls).toBe(1);
+  });
+});
+
+describe('manual proof of cancellation or a different replacement', () => {
+  const replacement = { ...tx, to: FROM, input: '0x', value: '0x0' };
+  const replacedReceipt = { ...receipt, to: FROM };
+  const rpcFor = (overrides: Parameters<typeof rpcWith>[0] = {}) =>
+    rpcWith({
+      eth_getTransactionByHash: replacement,
+      eth_getTransactionReceipt: replacedReceipt,
+      eth_getTransactionCount: '0x5',
+      ...overrides,
+    });
+  const check = (rpc: Rpc) => finalizedReplacementReceipt(rpc, HASH, swap.intent!, swap.intent!);
+  it.each(['0x1', '0x0'])(
+    'proves a different canonical finalized transaction with receipt status %s',
+    async (status) => {
+      expect(
+        await check(rpcFor({ eth_getTransactionReceipt: { ...replacedReceipt, status } })),
+      ).toEqual({
+        intentId: swap.intent!.id,
+        transactionHash: HASH,
+        from: FROM,
+        to: FROM,
+        data: '0x',
+        value: '0',
+        nonce: '4',
+        blockNumber: '16',
+        blockHash: BLOCK.hash,
+        receiptStatus: status === '0x1' ? 'success' : 'reverted',
+        gasUsed: '256',
+      });
+    },
+  );
+  it('supports contract creation as a different nonce-consuming body', async () => {
+    expect(
+      await check(
+        rpcFor({
+          eth_getTransactionByHash: { ...replacement, to: null, input: '0x6000' },
+          eth_getTransactionReceipt: { ...replacedReceipt, to: null },
+        }),
+      ),
+    ).toMatchObject({ to: null, data: '0x6000', nonce: '4' });
+  });
+  it.each([
+    ['from', TO],
+    ['nonce', '0x5'],
+    ['chainId', '0x1'],
+    ['chainId', undefined],
+    ['hash', hash('9')],
+    ['to', '0x1234'],
+    ['input', '0x123'],
+    ['input', undefined],
+    ['value', '0x00'],
+  ])('rejects invalid replacement %s', async (field, value) => {
+    await expect(
+      check(rpcFor({ eth_getTransactionByHash: { ...replacement, [field]: value } })),
+    ).rejects.toThrow();
+  });
+  it('does not classify the same call with different fees or gas as a different replacement', async () => {
+    await expect(
+      check(rpcFor({ eth_getTransactionByHash: { ...tx, gas: '0x1', maxFeePerGas: '0xff' } })),
+    ).rejects.toThrow(/original call/);
+  });
+  it('refuses an unchanged or malformed canonical finalized nonce', async () => {
+    for (const nonce of ['0x4', '0x3', null, '0x05']) {
+      await expect(check(rpcFor({ eth_getTransactionCount: nonce }))).rejects.toThrow();
+    }
+  });
+  it('requires a canonical hash-pinned nonce without a height fallback', async () => {
+    const calls: unknown[][] = [];
+    await expect(
+      check(
+        rpcFor({
+          eth_getTransactionCount: (params: unknown[]) => {
+            calls.push(params);
+            throw new Error('unsupported EIP1898');
+          },
+        }),
+      ),
+    ).rejects.toThrow(/unsupported EIP1898/);
+    expect(calls).toEqual([[FROM, { blockHash: BLOCK.hash, requireCanonical: true }]]);
+  });
+  it('does not accept a historical cancellation at the submission boundary', async () => {
+    await expect(
+      check(
+        rpcFor({
+          eth_getTransactionByHash: {
+            ...replacement,
+            blockNumber: BOUNDARY.number,
+            blockHash: BOUNDARY.hash,
+          },
+        }),
+      ),
+    ).rejects.toThrow(/historical hash/);
+  });
+  it.each(['body', 'receipt', 'unfinalized'])(
+    'returns no proof for %s still missing finalization',
+    async (missing) => {
+      const rpc = rpcFor(
+        missing === 'body'
+          ? { eth_getTransactionByHash: null }
+          : missing === 'receipt'
+            ? { eth_getTransactionReceipt: null }
+            : {
+                eth_getBlockByNumber: (p: unknown[]) =>
+                  p[0] === '0x0'
+                    ? { number: '0x0', hash: GENESIS }
+                    : p[0] === 'finalized'
+                      ? BOUNDARY
+                      : BLOCK,
+              },
+      );
+      expect(await check(rpc)).toBeNull();
+    },
+  );
+  it('rejects a replacement receipt for a different destination', async () => {
+    await expect(check(rpcFor({ eth_getTransactionReceipt: receipt }))).rejects.toThrow(
+      /receipt identity/,
+    );
+  });
+  it('rejects a body that changes during verification even if both bodies use this nonce', async () => {
+    let reads = 0;
+    await expect(
+      check(
+        rpcFor({
+          eth_getTransactionByHash: () =>
+            ++reads === 1 ? replacement : { ...replacement, value: '0x1' },
+        }),
+      ),
+    ).rejects.toThrow(/body changed/);
+  });
+  it('refuses finality loss after the receipt checks and a reorganization during the nonce read', async () => {
+    let finalityReads = 0;
+    await expect(
+      check(
+        rpcFor({
+          eth_getBlockByNumber: (p: unknown[]) => {
+            if (p[0] === '0x0') return { number: '0x0', hash: GENESIS };
+            if (p[0] === 'finalized' && ++finalityReads > 2) return null;
+            return BLOCK;
+          },
+        }),
+      ),
+    ).rejects.toThrow(/finality is unavailable/);
+    let changed = false;
+    await expect(
+      check(
+        rpcFor({
+          eth_getTransactionCount: () => {
+            changed = true;
+            return '0x5';
+          },
+          eth_getBlockByNumber: (p: unknown[]) =>
+            p[0] === '0x0'
+              ? { number: '0x0', hash: GENESIS }
+              : changed
+                ? { ...BLOCK, hash: hash('e') }
+                : BLOCK,
+        }),
+      ),
+    ).rejects.toThrow();
+  });
+  it('retains the original hold semantics for another genesis or deployment', async () => {
+    await expect(
+      check(
+        rpcFor({
+          eth_getBlockByNumber: (p: unknown[]) =>
+            p[0] === '0x0' ? { number: '0x0', hash: hash('e') } : BLOCK,
+        }),
+      ),
+    ).rejects.toThrow(/genesis/);
+    await expect(
+      finalizedReplacementReceipt(rpcFor(), HASH, swap.intent!, {
+        ...swap.intent!,
+        deploymentId: hash('e'),
+      }),
+    ).rejects.toThrow(/deployment/);
   });
 });

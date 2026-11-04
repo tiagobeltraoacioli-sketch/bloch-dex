@@ -1265,6 +1265,85 @@ describe('swap panel safety fixes', () => {
     expect(swapButton().disabled).toBe(true);
   });
 
+  it('requires explicit local closure of a wallet cancellation and preserves replaced history after reload', async () => {
+    const { rpc, state } = fakeChain();
+    let canonicalNonce = 0;
+    let cancelled = false;
+    const chain = withReceipts(
+      async (method, params) =>
+        method === 'eth_getTransactionCount'
+          ? `0x${canonicalNonce.toString(16)}`
+          : rpc(method, params),
+      () => (cancelled ? MINED : null),
+    );
+    const first = await mount(chain, state, (wallet) => {
+      const original = wallet.provider!;
+      return {
+        ...wallet,
+        provider: {
+          async request(args) {
+            const result = await original.request(args);
+            if (args.method === 'eth_sendTransaction') throw new Error('lost wallet reply');
+            return result;
+          },
+        },
+      };
+    });
+    await first.user.type(screen.getByLabelText('Amount'), '1');
+    await first.user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await first.user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
+    await screen.findByText(/no transaction hash was returned/);
+    state.transactions.set(HASH, {
+      hash: HASH,
+      from: ACCOUNT,
+      to: ACCOUNT,
+      input: '0x',
+      value: '0x0',
+      chainId: '0xab162',
+      nonce: '0x0',
+      blockNumber: INCLUDED.number,
+      blockHash: INCLUDED.hash,
+    });
+    canonicalNonce = 1;
+    cancelled = true;
+    const recovery = screen.getByLabelText('Recover transaction tracking');
+    await first.user.type(
+      within(recovery).getByLabelText('Transaction hash from wallet activity'),
+      HASH,
+    );
+    await first.user.click(
+      within(recovery).getByRole('button', { name: 'Check cancellation or replacement' }),
+    );
+    const verified = await screen.findByLabelText('Verified replacement');
+    expect(verified.textContent).toContain('not successful execution of the original request');
+    expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).not.toBeNull();
+    expect(first.sends()).toHaveLength(1);
+    await first.user.click(
+      within(verified).getByRole('button', { name: 'Close local hold as replaced' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText('Transactions').textContent).toContain(
+        'original request did not execute',
+      ),
+    );
+    expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+    expect(JSON.parse(localStorage.getItem(historyKey(network.chainId, ACCOUNT))!)).toContainEqual(
+      expect.objectContaining({
+        hash: HASH,
+        state: 'replaced',
+        label: 'Original approval request',
+      }),
+    );
+    expect(first.sends()).toHaveLength(1);
+    first.view.unmount();
+    const again = await mount(chain, state);
+    expect(screen.getByLabelText('Earlier transactions').textContent).toContain('replaced');
+    expect(screen.getByLabelText('Earlier transactions').textContent).toContain(
+      'original request did not execute',
+    );
+    expect(again.sends()).toHaveLength(0);
+  });
+
   it('ignores an allowance reply for the previous input token', async () => {
     const { rpc, state } = fakeChain({ allowance: 0n });
     let release: () => void = () => {};

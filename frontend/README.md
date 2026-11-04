@@ -444,6 +444,23 @@ an error, never a fallback. URLs must be `https` without credentials.
   updates that fail preserve the prior durable hold and keep new hashes in memory
   while the page remains open. Browser/extension and native Web Locks behavior
   still require separate browser validation; jsdom exercises a FIFO lock model.
+- **Manual cancellation or replacement recovery.** If the wallet replaced the
+  original nonce with a different call, enter that transaction hash and choose
+  “Check cancellation or replacement”. This is read-only. It requires the saved
+  sender, chain/genesis/deployment and nonce, a different destination/calldata/value,
+  canonical inclusion after the original boundary, and a canonical finalized
+  receipt. A hash-pinned read of finalized account state must show that nonce
+  consumed. A pending transaction, a missing receipt, an older identical call,
+  another account/nonce or a legacy record without a nonce cannot release the hold.
+  The verified replacement body and receipt are shown separately from the original
+  request. Only “Close local hold as replaced” clears the local hold, after
+  rechecking the same evidence and its context. A reverted replacement can also
+  consume the nonce; neither outcome is presented as execution of the original
+  request. History retains `replaced` after reload. This action never contacts the
+  wallet, sends a new transaction or automatically starts a new nonce. A wallet
+  reply arriving after closure cannot recreate the old hold or overwrite a newer
+  intent. If the replacement is no longer canonical/finalized, confirmation stops
+  and the original hold remains.
 - **Reserve caps.** The pools table shows each cap, how much of it is used and
   how much more can flow in ("inflow paused" at the cap). When the lens finds no
   route, `src/mainnet/caps.ts` replays the route on the finalized reserves and

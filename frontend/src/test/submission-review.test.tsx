@@ -178,6 +178,8 @@ function fixture(initial = saved()) {
   return {
     rpc,
     provider,
+    bodies,
+    receipts,
     args,
     mount,
     mine,
@@ -675,5 +677,169 @@ describe('same-nonce canonical preconditions', () => {
       };
       await expect(verifySameNonceReview(rpc, approval(), context, 0n)).rejects.toThrow();
     }
+  });
+});
+
+describe('explicit local closure after a finalized replacement', () => {
+  function cancelled() {
+    const f = fixture(saved(approval(), 0n, [TWO]));
+    f.mine(ONE);
+    f.bodies.set(ONE, { ...f.bodies.get(ONE)!, to: FROM, input: '0x', value: '0x0' });
+    f.receipts.set(ONE, { ...f.receipts.get(ONE)!, to: FROM });
+    f.setNonce(5n);
+    return f;
+  }
+  it('a hash check is read-only; only a separate action closes the hold as replaced', async () => {
+    const f = cancelled(),
+      hook = f.mount();
+    const before = localStorage.getItem(key);
+    let proof!: Awaited<ReturnType<typeof hook.result.current.checkReplacement>>;
+    await act(async () => {
+      proof = await hook.result.current.checkReplacement(ONE);
+    });
+    expect(localStorage.getItem(key)).toBe(before);
+    expect(hook.result.current.open).toBe(true);
+    expect(f.provider.request).not.toHaveBeenCalled();
+    await act(async () => {
+      await hook.result.current.closeReplacement(proof);
+    });
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(hook.result.current.tracked).toMatchObject({
+      state: 'replaced',
+      hash: ONE,
+      label: 'Original approval request',
+    });
+    expect(hook.result.current.tracked?.detail).toContain('original request did not execute');
+    expect(hook.result.current.open).toBe(false);
+    expect(f.provider.request).not.toHaveBeenCalled();
+    // Refresh canonical balances because the replacement can have different effects.
+    expect(f.onMined).toHaveBeenCalledOnce();
+  });
+  it('rechecks consumed nonce and finality on confirmation and retains the hold if they disappear', async () => {
+    const f = cancelled(),
+      hook = f.mount();
+    const proof = await hook.result.current.checkReplacement(ONE);
+    f.setNonce(4n);
+    await act(async () => {
+      await expect(hook.result.current.closeReplacement(proof)).rejects.toThrow(/nonce consumed/);
+    });
+    expect(stored()?.intent).toEqual(approval());
+    expect(f.provider.request).not.toHaveBeenCalled();
+  });
+  it('does not clear a different hold with a previously displayed proof', async () => {
+    const f = cancelled(),
+      hook = f.mount();
+    const proof = await hook.result.current.checkReplacement(ONE);
+    store(saved({ ...approval(), id: '87654321-4321-1234-1234-123456789abc', nonce: '5' }));
+    await act(async () => {
+      await expect(hook.result.current.closeReplacement(proof)).rejects.toThrow(/changed/);
+    });
+    expect(stored()?.intent?.nonce).toBe('5');
+  });
+  it('rejects confirmation when the displayed replacement body changed', async () => {
+    const f = cancelled(),
+      hook = f.mount();
+    const proof = await hook.result.current.checkReplacement(ONE);
+    f.bodies.set(ONE, { ...f.bodies.get(ONE)!, value: '0x1' });
+    await act(async () => {
+      await expect(hook.result.current.closeReplacement(proof)).rejects.toThrow(/evidence changed/);
+    });
+    expect(stored()?.intent).toEqual(approval());
+  });
+  it('retains the hold if storage refuses the explicit local closure', async () => {
+    const f = cancelled(),
+      hook = f.mount();
+    const proof = await hook.result.current.checkReplacement(ONE);
+    const remove = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      await act(async () => {
+        await expect(hook.result.current.closeReplacement(proof)).rejects.toThrow(
+          /could not clear/,
+        );
+      });
+      expect(stored()?.intent).toEqual(approval());
+    } finally {
+      remove.mockRestore();
+    }
+  });
+  it('blocks a stale confirmation after account or RPC context changes', async () => {
+    const f = cancelled(),
+      hook = f.mount();
+    const proof = await hook.result.current.checkReplacement(ONE);
+    const stale = hook.result.current.closeReplacement;
+    hook.rerender({ ...f.args, account: OTHER });
+    await act(async () => {
+      await expect(stale(proof)).rejects.toThrow(/context changed/);
+    });
+    expect(stored()?.intent).toEqual(approval());
+  });
+  it('ignores a delayed wallet response after an explicitly closed replacement', async () => {
+    const f = cancelled(),
+      hook = f.mount();
+    const proof = await hook.result.current.checkReplacement(ONE);
+    await act(async () => {
+      await hook.result.current.closeReplacement(proof);
+    });
+    await act(async () => {
+      expect(await hook.result.current.updateSubmission(approval().id, TWO)).toBe(true);
+    });
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(hook.result.current.tracked?.state).toBe('replaced');
+    expect(hook.result.current.open).toBe(false);
+  });
+  it('a live wallet promise cannot revive a closed hold or overwrite a newer intent when it returns', async () => {
+    const f = fixture();
+    let release!: (value: Hex) => void;
+    f.provider.request = vi.fn(async ({ method }) =>
+      method === 'eth_chainId'
+        ? '0xab162'
+        : new Promise<Hex>((resolve) => {
+            release = resolve;
+          }),
+    );
+    const hook = f.mount();
+    let pending!: Promise<Hex>;
+    act(() => {
+      pending = hook.result.current.reviewInWallet();
+    });
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    f.mine(ONE);
+    f.bodies.set(ONE, { ...f.bodies.get(ONE)!, to: FROM, input: '0x', value: '0x0' });
+    f.receipts.set(ONE, { ...f.receipts.get(ONE)!, to: FROM });
+    f.setNonce(5n);
+    const proof = await hook.result.current.checkReplacement(ONE);
+    await act(async () => {
+      await hook.result.current.closeReplacement(proof);
+    });
+    expect(localStorage.getItem(key)).toBeNull();
+    // The live wallet lock still refuses another request in this origin.
+    await act(async () => {
+      await expect(hook.result.current.withWalletRequest(async () => {})).rejects.toThrow(
+        /Nothing was queued/,
+      );
+    });
+    // Even a newer external journal record cannot be overwritten by this old reply.
+    const next = saved({ ...approval(), id: '87654321-4321-1234-1234-123456789abc', nonce: '5' });
+    store(next);
+    const retained = localStorage.getItem(key);
+    await act(async () => {
+      release(TWO);
+      await pending;
+    });
+    expect(localStorage.getItem(key)).toBe(retained);
+    expect(stored()?.intent?.nonce).toBe('5');
+    expect(f.provider.request).toHaveBeenCalledTimes(2);
+  });
+  it('cannot prove a replacement for a legacy hold without a fixed nonce', async () => {
+    const f = cancelled();
+    store({ hash: TWO, label: 'Legacy', deadline: 0n, sentAtMs: 0 });
+    const hook = f.mount();
+    await act(async () => {
+      await expect(hook.result.current.checkReplacement(ONE)).rejects.toThrow(/no saved nonce/);
+    });
+    expect(stored()?.hash).toBe(TWO);
+    expect(f.provider.request).not.toHaveBeenCalled();
   });
 });

@@ -55,7 +55,11 @@ import {
   type RouteCheck,
 } from './mainnet/caps';
 import { submissionFeeNote } from './mainnet/submission-fees';
-import { requireFinality, submissionContext } from './mainnet/submission-outcome';
+import {
+  requireFinality,
+  submissionContext,
+  type ReplacementProof,
+} from './mainnet/submission-outcome';
 import { usePendingSwap } from './mainnet/pendingswap';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
@@ -759,7 +763,7 @@ function SwapPanel({
   );
   const remember = (tx: { label: string; hash?: Hex; state: string; detail?: string }) => {
     if (!historyAccount || !tx.hash) return;
-    if (!['mined', 'failed', 'unknown', 'expired'].includes(tx.state)) return;
+    if (!['mined', 'failed', 'unknown', 'expired', 'replaced'].includes(tx.state)) return;
     // Only these fields: a tracked swap also carries a bigint deadline, which JSON cannot store.
     const entry: FinishedTx = {
       label: tx.label,
@@ -1391,6 +1395,7 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
   const [hash, setHash] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState('');
+  const [replacement, setReplacement] = useState<ReplacementProof | null>(null);
   const recover = async () => {
     if (busy) return;
     setBusy(true);
@@ -1425,6 +1430,37 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       setBusy(false);
     }
   };
+  const checkReplacement = async () => {
+    if (busy) return;
+    setBusy(true);
+    setReplacement(null);
+    setNote(
+      'Checking whether this different transaction canonically finalized at the original nonce…',
+    );
+    try {
+      setReplacement(await pendingSwap.checkReplacement(hash));
+      setNote(
+        'Replacement verified. The original hold remains until you explicitly close it below.',
+      );
+    } catch (error) {
+      setNote(message(error, 'The replacement could not be verified. The original hold remains.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const closeReplacement = async () => {
+    if (busy || !replacement) return;
+    setBusy(true);
+    setNote('Rechecking the replacement before closing only its local hold…');
+    try {
+      await pendingSwap.closeReplacement(replacement);
+    } catch (error) {
+      setReplacement(null);
+      setNote(message(error, 'The original hold remains.'));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div className="notice" aria-label="Recover transaction tracking">
       <p>
@@ -1437,7 +1473,11 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
         Transaction hash from wallet activity
         <input
           value={hash}
-          onChange={(event) => setHash(event.target.value)}
+          disabled={busy}
+          onChange={(event) => {
+            setHash(event.target.value);
+            setReplacement(null);
+          }}
           placeholder="0x…"
           maxLength={66}
           spellCheck={false}
@@ -1451,6 +1491,51 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       >
         Check transaction hash
       </button>
+      <p>
+        If you cancelled or replaced the request in your wallet with a different call, check that
+        transaction separately. Only a canonical finalized receipt at the original sender and nonce
+        can establish that the original request cannot execute. This check makes no wallet request.
+      </p>
+      <button
+        className="button secondary"
+        disabled={busy || !hash.trim() || !!pendingSwap.storageProblem}
+        onClick={() => void checkReplacement()}
+      >
+        Check cancellation or replacement
+      </button>
+      {replacement && (
+        <div className="notice" aria-label="Verified replacement">
+          <p>
+            A different transaction finalized at nonce {replacement.nonce}. The original request
+            cannot execute on this canonical chain. This is evidence of replacement, not successful
+            execution of the original request. Closing this hold only updates this browser; it sends
+            nothing.
+          </p>
+          <dl>
+            <dt>Replacement hash</dt>
+            <dd style={{ overflowWrap: 'anywhere' }}>{replacement.transactionHash}</dd>
+            <dt>From</dt>
+            <dd style={{ overflowWrap: 'anywhere' }}>{replacement.from}</dd>
+            <dt>To</dt>
+            <dd style={{ overflowWrap: 'anywhere' }}>{replacement.to ?? 'Contract creation'}</dd>
+            <dt>Native value (wei)</dt>
+            <dd>{replacement.value}</dd>
+            <dt>Calldata</dt>
+            <dd style={{ overflowWrap: 'anywhere' }}>{replacement.data}</dd>
+            <dt>Canonical finalized inclusion</dt>
+            <dd>Block {replacement.blockNumber}</dd>
+            <dt>Replacement receipt status</dt>
+            <dd>{replacement.receiptStatus}</dd>
+          </dl>
+          <button
+            className="button secondary"
+            disabled={busy || !!pendingSwap.storageProblem}
+            onClick={() => void closeReplacement()}
+          >
+            Close local hold as replaced
+          </button>
+        </div>
+      )}
       {pendingSwap.review?.details && (
         <details>
           <summary>Review the original request in your wallet</summary>

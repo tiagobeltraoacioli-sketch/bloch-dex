@@ -227,14 +227,16 @@ function block(value: unknown) {
   return { number: quantity(b.number), hash: b.hash as Hex };
 }
 
-function receipt(value: unknown, hash: Hex, intent: SubmissionIntent) {
+type ReceiptTarget = { from: Address; to: Address | null };
+function receipt(value: unknown, hash: Hex, intent: ReceiptTarget) {
   const r = object(value);
   assert(
     r.transactionHash === hash &&
       typeof r.from === 'string' &&
       r.from.toLowerCase() === intent.from &&
-      typeof r.to === 'string' &&
-      r.to.toLowerCase() === intent.to &&
+      (intent.to === null
+        ? r.to === null
+        : typeof r.to === 'string' && r.to.toLowerCase() === intent.to) &&
       isSubmissionHash(r.blockHash) &&
       (r.status === '0x0' || r.status === '0x1'),
     'The RPC returned an invalid receipt identity or status.',
@@ -290,16 +292,32 @@ export async function finalizedSubmissionReceipt(
   intent: SubmissionIntent,
   context: SubmissionContext = intent,
 ): Promise<Receipt | null> {
+  const result = await finalizedTransactionReceipt(rpc, hash, intent, context, (value) => ({
+    tx: matchTransaction(value, hash, intent),
+    target: intent,
+  }));
+  return result?.receipt ?? null;
+}
+
+/** Both original and replacement outcomes require the same immutable inclusion
+ * and finality checks; only transaction authentication differs. */
+async function finalizedTransactionReceipt(
+  rpc: Rpc,
+  hash: Hex,
+  intent: SubmissionIntent,
+  context: SubmissionContext,
+  authenticate: (value: unknown) => { tx: Record<string, unknown>; target: ReceiptTarget },
+): Promise<{ receipt: Receipt; blockHash: Hex } | null> {
   assertSubmissionContext(intent, context);
   assert(isSubmissionHash(hash), 'Invalid saved transaction hash.');
   await checkChain(rpc, context);
   const body = await rpc('eth_getTransactionByHash', [hash]);
   if (body === null) return null;
-  const tx = matchTransaction(body, hash, intent);
+  const { tx, target } = authenticate(body);
   afterSubmission(tx, intent);
   const raw = await rpc('eth_getTransactionReceipt', [hash]);
   if (raw === null) return null;
-  const r = receipt(raw, hash, intent);
+  const r = receipt(raw, hash, target);
   assert(
     tx.blockHash === r.blockHash && quantity(tx.blockNumber) === r.blockNumber,
     'The transaction body and receipt disagree about inclusion.',
@@ -311,7 +329,7 @@ export async function finalizedSubmissionReceipt(
   await canonical(rpc, boundary);
   await canonical(rpc, included);
   await canonical(rpc, finalized);
-  const again = receipt(await rpc('eth_getTransactionReceipt', [hash]), hash, intent);
+  const again = receipt(await rpc('eth_getTransactionReceipt', [hash]), hash, target);
   assert(
     again.blockHash === r.blockHash &&
       again.blockNumber === r.blockNumber &&
@@ -319,7 +337,7 @@ export async function finalizedSubmissionReceipt(
       again.gasUsed === r.gasUsed,
     'The receipt changed during verification. The submission hold remains.',
   );
-  const txAgain = matchTransaction(await rpc('eth_getTransactionByHash', [hash]), hash, intent);
+  const { tx: txAgain } = authenticate(await rpc('eth_getTransactionByHash', [hash]));
   assert(
     txAgain.blockHash === r.blockHash && quantity(txAgain.blockNumber) === r.blockNumber,
     'Transaction inclusion changed during verification.',
@@ -335,5 +353,106 @@ export async function finalizedSubmissionReceipt(
   await canonical(rpc, included);
   await checkChain(rpc, context);
   await canonical(rpc, boundary);
-  return { status: r.status, blockNumber: r.blockNumber, gasUsed: r.gasUsed };
+  return {
+    receipt: { status: r.status, blockNumber: r.blockNumber, gasUsed: r.gasUsed },
+    blockHash: r.blockHash,
+  };
+}
+
+export type ReplacementProof = {
+  intentId: string;
+  transactionHash: Hex;
+  from: Address;
+  to: Address | null;
+  data: Hex;
+  value: string;
+  nonce: string;
+  blockNumber: string;
+  blockHash: Hex;
+  receiptStatus: Receipt['status'];
+  gasUsed: string;
+};
+
+/** Read-only evidence of another body consuming the exact original nonce. This
+ * does not classify the saved intent as executed and never clears local storage. */
+export async function finalizedReplacementReceipt(
+  rpc: Rpc,
+  hash: Hex,
+  intent: SubmissionIntent,
+  context: SubmissionContext,
+): Promise<ReplacementProof | null> {
+  let first:
+    | { from: Address; to: Address | null; data: Hex; value: string; nonce: string }
+    | undefined;
+  const result = await finalizedTransactionReceipt(rpc, hash, intent, context, (value) => {
+    const tx = object(value);
+    assert(
+      tx.hash === hash &&
+        typeof tx.from === 'string' &&
+        tx.from.toLowerCase() === intent.from &&
+        quantity(tx.chainId) === BigInt(intent.chainId) &&
+        quantity(tx.nonce) === BigInt(intent.nonce),
+      'This replacement hash does not match the original sender, chain and nonce. Its hold remains.',
+    );
+    assert(
+      (tx.to === null || (typeof tx.to === 'string' && /^0x[0-9a-f]{40}$/i.test(tx.to))) &&
+        typeof tx.input === 'string' &&
+        /^0x(?:[0-9a-f]{2}){0,65536}$/i.test(tx.input),
+      'The replacement transaction body is malformed. Its hold remains.',
+    );
+    const body = {
+      from: intent.from,
+      to: tx.to === null ? null : ((tx.to as string).toLowerCase() as Address),
+      data: (tx.input as string).toLowerCase() as Hex,
+      value: quantity(tx.value).toString(),
+      nonce: intent.nonce,
+    };
+    assert(
+      body.to !== intent.to ||
+        body.data !== intent.data ||
+        BigInt(body.value) !== BigInt(intent.value),
+      'This is the original call, not a different replacement. Use Check transaction hash to restore its tracking.',
+    );
+    assert(
+      !first || stableJson(first) === stableJson(body),
+      'The replacement body changed during verification. Its hold remains.',
+    );
+    first = body;
+    return { tx, target: body };
+  });
+  if (!result || !first) return null;
+  const finalized = await requireFinality(rpc);
+  assert(
+    finalized.number >= result.receipt.blockNumber,
+    'Replacement inclusion is no longer finalized. Its hold remains.',
+  );
+  const nonce = quantity(
+    await rpc('eth_getTransactionCount', [
+      intent.from,
+      { blockHash: finalized.hash, requireCanonical: true },
+    ]),
+  );
+  assert(
+    nonce > BigInt(intent.nonce),
+    'Canonical finalized state does not show the original nonce consumed. Its hold remains.',
+  );
+  const again = await requireFinality(rpc);
+  assert(
+    again.number >= finalized.number &&
+      (again.number !== finalized.number || again.hash === finalized.hash),
+    'Replacement finality changed during the nonce check. Its hold remains.',
+  );
+  await canonical(rpc, finalized);
+  await canonical(rpc, { number: result.receipt.blockNumber, hash: result.blockHash });
+  await canonical(rpc, { number: BigInt(intent.afterBlockNumber), hash: intent.afterBlockHash });
+  await checkChain(rpc, context);
+  return {
+    ...first,
+    intentId: intent.id,
+    transactionHash: hash,
+    blockHash: result.blockHash,
+    blockNumber: result.receipt.blockNumber.toString(),
+    receiptStatus: result.receipt.status,
+    gasUsed: result.receipt.gasUsed.toString(),
+  };
 }

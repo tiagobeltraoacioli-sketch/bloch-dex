@@ -6,12 +6,12 @@ import type { Address, Hex } from 'viem';
 export type FinishedTx = {
   label: string;
   hash: Hex;
-  state: 'mined' | 'failed' | 'unknown' | 'expired';
+  state: 'mined' | 'failed' | 'unknown' | 'expired' | 'replaced';
   detail?: string;
 };
 
 export const HISTORY_LIMIT = 10;
-const STATES = new Set(['mined', 'failed', 'unknown', 'expired']);
+const STATES = new Set(['mined', 'failed', 'unknown', 'expired', 'replaced']);
 
 export const historyKey = (chainId: number, account: Address) =>
   `postern.mainnet.history.${chainId}.${account.toLowerCase()}`;

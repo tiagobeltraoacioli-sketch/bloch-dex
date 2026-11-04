@@ -15,6 +15,7 @@ import type { Provider } from '../wallet';
 import {
   assertSubmissionContext,
   finalizedSubmissionReceipt,
+  finalizedReplacementReceipt,
   isSubmissionHash,
   submissionContext,
   submissionBoundary,
@@ -22,6 +23,7 @@ import {
   verifySameNonceReview,
   type SubmissionContext,
   type SubmissionIntent,
+  type ReplacementProof,
 } from './submission-outcome';
 import { withSubmissionLock, withWalletRequestLock } from './submission-lock';
 import { sameNonceReviewDetails, transactionForSameNonceReview } from './submission-review';
@@ -46,7 +48,7 @@ export type PendingSwap = {
   note?: string;
 };
 export type TrackedSwap = PendingSwap & {
-  state: 'pending' | 'unknown' | 'mined' | 'failed';
+  state: 'pending' | 'unknown' | 'mined' | 'failed' | 'replaced';
   detail: string;
   /** Set on a failed swap once the page has read why it reverted. */
   cause?: RevertCause;
@@ -464,7 +466,7 @@ export function usePendingSwap({
       }).catch(() => false);
     const tick = async () => {
       const poll = await pollPendingSwap(rpc, swap, latest.current.now(), context);
-      if (!live) return;
+      if (!live || (swap.intent && settled.current.get(key) === swap.intent.id)) return;
       if (poll.kind === 'receipt') {
         const { status, blockNumber, gasUsed } = poll.receipt;
         const ok = status === 'success';
@@ -840,6 +842,72 @@ export function usePendingSwap({
     [key, context, contextKey, recall, checkContext, rpc, updateSubmission],
   );
 
+  const checkReplacement = useCallback(
+    async (value: string) => {
+      assertActive();
+      if (!key || !context)
+        throw new Error('Restore the original verified account and deployment.');
+      const hash = value.trim().toLowerCase();
+      if (!isSubmissionHash(hash))
+        throw new Error('Enter the replacement transaction hash from wallet activity.');
+      const held = recall(key);
+      if (!held?.swap.intent)
+        throw new Error(
+          'This older hold has no saved nonce and body for replacement verification.',
+        );
+      checkContext(held.swap);
+      const proof = await finalizedReplacementReceipt(rpc, hash, held.swap.intent, context);
+      assertActive();
+      if (!proof)
+        throw new Error(
+          'No canonical finalized replacement is available for that hash yet. The original hold remains.',
+        );
+      return proof;
+    },
+    [assertActive, key, context, recall, checkContext, rpc],
+  );
+
+  /** Explicit local acknowledgement only. Recheck the displayed proof before
+   * clearing the hold; never call a wallet or begin another transaction. */
+  const closeReplacement = useCallback(
+    async (proof: ReplacementProof) => {
+      assertActive();
+      if (!key || !context)
+        throw new Error('Restore the original verified account and deployment.');
+      const held = recall(key);
+      if (!held?.swap.intent || held.swap.intent.id !== proof.intentId)
+        throw new Error('The saved submission changed. Its current hold remains.');
+      checkContext(held.swap);
+      const verified = await checkReplacement(proof.transactionHash);
+      if (stableJson(verified) !== stableJson(proof))
+        throw new Error(
+          'The replacement evidence changed. Check the hash again before closing the hold.',
+        );
+      await withSubmissionLock(key, () => {
+        assertActive();
+        const current = recall(key);
+        if (!current || !sameIntent(current.swap, held.swap) || !removeStored(key, held.swap))
+          throw new Error(
+            'The verified replacement could not clear this saved hold. Restore storage and check again.',
+          );
+        settled.current.set(key, proof.intentId);
+        memory.current.delete(key);
+        setStorageProblem(null);
+        setTracked({
+          ...held.swap,
+          label: `Original ${held.swap.intent!.kind} request`,
+          hash: proof.transactionHash,
+          state: 'replaced',
+          detail: `A different transaction consumed nonce ${proof.nonce} in canonical finalized block ${proof.blockNumber}. The original request did not execute. Its local hold was explicitly closed; nothing new was sent.`,
+        });
+        // Refresh finalized balances after the different transaction, without
+        // treating it as a successful execution of the original call.
+        latest.current.onMined();
+      });
+    },
+    [assertActive, key, context, recall, checkContext, checkReplacement],
+  );
+
   /** Last synchronous check before entering eth_sendTransaction, with no intervening await. */
   const ready = useCallback(
     (id: string) => {
@@ -910,5 +978,7 @@ export function usePendingSwap({
     walletBusy,
     review,
     reviewInWallet,
+    checkReplacement,
+    closeReplacement,
   };
 }
