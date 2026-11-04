@@ -519,20 +519,21 @@ function PendingExcess({
         ...skimTransaction(pool.address, to),
         chainId: network.chainId,
       };
-      intentId = pendingSwap.reserve(
+      const reservation = await pendingSwap.reserve(
         { label: 'Skim to my wallet', deadline: 0n, sentAtMs: now() },
         'skim',
         tx,
       );
-      hash = await sendTransaction(wallet.provider, tx);
-      pendingSwap.updateSubmission(intentId, hash);
+      intentId = reservation.id;
+      hash = await sendTransaction(wallet.provider, { ...tx, nonce: reservation.nonce });
+      await pendingSwap.updateSubmission(intentId, hash);
       setNote('Skim submitted. Its outcome is tracked below; do not repeat it.');
     } catch (error) {
       if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
-        pendingSwap.rejected(intentId);
+        await pendingSwap.rejected(intentId);
         setNote('The wallet request was rejected by you. Nothing was sent.');
       } else if (intentId) {
-        pendingSwap.updateSubmission(intentId, hash);
+        await pendingSwap.updateSubmission(intentId, hash);
         setNote('Skim submission outcome unknown. Check wallet activity; do not repeat it.');
       } else setNote(message(error, 'No wallet request was sent.'));
     } finally {
@@ -908,7 +909,7 @@ function SwapPanel({
       if (generation !== formGeneration.current)
         throw new Error('The form changed, so nothing was sent. Get a new quote.');
       const tx = { ...build(), chainId: network.chainId };
-      intentId = pendingSwap.reserve(
+      const reservation = await pendingSwap.reserve(
         {
           label,
           deadline: swapInfo?.deadline ?? 0n,
@@ -918,22 +919,30 @@ function SwapPanel({
         swapInfo ? 'swap' : 'approval',
         tx,
       );
-      hash = await sendTransaction(provider, tx);
-      pendingSwap.updateSubmission(intentId, hash);
+      intentId = reservation.id;
+      if (generation !== formGeneration.current) {
+        await pendingSwap.rejected(intentId);
+        intentId = undefined;
+        throw new Error(
+          'The form changed before the wallet request. Nothing was sent. Get a new quote.',
+        );
+      }
+      hash = await sendTransaction(provider, { ...tx, nonce: reservation.nonce });
+      await pendingSwap.updateSubmission(intentId, hash);
       setSteps((all) => all.slice(0, index));
       // The shared tracker authenticates the call and its finalized receipt.
       // Approval allowance is reread from finalized state after settlement.
       return false;
     } catch (error) {
       if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
-        pendingSwap.rejected(intentId);
+        await pendingSwap.rejected(intentId);
         update({
           label,
           state: 'failed',
           detail: 'The wallet request was rejected by you. Nothing was sent.',
         });
       } else if (intentId) {
-        pendingSwap.updateSubmission(intentId, hash);
+        await pendingSwap.updateSubmission(intentId, hash);
         setSteps((all) => all.slice(0, index));
       } else
         update({ label, state: 'failed', detail: message(error, 'No wallet request was sent.') });
@@ -1340,9 +1349,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     <div className="notice" aria-label="Recover transaction tracking">
       <p>
         Check your wallet activity on this chain and copy the transaction hash. This check only
-        restores tracking after matching the saved sender, destination, call and value. It never
-        sends or replaces a transaction. Time passing or an empty explorer result cannot clear the
-        hold.
+        restores tracking after matching the saved sender, destination, call, value and nonce. It
+        never sends or replaces a transaction. Time passing or an empty explorer result cannot clear
+        the hold.
       </p>
       <label>
         Transaction hash from wallet activity

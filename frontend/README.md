@@ -390,19 +390,27 @@ an error, never a fallback. URLs must be `https` without credentials.
   reread only after the matching transaction is canonically finalized; an
   unfinalized receipt cannot authorize the next swap.
 - **Durable submission hold.** Before requesting a wallet transaction, the page
-  saves the exact sender, destination, calldata, value, chain, genesis and
-  deployment identity in browser storage. Storage failure prevents the request.
+  saves the exact sender, destination, calldata, value, nonce, chain, genesis and
+  deployment identity and the canonical head observed before the wallet request
+  in browser storage. Storage failure prevents the request. Journal mutations
+  use an origin-scoped Web Lock; unavailable browser coordination prevents sending.
+  The account nonce at that head must equal its pending nonce; existing pending
+  activity blocks a new wallet request. The chosen nonce is included explicitly
+  in `eth_sendTransaction`, and any wallet modification of it prevents settlement.
   Swap, approval and skim share one hold per chain/account. A missing wallet reply
   is an unknown outcome, even for a timeout or fee error, and survives a reload.
   Only an explicit wallet rejection (`4001`) clears a hashless request. Neither
   time passing nor a missing receipt establishes that no transaction executed.
   A wallet-returned or manually supplied hash must match the saved transaction
-  body. Settlement requires a strict receipt, matching canonical inclusion and a
+  body, including that exact nonce, and be included after the saved head, which
+  must remain canonical. A
+  historically identical approval or skim cannot release a new hold.
+  Settlement requires a strict receipt, matching canonical inclusion and a
   canonical finalized checkpoint, rechecked for changes before clearing the hold.
   The recovery form accepts a transaction hash from wallet activity and only
   restores tracking; it cannot resend, replace or raise fees. Incompatible
   deployment contexts, malformed records and older records without a verifiable
-  intent remain blocked and require independent reconciliation. Do not clear
+  intent or fixed nonce remain blocked and require independent reconciliation. Do not clear
   browser storage to bypass an unresolved submission. Browser storage belongs to
   this origin/profile; it does not coordinate other devices or unrelated apps.
 - **Reserve caps.** The pools table shows each cap, how much of it is used and

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
-import { verifySubmissionHash } from '../mainnet/submission-outcome';
+import { submissionBoundary, verifySubmissionHash } from '../mainnet/submission-outcome';
 import { pollPendingSwap, type PendingSwap } from '../mainnet/pendingswap';
 
 const hash = (digit: string) => `0x${digit.repeat(64)}` as Hex;
 const HASH = hash('1');
 const BLOCK = { number: '0x10', hash: hash('2'), timestamp: '0x1000' };
+const BOUNDARY = { number: '0xf', hash: hash('7') };
 const GENESIS = hash('3');
 const FROM = `0x${'4'.repeat(40)}` as const;
 const TO = `0x${'5'.repeat(40)}` as const;
@@ -24,6 +25,9 @@ const swap: PendingSwap = {
     data: '0x1234',
     value: '7',
     gas: '100000',
+    nonce: '4',
+    afterBlockNumber: '15',
+    afterBlockHash: BOUNDARY.hash,
     ...{ genesisHash: GENESIS, deploymentId: hash('6') },
   },
 };
@@ -41,6 +45,7 @@ const tx = {
   input: '0x1234',
   value: '0x7',
   chainId: '0xab162',
+  nonce: '0x4',
   blockNumber: BLOCK.number,
   blockHash: BLOCK.hash,
 };
@@ -48,11 +53,13 @@ function rpcWith(
   overrides: Partial<Record<string, unknown | ((params: unknown[]) => unknown)>> = {},
 ): Rpc {
   return async (method, params) => {
+    if (method === 'eth_getBlockByNumber' && params[0] === BOUNDARY.number) return BOUNDARY;
     if (method in overrides) {
       const value = overrides[method];
       return typeof value === 'function' ? value(params) : value;
     }
     if (method === 'eth_chainId') return '0xab162';
+    if (method === 'eth_getTransactionCount') return '0x4';
     if (method === 'eth_getBlockByNumber')
       return params[0] === '0x0' ? { number: '0x0', hash: GENESIS } : BLOCK;
     if (method === 'eth_getTransactionReceipt') return receipt;
@@ -280,5 +287,72 @@ describe('wallet submission settlement', () => {
         swap.intent!,
       ),
     ).rejects.toThrow(/no transaction body/);
+  });
+  it('refuses a historically identical call mined before the saved wallet request', async () => {
+    const historical = {
+      ...swap,
+      intent: { ...swap.intent!, afterBlockNumber: '16', afterBlockHash: BLOCK.hash },
+    };
+    expect((await pollPendingSwap(rpcWith(), historical, 0)).kind).toBe('unreachable');
+    await expect(
+      verifySubmissionHash(rpcWith(), HASH, historical.intent, historical.intent),
+    ).rejects.toThrow(/historical hash/);
+  });
+  it('retains the hold when the saved pre-wallet checkpoint is no longer canonical', async () => {
+    const orphaned = { ...swap, intent: { ...swap.intent!, afterBlockHash: hash('8') } };
+    expect((await pollPendingSwap(rpcWith(), orphaned, 0)).kind).toBe('unreachable');
+    await expect(
+      verifySubmissionHash(rpcWith(), HASH, orphaned.intent, orphaned.intent),
+    ).rejects.toThrow(/no longer canonical/);
+  });
+  it('does not settle an identical call with a different nonce', async () => {
+    const bound = { ...swap, intent: { ...swap.intent!, nonce: '4' } };
+    const rpc = rpcWith({ eth_getTransactionByHash: { ...tx, nonce: '0x5' } });
+    expect((await pollPendingSwap(rpc, bound, 0)).kind).toBe('unreachable');
+  });
+  it('does not recover an identical call with a different nonce', async () => {
+    const bound = { ...swap.intent!, nonce: '4' };
+    await expect(
+      verifySubmissionHash(
+        rpcWith({ eth_getTransactionByHash: { ...tx, nonce: '0x5' } }),
+        HASH,
+        bound,
+        bound,
+      ),
+    ).rejects.toThrow(/nonce/);
+  });
+
+  it('pins an unused nonce and canonical head before requesting the wallet', async () => {
+    expect(await submissionBoundary(rpcWith(), swap.intent!, FROM)).toEqual({
+      afterBlockNumber: '16',
+      afterBlockHash: BLOCK.hash,
+      nonce: '4',
+    });
+  });
+  it('refuses to choose a nonce when pending activity already exists', async () => {
+    const rpc = rpcWith({
+      eth_getTransactionCount: (p: unknown[]) => (p[1] === 'pending' ? '0x5' : '0x4'),
+    });
+    await expect(submissionBoundary(rpc, swap.intent!, FROM)).rejects.toThrow(/pending activity/);
+  });
+  it.each(['0x04', '-1', null, '0xffffffffffffffff'])(
+    'refuses an invalid or exhausted account nonce (%j)',
+    async (nonce) => {
+      await expect(
+        submissionBoundary(rpcWith({ eth_getTransactionCount: nonce }), swap.intent!, FROM),
+      ).rejects.toThrow();
+    },
+  );
+  it('refuses a nonce prepared while the latest head moves', async () => {
+    let reads = 0;
+    const rpc = rpcWith({
+      eth_getBlockByNumber: (p: unknown[]) =>
+        p[0] === '0x0'
+          ? { number: '0x0', hash: GENESIS }
+          : p[0] === 'latest' && ++reads > 1
+            ? { ...BLOCK, number: '0x11' }
+            : BLOCK,
+    });
+    await expect(submissionBoundary(rpc, swap.intent!, FROM)).rejects.toThrow(/head changed/);
   });
 });

@@ -11,10 +11,12 @@ import {
   finalizedSubmissionReceipt,
   isSubmissionHash,
   submissionContext,
+  submissionBoundary,
   verifySubmissionHash,
   type SubmissionContext,
   type SubmissionIntent,
 } from './submission-outcome';
+import { withSubmissionLock } from './submission-lock';
 import type { RevertCause, SwapRetryInfo } from './retry';
 
 export type PendingSwap = {
@@ -60,6 +62,9 @@ function parseIntent(value: unknown): SubmissionIntent | undefined {
     Number(v.chainId) <= 0 ||
     !isSubmissionHash(v.genesisHash) ||
     !isSubmissionHash(v.deploymentId) ||
+    !isSubmissionHash(v.afterBlockHash) ||
+    typeof v.afterBlockNumber !== 'string' ||
+    !UINT.test(v.afterBlockNumber) ||
     typeof v.from !== 'string' ||
     !ADDRESS.test(v.from) ||
     typeof v.to !== 'string' ||
@@ -68,6 +73,9 @@ function parseIntent(value: unknown): SubmissionIntent | undefined {
     !/^0x(?:[0-9a-f]{2}){0,65536}$/.test(v.data) ||
     typeof v.value !== 'string' ||
     !UINT.test(v.value) ||
+    typeof v.nonce !== 'string' ||
+    !UINT.test(v.nonce) ||
+    BigInt(v.nonce) >= 2n ** 64n - 1n ||
     typeof v.gas !== 'string' ||
     !UINT.test(v.gas)
   )
@@ -343,24 +351,28 @@ export function usePendingSwap({
     const { swap, saved } = held;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const forget = () => {
-      const inMemory = memory.current.get(key);
-      if (
-        inMemory &&
-        (identityOf(inMemory.swap) !== identityOf(swap) || inMemory.swap.hash !== swap.hash)
-      )
-        return false;
-      if (!removeStored(key, swap)) return false;
-      memory.current.delete(key);
-      return true;
-    };
+    const forget = async () =>
+      withSubmissionLock(key, () => {
+        if (!live || activeKey.current !== contextKey) return false;
+        const inMemory = memory.current.get(key);
+        if (
+          inMemory &&
+          (identityOf(inMemory.swap) !== identityOf(swap) || inMemory.swap.hash !== swap.hash)
+        )
+          return false;
+        if (!removeStored(key, swap)) return false;
+        memory.current.delete(key);
+        return true;
+      }).catch(() => false);
     const tick = async () => {
       const poll = await pollPendingSwap(rpc, swap, latest.current.now(), context);
       if (!live) return;
       if (poll.kind === 'receipt') {
         const { status, blockNumber, gasUsed } = poll.receipt;
         const ok = status === 'success';
-        if (!forget()) {
+        const forgotten = await forget();
+        if (!live) return;
+        if (!forgotten) {
           setStorageProblem(
             'The finalized receipt was found, but the saved submission hold could not be cleared. Keep storage available; verification will retry.',
           );
@@ -394,89 +406,112 @@ export function usePendingSwap({
       live = false;
       if (timer) clearTimeout(timer);
     };
-  }, [enabled, key, openHash, rpc, intervalMs, recall, checkContext, context]);
+  }, [enabled, key, openHash, rpc, intervalMs, recall, checkContext, context, contextKey]);
 
   /** Persist before invoking eth_sendTransaction. A storage failure prevents sending. */
   const reserve = useCallback(
-    (
+    async (
       swap: Omit<PendingSwap, 'hash' | 'intent'>,
       kind: SubmissionIntent['kind'],
       tx: TransactionRequest,
     ) => {
       if (!key || !account || !context)
         throw new Error('Connect the wallet and verify the deployment before submitting.');
-      if (recall(key)) throw new Error('Another submission is unresolved. Do not resend.');
-      const intent: SubmissionIntent = {
-        ...context,
-        id: crypto.randomUUID(),
-        kind,
-        chainId,
-        from: tx.from.toLowerCase() as Address,
-        to: tx.to.toLowerCase() as Address,
-        data: tx.data.toLowerCase() as Hex,
-        value: tx.value.toString(),
-        gas: tx.gas.toString(),
-      };
-      if (intent.from !== account.toLowerCase() || tx.chainId !== chainId || !parseIntent(intent))
-        throw new Error('The transaction does not match the connected account and chain.');
-      const held = { ...swap, intent };
-      if (!writeStored(key, held))
-        throw new Error(
-          'This browser could not save the submission intent. Nothing was sent. Enable storage before trying again.',
-        );
-      memory.current.set(key, { swap: held, saved: true });
-      setTracked(describeOpen(held, 'waiting', swap.sentAtMs, true));
-      return intent.id;
+      return withSubmissionLock(key, async () => {
+        if (activeKey.current !== contextKey)
+          throw new Error('The selected context changed before submission. Nothing was sent.');
+        if (recall(key)) throw new Error('Another submission is unresolved. Do not resend.');
+        const boundary = await submissionBoundary(rpc, context, account);
+        if (activeKey.current !== contextKey)
+          throw new Error('The selected context changed before submission. Nothing was sent.');
+        const intent: SubmissionIntent = {
+          ...context,
+          ...boundary,
+          id: crypto.randomUUID(),
+          kind,
+          chainId,
+          from: tx.from.toLowerCase() as Address,
+          to: tx.to.toLowerCase() as Address,
+          data: tx.data.toLowerCase() as Hex,
+          value: tx.value.toString(),
+          gas: tx.gas.toString(),
+        };
+        if (intent.from !== account.toLowerCase() || tx.chainId !== chainId || !parseIntent(intent))
+          throw new Error('The transaction does not match the connected account and chain.');
+        const held = { ...swap, intent };
+        if (!writeStored(key, held))
+          throw new Error(
+            'This browser could not save the submission intent. Nothing was sent. Enable storage before trying again.',
+          );
+        memory.current.set(key, { swap: held, saved: true });
+        setTracked(describeOpen(held, 'waiting', swap.sentAtMs, true));
+        return { id: intent.id, nonce: BigInt(intent.nonce) };
+      });
     },
-    [key, account, chainId, recall, context],
+    [key, account, chainId, recall, context, contextKey, rpc],
   );
 
   const updateSubmission = useCallback(
-    (id: string, hash?: Hex, note?: string) => {
+    async (id: string, hash?: Hex, note?: string) => {
       if (!key) return false;
-      let held;
-      try {
-        held = recall(key);
-      } catch {
-        /* Keep the existing durable hold. */
-      }
-      if (!held || held.swap.intent?.id !== id) {
+      return withSubmissionLock(key, () => {
+        let held;
+        try {
+          held = recall(key);
+        } catch {
+          /* Keep the existing durable hold. */
+        }
+        if (!held || held.swap.intent?.id !== id) {
+          if (activeKey.current === contextKey)
+            setStorageProblem(
+              'The submission hold could not be updated. Check wallet activity and reload when storage is available. Do not resend.',
+            );
+          return false;
+        }
+        // A delayed wallet/recovery response must not overwrite a newer hold
+        // created by another tab after settling this one.
+        const swap = { ...held.swap, ...(hash ? { hash } : {}), ...(note ? { note } : {}) };
+        let saved = false;
+        try {
+          const durable = readStored(key);
+          if (durable?.intent?.id === id) saved = writeStored(key, swap);
+          else if (activeKey.current === contextKey)
+            setStorageProblem(
+              'The saved submission hold changed. Reload to track the retained record. Do not resend.',
+            );
+        } catch {
+          /* Preserve the already-durable intent and the hash in memory. */
+        }
+        memory.current.set(key, { swap, saved });
+        if (activeKey.current === contextKey)
+          setTracked(describeOpen(swap, 'waiting', latest.current.now(), saved));
+        return saved;
+      }).catch(() => {
         if (activeKey.current === contextKey)
           setStorageProblem(
-            'The submission hold could not be updated. Check wallet activity and reload when storage is available. Do not resend.',
+            'The submission hold could not be updated. Restore browser storage and coordination before checking its outcome. Do not resend.',
           );
         return false;
-      }
-      // A delayed wallet/recovery response must not overwrite a newer hold
-      // created by another tab after settling this one.
-      const swap = { ...held.swap, ...(hash ? { hash } : {}), ...(note ? { note } : {}) };
-      let saved = false;
-      try {
-        const durable = readStored(key);
-        if (durable?.intent?.id === id) saved = writeStored(key, swap);
-        else if (activeKey.current === contextKey)
-          setStorageProblem(
-            'The saved submission hold changed. Reload to track the retained record. Do not resend.',
-          );
-      } catch {
-        /* Preserve the already-durable intent and the hash in memory. */
-      }
-      memory.current.set(key, { swap, saved });
-      if (activeKey.current === contextKey)
-        setTracked(describeOpen(swap, 'waiting', latest.current.now(), saved));
-      return saved;
+      });
     },
     [key, contextKey, recall],
   );
 
   const rejected = useCallback(
-    (id: string) => {
+    async (id: string) => {
       if (!key) return;
-      const held = recall(key);
-      if (!held || held.swap.intent?.id !== id || held.swap.hash || !removeStored(key, held.swap))
-        return;
-      memory.current.delete(key);
-      if (activeKey.current === contextKey) setTracked(null);
+      await withSubmissionLock(key, () => {
+        const held = recall(key);
+        if (!held || held.swap.intent?.id !== id || held.swap.hash || !removeStored(key, held.swap))
+          return;
+        memory.current.delete(key);
+        if (activeKey.current === contextKey) setTracked(null);
+      }).catch(() => {
+        if (activeKey.current === contextKey)
+          setStorageProblem(
+            'The rejected request could not be removed from storage. Restore browser coordination and reload; the hold remains.',
+          );
+      });
     },
     [key, contextKey, recall],
   );
@@ -494,7 +529,7 @@ export function usePendingSwap({
       await verifySubmissionHash(rpc, hash, held.swap.intent, context);
       if (activeKey.current !== contextKey)
         throw new Error('The selected context changed. The submission hold remains.');
-      if (!updateSubmission(held.swap.intent.id, hash))
+      if (!(await updateSubmission(held.swap.intent.id, hash)))
         throw new Error(
           'The hash could not be saved. The original submission hold remains; keep the wallet hash and restore storage before checking again.',
         );

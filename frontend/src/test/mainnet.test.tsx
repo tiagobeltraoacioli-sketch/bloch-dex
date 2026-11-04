@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -12,6 +12,7 @@ import {
   type Address,
   type Hex,
 } from 'viem';
+import { browserLocksForTest } from './browser-locks';
 import MainnetLive from '../MainnetLive';
 import type { Devnet4Wallet } from '../Devnet4Live';
 import { ERC20_ABI, LENS_ABI, PAIR_ABI, type LivePool, type Rpc } from '../devnet4/chain';
@@ -34,7 +35,12 @@ import {
   type MainnetNetwork,
 } from '../mainnet/config';
 import { checkRoute, explainBlock, headroom, headroomUse } from '../mainnet/caps';
-import { parsePendingSwap, pendingSwapKey, pollPendingSwap } from '../mainnet/pendingswap';
+import {
+  parsePendingSwap,
+  pendingSwapKey,
+  pollPendingSwap,
+  usePendingSwap,
+} from '../mainnet/pendingswap';
 import { blocksSwap, compareQuotes, signedQuote } from '../mainnet/quotecheck';
 import { MULTICALL3_ABI, readBalances, skimTransaction } from '../mainnet/reads';
 import { HOLD_TOKEN_ABI, HOLD_VAULT_ABI, readBridgeHold } from '../mainnet/bridgehold';
@@ -89,6 +95,7 @@ let deployment: DevnetDeployment;
 const fakeCode = new Map<Address, Hex>();
 
 beforeAll(async () => {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: browserLocksForTest() });
   const record = mainnetRecord();
   network = {
     ...bundledNetwork(),
@@ -168,6 +175,7 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
       case 'eth_getBlockByNumber':
         if (params[0] === 'finalized' && state.finalityDown)
           throw Object.assign(new Error('finality unavailable'), { code: -32001 });
+        if (params[0] === 'latest') return FINALIZED;
         return params[0] === '0x0'
           ? { number: '0x0', hash: deployment.genesisHash }
           : params[0] === 'finalized'
@@ -183,6 +191,8 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
         return fakeCode.get(params[0] as Address) ?? '0x';
       case 'eth_getBalance':
         return '0xde0b6b3a7640000';
+      case 'eth_getTransactionCount':
+        return `0x${state.transactions.size.toString(16)}`;
       case 'eth_getTransactionByHash':
         return state.transactions.get(String(params[0])) ?? null;
       case 'eth_getTransactionReceipt': {
@@ -646,6 +656,7 @@ describe('mainnet route', () => {
     expect(approve.to).toBe(BUSDC);
     // frontends-sec r10: each send names chain 700770, so a wallet that left it refuses.
     expect(approve.chainId).toBe('0xab162');
+    expect(requests[4].params![0]).toHaveProperty('nonce', '0x0');
     expect(norm(decodeFunctionData({ abi: ERC20_ABI, data: approve.data }).args)).toEqual([
       ROUTER,
       1_000_000n,
@@ -1175,7 +1186,7 @@ describe('swap panel safety fixes', () => {
         }
         return r;
       }
-      if (m === 'eth_getBlockByNumber' && p[0] === 'latest') return head?.() ?? null;
+      if (m === 'eth_getBlockByNumber' && p[0] === 'latest') return head?.() ?? FINALIZED;
       if (m === 'eth_getBlockByNumber' && p[0] === 'finalized') {
         const current = (await rpc(m, p)) as typeof FINALIZED;
         finalized =
@@ -1699,6 +1710,86 @@ describe('swap panel safety fixes', () => {
       expect(localStorage.getItem(key)).toBe(next);
       expect(swapButton().disabled).toBe(true);
       expect(sends()).toHaveLength(1);
+    });
+
+    it('does not request the wallet when the pending nonce differs from the canonical account nonce', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const pending: Rpc = async (m, p) =>
+        m === 'eth_getTransactionCount' && p[1] === 'pending' ? '0x1' : rpc(m, p);
+      const { user, sends } = await mount(
+        withReceipts(pending, () => null),
+        state,
+      );
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(steps()).toContain('account has pending activity'));
+      expect(sends()).toHaveLength(0);
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+    });
+
+    it('prevents any wallet request when browser submission locks are unavailable', async () => {
+      const locks = navigator.locks;
+      Object.defineProperty(navigator, 'locks', { configurable: true, value: undefined });
+      try {
+        const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+        const { user, sends } = await mount(
+          withReceipts(rpc, () => null),
+          state,
+        );
+        await quoted(user);
+        await user.click(swapButton());
+        await waitFor(() =>
+          expect(steps()).toContain('cannot safely coordinate wallet submissions'),
+        );
+        expect(sends()).toHaveLength(0);
+      } finally {
+        Object.defineProperty(navigator, 'locks', { configurable: true, value: locks });
+      }
+    });
+
+    it('serializes two independent holders before either can open the wallet', async () => {
+      const { rpc } = fakeChain();
+      const args = {
+        rpc,
+        chainId: network.chainId,
+        deployment,
+        account: ACCOUNT,
+        enabled: true,
+        now: () => NOW_MS,
+        onMined: () => {},
+      };
+      const one = renderHook(() => usePendingSwap(args));
+      const two = renderHook(() => usePendingSwap(args));
+      const intent = { label: 'Approval', deadline: 0n, sentAtMs: NOW_MS };
+      const tx = {
+        from: ACCOUNT,
+        to: BUSDC,
+        data: '0x1234' as Hex,
+        value: 0n,
+        gas: 100000n,
+        chainId: network.chainId,
+      };
+      let results: PromiseSettledResult<{ id: string; nonce: bigint }>[] = [];
+      await act(async () => {
+        results = await Promise.allSettled([
+          one.result.current.reserve(intent, 'approval', tx),
+          two.result.current.reserve(intent, 'approval', tx),
+        ]);
+      });
+      expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+      const persisted = parsePendingSwap(
+        localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)),
+      );
+      expect(persisted?.intent?.id).toBe(
+        (
+          results.find((r) => r.status === 'fulfilled') as PromiseFulfilledResult<{
+            id: string;
+            nonce: bigint;
+          }>
+        ).value.id,
+      );
+      expect(persisted?.intent?.afterBlockNumber).toBe('440');
+      expect(persisted?.intent?.afterBlockHash).toBe(FINALIZED.hash);
     });
 
     it('holds a record stored by another tab when Swap is pressed', async () => {

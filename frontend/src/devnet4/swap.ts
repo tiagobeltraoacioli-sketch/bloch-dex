@@ -29,6 +29,8 @@ export type TransactionRequest = {
   gas: bigint;
   /** Lets the wallet refuse if it left the network checked just before this send. */
   chainId?: number;
+  /** Mainnet binds reconciliation to this nonce before opening the wallet. */
+  nonce?: bigint;
 };
 export type SwapSide = { token: Address; native: boolean };
 
@@ -178,6 +180,7 @@ export async function sendTransaction(provider: Provider, tx: TransactionRequest
         value: hex(tx.value),
         gas: hex(tx.gas),
         ...(tx.chainId === undefined ? {} : { chainId: `0x${tx.chainId.toString(16)}` }),
+        ...(tx.nonce === undefined ? {} : { nonce: hex(tx.nonce) }),
       },
     ],
   });

@@ -14,6 +14,9 @@ export type SubmissionIntent = SubmissionContext & {
   data: Hex;
   value: string;
   gas: string;
+  nonce: string;
+  afterBlockNumber: string;
+  afterBlockHash: Hex;
 };
 const HASH = /^0x[0-9a-f]{64}$/;
 const QUANTITY = /^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/;
@@ -98,10 +101,47 @@ function matchTransaction(value: unknown, hash: Hex, intent: SubmissionIntent) {
       typeof tx.input === 'string' &&
       tx.input.toLowerCase() === intent.data &&
       quantity(tx.value) === BigInt(intent.value) &&
-      quantity(tx.chainId) === BigInt(intent.chainId),
-    'This hash does not match the saved sender, destination, call, value and chain. The submission hold remains.',
+      quantity(tx.chainId) === BigInt(intent.chainId) &&
+      quantity(tx.nonce) === BigInt(intent.nonce),
+    'This hash does not match the saved sender, destination, call, value, chain and nonce. The submission hold remains.',
   );
   return tx;
+}
+
+/** Observe a canonical head before the wallet request, excluding historical hashes. */
+export async function submissionBoundary(rpc: Rpc, context: SubmissionContext, account: Address) {
+  await checkChain(rpc, context);
+  const head = block(await rpc('eth_getBlockByNumber', ['latest', false]));
+  const nonce = quantity(await rpc('eth_getTransactionCount', [account, numberTag(head.number)]));
+  const pendingNonce = quantity(await rpc('eth_getTransactionCount', [account, 'pending']));
+  assert(
+    nonce === pendingNonce,
+    'This account has pending activity or its nonce changed. Resolve it in your wallet before submitting here. Nothing was sent.',
+  );
+  assert(
+    nonce < 2n ** 64n - 1n,
+    'The account nonce is outside the supported range. Nothing was sent.',
+  );
+  await canonical(rpc, head);
+  await checkChain(rpc, context);
+  const again = block(await rpc('eth_getBlockByNumber', ['latest', false]));
+  assert(
+    again.number === head.number && again.hash === head.hash,
+    'The canonical head changed while preparing the wallet request. Nothing was sent. Refresh and review again.',
+  );
+  return {
+    afterBlockNumber: head.number.toString(),
+    afterBlockHash: head.hash,
+    nonce: nonce.toString(),
+  };
+}
+
+function afterSubmission(tx: Record<string, unknown>, intent: SubmissionIntent) {
+  if (tx.blockNumber === null && tx.blockHash === null) return;
+  assert(
+    quantity(tx.blockNumber) > BigInt(intent.afterBlockNumber),
+    'This transaction was included before the saved wallet request. A historical hash cannot clear the submission hold.',
+  );
 }
 
 /** Used for a manually supplied hash; never sends or replaces a transaction. */
@@ -122,7 +162,8 @@ export async function verifySubmissionHash(
     tx !== null,
     'The RPC has no transaction body for that hash yet. The submission hold remains.',
   );
-  matchTransaction(tx, hash, intent);
+  afterSubmission(matchTransaction(tx, hash, intent), intent);
+  await canonical(rpc, { number: BigInt(intent.afterBlockNumber), hash: intent.afterBlockHash });
   await checkChain(rpc, context);
 }
 
@@ -170,6 +211,7 @@ export async function finalizedSubmissionReceipt(
   const body = await rpc('eth_getTransactionByHash', [hash]);
   if (body === null) return null;
   const tx = matchTransaction(body, hash, intent);
+  afterSubmission(tx, intent);
   const raw = await rpc('eth_getTransactionReceipt', [hash]);
   if (raw === null) return null;
   const r = receipt(raw, hash);
@@ -180,6 +222,8 @@ export async function finalizedSubmissionReceipt(
   const finalized = block(await rpc('eth_getBlockByNumber', ['finalized', false]));
   if (finalized.number < r.blockNumber) return null;
   const included = { number: r.blockNumber, hash: r.blockHash };
+  const boundary = { number: BigInt(intent.afterBlockNumber), hash: intent.afterBlockHash };
+  await canonical(rpc, boundary);
   await canonical(rpc, included);
   await canonical(rpc, finalized);
   const again = receipt(await rpc('eth_getTransactionReceipt', [hash]), hash);
@@ -205,5 +249,6 @@ export async function finalizedSubmissionReceipt(
   await canonical(rpc, finalized);
   await canonical(rpc, included);
   await checkChain(rpc, context);
+  await canonical(rpc, boundary);
   return { status: r.status, blockNumber: r.blockNumber, gasUsed: r.gasUsed };
 }
