@@ -112,7 +112,18 @@ function matchTransaction(value: unknown, hash: Hex, intent: SubmissionIntent) {
 export async function submissionBoundary(rpc: Rpc, context: SubmissionContext, account: Address) {
   await checkChain(rpc, context);
   const head = block(await rpc('eth_getBlockByNumber', ['latest', false]));
-  const nonce = quantity(await rpc('eth_getTransactionCount', [account, numberTag(head.number)]));
+  let pinnedNonce: unknown;
+  try {
+    pinnedNonce = await rpc('eth_getTransactionCount', [
+      account,
+      { blockHash: head.hash, requireCanonical: true },
+    ]);
+  } catch {
+    throw new Error(
+      'The RPC could not read the account nonce at the canonical block hash. Nothing was sent. A canonical hash-pinned nonce read is required.',
+    );
+  }
+  const nonce = quantity(pinnedNonce);
   const pendingNonce = quantity(await rpc('eth_getTransactionCount', [account, 'pending']));
   assert(
     nonce === pendingNonce,

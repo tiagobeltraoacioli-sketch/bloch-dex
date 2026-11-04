@@ -45,6 +45,7 @@ import { blocksSwap, compareQuotes, signedQuote } from '../mainnet/quotecheck';
 import { MULTICALL3_ABI, readBalances, skimTransaction } from '../mainnet/reads';
 import { HOLD_TOKEN_ABI, HOLD_VAULT_ABI, readBridgeHold } from '../mainnet/bridgehold';
 import { contentSecurityPolicy } from '../mainnet/headers';
+import feeRefusal from './fixtures/sequencer-fee-error.json';
 import networkJson from '../../../deployments/mainnet/frontend.network.json';
 import type { Provider } from '../wallet';
 
@@ -1292,6 +1293,40 @@ describe('swap panel safety fixes', () => {
     };
     const steps = () => screen.getByLabelText('Transactions').textContent!;
 
+    it('keeps structured fee refusal unknown without attaching the diagnostic hash or retrying', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let sends = 0;
+      const chain = withReceipts(rpc, () => null);
+      const first = await mount(chain, state, (wallet) => {
+        const original = wallet.provider!;
+        return {
+          ...wallet,
+          provider: {
+            async request(args) {
+              if (args.method === 'eth_sendTransaction') {
+                sends++;
+                throw feeRefusal.error;
+              }
+              return original.request(args);
+            },
+          },
+        };
+      });
+      await quoted(first.user);
+      await first.user.click(swapButton());
+      await waitFor(() => expect(steps()).toContain('RPC fee diagnostic'));
+      expect(steps()).toContain('outcome remains unknown');
+      expect(steps()).not.toContain(feeRefusal.error.data.transactionHash);
+      expect(
+        parsePendingSwap(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)))?.hash,
+      ).toBeUndefined();
+      first.view.unmount();
+      await mount(chain, state);
+      await waitFor(() => expect(steps()).toContain('RPC fee diagnostic'));
+      expect(swapButton().disabled).toBe(true);
+      expect(sends).toBe(1);
+    });
+
     it('retains an unknown wallet submission without a hash across reload', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
       let sends = 0;
@@ -1710,6 +1745,63 @@ describe('swap panel safety fixes', () => {
       expect(localStorage.getItem(key)).toBe(next);
       expect(swapButton().disabled).toBe(true);
       expect(sends()).toHaveLength(1);
+    });
+
+    it('cancels a prepared intent when the form changes during boundary RPC reads', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      let waiting = false;
+      let release: () => void = () => {};
+      const slow: Rpc = async (m, p) => {
+        if (m === 'eth_getTransactionCount' && p[1] === 'pending') {
+          waiting = true;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        return rpc(m, p);
+      };
+      const { user, sends } = await mount(
+        withReceipts(slow, () => null),
+        state,
+      );
+      await quoted(user);
+      await user.click(swapButton());
+      await waitFor(() => expect(waiting).toBe(true));
+      await user.type(screen.getByLabelText('Amount'), '1');
+      release();
+      await waitFor(() => expect(steps()).toContain('context changed before the wallet request'));
+      expect(sends()).toHaveLength(0);
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+    });
+
+    it('cancels an unsent skim when the wallet provider changes during boundary reads', async () => {
+      const { rpc, state } = fakeChain({
+        excess: {
+          [USD_PAIR]: { excess0: 1n, excess1: 0n, blocksInflow0: false, blocksInflow1: false },
+        },
+      });
+      let waiting = false;
+      let release: () => void = () => {};
+      const slow: Rpc = async (m, p) => {
+        if (m === 'eth_getTransactionCount' && p[1] === 'pending') {
+          waiting = true;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        return rpc(m, p);
+      };
+      const chain = withReceipts(slow, () => null);
+      const first = await mount(chain, state);
+      await first.user.click(await screen.findByRole('button', { name: 'Skim to my wallet' }));
+      await waitFor(() => expect(waiting).toBe(true));
+      const next = fakeWallet(state);
+      first.view.rerender(app(chain, next.wallet));
+      release();
+      await screen.findByText(/wallet or page context changed before the request/);
+      expect(first.sends()).toHaveLength(0);
+      expect(next.requests.filter((r) => r.method === 'eth_sendTransaction')).toHaveLength(0);
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
     });
 
     it('does not request the wallet when the pending nonce differs from the canonical account nonce', async () => {

@@ -54,6 +54,7 @@ import {
   headroomUse,
   type RouteCheck,
 } from './mainnet/caps';
+import { submissionFeeNote } from './mainnet/submission-fees';
 import { usePendingSwap } from './mainnet/pendingswap';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
@@ -493,6 +494,15 @@ function PendingExcess({
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const currentWallet = useRef(wallet);
+  currentWallet.current = wallet;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const e = pool.excess;
   if (!e || (e.excess0 === 0n && e.excess1 === 0n)) return null;
   const blocked = e.blocksInflow0 || e.blocksInflow1;
@@ -525,6 +535,16 @@ function PendingExcess({
         tx,
       );
       intentId = reservation.id;
+      if (
+        !mounted.current ||
+        currentWallet.current.provider !== wallet.provider ||
+        currentWallet.current.account?.address !== wallet.account.address ||
+        !pendingSwap.ready(intentId)
+      ) {
+        await pendingSwap.rejected(intentId);
+        intentId = undefined;
+        throw new Error('The wallet or page context changed before the request. Nothing was sent.');
+      }
       hash = await sendTransaction(wallet.provider, { ...tx, nonce: reservation.nonce });
       await pendingSwap.updateSubmission(intentId, hash);
       setNote('Skim submitted. Its outcome is tracked below; do not repeat it.');
@@ -533,7 +553,7 @@ function PendingExcess({
         await pendingSwap.rejected(intentId);
         setNote('The wallet request was rejected by you. Nothing was sent.');
       } else if (intentId) {
-        await pendingSwap.updateSubmission(intentId, hash);
+        await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));
         setNote('Skim submission outcome unknown. Check wallet activity; do not repeat it.');
       } else setNote(message(error, 'No wallet request was sent.'));
     } finally {
@@ -744,6 +764,14 @@ function SwapPanel({
   // Bumped on every form change. A reply or a send that started under an older
   // value belongs to a form the user has since changed, and is dropped.
   const formGeneration = useRef(0);
+  const currentWallet = useRef(wallet);
+  currentWallet.current = wallet;
+  useEffect(
+    () => () => {
+      formGeneration.current++;
+    },
+    [],
+  );
   const lastQuoteRequest = useRef(0);
   const [requote, setRequote] = useState(0);
   const input = options.find((o) => o.key === inKey);
@@ -920,11 +948,16 @@ function SwapPanel({
         tx,
       );
       intentId = reservation.id;
-      if (generation !== formGeneration.current) {
+      if (
+        generation !== formGeneration.current ||
+        currentWallet.current.provider !== provider ||
+        currentWallet.current.account?.address !== wallet.account?.address ||
+        !pendingSwap.ready(intentId)
+      ) {
         await pendingSwap.rejected(intentId);
         intentId = undefined;
         throw new Error(
-          'The form changed before the wallet request. Nothing was sent. Get a new quote.',
+          'The form or wallet context changed before the wallet request. Nothing was sent. Get a new quote.',
         );
       }
       hash = await sendTransaction(provider, { ...tx, nonce: reservation.nonce });
@@ -942,7 +975,7 @@ function SwapPanel({
           detail: 'The wallet request was rejected by you. Nothing was sent.',
         });
       } else if (intentId) {
-        await pendingSwap.updateSubmission(intentId, hash);
+        await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));
         setSteps((all) => all.slice(0, index));
       } else
         update({ label, state: 'failed', detail: message(error, 'No wallet request was sent.') });

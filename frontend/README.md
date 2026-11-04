@@ -397,10 +397,15 @@ an error, never a fallback. URLs must be `https` without credentials.
   The account nonce at that head must equal its pending nonce; existing pending
   activity blocks a new wallet request. The chosen nonce is included explicitly
   in `eth_sendTransaction`, and any wallet modification of it prevents settlement.
+  The initial nonce uses EIP-1898 `{blockHash, requireCanonical: true}`; an RPC
+  without that capability blocks the request rather than falling back to a height.
   Swap, approval and skim share one hold per chain/account. A missing wallet reply
   is an unknown outcome, even for a timeout or fee error, and survives a reload.
   Only an explicit wallet rejection (`4001`) clears a hashless request. Neither
   time passing nor a missing receipt establishes that no transaction executed.
+  Structured `sequencer-fee-underpriced` errors may display validated integer fee
+  diagnostics. Their reported hash is never attached to the intent: the wallet's
+  signed hash is unknown, so the hold remains and no retry or fee change occurs.
   A wallet-returned or manually supplied hash must match the saved transaction
   body, including that exact nonce, and be included after the saved head, which
   must remain canonical. A

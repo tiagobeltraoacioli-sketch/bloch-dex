@@ -355,4 +355,31 @@ describe('wallet submission settlement', () => {
     });
     await expect(submissionBoundary(rpc, swap.intent!, FROM)).rejects.toThrow(/head changed/);
   });
+  it('pins the nonce read to the canonical block hash without a number fallback', async () => {
+    const calls: unknown[][] = [];
+    const rpc = rpcWith({
+      eth_getTransactionCount: (p: unknown[]) => {
+        calls.push(p);
+        return '0x4';
+      },
+    });
+    await submissionBoundary(rpc, swap.intent!, FROM);
+    expect(calls).toEqual([
+      [FROM, { blockHash: BLOCK.hash, requireCanonical: true }],
+      [FROM, 'pending'],
+    ]);
+  });
+  it('fails before the wallet when a canonical hash-pinned nonce read is unsupported', async () => {
+    let calls = 0;
+    const rpc = rpcWith({
+      eth_getTransactionCount: () => {
+        calls++;
+        throw new Error('unsupported block identifier');
+      },
+    });
+    await expect(submissionBoundary(rpc, swap.intent!, FROM)).rejects.toThrow(
+      /canonical hash-pinned nonce read is required/,
+    );
+    expect(calls).toBe(1);
+  });
 });

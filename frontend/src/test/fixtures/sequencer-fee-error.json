@@ -1,0 +1,23 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32000,
+    "message": "transaction underpriced for sequencer policy; use the transaction-specific fee in error.data (inclusion is not guaranteed)",
+    "data": {
+      "baseFeePerGas": "0x3b2308d7",
+      "chargedFreshSlots": "0x1",
+      "effectivePriorityFeePerGas": "0x7735940",
+      "freshSlotPriceWei": "0xb5e620f48000",
+      "freshSlots": "0x1",
+      "gasUsed": "0xb40f",
+      "headHash": "0x60d94aff5b9fa2d13b22386eccd5aab18becb256762fad3266418d8f1ec3c27d",
+      "headNumber": "0x1",
+      "kind": "sequencer-fee-underpriced",
+      "requiredMaxFeePerGas": "0x13dc0ddc2",
+      "requiredPriorityFeePerGas": "0x1029dd4eb",
+      "scope": "latest-state-next-block",
+      "transactionHash": "0x4e0e1a2227e2dbda4f3dd8e0fd69e6ca88d840aea95b2f5804806359cf49662f"
+    }
+  }
+}

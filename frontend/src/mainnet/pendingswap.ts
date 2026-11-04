@@ -537,6 +537,30 @@ export function usePendingSwap({
     [key, context, contextKey, recall, checkContext, rpc, updateSubmission],
   );
 
+  /** Last synchronous check before entering eth_sendTransaction, with no intervening await. */
+  const ready = useCallback(
+    (id: string) => {
+      if (!enabled || !key || activeKey.current !== contextKey) return false;
+      try {
+        const held = recall(key);
+        const durable = readStored(key);
+        if (
+          !held ||
+          held.swap.intent?.id !== id ||
+          held.swap.hash ||
+          durable?.intent?.id !== id ||
+          durable.hash
+        )
+          return false;
+        checkContext(held.swap);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [enabled, key, contextKey, recall, checkContext],
+  );
+
   /** True when a swap is open, including one sent from another tab since this one loaded. */
   const holds = useCallback(() => {
     if (!key) return false;
@@ -568,5 +592,6 @@ export function usePendingSwap({
     rejected,
     holds,
     recover,
+    ready,
   };
 }
