@@ -97,7 +97,7 @@ submission path without a review. Round 14 had it reviewed independently. Contra
 
 | Finding | Status |
 |---|---|
-| H1 (frontend): "Review same nonce in wallet" was offered while the original could still be queued; a wallet that ignores the page's nonce would execute the same call twice | Fixed `2ad78cf`: no wallet request unless the pending nonce equals the canonical nonce. H1-EVIDENCE |
+| H1 (frontend): "Review same nonce in wallet" was offered while the original could still be queued; a wallet that ignores the page's nonce would execute the same call twice | Fixed `2ad78cf`: no wallet request unless the pending nonce equals the canonical nonce. Driven in headless Chrome with a simulated wallet (`frontend/integration/browser`); real wallets: `docs/WALLET-MANUAL-TEST.md`, not yet run |
 | M1 (keeper): the skim recipient came from the gate file's `feeTo` unchecked | Fixed `e6fddb8`: `feeTo` must be the pinned Safe and the factory's `feeTo()` at the acting block |
 | M2 (keeper): whatever the external signer returned was published if the sender matched | Fixed `e6fddb8`: only the planned skim (chain, nonce, recipient, data, zero value, gas, both fees) is published |
 | M3 (keeper): one lost transaction keeps the keeper waiting until an operator edits the state file | Fixed `61448db`: the stored signed bytes are published again unchanged, then replaced at the same nonce with higher fees inside the same ceilings; a nonce used by an unrecorded transaction is settled from the finalized chain. One nonce at a time, recipient always `feeTo` (`OPS-DEX-MONITOR-KEEPER.md`, "Crash behaviour and automatic recovery") |
@@ -105,9 +105,32 @@ submission path without a review. Round 14 had it reviewed independently. Contra
 | L1, L4, L6 | Fixed `e6fddb8` |
 | L2 (keeper leaves `.lock` after SIGTERM) | Fixed `61448db`: a stopped pass releases its lock, and a lock whose owner is provably gone (reboot, missing process, reused process ID) is taken over |
 | L5 (pre-round-13 pending records) | Handled `61448db`: such records hold no signed bytes, so they are never re-published or replaced; they settle by a receipt or by the finalized transaction that used their nonce. None exists on 700770 |
-| L3 (the systemd unit uses the built-in 48 tx / 0.05 BLCH defaults, not the form's values) | L3-STATUS |
+| L3 (the systemd unit uses the built-in 48 tx / 0.05 BLCH defaults, not the form's values) | Fixed `e365ef1`: the units pass `--budget-wei` and `--max-tx` from the opening form's `DEX_KEEPER_BUDGET_WEI` and `DEX_KEEPER_MAX_TX`, and the monitor takes `--keeper-max-tx` |
 
 No finding above Low in `finality-gate.mjs`, `rpc-transport.mjs`, `publish-recorded.mjs`, `sign-and-publish.sh`,
 `sequencer-fee-error.mjs`, `keeper-accounting.mjs`, `keeper-state-store.mjs` or the opening-form quoting.
 Not reviewed: `dex-monitor.mjs` and `dex-seed-plan.mjs` beyond their diffs, `rehearse-reth-dex.mjs`, the tests.
+
+## 8. Round 14, second pass (2026-11-09): browser harness and two independent reviews
+
+Found by driving the production bundle in headless Chrome with a simulated wallet, and by two independent
+adversarial reviews of the round 14 changes (keeper recovery, new-slot fee, gate).
+
+| Finding | Status |
+|---|---|
+| B1 (frontend, High): a wallet that ignores the nonce the page asks for signed a "same nonce" review at its next nonce while still holding the original; both were mined (two router calls in the harness) | Fixed `7362524`: no wallet review once the wallet returned a hash; a later nonce carrying the saved call settles the hold; the page warns when the wallet signed another nonce. **Residual, accepted and asserted as such in the harness:** when the wallet's reply was lost (no hash known), the wallet ignores the nonce and the user ignores the page's warning, two transactions can execute. Whether MetaMask honours a site's nonce is test 9 of `docs/WALLET-MANUAL-TEST.md`; if it does not, remove the review button before opening |
+| K-M1, K-M2 (keeper): a fee quote above the ceilings, or four refused replacements, left an open entry waiting for ever | Fixed `e365ef1` |
+| K-M3 (keeper): a new nonce signed behind another queued transaction of the keeper account could leave a permanent gap | Fixed `e365ef1`: no signature unless the pending count equals the account nonce |
+| K-M4, K-M5 (keeper): a node reporting an old block timestamp, or a host clock a day ahead, emptied the 24 h budget window | Fixed `e365ef1`. Against a node that lies about gas used the hard bound is `--max-tx` x `--max-gas` x `--max-fee-wei`, documented |
+| K-L1 (keeper): a first publication the node refuses with its admission price is released without finalized data; a node that queues it anyway and lies gets a second nonce signed | Open, Low, accepted: the keeper talks to the operator's own settled RPC, which answers this only before its spool write. Both transactions are still `skim(feeTo)` |
+| K-L2, K-L3 (lock): no host or PID-namespace identity; a leftover `.lock.break` | Fixed `e365ef1` (no takeover across hosts or namespaces; the message names the file). A leftover `.lock.break` still needs an operator |
+| K-L4, K-L5, K-L7, K-L8 (keeper): signer arguments in an error message; unchecked fee options; upper-case signed bytes; a pair not bound to the pinned factory | Fixed `e365ef1` |
+| K-L6 (keeper): an entry left open by a pre-round-14 keeper holds no signed bytes and is not re-published or replaced | Open, Low: it settles by a receipt or by the finalized transaction that used its nonce; none exists on 700770 |
+| F-M1 (tools): a tool started through a symlink or from a path with a space did nothing and exited 0, the mainnet gate included | Fixed `e365ef1` (`scripts/staging/is-main.mjs`, test) |
+| F-M2, F-L1 (frontend): an RPC could make the page suggest a priority fee hundreds of times the honest one, and an unbounded max fee | Fixed `e365ef1`: at most 13.75 gwei of suggested tip with the committed policy (0.0069 BLCH on a 500,000-gas swap), base fee refused above 1,000 gwei |
+| F-M3 (frontend): the pending-nonce check of a same-nonce review was not the last read before the wallet | Fixed `e365ef1` (pricing first). The signed-nonce warning is still a single read right after the wallet returns |
+| F-L2 (gate consumers): `frontend-record.mjs` and the page accept any schema-2 report with `liquidity-enabled` for chain 700770 and the plan's genesis, including one from the generic gate without the Safe and bridge checks | Open, Low: the opening procedure runs the mainnet wrapper, and the monitor re-runs it every pass. Candidate fix: require the wrapper's `pinned` block for chain 700770 |
+| F-L3 (gate policy): the pinned launch policy fixes the signers, thresholds and guardians of the bridge token but not `largeMintDelay`, `cancelQuorum`, `switchDelay` or `supplyCap`, which are compared with the operator-supplied bridge plan only | Open, Low: needs the bridge line's minimums in `deployments/mainnet/bridge-token.pin.json` |
+| F-L4 (frontend): with the new-slot policy on, every wallet request first needs `eth_createAccessList`; when the RPC cannot answer, or the call would revert, nothing is sent | By design: nothing is saved either, and the user can try again. Turn the policy off in the network file to restore the old behaviour |
+| New-slot fee: the count is an upper bound | Exact for the launch contracts in the harness (first approve, first swap, repeat swaps). A token that reads zero-valued slots it does not write would be over-counted by 0.00022 BLCH per slot; the real bridge token was not measured in a browser. An exact figure needs a quote method on the L2 RPC |
 
