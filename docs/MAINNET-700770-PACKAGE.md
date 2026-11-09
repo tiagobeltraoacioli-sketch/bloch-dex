@@ -226,7 +226,15 @@ calls.
    publish.
 1. Safe: config, plan, preflight, txs, a refused wrong `--confirm`, then sign
    and publish.
-2. bUSDC test token with `bucketCapacity()`.
+2. bUSDC. With `BRIDGE_REPO=<clean checkout of the bridge RC>` and `ETH_PORT=<port>` (required in
+   private-L2 mode) it is the real `BridgedStablecoinV3`, created by the bridge's own
+   `deploy_pontes.py` over a `ProvenanceSourceVault` from `vault_pontes.py` on a loopback
+   "Ethereum" anvil, both under the mainnet policy: 5 of 7 signers, 6 for the switch, 3 guardians,
+   T = 0, 12 h mint delay, 5 + 5 bps vault fee (`scripts/staging/bridge-v3-real.sh`). The issuer's
+   bUSDC comes from a real vault deposit, the committee's mint and an execute after the delay. The
+   gates take the bridge's `busdc.plan.json` and `busdc.record.json`. Without `BRIDGE_REPO`, anvil
+   mode uses a test token with `bucketCapacity()` and shows only the genesis refusal and the
+   generic gate.
 3. DEX:
    - config with `blochInc` from the Safe plan;
    - plan;
@@ -251,7 +259,10 @@ The two runs differ as follows:
 
 - **anvil, chain 700770:** the mainnet gate wrapper refuses the run, because
   anvil's genesis is not the pin. The generic gate passes through the anvil
-  finality shim.
+  finality shim. With `BRIDGE_REPO`, every other check of the mainnet gate (Safe pin,
+  bridge plan and record, reviewed token build, launch policy) is also run with only
+  the genesis pin replaced (`scripts/fixtures/mainnet-gate-rehearsal-genesis.mjs`,
+  rehearsal only), and a bridge plan with another signer is refused.
 - **private L2:** it uses the `bloch-l2-produce-dev` and `bloch-l2-settled-rpc`
   named by `l2Release` in `pins.json` with `--rules mainnet` and the
   ceremony's domain and genesis time. Its genesis is the real
@@ -260,6 +271,10 @@ The two runs differ as follows:
   - A producer loop includes the spooled transactions.
   - Finality is a synthetic follower status (schema v2) written by
     `private-l2.sh finalize`.
+  - The bridge token's 12 h mint delay passes on the rehearsal clock
+    (`private-l2.sh warp`: later blocks are anchored that far ahead).
+  - The mainnet gate is refused before finality and without the bridge record,
+    and passes with the bridge's plan and record.
 
   It proves the tooling against the real RPC binary and genesis. It does not
   prove L1 settlement.
@@ -329,3 +344,16 @@ node scripts/staging/deploy-dex.mjs check-pair --plan deployments/mainnet/700770
 
 The check prints the reserves and shares. If they are not zero, someone also
 deposited: run `dex-seed-plan.mjs plan` before seeding.
+
+### Round 14 runs (2026-11-09), with the real bridge token
+
+Bridge revision `bb9abe0` (token creation keccak `0xe560441f…1de7`, the pin).
+
+| Run | Where | Result |
+|---|---|---|
+| `rehearse-mainnet-package.sh anvil` with `BRIDGE_REPO` | Mac | REHEARSAL OK; mainnet gate checks pass with the genesis pin replaced; other signer refused |
+| `rehearse-mainnet-package.sh anvil` without `BRIDGE_REPO` | Mac | REHEARSAL OK (stand-in path unchanged) |
+| `rehearse-mainnet-package.sh private-l2` with `BRIDGE_REPO` | build host, launch release binaries (`produce-dev e3f1a290…`, `settled-rpc 53e88565…`), pinned genesis | REHEARSAL OK; **the mainnet gate itself passes** with `busdc.plan.json` / `busdc.record.json` |
+
+`scripts/staging/e2e-settled/drive.sh` uses the same library (steps `bridge-eth`, `bridge-credit`);
+it needs the private settled stack with real proofs and was not run in round 14.
