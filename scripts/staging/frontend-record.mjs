@@ -10,6 +10,7 @@
 //   node scripts/staging/frontend-record.mjs --config <config.json> --plan <plan.json> \
 //     --infra-plan <infra-plan.json> --gate-report <gate-report.json> --write <record.json>
 import { readFileSync, writeFileSync } from "node:fs";
+import { isMain } from "./is-main.mjs";
 
 export const RECORD_DOMAIN = "postern.dex.frontend-record.v1";
 const MAINNET_CHAIN_ID = JSON.parse(
@@ -52,7 +53,7 @@ export function assembleRecord({ config, plan, infra, gateReport }) {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const args = process.argv.slice(2);
   const get = (flag) => {
     const i = args.indexOf(flag);

@@ -26,6 +26,7 @@ import {
   blockRef, call, checkIdentity, createRequest, deploymentFromGate, encode, encodeFunctionData, ABI, hashTypedData,
   parseArgs, readBlock, readGate, readPair, recoverAddress, stringify,
 } from "./dex-ops-lib.mjs";
+import { isMain } from "../staging/is-main.mjs";
 
 export function safeTxTypedData({ chainId, safe, to, data, nonce }) {
   return {
@@ -198,7 +199,7 @@ async function main() {
   return OK;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   main().then(
     (code) => process.exit(code),
     (error) => {

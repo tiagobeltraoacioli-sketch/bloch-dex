@@ -38,6 +38,7 @@ import {
   stableJson,
   validateDeployConfig,
 } from "./dex-deploy-config.mjs";
+import { isMain } from "./is-main.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, stringToHex } = requireFromFrontend("viem");
@@ -274,7 +275,7 @@ export async function main(argv) {
   return { decision: "recorded", configSha256: plan.configSha256, gate: options.write, createPairFrontRun: existing.length > 0 };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   try {
     console.log(JSON.stringify(await main(process.argv.slice(2)), null, 2));
   } catch (error) {

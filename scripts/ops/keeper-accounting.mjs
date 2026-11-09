@@ -14,8 +14,11 @@ export function keeperNeedsReconciliation(tx) {
     typeof tx.includedBlockHash === "string" && HASH.test(tx.includedBlockHash) && !/^0x0+$/.test(tx.includedBlockHash));
 }
 
+// A settled entry leaves the window 24 h after the LATER of its local signing time and its
+// block's timestamp: a node that reports an old block timestamp cannot empty the window.
+const windowTime = (tx) => (tx.status === "refused" ? tx.at : Math.max(Number.isSafeInteger(tx.at) ? tx.at : 0, tx.includedAt));
 export const keeperWindow = (state, now) => state.txs.filter((tx) =>
-  keeperNeedsReconciliation(tx) || Number(now) - (tx.status === "refused" ? tx.at : tx.includedAt) < 86400);
+  keeperNeedsReconciliation(tx) || Number(now) - windowTime(tx) < 86400);
 
 export const keeperCharge = (tx) => BigInt(keeperNeedsReconciliation(tx)
   ? tx.reservedWei ?? tx.spentWei ?? 0

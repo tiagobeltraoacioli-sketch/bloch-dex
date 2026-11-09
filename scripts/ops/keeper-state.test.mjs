@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { acquireLock, saveState } from "./dex-skim-keeper.mjs";
@@ -88,8 +88,8 @@ test("keeper cannot release a lock that changed ownership", (t) => {
 import { lockOwnerIsGone } from "./keeper-state-store.mjs";
 import { spawnSync } from "node:child_process";
 
-const alive = { bootId: () => "boot-1", processStart: () => "100", kill: () => {} };
-const record = (extra = {}) => ({ pid: 4242, ownerToken: "t", bootId: "boot-1", processStart: "100", ...extra });
+const alive = { bootId: () => "boot-1", processStart: () => "100", kill: () => {}, identity: () => ({ host: "h1", pidNamespace: "pid:[1]" }) };
+const record = (extra = {}) => ({ pid: 4242, ownerToken: "t", bootId: "boot-1", processStart: "100", host: "h1", pidNamespace: "pid:[1]", ...extra });
 
 test("a lock owner is gone only on a reboot, a missing process, or a reused process ID", () => {
   assert.equal(lockOwnerIsGone(record(), alive), false);
@@ -100,6 +100,11 @@ test("a lock owner is gone only on a reboot, a missing process, or a reused proc
   // No start time on this platform, or in the record: a live process ID is never called gone.
   assert.equal(lockOwnerIsGone(record({ processStart: null }), { ...alive, processStart: () => "999" }), false);
   assert.equal(lockOwnerIsGone(record(), { ...alive, processStart: () => null }), false);
+  // Another host or PID namespace sharing the state directory: never judged gone, whatever the probes say.
+  const dead = { ...alive, bootId: () => "boot-2", kill: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); } };
+  assert.equal(lockOwnerIsGone(record({ host: "h2" }), dead), false);
+  assert.equal(lockOwnerIsGone(record({ pidNamespace: "pid:[2]" }), dead), false);
+  assert.equal(lockOwnerIsGone(record({ pidNamespace: undefined }), dead), false);
   // Records that cannot be judged: older format, damaged, foreign.
   for (const bad of [null, {}, { pid: 4242, ownerToken: "t" }, record({ pid: 0 }), record({ pid: "4242" }), record({ ownerToken: undefined })]) {
     assert.equal(lockOwnerIsGone(bad, { ...alive, kill: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); } }), false);
@@ -111,7 +116,8 @@ test("a lock left by a dead keeper process is taken over; one left by a live pro
   // A real process that has exited: its ID is free (reuse within this test is not plausible).
   const dead = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
   const deadPid = Number(dead.stdout.trim());
-  fs.writeFileSync(`${path}.lock`, JSON.stringify({ pid: deadPid, startedAt: "2026-11-09T00:00:00Z", ownerToken: "dead-owner", bootId: null, processStart: null }));
+  const here = { host: os.hostname(), pidNamespace: (() => { try { return fs.readlinkSync("/proc/self/ns/pid"); } catch { return null; } })() };
+  fs.writeFileSync(`${path}.lock`, JSON.stringify({ pid: deadPid, startedAt: "2026-11-09T00:00:00Z", ownerToken: "dead-owner", bootId: null, processStart: null, ...here }));
   const release = acquireLock(path);
   const mine = JSON.parse(fs.readFileSync(`${path}.lock`, "utf8"));
   assert.equal(mine.pid, process.pid);
@@ -127,7 +133,7 @@ test("a lock left by a dead keeper process is taken over; one left by a live pro
     assert.equal(fs.readFileSync(`${path}.lock`, "utf8"), content);
   }
   // Another process is already taking a dead lock over.
-  fs.writeFileSync(`${path}.lock`, JSON.stringify({ pid: deadPid, ownerToken: "dead-owner", bootId: null, processStart: null }));
+  fs.writeFileSync(`${path}.lock`, JSON.stringify({ pid: deadPid, ownerToken: "dead-owner", bootId: null, processStart: null, ...here }));
   fs.writeFileSync(`${path}.lock.break`, "");
   assert.throws(() => acquireLock(path), /another process is taking it over/);
   assert.equal(JSON.parse(fs.readFileSync(`${path}.lock`, "utf8")).ownerToken, "dead-owner");

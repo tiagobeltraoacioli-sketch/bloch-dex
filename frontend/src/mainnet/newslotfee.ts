@@ -31,7 +31,9 @@
 //     transaction (the router's WBLCH balance and the withdraw latch); they read zero before
 //     and after, the RPC does not charge them, and `transientSlots` excludes them;
 //   * a new slot costs at least 20,000 gas (SSTORE from zero) and refunds never exceed a
-//     fifth of the gas used, so the count is capped at (gasUsed x 5/4 - 21,000) / 20,000.
+//     fifth of the gas used, so the count is capped at (gasUsed - 21,000) / 16,000. This also
+//     bounds the suggested tip at price x (1 + margin) / 16,000 per gas (13.75 gwei with the
+//     committed policy), whatever a broken RPC answers.
 // In headless Chrome against a node applying the RPC's rule from a state trace
 // (frontend/integration/browser), a first approve, a first swap and repeat swaps are priced
 // for exactly the slots the node measures. The
@@ -62,8 +64,10 @@ const INTRINSIC_GAS = 21_000n;
 /** EIP-2930 intrinsic gas of an access list entry. */
 const ACCESS_LIST_ADDRESS_GAS = 2_400n;
 const ACCESS_LIST_KEY_GAS = 1_900n;
-/** SSTORE of a non-zero value into a zero slot (EIP-2200 / EIP-2929, already warm). */
-const NEW_SLOT_GAS = 20_000n;
+/** SSTORE of a non-zero value into a zero slot is 20,000 gas; four fifths of it survive any refund. */
+const NEW_SLOT_GAS_AFTER_REFUNDS = 16_000n;
+/** A base fee above this is refused: the wallet would have to reserve an absurd balance. */
+export const MAX_BASE_FEE_WEI = 1_000n * 10n ** 9n;
 
 export type NewSlotFeePolicy = { enabled: boolean; freshSlotPriceWei: bigint; marginBps: number };
 export const NEW_SLOT_FEE_OFF: NewSlotFeePolicy = {
@@ -229,9 +233,12 @@ export async function priceNewSlots(
       if (BigInt(word) === 0n) possibleNewSlots += 1n;
     }
   }
-  // Each new slot costs at least 20,000 gas, and refunds are at most a fifth of the gas used.
-  const byGas = ((simulated * 5n) / 4n - INTRINSIC_GAS) / NEW_SLOT_GAS;
-  if (possibleNewSlots > byGas) possibleNewSlots = byGas > 0n ? byGas : 0n;
+  // Each new slot costs the transaction itself at least 20,000 gas (SSTORE from zero), and
+  // refunds are at most a fifth of the gas used. Counting no more slots than the gas left
+  // after the 21,000 intrinsic can pay at 16,000 each also bounds the tip, whatever the RPC
+  // answers: at most price x (1 + margin) / 16,000 per gas.
+  const byGas = (gasUsed - INTRINSIC_GAS) / NEW_SLOT_GAS_AFTER_REFUNDS;
+  if (possibleNewSlots > byGas) possibleNewSlots = byGas;
   if (possibleNewSlots === 0n) return null;
   refuse(
     possibleNewSlots <= MAX_NEW_SLOTS,
@@ -247,6 +254,10 @@ export async function priceNewSlots(
   } | null;
   refuse(block, 'the latest L2 block could not be read');
   const baseFee = quantity(block.baseFeePerGas, 'base fee');
+  refuse(
+    baseFee <= MAX_BASE_FEE_WEI,
+    `the L2 RPC reports a base fee of ${formatGwei(baseFee)} gwei, above ${formatGwei(MAX_BASE_FEE_WEI)} gwei`,
+  );
   const slotTip = slotTipFor(possibleNewSlots, gasUsed, policy.freshSlotPriceWei, policy.marginBps);
   const maxPriorityFeePerGas = slotTip > publishedTip ? slotTip : publishedTip;
   return {

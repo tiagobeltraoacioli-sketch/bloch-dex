@@ -19,6 +19,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { CRIT, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN, ZERO_ADDRESS, createRequest, decodeFunctionResult, deploymentFromGate, encodeFunctionData, keccak256, parseAbi, parseArgs, readBlock, stringify } from "./dex-ops-lib.mjs";
+import { isMain } from "../staging/is-main.mjs";
 
 const ABI = parseAbi([
   "function balanceOf(address) view returns (uint256)",
@@ -133,7 +134,7 @@ export async function runFootprint(gate, options, state, deps) {
   return { level, height: latest.number, total, perContract: per, capacitySlots: cap, usedBps: used, growth24h, note: "Count of listed contracts against the proven class at this height. Swaps touch all of them in one block" };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ["json"] });
     if (!args.config || !args.rpc || !args.state) {

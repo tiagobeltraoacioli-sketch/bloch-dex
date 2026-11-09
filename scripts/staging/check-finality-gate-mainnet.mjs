@@ -21,6 +21,7 @@ import { readFile } from "node:fs/promises";
 import { createJsonRpcRequest, evaluateFinalityGate } from "./finality-gate.mjs";
 import { checkBridgeRecord, checkMainnetPolicy } from "./bridge-token-identity.mjs";
 import { SAFE_V141, stableJson } from "./dex-deploy-config.mjs";
+import { isMain } from "./is-main.mjs";
 
 export const PINS = Object.freeze(
   JSON.parse(await readFile(new URL("../../deployments/mainnet/700770/pins.json", import.meta.url), "utf8")),
@@ -79,7 +80,7 @@ export async function readBridgeArgs(pairs) {
   return out;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   const args = process.argv.slice(2);
   const usage = "Usage: node scripts/staging/check-finality-gate-mainnet.mjs --config <gate.json> --safe-plan <safe.plan.json> --bridge-plan <plan.json> --bridge-record <record.json> [--bridge-plan … --bridge-record …] --rpc <url>";
   const named = { config: [], "safe-plan": [], "bridge-plan": [], "bridge-record": [], rpc: [] };

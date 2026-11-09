@@ -85,14 +85,19 @@ describe('new-slot priority fee', () => {
   it("satisfies the RPC's own refusal fixture: its gas and slot count priced here pass its rule", async () => {
     const d = refusal.error.data;
     // The RPC measured 46,095 gas for the approve as the wallet sends it (no access list);
-    // eth_createAccessList reports the run WITH the list, 4,300 intrinsic gas dearer at most.
-    const withList = `0x${(BigInt(d.gasUsed) + 4_300n).toString(16)}`;
+    // eth_createAccessList reports the run WITH the list: 4,300 intrinsic gas more, 2,100 less
+    // for the slot that is no longer cold.
+    const withList = `0x${(BigInt(d.gasUsed) + 4_300n - 2_100n).toString(16)}`;
     const { rpc } = node({ gasUsed: withList, baseFee: d.baseFeePerGas });
     const policy = { ...ON, freshSlotPriceWei: BigInt(d.freshSlotPriceWei), marginBps: 0 };
     const fee = (await priceNewSlots(rpc, { ...CALL, gas: 200_000n }, policy))!;
     expect(fee.possibleNewSlots).toBe(BigInt(d.chargedFreshSlots));
-    // With no margin the page's figure is exactly the RPC's requiredPriorityFeePerGas.
-    expect(fee.maxPriorityFeePerGas).toBe(BigInt(d.requiredPriorityFeePerGas));
+    // The page divides by a lower bound of the gas, so even with no margin its figure is at
+    // or above the RPC's requiredPriorityFeePerGas, and within 5% of it.
+    const required = BigInt(d.requiredPriorityFeePerGas);
+    expect(fee.gasUsed).toBe(BigInt(d.gasUsed) - 2_100n);
+    expect(fee.maxPriorityFeePerGas).toBeGreaterThanOrEqual(required);
+    expect(fee.maxPriorityFeePerGas * 100n).toBeLessThanOrEqual(required * 105n);
     expect(fee.maxFeePerGas).toBeGreaterThanOrEqual(BigInt(d.requiredMaxFeePerGas));
   });
 
@@ -124,16 +129,29 @@ describe('new-slot priority fee', () => {
     expect(newSlotFeeNote(fee)).toBe('');
   });
 
-  it('never counts more new slots than the simulated gas can pay for (20,000 gas each)', async () => {
-    // 46,000 gas: (46,000 x 5/4 - 21,000) / 20,000 = 1 slot at most, whatever the list says.
-    const many = node({
-      keys: [key(1), key(2), key(3), key(4)],
-      zero: [key(1), key(2), key(3), key(4)],
-    });
-    expect((await priceNewSlots(many.rpc, CALL, ON))!.possibleNewSlots).toBe(1n);
-    // 30,000 gas cannot hold a single new slot: the wallet picks the fee.
-    const cheap = node({ gasUsed: '0x7530' });
-    expect(await priceNewSlots(cheap.rpc, CALL, ON)).toBeNull();
+  it('never counts more new slots than the gas can pay for, which also bounds the tip', async () => {
+    const four = [key(1), key(2), key(3), key(4)];
+    // 46,000 simulated, 36,000 without the 4-key list: (36,000 - 21,000) / 16,000 = 0 slots.
+    const none = node({ keys: four, zero: four });
+    expect(await priceNewSlots(none.rpc, CALL, ON)).toBeNull();
+    // 70,000 simulated, 60,000 without the list: 2 slots at most although four keys read zero.
+    const many = node({ keys: four, zero: four, gasUsed: '0x11170' });
+    expect((await priceNewSlots(many.rpc, CALL, ON))!.possibleNewSlots).toBe(2n);
+    // A lying RPC: 128 zero keys and any gas it likes. The tip stays under
+    // price x 1.1 / 16,000 = 13.75 gwei, so a 500,000-gas swap pays at most 0.0069 BLCH.
+    const keys = Array.from({ length: 128 }, (_, i) => key(i + 1));
+    let priced = 0;
+    for (const gasUsed of ['0x5208', '0x30d40', '0x493e0', '0x7a120']) {
+      const fee = await priceNewSlots(
+        node({ keys, zero: keys, gasUsed }).rpc,
+        { ...CALL, gas: 500_000n },
+        ON,
+      );
+      if (!fee) continue;
+      priced += 1;
+      expect(fee.maxPriorityFeePerGas).toBeLessThanOrEqual(13_750_000_000n);
+    }
+    expect(priced).toBeGreaterThan(0);
   });
 
   it('skips the slots a router swap sets and clears again in the launch WBLCH', async () => {
@@ -191,7 +209,9 @@ describe('new-slot priority fee', () => {
       [{ gasUsed: '0x30d40' }, /simulated gas/],
       [{ gasUsed: 'nope' }, /no simulated gas/],
       [{ tip: '0x174876e801' }, /priority fee/],
-      [{ baseFee: undefined as unknown as string, tip: '0x' }, /no priority fee/],
+      [{ tip: '0x' }, /no priority fee/],
+      [{ baseFee: 'none' }, /no base fee/],
+      [{ baseFee: '0xe8d4a51001' }, /base fee of/],
 
       [{ keys: ['0x12'] }, /malformed access list/],
     ];

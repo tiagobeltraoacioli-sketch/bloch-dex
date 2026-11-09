@@ -24,6 +24,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequest, encodeFunctionData, isqrt, keccak256, parseAbi, parseArgs, parseUnits } from "./dex-ops-lib.mjs";
 import { PENDING, configSha256, validateDeployConfig } from "../staging/dex-deploy-config.mjs";
 import { MAX_FRACTION_BPS, SEEDER_FLOOR_BPS } from "./dex-seed-plan.mjs";
+import { isMain } from "../staging/is-main.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const FORM_DOMAIN = "postern.dex.opening-form.v1";
@@ -303,6 +304,8 @@ function envFile(v) {
     `DEX_KEEPER=${v.keeper}`,
     `DEX_KEEPER_KEYSTORE=${environmentValue(v.keystore)}`,
     `DEX_KEEPER_PASSWORD_FILE=${environmentValue(v.passwordFile)}`,
+    `DEX_KEEPER_BUDGET_WEI=${v.budgetWei}`,
+    `DEX_KEEPER_MAX_TX=${v.maxTx}`,
     "",
   ].join("\n");
 }
@@ -410,6 +413,6 @@ async function main() {
   return 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   main().then((code) => process.exit(code), (error) => { console.error(`opening-form: ${error.message}`); process.exit(2); });
 }

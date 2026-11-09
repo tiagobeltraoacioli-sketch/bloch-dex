@@ -3,7 +3,8 @@
 // was rebooted since, the process ID no longer exists, or (Linux) that ID now belongs to a
 // process with another start time. Anything else requires operator inspection.
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, fstatSync, mkdirSync, openSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 
 function syncDirectory(directory) {
@@ -39,6 +40,9 @@ export function saveState(path, state) {
 
 const readText = (path) => { try { return readFileSync(path, "utf8").trim(); } catch { return null; } };
 const bootId = () => readText("/proc/sys/kernel/random/boot_id");
+/// Linux: the PID namespace of this process. Process IDs mean nothing across namespaces or hosts.
+const pidNamespace = () => { try { return readlinkSync("/proc/self/ns/pid"); } catch { return null; } };
+const ownIdentity = () => ({ host: hostname(), pidNamespace: pidNamespace() });
 /// Linux: the process start time in clock ticks since boot (field 22 of /proc/<pid>/stat).
 function processStart(pid) {
   const stat = readText(`/proc/${pid}/stat`);
@@ -46,8 +50,12 @@ function processStart(pid) {
 }
 
 /// True only with proof that the process which wrote this lock record no longer runs.
-export function lockOwnerIsGone(record, probe = { bootId, processStart, kill: (pid) => process.kill(pid, 0) }) {
+export function lockOwnerIsGone(record, probe = { bootId, processStart, kill: (pid) => process.kill(pid, 0), identity: ownIdentity }) {
   if (!record || !Number.isSafeInteger(record.pid) || record.pid <= 0 || typeof record.ownerToken !== "string" || !("bootId" in record)) return false;
+  // A lock written on another host or in another PID namespace (containers sharing the state
+  // directory) cannot be judged from here: its owner may be alive where this process cannot see it.
+  const here = (probe.identity ?? ownIdentity)();
+  if (record.host !== here.host || (record.pidNamespace ?? null) !== here.pidNamespace) return false;
   const boot = probe.bootId();
   if (record.bootId && boot && record.bootId !== boot) return true;
   try { probe.kill(record.pid); } catch (error) { return error.code === "ESRCH"; }
@@ -71,7 +79,7 @@ export function acquireLock(path) {
     const breaker = `${lock}.break`;
     let breakFd;
     try { breakFd = openSync(breaker, "wx", 0o600); }
-    catch (inner) { if (inner.code === "EEXIST") throw refuse(" and another process is taking it over"); throw inner; }
+    catch (inner) { if (inner.code === "EEXIST") throw refuse(` and another process is taking it over (or crashed doing so: then remove ${breaker} too)`); throw inner; }
     try {
       let current = null;
       try { current = JSON.parse(readFileSync(lock, "utf8")); } catch (inner) { if (inner.code !== "ENOENT") throw refuse(" and changed while it was examined"); }
@@ -85,7 +93,7 @@ export function acquireLock(path) {
   const identity = fstatSync(fd);
   const ownerToken = randomUUID();
   try {
-    writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), ownerToken, bootId: bootId(), processStart: processStart(process.pid) })}\n`);
+    writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), ownerToken, bootId: bootId(), processStart: processStart(process.pid), ...ownIdentity() })}\n`);
     fsyncSync(fd);
   } finally { closeSync(fd); }
   syncDirectory(directory);

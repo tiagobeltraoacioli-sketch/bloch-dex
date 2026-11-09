@@ -32,6 +32,7 @@
         "scripts/staging/sign-and-publish.sh",
         "scripts/staging/publish-recorded.mjs",
         "scripts/staging/rpc-transport.mjs",
+        "scripts/staging/is-main.mjs",
         "scripts/staging/sequencer-fee-error.mjs",
         "scripts/staging/verify-deployment.mjs",
         "scripts/staging/manifest.mjs",

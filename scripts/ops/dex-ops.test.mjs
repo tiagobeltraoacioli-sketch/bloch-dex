@@ -86,6 +86,7 @@ function fakeNode(overrides = {}) {
       case "getReserves": return [reserves[0], reserves[1], 1];
       case "reserveCaps": return [CAP0, CAP1];
       case "feeTo": return chain.factoryFeeTo ?? SAFE;
+      case "factory": return chain.pairFactory ?? FACTORY;
       case "totalSupply": return chain.totalSupply;
       case "kLast": return chain.kLast;
       case "allPairsLength": return chain.pairCount;
@@ -1588,8 +1589,11 @@ test("recovery: a refused first publication is followed, after the cooldown, by 
   dear.chain.publish = (raw) => { throw feeRefusal(raw, { required: 50_000_000_000n }); };
   const dearState = emptyKeeperState();
   assert.equal((await runKeeper(gate, keeperOptions(), dearState, keeperDeps(dear, T0_SENT))).level, CRIT);
-  const blocked = await runKeeper(gate, keeperOptions(), dearState, { ...keeperDeps(dear, T0_SENT + 1_800), sign: async () => { throw new Error("must not sign"); } });
-  assert.equal(blocked.action, "fee-above-ceiling");
+  // ...and it is not remembered: the next attempt is priced afresh, inside the ceilings, and counted like any other.
+  assert.equal(dearState.feeHint, undefined);
+  const again = await runKeeper(gate, keeperOptions(), dearState, keeperDeps(dear, T0_SENT + 1_800));
+  assert.equal(again.action, "publish-refused");
+  assert.ok(dear.chain.sent.every((raw) => skimOf(raw).tx.maxPriorityFeePerGas <= DEFAULTS.maxTipWei));
 });
 
 test("recovery: stored bytes that are not this keeper's skim to the Safe are never published", async () => {
@@ -1717,4 +1721,105 @@ test("recovery: an earlier open nonce of the account, or two unresolved records,
   two.state.txs.push({ ...two.state.txs[0], hash: blockHash(0xabcn), nonce: "1" });
   const outcome = await runKeeper(gate, keeperOptions(), two.state, { ...keeperDeps(two.node, T0_SENT + 9_000), sign: async () => { throw new Error("must not sign"); } });
   assert.equal(outcome.action, "wait-in-flight");
+});
+
+// ---- round 14 review findings (independent reviewer, 2026-11-09)
+
+test("review M1: a quote above the ceilings is forgotten after one interval, and the stored bytes are published again", async () => {
+  const { node, state } = await sentOnce();
+  const raw = state.txs[0].raw;
+  let refuse = true;
+  node.chain.publish = (r) => { if (refuse) throw feeRefusal(r, { required: 9_000_000_000n }); return keccak256(r); };
+  assert.equal((await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 900))).action, "fee-above-ceiling");
+  refuse = false; // the price fell back; the old quote must not hold the entry
+  const early = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 1_000));
+  assert.equal(early.action, "fee-above-ceiling");
+  const later = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 1_800));
+  assert.equal(later.action, "wait-in-flight");
+  assert.equal(later.rebroadcast, "accepted");
+  assert.equal(state.txs[0].feeRequirement, undefined);
+  assert.equal(node.chain.sent.at(-1), raw);
+});
+
+test("review M2: a replacement the node refuses is not an attempt, is spaced, and never exhausts the replacements", async () => {
+  const { node, state } = await sentOnce();
+  const original = state.txs[0].hash;
+  node.chain.publish = (r) => { throw feeRefusal(r, { required: 3_000_000_000n }); };
+  let now = T0_SENT + 900;
+  const first = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, now));
+  assert.equal(first.action, "publish-refused");
+  assert.equal(first.level, WARN);
+  assert.equal(state.txs[0].hash, original);
+  assert.equal(state.txs[0].attempts, undefined);
+  const signs = [];
+  const soon = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node, now + 60), sign: async (tx) => { signs.push(tx); return signer(tx); } });
+  assert.equal(soon.action, "wait-in-flight");
+  assert.equal(signs.length, 0);
+  for (let i = 0; i < 8; i++) { now += 900; await runKeeper(gate, keeperOptions(), state, keeperDeps(node, now)); }
+  assert.equal(state.txs.length, 1);
+  assert.equal(state.txs[0].attempts, undefined);
+  // The node accepts again: the keeper still acts, on the same nonce.
+  delete node.chain.publish;
+  now += 900;
+  const done = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, now));
+  assert.ok(done.rebroadcast === "accepted" || done.action === "replaced", done.action);
+  assert.equal(new Set(node.chain.sent.map((raw) => skimOf(raw).nonce)).size, 1);
+  assertOnlySkimsToSafe(node);
+});
+
+test("review M3: no new nonce is signed behind other queued transactions of the keeper account", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  node.chain.nonceAt = (tag) => (tag === "pending" ? 1n : 0n);
+  const state = emptyKeeperState();
+  const outcome = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node), sign: async () => { throw new Error("must not sign"); } });
+  assert.equal(outcome.action, "keeper-account-has-queued-transactions");
+  assert.equal(outcome.level, WARN);
+  assert.equal(state.txs.length, 0);
+});
+
+test("review M4: a node that reports an old block timestamp cannot empty the budget window", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  const options = keeperOptions({ maxTx: 2, hardReserveBps: 0n, cooldownSeconds: 0 });
+  let now = T0_SENT;
+  for (let i = 0; i < 2; i++) {
+    assert.equal((await runKeeper(gate, options, state, keeperDeps(node, now))).action, "sent");
+    const hash = state.txs.at(-1).hash;
+    node.chain.receipts[hash] = keeperReceipt(node, hash);
+    node.chain.blockTimestamps[9n] = 1n; // the lie: included in 1970
+    node.chain.nonce += 1n;
+    now += 300;
+  }
+  const third = await runKeeper(gate, options, state, keeperDeps(node, now));
+  assert.equal(third.action, "tx-count-exhausted");
+  assert.equal(state.txs.length, 2);
+});
+
+test("review M5: a wall clock far from the chain head stops the pass before the window is touched", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP, latestNumber: 10n });
+  node.chain.blockTimestamps[10n] = BigInt(T0_SENT);
+  const state = emptyKeeperState();
+  const options = keeperOptions({ maxClockSkewSeconds: 64_800 });
+  assert.equal((await runKeeper(gate, options, state, keeperDeps(node, T0_SENT + 100))).action, "sent");
+  const before = JSON.stringify(state);
+  for (const now of [T0_SENT + 90_000, T0_SENT - 70_000]) {
+    const outcome = await runKeeper(gate, options, state, { ...keeperDeps(node, now), sign: async () => { throw new Error("must not sign"); } });
+    assert.equal(outcome.action, "clock-or-head-stale");
+  }
+  // With nothing open, the stale clock is what stops it, and the history is intact.
+  const settled = emptyKeeperState();
+  settled.txs.push({ at: T0_SENT, hash: blockHash(5n), nonce: "0", pair: PAIR, reservedWei: "1", spentWei: "1", status: "effective", ...settledFields(T0_SENT) });
+  const ahead = await runKeeper(gate, options, settled, { ...keeperDeps(node, T0_SENT + 90_000), sign: async () => { throw new Error("must not sign"); } });
+  assert.equal(ahead.action, "clock-or-head-stale");
+  assert.equal(ahead.level, WARN);
+  assert.equal(settled.txs.length, 1);
+  assert.equal(JSON.stringify(state), before);
+});
+
+test("review L8: a pinned pair that belongs to another factory is refused", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP, pairFactory: address(0xbad) });
+  const outcome = await runKeeper(gate, keeperOptions(), emptyKeeperState(), keeperDeps(node));
+  assert.equal(outcome.action, "refused");
+  assert.match(outcome.detail, /belongs to factory/);
+  assert.equal(node.chain.sent.length, 0);
 });

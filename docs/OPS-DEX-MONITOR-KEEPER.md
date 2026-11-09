@@ -104,6 +104,7 @@ Signing goes through `cast mktx`; the keeper never sees the key. Use a fresh add
 | Time between publications of the same stored transaction | `--rebroadcast-s` | 900 s |
 | Time out of the chain before the same nonce may be replaced | `--replace-after-s` | 7,200 s |
 | Replacements of one nonce | `--max-replacements` | 4 |
+| Largest difference between this host's clock and the head block's timestamp | `--max-clock-skew-s` | 64,800 s |
 
 Exit status: 0 nothing needed, sent, waiting or cooling down; 1 needs attention (budget, count, fee, gas, funding, backoff); 2 refused (identity, code hash, simulation, publication); 3 the node did not answer.
 
@@ -132,8 +133,9 @@ A write or flush failure stops publication. This is an application-level
 durability guarantee using the filesystem's `fsync`; the rehearsal does not
 simulate a power loss or validate storage hardware.
 
-The exclusive `.lock` records its process ID, an owner token and, on Linux, the
-boot ID and the process start time. Its age never authorizes another process to
+The exclusive `.lock` records its process ID, an owner token, the host name and, on Linux, the
+boot ID, the PID namespace and the process start time. A lock written on another host or in
+another PID namespace is never taken over. Its age never authorizes another process to
 take it over. A lock is taken over only when its owner is provably gone: the host
 was rebooted since, the process ID no longer exists, or that ID now belongs to a
 process with another start time. A pass stopped by SIGTERM, SIGINT or SIGHUP
@@ -166,6 +168,22 @@ needed:
 A lost transaction with nothing left to skim is not replaced (the keeper only ever
 sends a skim that is needed): it stays recorded with `"replaceable": true`, and
 its nonce is reused when a skim is next needed.
+
+Further rules of the recovery, from the round 14 review:
+
+- A node's "not in my spool" answer and its quote are kept for one `--rebroadcast-s` only; then the stored bytes are
+  published again. A quote above the ceilings is reported and never remembered.
+- A replacement the node refuses was never queued: it is not counted against `--max-replacements`, the entry returns
+  to the attempt before it, and the next replacement waits one `--rebroadcast-s`.
+- A new nonce is signed only when the node's pending count equals the account's nonce
+  (`keeper-account-has-queued-transactions` otherwise): the keeper never signs behind another queued transaction.
+- A settled entry stays in the 24 h window until 24 h after the later of its signing time and its block's timestamp,
+  and a pass does nothing (`clock-or-head-stale`, WARN) when this host's clock and the head block differ by more than
+  `--max-clock-skew-s`. The budget is accounted from the node's receipts: against a node that lies about gas, the hard
+  bound is `--max-tx` x `--max-gas` x `--max-fee-wei` per window (0.144 BLCH with the defaults), and the keeper's balance.
+- Each pinned pair must report the pinned factory as its `factory()`.
+- The example units pass `--budget-wei` and `--max-tx` from `DEX_KEEPER_BUDGET_WEI` and `DEX_KEEPER_MAX_TX` (written by
+  the opening form), and the monitor judges `keeper_budget` with the same `--keeper-max-tx`.
 
 What still needs an operator: a fee quote or a replacement above the ceilings
 (raise `--max-tip-wei` / `--max-fee-wei`, or skim by hand: the keeper then settles

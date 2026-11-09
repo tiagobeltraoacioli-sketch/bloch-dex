@@ -36,7 +36,8 @@
 //        [--tip-wei 1000000000] [--max-tip-wei 8000000000]
 //        [--soft-share-bps 2500] [--hard-reserve-bps 2500]
 //        [--cooldown-s 1800] [--pending-timeout-s 7200] [--rebroadcast-s 900]
-//        [--replace-after-s 7200] [--max-replacements 4] -- <cast signer arguments>
+//        [--replace-after-s 7200] [--max-replacements 4] [--max-clock-skew-s 64800]
+//        -- <cast signer arguments>
 //
 // Recovery of a lost transaction is automatic and never opens a second nonce (docs: "Crash
 // behaviour"): the signed bytes are kept in the state file and re-published unchanged; a
@@ -59,6 +60,7 @@ import {
   blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, isAtKCeiling, keccak256,
   call, parseArgs, parseTransaction, readBlock, readBridgeExit, readGate, readPair, recoverTransactionAddress, stringify,
 } from "./dex-ops-lib.mjs";
+import { isMain } from "../staging/is-main.mjs";
 
 export const DEFAULTS = Object.freeze({
   // 0.05 BLCH per 24 h: about 70 skims at the top of the tip range. A griefer who wins a
@@ -90,6 +92,8 @@ export const DEFAULTS = Object.freeze({
   rebroadcastSeconds: 900,
   replaceAfterSeconds: KEEPER_PENDING_TIMEOUT_SECONDS,
   maxReplacements: 4,
+  // 18 h: above the 12 h 10 min the V3 rehearsal chain starts behind the wall clock, below the 24 h window.
+  maxClockSkewSeconds: 64_800,
 });
 /// A same-nonce replacement raises both fee fields by at least 1/8 (the L2 spool and geth ask 10%).
 export const replacementFloor = (wei) => (BigInt(wei) * 9n + 7n) / 8n;
@@ -304,6 +308,13 @@ async function reconcile(state, keeper, deployment, request, now, options) {
 
   // Not mined, and the nonce is still free. Publish the same signed bytes again.
   const lastAttemptAt = open.replacedAt ?? open.at;
+  // The node's "not in my spool" answer and its quote describe one head. After one
+  // re-publication interval they are forgotten and the stored bytes are published again, so
+  // an old quote above the ceilings cannot hold the entry for ever.
+  if (Number.isSafeInteger(open.notSpooledAt) && now - open.notSpooledAt >= options.rebroadcastSeconds) {
+    delete open.notSpooledAt;
+    delete open.feeRequirement;
+  }
   let notSpooled = Number.isSafeInteger(open.notSpooledAt) && open.notSpooledAt >= lastAttemptAt;
   let rebroadcast;
   if (options.execute && open.raw !== undefined && !notSpooled && now - (open.lastBroadcastAt ?? lastAttemptAt) >= options.rebroadcastSeconds) {
@@ -328,7 +339,8 @@ async function reconcile(state, keeper, deployment, request, now, options) {
   const feesKnown = [open.tipWei, open.maxFeeWei].every((v) => typeof v === "string" && DECIMAL.test(v));
   const only = state.txs.filter(keeperNeedsReconciliation).length === 1;
   const exhausted = (open.attempts?.length ?? 0) >= options.maxReplacements;
-  const replace = (stale || notSpooled) && feesKnown && only && !exhausted ? open : undefined;
+  const spaced = !(Number.isSafeInteger(open.noReplaceBefore) && now < open.noReplaceBefore);
+  const replace = (stale || notSpooled) && feesKnown && only && !exhausted && spaced ? open : undefined;
   return pending(exhausted && stale ? "replacements-exhausted" : notSpooled ? "not-in-spool" : undefined, open, { ...(rebroadcast ? { rebroadcast } : {}), replace });
 }
 
@@ -348,6 +360,15 @@ export async function runKeeper(gate, givenOptions, state, deps) {
       throw new IdentityError(`the gate file's feeTo ${deployment.feeTo} is not its Bloch Inc Safe ${deployment.safe?.address}`);
     }
     await checkIdentity(request, deployment);
+    const head = await readBlock(request, "latest");
+    // The budget window is measured on this host's clock. A clock far from the chain's (or a
+    // head that stopped long ago) would empty the window or act on stale reserves: do nothing.
+    if (options.maxClockSkewSeconds !== undefined) {
+      const skew = BigInt(now) - head.timestamp;
+      if (skew > BigInt(options.maxClockSkewSeconds) || -skew > BigInt(options.maxClockSkewSeconds)) {
+        return result(WARN, "clock-or-head-stale", { now, headTimestamp: head.timestamp, maxClockSkewSeconds: options.maxClockSkewSeconds });
+      }
+    }
     const requireFactoryRecipient = async (at) => {
       const factoryCode = await codeHash(request, deployment.factory.address, at);
       if (factoryCode !== deployment.factory.codeHash) throw new IdentityError(`factory ${deployment.factory.address} code ${factoryCode} differs from the pin`);
@@ -382,6 +403,9 @@ export async function runKeeper(gate, givenOptions, state, deps) {
     for (const pair of deployment.pairs) {
       const observed = await codeHash(request, pair.address, at);
       if (observed !== pair.codeHash) throw new IdentityError(`pair ${pair.address} code ${observed} differs from the pin`);
+      // The recipient check reads the factory; the pair must be that factory's, or a gate file naming another factory could pass it.
+      const pairFactory = (await call(request, pair.address, "factory", [], at)).toLowerCase();
+      if (pairFactory !== deployment.factory.address.toLowerCase()) throw new IdentityError(`pair ${pair.address} belongs to factory ${pairFactory}, not the pinned ${deployment.factory.address}`);
       const pairState = await readPair(request, pair, at);
       const kinds = pairState.sides.map((side) => classifyExcess(side, options.floorBps));
       const closure = closureOf(pairState, options.floorBps);
@@ -469,9 +493,14 @@ export async function runKeeper(gate, givenOptions, state, deps) {
 
     // A new nonce only when nothing is open; a replacement keeps the open entry's nonce, which
     // must still be the account's next one (reconcile read it; read again: time has passed).
-    const nonce = replacing ? BigInt(replacing.nonce) : BigInt(await request("eth_getTransactionCount", [keeper, "pending"]));
-    if (replacing && BigInt(await request("eth_getTransactionCount", [keeper, "latest"])) !== nonce) return result(inFlight.level, "wait-in-flight", inFlight);
-    const raw = await sign({ chainId: deployment.chainId, nonce, gasLimit, maxFee, tip, to: target.address, data });
+    const accountNonce = BigInt(await request("eth_getTransactionCount", [keeper, "latest"]));
+    if (replacing && accountNonce !== BigInt(replacing.nonce)) return result(inFlight.level, "wait-in-flight", inFlight);
+    // A new nonce is the account's next one. If the node counts other queued transactions of
+    // this account, signing behind them could leave a gap that nothing here can close.
+    const pendingNonce = replacing ? accountNonce : BigInt(await request("eth_getTransactionCount", [keeper, "pending"]));
+    if (pendingNonce !== accountNonce) return blocked("keeper-account-has-queued-transactions", { latestNonce: accountNonce, pendingNonce });
+    const nonce = accountNonce;
+    const raw = String(await sign({ chainId: deployment.chainId, nonce, gasLimit, maxFee, tip, to: target.address, data })).toLowerCase();
     const signer = (await recoverTransactionAddress({ serializedTransaction: raw })).toLowerCase();
     if (signer !== keeper) throw new IdentityError(`the signer is ${signer}, not the configured keeper ${keeper}`);
     // The signer is an external program: publish only the exact transaction that was planned and reserved.
@@ -507,10 +536,16 @@ export async function runKeeper(gate, givenOptions, state, deps) {
       // The next attempt stays inside the same ceilings; if the quote is above them an operator must decide.
       const withinCeilings = feeRequirement && BigInt(feeRequirement.requiredPriorityFeePerGas) <= options.maxTipWei && BigInt(feeRequirement.requiredMaxFeePerGas) <= options.maxFeeWei;
       if (feeRequirement && replacing) {
-        // These bytes are not in the node's spool, but an older attempt of this nonce may still
-        // be: the entry stays open and reserved, and a later pass replaces it again with this quote.
+        // These bytes never entered the node's spool, so they do not count as an attempt: the
+        // entry goes back to the attempt before (which may still be queued somewhere), keeps
+        // its reservation, and a later pass replaces it again with this quote.
+        const previous = entry.attempts.pop();
+        Object.assign(entry, { hash: previous.hash, raw: previous.raw, pair: previous.pair, tipWei: previous.tipWei, maxFeeWei: previous.maxFeeWei, gasLimit: previous.gasLimit });
+        if (previous.at === entry.at) delete entry.replacedAt; else entry.replacedAt = previous.at;
+        if (!entry.attempts.length) delete entry.attempts;
         entry.notSpooledAt = now;
         entry.feeRequirement = feeRequirement;
+        entry.noReplaceBefore = now + options.rebroadcastSeconds;
         save(state);
         return result(withinCeilings ? WARN : CRIT, "publish-refused", { hash, detail: error.message, feeRequirement, retry: withinCeilings ? "automatic, at the same nonce" : "needs higher --max-tip-wei / --max-fee-wei" });
       }
@@ -521,7 +556,8 @@ export async function runKeeper(gate, givenOptions, state, deps) {
         entry.refusalKind = feeRequirement.kind;
         entry.spentWei = "0";
         state.nextAllowedAt = now + options.cooldownSeconds;
-        state.feeHint = { requiredPriorityFeePerGas: feeRequirement.requiredPriorityFeePerGas, requiredMaxFeePerGas: feeRequirement.requiredMaxFeePerGas, transactionHash: hash, at: now };
+        // A quote above the ceilings is reported, never remembered: the next attempt is priced afresh.
+        if (withinCeilings) state.feeHint = { requiredPriorityFeePerGas: feeRequirement.requiredPriorityFeePerGas, requiredMaxFeePerGas: feeRequirement.requiredMaxFeePerGas, transactionHash: hash, at: now };
         save(state);
         return result(withinCeilings ? WARN : CRIT, "publish-refused", { hash, detail: error.message, feeRequirement, retry: withinCeilings ? "automatic, after the cooldown" : "needs higher --max-tip-wei / --max-fee-wei" });
       }
@@ -561,11 +597,16 @@ export async function withBridgeExit(outcome, ethRequest, request, cfg, deployme
 function castSigner(signerArgs) {
   const run = promisify(execFile);
   return async ({ chainId, nonce, gasLimit, maxFee, tip, to, data }) => {
-    const { stdout } = await run("cast", [
-      "mktx", "--chain", String(chainId), "--nonce", nonce.toString(), "--gas-limit", gasLimit.toString(),
-      "--gas-price", maxFee.toString(), "--priority-gas-price", tip.toString(), ...signerArgs, to, data,
-    ]);
-    return stdout.trim();
+    try {
+      const { stdout } = await run("cast", [
+        "mktx", "--chain", String(chainId), "--nonce", nonce.toString(), "--gas-limit", gasLimit.toString(),
+        "--gas-price", maxFee.toString(), "--priority-gas-price", tip.toString(), ...signerArgs, to, data,
+      ]);
+      return stdout.trim();
+    } catch (error) {
+      // The default message carries the whole command line, signer arguments included.
+      throw new Error(`cast mktx failed: ${String(error.stderr ?? "").trim().split("\n").at(-1) || `exit ${error.code}`}`);
+    }
   };
 }
 
@@ -573,7 +614,7 @@ function bigOption(args, name, fallback) {
   return args[name] === undefined ? fallback : BigInt(args[name]);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   let release = () => {};
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ["execute"] });
@@ -600,8 +641,12 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       rebroadcastSeconds: Number(args["rebroadcast-s"] ?? DEFAULTS.rebroadcastSeconds),
       replaceAfterSeconds: Number(args["replace-after-s"] ?? DEFAULTS.replaceAfterSeconds),
       maxReplacements: Number(args["max-replacements"] ?? DEFAULTS.maxReplacements),
+      maxClockSkewSeconds: Number(args["max-clock-skew-s"] ?? DEFAULTS.maxClockSkewSeconds),
     };
-    const integerOptions = { maxTx: "max-tx", cooldownSeconds: "cooldown-s", pendingTimeoutSeconds: "pending-timeout-s", rebroadcastSeconds: "rebroadcast-s", replaceAfterSeconds: "replace-after-s", maxReplacements: "max-replacements" };
+    for (const k of ["budgetWei", "maxFeeWei", "tipWei", "maxTipWei", "maxGas", "floorBps", "softShareBps", "hardReserveBps"]) if (options[k] < 0n) throw new Error(`${k} must not be negative`);
+    if (options.ceilingFloorWei !== null && options.ceilingFloorWei < 0n) throw new Error("--ceiling-floor-wei must not be negative");
+    if (options.tipWei > options.maxTipWei || options.maxTipWei > options.maxFeeWei) throw new Error("--tip-wei must not exceed --max-tip-wei, and --max-tip-wei must not exceed --max-fee-wei");
+    const integerOptions = { maxClockSkewSeconds: "max-clock-skew-s", maxTx: "max-tx", cooldownSeconds: "cooldown-s", pendingTimeoutSeconds: "pending-timeout-s", rebroadcastSeconds: "rebroadcast-s", replaceAfterSeconds: "replace-after-s", maxReplacements: "max-replacements" };
     for (const [k, flag] of Object.entries(integerOptions)) {
       if (!Number.isSafeInteger(options[k]) || options[k] < 0) throw new Error(`--${flag} must be a non-negative integer`);
     }

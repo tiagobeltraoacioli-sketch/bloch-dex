@@ -32,6 +32,7 @@ import {
   formatUnits, isAtKCeiling, isBricked, isClosed, parseArgs, parseUnits, readBlock, readBridgeExit, readGate, readPair, stringify, worst,
   ZERO_ADDRESS,
 } from "./dex-ops-lib.mjs";
+import { isMain } from "../staging/is-main.mjs";
 
 export const THRESHOLDS = Object.freeze({
   // Same values and reasoning as the L2 monitor's mainnet profile.
@@ -187,7 +188,7 @@ export async function runMonitor(gate, options, request, deps = {}) {
 
   if (options.ethRequest && options.bridgeVault) await checkBridgeExit({ deployment, finalized, add, facts, options }, request, guarded);
 
-  if (options.keeperState) checkKeeperState(options.keeperState, now, add);
+  if (options.keeperState) checkKeeperState(options.keeperState, now, add, options.keeperMaxTx ?? 48);
 
   return finish(checks, facts);
 }
@@ -383,7 +384,14 @@ async function gateFor(args) {
   return (gate, request) => evaluateMainnetGate(gate, safePlan, request, bridgeTokens);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+/// --keeper-max-tx: the keeper's own --max-tx, so keeper_budget judges the count the keeper is run with.
+function keeperMaxTx(value) {
+  if (value === undefined) return undefined;
+  if (!/^[1-9][0-9]{0,5}$/.test(String(value))) throw new Error("--keeper-max-tx must be a positive integer");
+  return Number(value);
+}
+
+if (isMain(import.meta.url)) {
   try {
     const args = parseArgs(process.argv.slice(2), { flags: ["rehearsal", "json", "expect-seeded"] });
     // Written by the skim keeper. Optional: the monitor can run on a host with no keeper.
@@ -395,7 +403,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     const request = createRequest(args.rpc);
     const result = await runMonitor(
       readGate(args.config),
-      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"],
+      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"], keeperMaxTx: keeperMaxTx(args["keeper-max-tx"]),
         ethRequest: args["eth-rpc"] ? createRequest(args["eth-rpc"]) : undefined, bridgeVault: args["bridge-vault"],
         bridgeVaultCodeHash: args["bridge-vault-code-hash"], bridgeToken: args["bridge-token"] },
       request,

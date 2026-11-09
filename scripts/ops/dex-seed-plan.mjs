@@ -32,6 +32,7 @@ import {
 import { existsSync, renameSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { verifyDepositorHistory } from "../staging/finality-gate.mjs";
+import { isMain } from "../staging/is-main.mjs";
 
 const WAD = 10n ** 18n;
 const MINIMUM_LIQUIDITY = 1000n;
@@ -458,7 +459,7 @@ async function writeSeedTxs(file, gate, deployment, steps, request) {
   return { file, configSha256: sha, count: transactions.length };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   main().then(
     (code) => process.exit(code),
     (error) => {

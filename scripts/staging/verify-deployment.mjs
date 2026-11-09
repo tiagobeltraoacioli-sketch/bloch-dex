@@ -26,6 +26,7 @@ import { createRequire } from "node:module";
 import { createJsonRpcRequest, verifySafe } from "./finality-gate.mjs";
 import { BRIDGE_BUCKET_DIVISOR, EMPTY_CODE_HASH, loadArtifacts, stableJson } from "./dex-deploy-config.mjs";
 import { verifyInfra } from "./infra-deploy-config.mjs";
+import { isMain } from "./is-main.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, parseAbi, encodeFunctionData, decodeFunctionResult } = requireFromFrontend("viem");
@@ -247,7 +248,7 @@ export async function readHashes(path) {
   return hashes;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   try {
     const o = parse(process.argv.slice(2));
     const report = await verifyDeployment({

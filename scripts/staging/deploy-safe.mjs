@@ -19,6 +19,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createJsonRpcRequest } from "./finality-gate.mjs";
 import { configSha256, EMPTY_CODE_HASH, stableJson } from "./dex-deploy-config.mjs";
 import { loadSafeArtifacts, pendingFields, planSafe, safeTransactions, validateSafeConfig } from "./safe-deploy-config.mjs";
+import { isMain } from "./is-main.mjs";
 
 function refuse(condition, message) {
   if (!condition) throw new Error(`deploy-safe: ${message}`);
@@ -87,7 +88,7 @@ export async function main(argv) {
   return { decision: "transactions-written", file: o.write, count: txs.transactions.length, configSha256: plan.configSha256 };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   try {
     console.log(JSON.stringify(await main(process.argv.slice(2)), null, 2));
   } catch (error) {

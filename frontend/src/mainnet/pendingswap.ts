@@ -735,9 +735,10 @@ export function usePendingSwap({
         // shows now. Many wallets ignore the nonce a site asks for and would sign this review at their next nonce:
         // the same call twice. With a hash known, the only safe controls are the wallet's own speed up and cancel.
         if (submissionHashes(held.swap).length) throw new Error(REVIEW_WITH_HASH);
-        await verifySameNonceReview(rpc, intent, context, held.swap.deadline);
-        // Priced before the review attempt is journaled: a failure here changes nothing.
+        // Priced first (several RPC reads), so that the canonical and pending nonce checks are the
+        // last reads before the wallet. A pricing failure changes nothing.
         const fee = await price(tx);
+        await verifySameNonceReview(rpc, intent, context, held.swap.deadline);
         const walletChain = await provider.request({ method: 'eth_chainId' });
         if (
           typeof walletChain !== 'string' ||

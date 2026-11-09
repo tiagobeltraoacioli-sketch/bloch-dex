@@ -61,6 +61,7 @@ export const ABI = parseAbi([
   "function getReserves() view returns (uint112, uint112, uint32)",
   "function reserveCaps() view returns (uint112, uint112)",
   "function feeTo() view returns (address)",
+  "function factory() view returns (address)",
   "function totalSupply() view returns (uint256)",
   "function kLast() view returns (uint256)",
   "function balanceOf(address) view returns (uint256)",

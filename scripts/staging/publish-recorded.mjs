@@ -8,6 +8,7 @@ import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRpcTransport } from "./rpc-transport.mjs";
 import { sequencerFeeRequirement } from "./sequencer-fee-error.mjs";
+import { isMain } from "./is-main.mjs";
 
 const { keccak256, parseTransaction, recoverTransactionAddress } = createRequire(new URL("../../frontend/package.json", import.meta.url))("viem");
 const DOMAIN = "postern.dex.publication-journal.v1";
@@ -116,6 +117,6 @@ async function main() {
   else { console.error(JSON.stringify(result, null, 2)); process.exitCode = 1; }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMain(import.meta.url)) {
   main().catch((error) => { console.error(`publication stopped: ${error.message}; inspect the journal before any new attempt`); process.exitCode = 1; });
 }

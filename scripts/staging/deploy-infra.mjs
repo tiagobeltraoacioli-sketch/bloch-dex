@@ -16,6 +16,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createJsonRpcRequest } from "./finality-gate.mjs";
 import { configSha256, stableJson } from "./dex-deploy-config.mjs";
 import { infraTransactions, pendingFields, planInfra, validateInfraConfig } from "./infra-deploy-config.mjs";
+import { isMain } from "./is-main.mjs";
 
 function refuse(condition, message) {
   if (!condition) throw new Error(`deploy-infra: ${message}`);
@@ -76,7 +77,7 @@ export async function main(argv) {
   return { decision: "transactions-written", file: o.write, count: txs.transactions.length, configSha256: plan.configSha256 };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   try {
     console.log(JSON.stringify(await main(process.argv.slice(2)), null, 2));
   } catch (error) {
