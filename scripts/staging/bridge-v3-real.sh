@@ -18,7 +18,10 @@
 # The caller provides: WORK, EV, RPC (the L2), log(), must KEY TO|create DATA VALUE GAS (a mined L2 transaction that
 # must succeed), BRIDGE_REPO, and either ETH_PORT (an anvil is started and added to PIDS) or BRIDGE_ETH_RPC.
 # Functions, in order:
-#   bridge_v3_keys                      throwaway keys; sets BRIDGE_L2_DEPLOYER (needs L2 gas before bridge_v3_token)
+#   bridge_v3_keys                      throwaway keys (made once per WORK); sets BRIDGE_L2_DEPLOYER (needs L2 gas
+#                                       before bridge_v3_token)
+#   bridge_v3_load                      a staged driver's later invocation: restores VAULT, ASSET, BRIDGE_ARGS and the
+#                                       totals from the files of an earlier invocation (needs BRIDGE_ETH_RPC)
 #   bridge_v3_vault SAFE                Ethereum side; SAFE is the Bloch Inc Safe named as the funder in the configs
 #   bridge_v3_token GENESIS SAFE        L2 side: sets ASSET, ASSET_CODE, BRIDGE_ARGS (gate and monitor arguments)
 #   bridge_v3_open                      the vault's release committee enables deposits and releases (5 of 7)
@@ -54,13 +57,26 @@ bkey() { node -e 'console.log(require(process.argv[1])[Number(process.argv[2])][
 bcommittee() { local i; for i in $(seq "$1" "$2"); do echo "$(bkey "$i" address) $(bkey "$i" private_key)"; done | sort > "$3"; }
 
 bridge_v3_keys() {
-  umask 077; cast wallet new --number 24 --json > "$BW/keys.json"; umask 022
+  if [ ! -s "$BW/keys.json" ]; then umask 077; cast wallet new --number 24 --json > "$BW/keys.json"; umask 022; fi
   BRIDGE_ETH_DEPLOYER_KEY=$(bkey 0 private_key); BRIDGE_ETH_DEPLOYER=$(bkey 0 address)
   BRIDGE_ETH_USER_KEY=$(bkey 1 private_key); BRIDGE_ETH_USER=$(bkey 1 address)
   bcommittee 2 8 "$BW/eth-signers.txt"; bcommittee 9 11 "$BW/eth-guardians.txt"
   BRIDGE_FEE_TO=$(bkey 12 address)
   BRIDGE_L2_DEPLOYER_KEY=$(bkey 13 private_key); BRIDGE_L2_DEPLOYER=$(bkey 13 address)
   bcommittee 14 20 "$BW/l2-signers.txt"; bcommittee 21 23 "$BW/l2-guardians.txt"
+}
+
+bridge_v3_load() {
+  bridge_v3_keys
+  : "${BRIDGE_ETH_RPC:?BRIDGE_ETH_RPC is required to continue an earlier invocation}"
+  if [ -s "$EV/busdc-vault.verify.json" ]; then
+    VAULT=$(bjson "$EV/busdc-vault.verify.json" busdcEthereum.vault); VAULT_CODE=$(bjson "$EV/busdc-vault.verify.json" busdcEthereum.vaultCodeHash)
+  fi
+  if [ -s "$EV/busdc.record.json" ]; then
+    ASSET=$(bjson "$EV/busdc.record.json" address); ASSET_CODE=$(bjson "$EV/busdc.record.json" runtimeCodeHash)
+    BRIDGE_ARGS=(--bridge-plan "$EV/busdc.plan.json" --bridge-record "$EV/busdc.record.json")
+  fi
+  if [ -s "$BW/totals" ]; then read -r BRIDGE_NET_TOTAL BRIDGE_FEE_TOTAL < "$BW/totals"; fi
 }
 
 bridge_v3_vault() {
@@ -167,6 +183,7 @@ bridge_v3_deposit() {
     { echo "FAIL: a V3 mint at T = 0 credited without the delay" >&2; exit 1; }
   BRIDGE_NET_TOTAL=$((BRIDGE_NET_TOTAL + net)); BRIDGE_FEE_TOTAL=$((BRIDGE_FEE_TOTAL + gross - net))
   BRIDGE_DEPOSIT_ID=$id
+  echo "$BRIDGE_NET_TOTAL $BRIDGE_FEE_TOTAL" > "$BW/totals"
 }
 
 bridge_v3_credit() {

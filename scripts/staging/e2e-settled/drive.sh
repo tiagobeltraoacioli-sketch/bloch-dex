@@ -5,8 +5,15 @@
 # after the gate are sent in bursts so that one L2 block (one real proof) covers
 # several of them: the kit's sequential path would take one proof per step.
 #
-#   drive.sh keys|fund|deploy|gate|launch|safe-fee|cap-skim|ui-prep|...
+#   drive.sh keys|bridge-eth|fund|wait-funded|deploy|gate|bridge-credit|seed|swaps|safe-fee|cap-skim|ui-prep|...
 # State lives in $F/flow; each step records its result in $F/flow/evidence.
+#
+# bUSDC is the REAL bridge token (scripts/staging/bridge-v3-real.sh): BridgedStablecoinV3 from the bridge's own
+# deploy_pontes.py under the mainnet policy, over a ProvenanceSourceVault on a loopback "Ethereum" anvil. Set
+#   BRIDGE_REPO=<clean git checkout of the bridge repository at its release candidate>  ETH_PORT=<free loopback port>
+# for every step. The mainnet gate and the monitor take the bridge's busdc.plan.json and busdc.record.json; without
+# them they refuse (agent 227, L-3). The token's 12 h mint delay is real here (the L2 clock follows the private L1):
+# `deploy` queues the issuer's mint, and `bridge-credit` executes it once the delay has passed, before `seed`.
 set -euo pipefail
 F=${F:-$HOME/l2dexbridge-20261030/dex-e2e-r3}
 . "$F/env.sh"
@@ -133,20 +140,46 @@ EXCESS="pendingExcess(address)((uint256,uint256,bool,bool))"
 FAR=99999999999
 mon_note() { # label [flags] -> stores the JSON and logs level and non-OK checks
   local label=$1; shift
-  set +e; node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "${MON_RPC:-$RPC}" --lp-recipient "$LP_RECIPIENT" "$@" --json > "$EV/monitor.$label.json"; local c=$?; set -e
+  set +e; node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" "${BRIDGE_ARGS[@]}" --rpc "${MON_RPC:-$RPC}" --lp-recipient "$LP_RECIPIENT" "$@" --json > "$EV/monitor.$label.json"; local c=$?; set -e
   note "monitor[$label] exit $c: $(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log((r.checks||[]).filter(c=>c.level!==0&&c.status!=="OK"&&c.level!=="OK").map(c=>c.name+":"+(c.message||c.detail||"")).join("; ")||"all OK")' "$EV/monitor.$label.json" 2>/dev/null || echo unparsable)"
 }
+
+# The real bridge token (see the header). `must` is the library's "one mined L2 transaction that must succeed".
+: "${BRIDGE_REPO:?BRIDGE_REPO=<clean bridge checkout> is required (the mainnet gate takes bUSDC from the bridge deployment record)}"
+: "${ETH_PORT:?ETH_PORT=<free loopback port for the rehearsal Ethereum anvil> is required}"
+BRIDGE_ETH_RPC=http://127.0.0.1:$ETH_PORT
+BRIDGE_ISSUER_NET=${BRIDGE_ISSUER_NET:-9000000000}
+must() { q "$1" "$2" "$3" "$4" "$5" 0x1; flush; }
+# shellcheck source=scripts/staging/bridge-v3-real.sh
+. scripts/staging/bridge-v3-real.sh
+BRIDGE_ARGS=()
+if [ -s "$WORK/bridge/keys.json" ]; then bridge_v3_load; fi
+FUNDED=("${BOOT:-}" "${DEPLOYER:-}" "${ISSUER:-}" "${INFRA:-}" "${BRIDGE_L2_DEPLOYER:-}"); NFUNDED=5
 
 cmd=${1:?command}; shift || true
 case "$cmd" in
 keys)
   [ ! -e "$WORK/keys.json" ] || { echo "keys exist"; exit 1; }
   umask 077; cast wallet new --number 10 --json > "$WORK/keys.json"; umask 022
-  echo "keys generated (throwaway) in $WORK/keys.json"
+  bridge_v3_keys
+  echo "keys generated (throwaway) in $WORK/keys.json and $WORK/bridge/keys.json"
+  ;;
+bridge-eth)
+  # The rehearsal "Ethereum": a loopback anvil with chain id 1 that outlives this invocation (`bridge-eth stop` ends it).
+  if [ "${1:-}" = stop ]; then
+    [ ! -e "$WORK/bridge/anvil-eth.pid" ] || { kill "$(cat "$WORK/bridge/anvil-eth.pid")" 2> /dev/null || true; rm -f "$WORK/bridge/anvil-eth.pid"; }
+    echo "rehearsal Ethereum stopped"
+  else
+    [ ! -e "$WORK/bridge/anvil-eth.pid" ] || { echo "rehearsal Ethereum already started"; exit 1; }
+    nohup anvil --chain-id 1 --port "$ETH_PORT" --host 127.0.0.1 --silent < /dev/null > "$WORK/bridge/anvil-eth.log" 2>&1 &
+    echo $! > "$WORK/bridge/anvil-eth.pid"
+    for _ in $(seq 50); do cast chain-id --rpc-url "$BRIDGE_ETH_RPC" > /dev/null 2>&1 && break; sleep 0.2; done
+    echo "rehearsal Ethereum (anvil, chain id 1) on $BRIDGE_ETH_RPC, pid $(cat "$WORK/bridge/anvil-eth.pid")"
+  fi
   ;;
 fund)
-  # L1 -> L2 deposits for the deployers and the issuer, through the real inbox.
-  python3 - "$BOOT" "$DEPLOYER" "$ISSUER" "$INFRA" <<'PY'
+  # L1 -> L2 deposits for the deployers, the issuer and the bridge token's deployer, through the real inbox.
+  python3 - "${FUNDED[@]}" <<'PY'
 import os, sys, time, json
 sys.path.insert(0, os.environ['FS'] + '/src/rehearsal/drills')
 import drillctl as d
@@ -158,7 +191,7 @@ for _ in range(120):
     if ok(): break
     time.sleep(5)
 fs.save(**{f'l2_address_a{i}': a[2:] for i, a in enumerate(sys.argv[1:])})
-for i in range(4):
+for i in range(len(sys.argv) - 1):
     for _ in range(40):
         try:
             fs.deposit(f'a{i}', 10_000_000_000)
@@ -167,13 +200,13 @@ for i in range(4):
             print('retry', str(e)[:200], flush=True); time.sleep(5)
     time.sleep(8)
 PY
-  log "fund: 4 deposits of 100 BLCH sent on L1; $(python3 -c "print('')")"
+  log "fund: $NFUNDED deposits of 100 BLCH sent on L1"
   ;;
 wait-funded)
-  for a in "$BOOT" "$DEPLOYER" "$ISSUER" "$INFRA"; do
+  for a in "${FUNDED[@]}"; do
     until [ "$(cast balance "$a" --rpc-url "$RPC" 2>/dev/null || echo 0)" != 0 ]; do sleep 10; done
   done
-  log "fund: all 4 addresses funded on L2 ($(heads))"
+  log "fund: all $NFUNDED addresses funded on L2 ($(heads))"
   ;;
 deploy)
   GENESIS=$(cast block 0 --field hash --rpc-url "$RPC")
@@ -210,22 +243,29 @@ console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$BOOT" "$OWNERS_JSON" > "$
   $S txs --config "$EV/safe.config.json" --artifacts "$SAFE_ARTIFACTS" --plan "$EV/safe.plan.json" --write "$WORK/safe.txs.json" >> "$EV/steps.log"
   $S blochinc --plan "$EV/safe.plan.json" > "$EV/blochinc.json"
   fi
-  log "infra, Safe and the bUSDC stand-in: one burst"
+  log "infra and Safe: one burst"
   P=scripts/staging/sign-and-publish.sh
   publish_burst "$WORK/infra.txs.json" "$INFRA_KEY" "$EV/infra.hashes.txt" &
   PA=$!
   publish_burst "$WORK/safe.txs.json" "$BOOT_KEY" "$EV/safe.hashes.txt" &
   PB=$!
-  if [ ! -e "$WORK/asset" ]; then
-    TOKEN_INIT=$(node -e 'const a=require(process.argv[1]);console.log(a.bytecode.object)' "$ROOT/out/RehearsalBridgedToken.sol/RehearsalBridgedToken.json")$(cast abi-encode "c(string,string,uint8,uint256,address,uint256)" "Rehearsal bUSDC" bUSDC 6 1000000000000 "$ISSUER" $USD_BUCKET | cut -c3-)
-    q "$ISSUER_KEY" create "$TOKEN_INIT" 0 3000000 0x1; flush
-    cast compute-address "$ISSUER" --nonce 0 | awk '{print tolower($NF)}' > "$WORK/asset"
-  fi
   wait $PA; wait $PB
   log "infra and Safe published ($(heads))"
-  R=$(cat "$WORK/asset")
-  ASSET=$R; ASSET_CODE=$(cast keccak "$(cast code "$ASSET" --rpc-url "$RPC")")
-  note "bUSDC stand-in $ASSET code $ASSET_CODE"
+  if [ ! -e "$WORK/asset" ]; then
+    # The real bUSDC: vault_pontes.py and deploy_pontes.py under the mainnet policy; the Safe is the named funder.
+    BLOCH_INC=$(jsonget "$EV/blochinc.json" address)
+    bridge_v3_vault "$BLOCH_INC"
+    bridge_v3_token "$GENESIS" "$BLOCH_INC"
+    echo "$ASSET" > "$WORK/asset"
+    bridge_v3_open
+    # The issuer's bUSDC: a real vault deposit and the committee's mint now; `bridge-credit` executes it after 12 h.
+    bridge_v3_deposit "$BRIDGE_ISSUER_NET" "$ISSUER" "$ISSUER_KEY"
+    echo "$BRIDGE_DEPOSIT_ID" > "$WORK/bridge/issuer-deposit-id"
+    bridge_v3_fees
+    note "bridge: $BRIDGE_ISSUER_NET bUSDC units queued for the issuer (deposit $BRIDGE_DEPOSIT_ID); run bridge-credit after the $BRIDGE_MINT_DELAY s delay"
+  fi
+  ASSET=$(cat "$WORK/asset"); ASSET_CODE=$(cast keccak "$(cast code "$ASSET" --rpc-url "$RPC")")
+  note "bUSDC (BridgedStablecoinV3 from deploy_pontes.py) $ASSET code $ASSET_CODE"
   FIRST_DEPOSITOR=${DEPOSITOR:-} node -e '
 const c = JSON.parse(require("fs").readFileSync("deployments/mainnet/dex-mainnet.config.json", "utf8"));
 const [genesis, revision, deployer, blochInc, token, codeHash] = process.argv.slice(1);
@@ -276,18 +316,29 @@ console.log(JSON.stringify(c, null, 2));' "$GENESIS" "$REVISION" "$DEPLOYER" "$E
   log "deploy done ($(heads))"
   ;;
 gate)
-  GATE_ARGS=(--config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC")
+  GATE_ARGS=(--config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" "${BRIDGE_ARGS[@]}" --rpc "$RPC")
   log "gate before finality"
   if $GATE "${GATE_ARGS[@]}" 2> "$EV/gate.early.txt" > /dev/null; then note "gate passed already: deployment block was finalized before this check"; else note "refused: $(cat "$EV/gate.early.txt")"; fi
   LAST=$(BN=$(tail -1 "$EV/dex.hashes.txt"); cast rpc eth_getTransactionReceipt "$BN" --rpc-url "$RPC" | node -e 'console.log(BigInt(JSON.parse(require("fs").readFileSync(0,"utf8")).blockNumber).toString())')
   log "waiting for real finality of block $LAST"
   wait_final "$LAST"
   cast rpc bloch_finality --rpc-url "$RPC" > "$EV/bloch_finality.json" || true
+  bridge_v3_verify
   $GATE "${GATE_ARGS[@]}" > "$EV/gate-report.json"
   note "gate: $(node -e 'const r=require(process.argv[1]);console.log(r.decision, "finalized", r.finalized.number, r.genesisHash)' "$EV/gate-report.json")"
   node scripts/staging/verify-deployment.mjs --safe-plan "$EV/safe.plan.json" --dex-plan "$EV/dex.plan.json" --infra-plan "$EV/infra.plan.json" --rpc "$RPC" --at finalized \
     --safe-hashes "$EV/safe.hashes.txt" --dex-hashes "$EV/dex.hashes.txt" --infra-hashes "$EV/infra.hashes.txt" --expect-empty > "$EV/verify.finalized.json"
   note "verify at finalized: $(node -e 'const r=require(process.argv[1]);console.log(r.decision, r.checks.length, "checks")' "$EV/verify.finalized.json")"
+  ;;
+bridge-credit)
+  # The issuer's queued mint, executed by the issuer as the relayer once the token's delay has passed on the L2 clock.
+  state_load
+  ID=$(cat "$WORK/bridge/issuer-deposit-id")
+  if [ "$(cast call "$ASSET" "balanceOf(address)(uint256)" "$ISSUER" --rpc-url "$RPC" | awk '{print $1}')" = 0 ]; then
+    bridge_v3_credit "$ID" "$ISSUER_KEY"
+  fi
+  [ "$(cast call "$ASSET" "balanceOf(address)(uint256)" "$ISSUER" --rpc-url "$RPC" | awk '{print $1}')" = "$BRIDGE_ISSUER_NET" ] || { echo "FAIL: the issuer's bUSDC did not credit (is the 12 h delay over?)"; exit 1; }
+  log "bridge: $BRIDGE_ISSUER_NET bUSDC units credited to the issuer (deposit $ID) ($(heads))"
   ;;
 seed)
   state_load
@@ -566,7 +617,7 @@ failed-approve)
   head -c 1200 "$EV/failed-approve.plan.txt" | tee -a "$EV/steps.log"; echo
   $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" > "$EV/failed-approve.gate.txt" 2>&1; note "gate exit $?"
   head -c 800 "$EV/failed-approve.gate.txt" | tee -a "$EV/steps.log"; echo
-  node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" --json > "$EV/failed-approve.monitor.json" 2>&1; note "monitor exit $?"
+  node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" "${BRIDGE_ARGS[@]}" --rpc "$RPC" --json > "$EV/failed-approve.monitor.json" 2>&1; note "monitor exit $?"
   node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/gate.json" --rpc "$RPC" --tx "$(cat "$WORK/failed-approve-hash")" > "$EV/failed-approve.note-tx.txt" 2>&1; note "note-tx exit $?: $(head -c 500 "$EV/failed-approve.note-tx.txt")"
   node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/failed-approve.plan2.txt" 2>&1; note "plan after note-tx exit $?: $(head -c 400 "$EV/failed-approve.plan2.txt")"
   set -e
