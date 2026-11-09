@@ -1,0 +1,602 @@
+// Wallet-behaviour scenarios for #/mainnet in a real browser engine, against the loopback anvil chain of
+// rehearse-mainnet-package.sh. Started by wallet-hook.sh (see run.mjs and ../README.md):
+//
+//   node scenarios.mjs <wallet-harness.json> [--only <name>[,<name>…]]
+//
+// Each scenario gets a fresh throwaway account and an isolated browser context, drives the built production bundle
+// like a user (visible text, labels, clicks), plays one wallet behaviour and then asserts chain facts (how many router
+// calls of this account were mined, its nonce, balances) next to what the page shows. Exit status 0 only when every
+// assertion of every scenario held. This is a simulated wallet, not a wallet extension: see docs/WALLET-MANUAL-TEST.md.
+import { createServer } from 'node:http';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { encodeFunctionData, keccak256, parseAbi } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
+import { launch, openPage } from './cdp.mjs';
+import { createWallet, PROVIDER_SCRIPT } from './wallet.mjs';
+
+const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const only = process.argv[3] === '--only' ? process.argv[4].split(',') : null;
+for (const url of [config.rpc, config.page])
+  if (!/^http:\/\/127\.0\.0\.1:\d+(\/|$)/.test(url)) throw new Error(`${url} is not a loopback URL`);
+mkdirSync(config.out, { recursive: true });
+const ERC20 = parseAbi(['function transfer(address,uint256)', 'function balanceOf(address) view returns (uint256)', 'function allowance(address,address) view returns (uint256)']);
+const hex = (n) => `0x${BigInt(n).toString(16)}`;
+const say = (line) => console.log(line);
+
+// ---- chain ----
+let rpcId = 0;
+async function rpc(method, params = []) {
+  const response = await fetch(config.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method, params }) });
+  const body = await response.json();
+  if (body.error) throw Object.assign(new Error(`${method}: ${body.error.message}`), { code: body.error.code });
+  return body.result;
+}
+const head = async () => BigInt(await rpc('eth_blockNumber'));
+/** One block that takes what is queued. */
+const mine = () => rpc('anvil_mine', ['0x1']);
+/** Anvil's `finalized` tag trails `latest` by 64 blocks. */
+const finalize = () => rpc('anvil_mine', ['0x41']);
+const mineAndFinalize = async () => (await mine(), await finalize());
+const nonceOf = async (address, tag = 'latest') => Number(await rpc('eth_getTransactionCount', [address, tag]));
+const tokenBalance = async (holder) => BigInt(await rpc('eth_call', [{ to: config.asset, data: encodeFunctionData({ abi: ERC20, functionName: 'balanceOf', args: [holder] }) }, 'latest']));
+const allowance = async (holder) => BigInt(await rpc('eth_call', [{ to: config.asset, data: encodeFunctionData({ abi: ERC20, functionName: 'allowance', args: [holder, config.router] }) }, 'latest']));
+/** Every mined transaction of `address` since block `from`: [{ hash, nonce, to, status, router }]. */
+async function minedBy(address, from) {
+  const found = [];
+  for (let n = from + 1n, top = await head(); n <= top; n++) {
+    const block = await rpc('eth_getBlockByNumber', [hex(n), true]);
+    for (const tx of block.transactions) {
+      if (tx.from.toLowerCase() !== address) continue;
+      const receipt = await rpc('eth_getTransactionReceipt', [tx.hash]);
+      found.push({ hash: tx.hash, nonce: Number(tx.nonce), to: tx.to?.toLowerCase(), ok: receipt.status === '0x1', router: tx.to?.toLowerCase() === config.router.toLowerCase(), block: Number(n) });
+    }
+  }
+  return found;
+}
+const issuer = privateKeyToAccount(config.issuerKey);
+async function fund(address, { blch = 5n * 10n ** 18n, busdc = 0n } = {}) {
+  await rpc('anvil_setBalance', [address, hex(blch)]);
+  if (busdc > 0n) {
+    const raw = await issuer.signTransaction({ type: 'eip1559', chainId: config.chainId, nonce: await nonceOf(issuer.address, 'pending'), to: config.asset, gas: 100_000n, maxFeePerGas: 5_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n, data: encodeFunctionData({ abi: ERC20, functionName: 'transfer', args: [address, busdc] }) });
+    await rpc('eth_sendRawTransaction', [raw]);
+  }
+  await mineAndFinalize();
+}
+
+// ---- the page's RPC: a CORS gateway in front of anvil, as the public gateway is in front of the settled RPC ----
+const pageCalls = [];
+const cors = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type' };
+const gateway = createServer(async (req, res) => {
+  if (req.method === 'OPTIONS') return res.writeHead(204, cors).end();
+  let raw = '';
+  for await (const chunk of req) raw += chunk;
+  try {
+    const message = JSON.parse(raw);
+    for (const call of Array.isArray(message) ? message : [message]) pageCalls.push(call.method);
+  } catch {
+    /* forwarded as is */
+  }
+  const upstream = await fetch(config.rpc, { method: 'POST', headers: { 'content-type': 'application/json' }, body: raw });
+  res.writeHead(200, { 'content-type': 'application/json', ...cors }).end(await upstream.text());
+}).listen(config.gatewayPort, '127.0.0.1');
+
+// ---- scenarios ----
+const browser = await launch(config.chrome, config.debugPort);
+const evidence = {
+  schema: 'postern.frontend.browser-wallet.v1',
+  revision: config.revision,
+  workingTreeDirty: config.dirty,
+  browser: browser.product,
+  engine: 'real browser engine (headless), production bundle, loopback anvil',
+  wallet: 'SIMULATED EIP-1193/EIP-6963 provider with a throwaway key; not a wallet extension, not WalletConnect',
+  finality: "anvil's `finalized` tag (latest - 64), advanced by anvil_mine; not Bloch settled finality",
+  scenarios: [],
+};
+const scenarios = [];
+const scenario = (name, covers, run) => scenarios.push({ name, covers, run });
+
+const PENDING = /Waiting for the next L2 block and canonical finality\. Do not resend with a new nonce; Swap stays disabled until the outcome is known\./;
+const NO_HASH = /Wallet submission outcome unknown: no transaction hash was returned\./;
+
+async function runScenario({ name, covers, run }) {
+  const record = { name, covers, assertions: [], page: {}, chain: {}, wallet: {} };
+  evidence.scenarios.push(record);
+  const check = (what, ok, detail) => {
+    record.assertions.push({ what, ok: !!ok, ...(detail === undefined ? {} : { detail: typeof detail === 'bigint' ? detail.toString() : detail }) });
+    say(`  ${ok ? 'ok  ' : 'FAIL'} ${what}${ok || detail === undefined ? '' : ` (${JSON.stringify(detail, (_, v) => (typeof v === 'bigint' ? v.toString() : v))})`}`);
+  };
+  say(`== ${name}`);
+  const { browserContextId } = await browser.send('Target.createBrowserContext');
+  const wallet = createWallet({ rpc, chainId: config.chainId });
+  const tabs = [];
+  const callsFrom = pageCalls.length;
+  try {
+    const world = {
+      wallet,
+      check,
+      record,
+      start: 0n,
+      /** A tab of this scenario's browser profile, with the wallet injected. */
+      async tab() {
+        const page = await openPage(browser, browserContextId, {
+          initScript: PROVIDER_SCRIPT,
+          url: config.page,
+          log: say,
+          onBinding: (bridge, payload, from) => {
+            if (bridge !== '__walletBridge') return;
+            const { id, method, params } = JSON.parse(payload);
+            wallet.handle(method, params).then(
+              (value) => from.evaluate(`window.__walletReply(${id}, true, ${JSON.stringify(value)})`).catch(() => {}),
+              (error) => from.evaluate(`window.__walletReply(${id}, false, ${JSON.stringify({ code: error.code ?? -32603, message: error.message ?? String(error), ...('data' in error ? { data: error.data } : {}) })})`).catch(() => {}),
+            );
+          },
+        });
+        tabs.push(page);
+        return page;
+      },
+      async connect(page) {
+        await page.waitText('/Pools at finalized block \\d+/');
+        await page.click('Connect Harness wallet');
+        await page.waitFor('finalized balances', `!!window.__h.labelled('Finalized balances')`);
+      },
+      /** The page reads at the finalized block it loaded; bring it to the current one, as the Refresh button does. */
+      async fresh(page) {
+        const want = (await head()) - 64n;
+        const shown = `(() => { const m = /Pools at finalized block (\\d+)/.exec(document.body.innerText); return m ? Number(m[1]) : -1; })()`;
+        if (BigInt(await page.evaluate(shown)) < want) {
+          if (await page.button('Refresh')) await page.click('Refresh');
+          await page.waitFor(`finalized block ${want}`, `${shown} >= ${want}`);
+        }
+      },
+      async quote(page, pay, receive, amount) {
+        for (let attempt = 0; ; attempt++) {
+          await world.fresh(page);
+          await page.select('You pay', pay);
+          await page.select('You receive', receive);
+          await page.fill('Amount', amount);
+          await page.click('Get quote');
+          try {
+            await page.waitFor('quote', `!!window.__h.labelled('Quote')`, 6000);
+            break;
+          } catch (error) {
+            // A refresh that was already under way remounts the form and empties it; fill it again.
+            if (attempt === 2) throw error;
+          }
+        }
+        // The latest-block cross-check ends before Swap can be judged.
+        await delay(700);
+      },
+      /** Fund, open one tab, connect. */
+      async begin(funding) {
+        await fund(wallet.address, funding);
+        world.start = await head();
+        const page = await world.tab();
+        await world.connect(page);
+        return page;
+      },
+      async facts(label = 'end') {
+        const mined = await minedBy(wallet.address, world.start);
+        const facts = {
+          minedTransactions: mined,
+          routerCallsMined: mined.filter((t) => t.router && t.ok).length,
+          nonceLatest: await nonceOf(wallet.address),
+          noncePending: await nonceOf(wallet.address, 'pending'),
+          busdc: (await tokenBalance(wallet.address)).toString(),
+          walletSendRequests: wallet.sends().length,
+          walletSigned: wallet.signed.map((s) => ({ hash: s.hash, nonce: s.tx.nonce, origin: s.origin, broadcast: s.broadcast, requestedNonce: s.requestedNonce ?? null })),
+        };
+        record.chain[label] = facts;
+        return facts;
+      },
+      note: async (page, label) => {
+        record.page[label] = { transactions: await page.labelled('Transactions'), recovery: (await page.labelled('Recover transaction tracking'))?.slice(-600) ?? null };
+      },
+    };
+    await run(world);
+    const sent = pageCalls.slice(callsFrom).filter((m) => m === 'eth_sendRawTransaction' || m === 'eth_sendTransaction');
+    check('the page itself never publishes or sends through its RPC', sent.length === 0, sent);
+  } catch (error) {
+    check(`scenario completed without an unexpected error`, false, String(error.message ?? error));
+    for (const [i, page] of tabs.entries()) await page.screenshot(join(config.out, `${name}-failure-tab${i}.png`)).catch(() => {});
+  } finally {
+    record.console = tabs.flatMap((t) => t.console).filter((l) => !l.startsWith('debug')).slice(0, 40);
+    await browser.send('Target.disposeBrowserContext', { browserContextId }).catch(() => {});
+  }
+}
+
+const AMOUNT = '0.01';
+const SWAP = `Swap ${AMOUNT} BLCH for bUSDC`;
+const swapNative = async (w, page) => (await w.quote(page, 'BLCH', 'bUSDC', AMOUNT), await page.click('Swap'));
+const openReview = (page) => page.evaluate(`(() => { const d = [...document.querySelectorAll('details')].find((x) => x.querySelector('summary')?.textContent.includes('Review the original request')); if (d) d.open = true; return !!d; })()`);
+const pasteHash = (page, hash) => page.fill('Transaction hash from wallet activity', hash);
+const disabled = async (page, name) => (await page.button(name))?.disabled === true;
+
+scenario('normal-send', 'baseline: one request, one broadcast, finalized', async (w) => {
+  const page = await w.begin();
+  const before = await tokenBalance(w.wallet.address);
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  w.check('while the swap is queued the Swap button is disabled', await disabled(page, 'Swap'));
+  w.check('the site asked the wallet for the canonical nonce', w.wallet.sends()[0]?.params[0].nonce === '0x0', w.wallet.sends()[0]?.params[0].nonce);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  await w.note(page, 'mined');
+  const f = await w.facts();
+  w.check('exactly one router call of this account was mined', f.routerCallsMined === 1, f.routerCallsMined);
+  w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
+  w.check('the wallet got exactly one eth_sendTransaction', f.walletSendRequests === 1, f.walletSendRequests);
+  w.check('bUSDC arrived', (await tokenBalance(w.wallet.address)) > before);
+});
+
+scenario('queued-at-sequencer', '(a) queued; (e) reload: no second swap and no wallet review while the first is queued', async (w) => {
+  const page = await w.begin();
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  w.check('queued: the node counts it as pending', (await nonceOf(w.wallet.address, 'pending')) === 1 && (await nonceOf(w.wallet.address)) === 0);
+  w.check('queued: Swap is disabled', await disabled(page, 'Swap'));
+  await w.quote(page, 'BLCH', 'bUSDC', '0.02');
+  w.check('queued: Swap stays disabled for a new quote', await disabled(page, 'Swap'));
+  w.check('queued: with a wallet hash known, no same-nonce wallet review is offered', (await openReview(page)) === false && (await page.button('Review same nonce in wallet')) === null);
+  await page.reload();
+  await w.connect(page);
+  await page.waitText(PENDING);
+  await w.quote(page, 'BLCH', 'bUSDC', AMOUNT);
+  w.check('after a reload Swap is still disabled and no review is offered', (await disabled(page, 'Swap')) && (await openReview(page)) === false);
+  w.check('the wallet got exactly one request', w.wallet.sends().length === 1, w.wallet.sends().length);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1, f.routerCallsMined);
+  w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
+});
+
+scenario('queued-reply-lost', '(a) published and queued, but the wallet reply was lost: the same-nonce review is refused while it is queued (H1); (e) reload', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('broadcast-reply-lost');
+  await swapNative(w, page);
+  await page.waitText(NO_HASH);
+  w.check('queued: the node counts it as pending', (await nonceOf(w.wallet.address, 'pending')) === 1 && (await nonceOf(w.wallet.address)) === 0);
+  w.check('queued: Swap is disabled', await disabled(page, 'Swap'));
+  w.check('no hash known: the review section is offered', await openReview(page));
+  await page.click('Review same nonce in wallet');
+  await page.waitText('/A transaction from this account is still queued at the sequencer\\. A second wallet request could execute the same call twice\\./');
+  w.check('queued: the same-nonce review made no wallet request', w.wallet.sends().length === 1, w.wallet.sends().length);
+  await page.reload();
+  await w.connect(page);
+  await page.waitText(NO_HASH);
+  await openReview(page);
+  await page.click('Review same nonce in wallet');
+  await page.waitText('/still queued at the sequencer/');
+  w.check('after a reload the review is still refused without a wallet request', w.wallet.sends().length === 1, w.wallet.sends().length);
+  await mineAndFinalize();
+  await pasteHash(page, w.wallet.signed[0].hash);
+  await page.click('Check transaction hash');
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1, f.routerCallsMined);
+  w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
+});
+
+scenario('held-in-wallet-review-refused', '(a) queued in the wallet only: the node sees nothing pending, the wallet returned a hash', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('hold');
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  w.check('held: the node sees nothing pending for the account', (await nonceOf(w.wallet.address, 'pending')) === 0);
+  w.check('held: Swap is disabled', await disabled(page, 'Swap'));
+  // A wallet that takes the nonce from its own tracker would sign a review at the next nonce: two swaps.
+  w.wallet.state.ignoreNonce = true;
+  const offered = await openReview(page);
+  if (offered && (await page.button('Review same nonce in wallet'))) {
+    await page.click('Review same nonce in wallet');
+    await delay(2500);
+  }
+  await w.note(page, 'after-review-attempt');
+  w.check('held: no same-nonce wallet review is offered once the wallet returned a hash', !offered);
+  w.check('held: no second wallet request is made while the wallet already returned a hash', w.wallet.sends().length === 1, w.wallet.sends().length);
+  await w.wallet.release(w.wallet.signed[0]);
+  for (const s of w.wallet.signed.slice(1)) await w.wallet.release(s).catch(() => {});
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1, f.routerCallsMined);
+  w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
+});
+
+scenario('reply-lost-review-honoured-nonce', '(a) the wallet queued the request but its reply was lost; a wallet that honours the requested nonce cannot double', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('hold-reply-lost');
+  await swapNative(w, page);
+  await page.waitText(NO_HASH);
+  w.check('reply lost: Swap is disabled', await disabled(page, 'Swap'));
+  await openReview(page);
+  await page.click('Review same nonce in wallet');
+  await page.waitText('/Wallet returned 0x[0-9a-f]{64}\\./');
+  w.check('review: the wallet was asked for the original nonce', w.wallet.sends()[1]?.params[0].nonce === '0x0', w.wallet.sends()[1]?.params[0].nonce);
+  // The wallet now also publishes the request it had queued: same nonce, so the node keeps one of the two.
+  await w.wallet.release(w.wallet.signed[0]).catch(() => {});
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1, f.routerCallsMined);
+  w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
+});
+
+scenario('reply-lost-review-wallet-ignores-nonce', 'RESIDUAL RISK probe: reply lost, then a review in a wallet that ignores the requested nonce', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('hold-reply-lost');
+  await swapNative(w, page);
+  await page.waitText(NO_HASH);
+  w.wallet.state.ignoreNonce = true;
+  await openReview(page);
+  await page.click('Review same nonce in wallet');
+  await delay(3000);
+  await w.note(page, 'after-review');
+  const text = await page.text();
+  w.check('the page tells the user the wallet used another nonce and to cancel it', /Your wallet signed nonce 1 instead of the reviewed nonce 0 .*cancel it in your wallet now/.test(text.replace(/\s+/g, ' ')), (await page.labelled('Recover transaction tracking'))?.slice(-400));
+  // The user does NOT cancel: both copies are published. The page cannot stop a wallet from doing this.
+  await w.wallet.release(w.wallet.signed[0]);
+  await mineAndFinalize();
+  const f = await w.facts();
+  w.record.residual = 'A wallet that ignores the nonce of eth_sendTransaction and already holds the first request signs the review at the next nonce. The page cannot prevent it; it can only warn after the wallet answers. Whether a real wallet honours the nonce is a manual test (docs/WALLET-MANUAL-TEST.md, test 9).';
+  w.check('documented residual: both copies were mined (2 router calls) when the user ignores the warning', f.routerCallsMined === 2, f.routerCallsMined);
+});
+
+scenario('speed-up', '(b) speed-up in the wallet; (e) reload before recovery', async (w) => {
+  const page = await w.begin();
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  const faster = await w.wallet.speedUp(w.wallet.signed[0]);
+  await mineAndFinalize();
+  await delay(12_000);
+  w.check('the page does not claim an outcome for the replaced hash', PENDING.test((await page.text()).replace(/\s+/g, ' ')) && (await disabled(page, 'Swap')));
+  await page.reload();
+  await w.connect(page);
+  await page.waitFor('recovery form', `!!window.__h.labelled('Recover transaction tracking')`);
+  await pasteHash(page, faster.hash);
+  await page.click('Check transaction hash');
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  await w.note(page, 'recovered');
+  const f = await w.facts();
+  w.check('exactly one router call was mined, the sped-up one', f.routerCallsMined === 1 && f.minedTransactions[0].hash === faster.hash, f.minedTransactions);
+  w.check('the original hash was never mined', (await rpc('eth_getTransactionReceipt', [w.wallet.signed[0].hash])) === null);
+  w.check('the wallet got exactly one eth_sendTransaction from the site', f.walletSendRequests === 1, f.walletSendRequests);
+});
+
+scenario('cancel', '(c) cancel in the wallet: zero swaps, hold closed only on finalized proof; then one deliberate swap', async (w) => {
+  const page = await w.begin();
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  const cancelled = await w.wallet.cancel(w.wallet.signed[0]);
+  await mine();
+  await pasteHash(page, cancelled.hash);
+  await page.click('Check cancellation or replacement');
+  await page.waitText('/No canonical finalized replacement is available for that hash yet\\. The original hold remains\\./');
+  w.check('a mined but not finalized cancellation does not close the hold', await disabled(page, 'Swap'));
+  await finalize();
+  await page.click('Check cancellation or replacement');
+  await page.waitText('/Replacement verified\\. The original hold remains until you explicitly close it below\\./');
+  w.check('a verified cancellation still keeps the hold until the user closes it', await disabled(page, 'Swap'));
+  await page.click('Close local hold as replaced');
+  await page.waitText('/A different transaction consumed nonce 0 in canonical finalized block \\d+\\. The original request did not execute\\./');
+  let f = await w.facts('after-cancel');
+  w.check('zero router calls were mined', f.routerCallsMined === 0, f.routerCallsMined);
+  w.check('the cancellation consumed nonce 0', f.nonceLatest === 1 && f.minedTransactions[0]?.hash === cancelled.hash, f.minedTransactions);
+  await page.waitText('/Pools at finalized block \\d+/');
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  f = await w.facts();
+  w.check('the deliberate swap after the cancellation was mined once', f.routerCallsMined === 1 && f.nonceLatest === 2, f);
+});
+
+scenario('dropped', '(d) the wallet returned a hash that never reaches a block; (e) reload', async (w) => {
+  const page = await w.begin();
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  await rpc('anvil_dropTransaction', [w.wallet.signed[0].hash]);
+  w.check('dropped: the node no longer knows the transaction', (await rpc('eth_getTransactionByHash', [w.wallet.signed[0].hash])) === null);
+  await mineAndFinalize();
+  await delay(12_000);
+  w.check('dropped: the hold stays and Swap stays disabled', PENDING.test((await page.text()).replace(/\s+/g, ' ')) && (await disabled(page, 'Swap')));
+  w.check('dropped: the page did not ask the wallet again', w.wallet.sends().length === 1, w.wallet.sends().length);
+  await page.reload();
+  await w.connect(page);
+  await page.waitText(PENDING);
+  await w.quote(page, 'BLCH', 'bUSDC', AMOUNT);
+  w.check('dropped, after a reload: Swap is still disabled', await disabled(page, 'Swap'));
+  let f = await w.facts('while-dropped');
+  w.check('dropped: nothing of this account was mined', f.minedTransactions.length === 0, f.minedTransactions);
+  // The documented way out: the next transaction of the account at that nonce, sent from the wallet itself.
+  const other = await w.wallet.sendOwn(0);
+  await mineAndFinalize();
+  await pasteHash(page, other.hash);
+  await page.click('Check cancellation or replacement');
+  await page.waitText('/Replacement verified\\./');
+  await page.click('Close local hold as replaced');
+  await page.waitText('/The original request did not execute\\./');
+  await page.waitText('/Pools at finalized block \\d+/');
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  f = await w.facts();
+  w.check('the deliberate retry yields exactly one router call', f.routerCallsMined === 1, f.routerCallsMined);
+  w.check('nonces: 0 other transaction, 1 the swap', f.nonceLatest === 2 && f.minedTransactions.find((t) => t.router)?.nonce === 1, f.minedTransactions);
+  w.check('the site made exactly two wallet requests, one per deliberate click', f.walletSendRequests === 2, f.walletSendRequests);
+});
+
+scenario('rejected', 'user rejection (4001) releases the hold; the next swap is the only one', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('reject');
+  await swapNative(w, page);
+  await page.waitText('/The wallet request was rejected by you\\. Nothing was sent\\./');
+  w.check('rejected: no hold is left in storage', (await page.evaluate(`Object.keys(localStorage).filter((k) => k.startsWith('postern.mainnet.pendingSwap')).length`)) === 0);
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1 && f.nonceLatest === 1, f);
+});
+
+for (const [mode, expectNote] of [['error-fee-data', true], ['error-fee-data-lost', false]])
+  scenario(`fee-refusal-${mode === 'error-fee-data' ? 'with-data' : 'data-lost'}`, `the wallet's node refuses the fee; the wallet ${expectNote ? 'passes error.data on' : 'loses error.data'}`, async (w) => {
+    const page = await w.begin();
+    w.wallet.state.next.push(mode);
+    await swapNative(w, page);
+    await page.waitText(NO_HASH);
+    const text = (await page.text()).replace(/\s+/g, ' ');
+    w.check(`the fee diagnostic is ${expectNote ? 'shown' : 'not invented'}`, /RPC fee diagnostic \(not bound to your wallet's signed transaction\)/.test(text) === expectNote);
+    w.check('the hold stays and Swap is disabled', await disabled(page, 'Swap'));
+    await delay(11_000);
+    w.check('no retry and no fee increase: one wallet request', w.wallet.sends().length === 1, w.wallet.sends().length);
+    await mineAndFinalize();
+    const f = await w.facts();
+    w.check('nothing was mined', f.minedTransactions.length === 0, f.minedTransactions);
+    await w.note(page, 'refused');
+  });
+
+scenario('reload-while-wallet-open', '(e) the page is reloaded while the wallet prompt is open; the wallet then confirms', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('never-answer');
+  await swapNative(w, page);
+  await page.waitFor('wallet prompt', `true`);
+  for (let i = 0; i < 50 && w.wallet.open.length === 0; i++) await delay(100);
+  w.check('the wallet prompt is open', w.wallet.open.length === 1);
+  w.check('the intent is saved before the wallet answers', (await page.evaluate(`Object.keys(localStorage).filter((k) => k.startsWith('postern.mainnet.pendingSwap')).length`)) === 1);
+  await page.reload();
+  await w.connect(page);
+  await page.waitText(NO_HASH);
+  await w.quote(page, 'BLCH', 'bUSDC', AMOUNT);
+  w.check('after the reload Swap is disabled', await disabled(page, 'Swap'));
+  // The user confirms in the wallet after all; the reloaded page never sees the reply.
+  const request = w.wallet.open[0].request;
+  w.wallet.state.next.push('broadcast');
+  const hash = await w.wallet.handle('eth_sendTransaction', [request]);
+  await mineAndFinalize();
+  await pasteHash(page, hash);
+  await page.click('Check transaction hash');
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1 && f.nonceLatest === 1, f);
+});
+
+scenario('two-tabs', '(f) two tabs of one account: sequential and simultaneous clicks', async (w) => {
+  const a = await w.begin();
+  const b = await w.tab();
+  await w.connect(b);
+  await w.quote(a, 'BLCH', 'bUSDC', AMOUNT);
+  await w.quote(b, 'BLCH', 'bUSDC', AMOUNT);
+  w.wallet.state.next.push('never-answer');
+  await Promise.all([a.click('Swap'), b.click('Swap')]);
+  await delay(4000);
+  w.check('simultaneous clicks in two tabs open exactly one wallet prompt', w.wallet.open.length === 1 && w.wallet.sends().length === 1, { open: w.wallet.open.length, sends: w.wallet.sends().length });
+  w.record.page.tabA = await a.labelled('Transactions');
+  w.record.page.tabB = await b.labelled('Transactions');
+  w.check('both tabs have Swap disabled', (await disabled(a, 'Swap')) && (await disabled(b, 'Swap')));
+  // The user confirms the one prompt.
+  w.wallet.state.next.push('broadcast');
+  const { request, resolve } = w.wallet.open[0];
+  resolve(await w.wallet.handle('eth_sendTransaction', [request]));
+  await a.waitText(PENDING).catch(() => {});
+  await b.waitText(PENDING).catch(() => {});
+  await w.quote(b, 'BLCH', 'bUSDC', '0.02');
+  w.check('while it is queued the other tab cannot swap either', await disabled(b, 'Swap'));
+  await mineAndFinalize();
+  await delay(14_000);
+  const f = await w.facts();
+  // wallet.handle was called once more by the harness to play the confirmation: 2 entries, 1 prompt.
+  w.check('exactly one router call was mined', f.routerCallsMined === 1 && f.nonceLatest === 1, f);
+  const texts = [(await a.text()).replace(/\s+/g, ' '), (await b.text()).replace(/\s+/g, ' ')];
+  w.check('one tab reports the swap mined and neither still shows a hold', texts.some((t) => new RegExp(`${SWAP}: mined`).test(t)) && texts.every((t) => !PENDING.test(t)), texts.map((t) => /: (mined|pending|unknown)/.exec(t)?.[0] ?? null));
+  for (const t of [a, b]) await (await t.button('Refresh') ? t.click('Refresh') : null);
+  await w.quote(b, 'BLCH', 'bUSDC', AMOUNT);
+  w.check('after finality the other tab can swap again', !(await disabled(b, 'Swap')));
+});
+
+scenario('approve-then-swap', '(g) approve, then swap: order, exact allowance, no swap while the approval is queued', async (w) => {
+  const page = await w.begin({ busdc: 50_000_000n });
+  await w.quote(page, 'bUSDC', 'BLCH', '10');
+  w.check('before the approval Swap is disabled', await disabled(page, 'Swap'));
+  await page.click('Approve 10 bUSDC');
+  await page.waitText(PENDING);
+  w.check('approval queued: Swap and Approve are both disabled', (await disabled(page, 'Swap')) && (await page.button('Approve 10 bUSDC'))?.disabled !== false);
+  await mineAndFinalize();
+  await page.waitText('/Approve 10 bUSDC: mined/', 40_000);
+  w.check('the allowance is exactly the quoted amount', (await allowance(w.wallet.address)) === 10_000_000n, await allowance(w.wallet.address));
+  await page.waitText('/Pools at finalized block \\d+/');
+  await w.quote(page, 'bUSDC', 'BLCH', '10');
+  w.check('after the finalized approval no second approval is asked', (await page.button('Approve 10 bUSDC')) === null);
+  await page.click('Swap');
+  await page.waitText(PENDING);
+  await mineAndFinalize();
+  await page.waitText('/Swap 10 bUSDC for BLCH: mined/', 40_000);
+  const f = await w.facts();
+  w.check('approval at nonce 0, swap at nonce 1, one router call', f.routerCallsMined === 1 && f.minedTransactions.length === 2 && f.minedTransactions[0].to === config.asset.toLowerCase() && f.minedTransactions[1].router && f.minedTransactions[1].nonce === 1, f.minedTransactions);
+  w.check('10 bUSDC left the account and the allowance is spent', (await tokenBalance(w.wallet.address)) === 40_000_000n && (await allowance(w.wallet.address)) === 0n);
+});
+
+scenario('wallet-ignores-site-fields', 'a wallet that picks nonce and fees itself, with nothing else queued', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.ignoreNonce = true;
+  w.wallet.state.ignoreFees = true;
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1 && f.nonceLatest === 1, f);
+});
+
+scenario('wallet-own-queue-ignores-nonce', 'a wallet with its own unpublished transaction ignores the requested nonce: the swap executes at another nonce', async (w) => {
+  const page = await w.begin();
+  // The wallet holds an older transaction of its own at nonce 0 that the node never saw (for example evicted).
+  w.wallet.state.next.push('hold');
+  const own = await w.wallet.handle('eth_sendTransaction', [{ from: w.wallet.address, to: `0x${'5e'.repeat(20)}`, value: '0x1', gas: '0x5208' }]);
+  w.wallet.requests.pop();
+  w.wallet.state.ignoreNonce = true;
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  w.check('the site asked for nonce 0 and the wallet signed nonce 1', w.wallet.signed[1].requestedNonce === '0' && w.wallet.signed[1].tx.nonce === 1, w.wallet.signed[1]);
+  // The user un-sticks the older transaction in the wallet; both are then mined in nonce order.
+  await w.wallet.release(w.wallet.signed[0]);
+  await mineAndFinalize();
+  await delay(12_000);
+  await w.note(page, 'after-both-mined');
+  const f = await w.facts();
+  w.check('one router call was mined, at nonce 1', f.routerCallsMined === 1 && f.minedTransactions.find((t) => t.router)?.nonce === 1, f.minedTransactions);
+  const text = (await page.text()).replace(/\s+/g, ' ');
+  w.check('the page reports the swap as mined although the wallet used another nonce', new RegExp(`${SWAP}: mined`).test(text), /: (mined|pending|unknown)[^.]*\./.exec(text)?.[0]);
+  // The dangerous alternative: declaring the request "not executed" from the transaction at nonce 0.
+  if (!new RegExp(`${SWAP}: mined`).test(text)) {
+    await pasteHash(page, own);
+    await page.click('Check cancellation or replacement');
+    await delay(3000);
+    const after = (await page.text()).replace(/\s+/g, ' ');
+    w.check('the page does not offer to close the hold as "did not execute"', !/Replacement verified/.test(after), (await page.labelled('Recover transaction tracking'))?.slice(-300));
+  }
+});
+
+let failed = 0;
+try {
+  await rpc('evm_setAutomine', [false]);
+  for (const s of scenarios) if (!only || only.includes(s.name)) await runScenario(s);
+} finally {
+  await rpc('evm_setAutomine', [true]).catch(() => {});
+  await browser.close();
+  gateway.close();
+}
+for (const s of evidence.scenarios) failed += s.assertions.filter((a) => !a.ok).length;
+evidence.summary = {
+  scenarios: evidence.scenarios.length,
+  assertions: evidence.scenarios.reduce((n, s) => n + s.assertions.length, 0),
+  failed,
+  result: failed === 0 ? 'PASS' : 'FAIL',
+};
+writeFileSync(join(config.out, 'result.json'), `${JSON.stringify(evidence, (_, v) => (typeof v === 'bigint' ? v.toString() : v), 2)}\n`);
+say(`browser wallet scenarios: ${evidence.summary.result}, ${evidence.summary.scenarios} scenarios, ${evidence.summary.assertions} assertions, ${failed} failed (${join(config.out, 'result.json')})`);
+process.exit(failed === 0 ? 0 : 1);

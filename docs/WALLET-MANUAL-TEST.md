@@ -1,0 +1,304 @@
+# Manual real-wallet test of the swap, approval and recovery flows
+
+Run this before the DEX page is opened to the public. It is the only test of the page with a real wallet: the unit
+tests use jsdom, and the browser harness (`frontend/integration/browser/`, see `frontend/integration/README.md`) uses a
+real browser engine with a **simulated** wallet. The last column of each test says what the harness already showed and
+what only this script can show.
+
+The answers this script must produce, because no automated test can:
+
+1. Does the wallet use the `nonce` the page sends in `eth_sendTransaction`, or its own? (tests 2 and 9)
+2. Does the wallet return a transaction hash only after it published the transaction? (test 2)
+3. What does the page receive when the wallet's node refuses a fee: the structured `error.data`, or text only? (test 8)
+4. Do the wallet's own "Speed up" and "Cancel" produce transactions the page can recover? (tests 4 and 5)
+
+## Scope
+
+| Wallet | How it reaches the page | Tested here |
+|---|---|---|
+| MetaMask extension, desktop Chrome | injected, EIP-6963 | all tests |
+| MetaMask Mobile, in-app browser | injected | tests 1 to 5, 7 and 10 |
+| One WalletConnect wallet through the QR entry | WalletConnect | test 11 only |
+
+The QR entry of this frontend is identity-only (`frontend/src/qr-wallet.ts`): its provider answers account and chain
+and refuses everything else with "This DEX preview requests account access only. Transactions require a verified
+deployment." A WalletConnect wallet therefore cannot approve or swap on this page. Test 11 confirms that.
+
+## Before you start
+
+| Item | Value to record |
+|---|---|
+| Page URL under test and its build revision (shown in "Verified deployment record") | |
+| L2 RPC URL shown in the "Network" card | |
+| Wallet name and version | |
+| Browser and version, or phone model and OS | |
+| Test account address (a fresh account with no history on this chain) | |
+| Date and time (UTC) | |
+
+Requirements:
+
+- The DEX is deployed and the page shows "Pools at finalized block N" (not "Not yet live").
+- The test account holds about 1 BLCH and 30 bUSDC. Use small amounts: every test below moves at most 0.01 BLCH or 10 bUSDC.
+- In MetaMask, turn on Settings, Advanced, "Customize transaction nonce". It makes the nonce visible in every prompt.
+- A block explorer or `cast` to read transactions. With `cast`, set the RPC once:
+
+```
+export ETH_RPC_URL=<the L2 RPC URL of the Network card>
+```
+
+- Time. An L2 block takes 12 to 15 minutes and finality about 100 minutes. A test that says "wait for finality" takes
+  that long. Run tests 1, 6 and 7 first; the others can run on separate fresh accounts in parallel.
+
+After every test, record the account's mined transactions:
+
+```
+cast nonce <account> --block latest
+```
+
+```
+cast nonce <account> --block pending
+```
+
+A test passes only when the page text matches **and** the number of router calls mined for the account is the number
+the test states. Count router calls in the explorer (transactions from the account to the Router address of the
+"Verified deployment record" card with status success).
+
+## Test 1: one swap
+
+1. Open the page URL and go to "Mainnet".
+2. Click "Connect MetaMask" and approve the connection in the wallet.
+3. If the Network card shows "Add or switch to Bloch L2", click it and approve in the wallet. It must then show "Wallet is on chain 700770".
+4. In the Swap card choose "You pay" BLCH and "You receive" bUSDC.
+5. Type `0.01` in "Amount".
+6. Click "Get quote".
+7. Click "Swap".
+8. In the wallet prompt, write down the nonce and the fees shown. Do not change them.
+9. Confirm in the wallet.
+10. Read the "Transactions" list on the page.
+11. Wait for finality.
+
+Expected: at step 7 the list shows "Swap 0.01 BLCH for bUSDC: waiting Confirm in your wallet." After step 9 it shows
+"Swap 0.01 BLCH for bUSDC: pending" with the hash and "Waiting for the next L2 block and canonical finality. Do not
+resend with a new nonce; Swap stays disabled until the outcome is known." The "Swap" button is disabled. After
+finality: "Swap 0.01 BLCH for bUSDC: mined" and "Mined in block N; verified canonical and finalized."
+
+Router calls mined: 1. Harness: `normal-send`. Real wallet only: the prompt content, the fees the wallet chose.
+
+## Test 2: does the wallet use the page's nonce, and when does it return the hash
+
+1. Repeat test 1, steps 4 to 7, with amount `0.01`.
+2. In the wallet prompt, read the nonce.
+3. Run `cast nonce <account> --block latest` and compare.
+4. Confirm in the wallet.
+5. At the moment the page shows the hash, run:
+
+```
+cast tx <hash>
+```
+
+Expected and what to record:
+
+| Observation | Record |
+|---|---|
+| Nonce in the prompt equals `cast nonce … latest` | yes / no |
+| `cast tx <hash>` finds the transaction as soon as the page shows the hash (the wallet published before answering) | yes / no |
+| `nonce` field of `cast tx <hash>` | |
+
+Router calls mined after finality: 1. Harness: `wallet-ignores-site-fields`. Real wallet only: all three rows.
+
+If the wallet's nonce differs from the canonical one because the wallet remembers older transactions, clear it first
+(MetaMask: Settings, Advanced, "Clear activity tab data") and repeat.
+
+## Test 3: a second swap while the first is queued
+
+1. Start a swap as in test 1 and confirm it in the wallet.
+2. Before the next L2 block, change "Amount" to `0.02`.
+3. Click "Get quote".
+4. Try to click "Swap".
+5. Reload the page (browser reload).
+6. Click "Connect MetaMask".
+7. Get a quote for `0.01` again and try to click "Swap".
+8. Open a second tab with the same URL, connect, get a quote, try to click "Swap".
+9. Wait for finality.
+
+Expected: "Swap" is disabled at steps 4, 7 and 8. The hold text of test 1 is shown after the reload and in the second
+tab. No section "Review the original request in your wallet" is offered, because the wallet returned a hash. The
+wallet shows exactly one transaction.
+
+Router calls mined: 1. Harness: `queued-at-sequencer`, `two-tabs`. Real wallet only: that the wallet prompt does not
+reappear after a reload.
+
+## Test 4: speed up in the wallet
+
+1. Start a swap as in test 1 and confirm it.
+2. In the wallet's activity list, open the pending transaction.
+3. Click "Speed up" and confirm.
+4. Copy the hash of the sped-up transaction from the wallet activity.
+5. Wait until that transaction is mined (wallet shows it confirmed).
+6. On the page, paste the hash into "Transaction hash from wallet activity".
+7. Click "Check transaction hash".
+8. Wait for finality.
+
+Expected: before step 6 the page still shows the first hash as pending and "Swap" disabled; it must not show "mined"
+or "failed" for the first hash. After step 7: "The transaction matches the saved intent. Waiting for its canonical
+finalized receipt." After finality: "Swap 0.01 BLCH for bUSDC: mined" with the sped-up hash.
+
+Router calls mined: 1. The first hash has no receipt. Harness: `speed-up`. Real wallet only: that MetaMask's speed-up
+keeps the call, the value and the nonce (if it did not, step 7 answers "This hash does not match the saved sender,
+destination, call, value and chain at the saved nonce or a later one. The submission hold remains."; record that).
+
+## Test 5: cancel in the wallet
+
+1. Start a swap as in test 1 and confirm it.
+2. In the wallet's activity list, open the pending transaction.
+3. Click "Cancel" and confirm.
+4. Copy the hash of the cancellation from the wallet activity.
+5. Paste it into "Transaction hash from wallet activity".
+6. Click "Check cancellation or replacement".
+7. Wait for finality of the cancellation.
+8. Click "Check cancellation or replacement" again.
+9. Click "Close local hold as replaced".
+10. Get a new quote for `0.01` and click "Swap". Confirm in the wallet.
+11. Wait for finality.
+
+Expected: at step 6, before finality: "No canonical finalized replacement is available for that hash yet. The original
+hold remains." At step 8: "Replacement verified. The original hold remains until you explicitly close it below." and
+a "Verified replacement" box with the cancellation's hash; "Swap" is still disabled. After step 9: "Original swap
+request: replaced" and "A different transaction consumed nonce N in canonical finalized block B. The original request
+did not execute. Its local hold was explicitly closed; nothing new was sent." After step 11: the new swap is mined.
+
+Router calls mined: 0 after step 9, 1 after step 11. Harness: `cancel`. Real wallet only: that the cancel wins the
+race against the original; if the original swap is mined instead, the page shows it mined and step 8 answers that no
+replacement exists. Record which one happened.
+
+## Test 6: reject in the wallet
+
+1. Get a quote for `0.01` and click "Swap".
+2. Click "Reject" in the wallet prompt.
+3. Get a quote again and click "Swap". Confirm in the wallet.
+4. Wait for finality.
+
+Expected: after step 2: "Swap 0.01 BLCH for bUSDC: failed The wallet request was rejected by you. Nothing was sent."
+and "Swap" is available again after a new quote. After step 4: mined.
+
+Router calls mined: 1. Harness: `rejected`. Real wallet only: that the wallet reports the rejection with code 4001;
+if it does not, the page shows "Wallet submission outcome unknown: no transaction hash was returned." and keeps the
+hold. Record which.
+
+## Test 7: approve, then swap
+
+1. Choose "You pay" bUSDC and "You receive" BLCH, amount `10`, click "Get quote".
+2. Click "Approve 10 bUSDC".
+3. In the wallet prompt, read the spending cap. Do not change it. Confirm.
+4. While the approval is pending, try to click "Swap".
+5. Wait for finality.
+6. Click "Get quote" again.
+7. Click "Swap" and confirm in the wallet.
+8. Wait for finality.
+
+Expected: the wallet shows a spending cap of exactly 10 bUSDC for the Router. "Swap" is disabled at step 4. After step
+5: "Approve 10 bUSDC: mined". At step 6 no "Approve" button appears. After step 8: "Swap 10 bUSDC for BLCH: mined".
+
+Transactions mined: 1 approval then 1 router call, consecutive nonces. Harness: `approve-then-swap`. Real wallet
+only: the spending-cap prompt (a wallet lets the user edit it; a lower cap makes the swap revert, a higher one is the
+user's choice), and the first-approval fee (test 8).
+
+## Test 8: the first approval and the new-slot fee
+
+This applies when the L2 RPC runs with its admission policy (`--required-tip-file`). A first `approve` writes a new
+storage slot and needs a higher priority fee than the wallet's default.
+
+1. On a fresh account, do test 7 steps 1 to 3.
+2. Read the page.
+
+Record which of these happened:
+
+| Outcome | Page text |
+|---|---|
+| Accepted at once | "Approve 10 bUSDC: pending …" |
+| Refused, data passed on by the wallet | "Wallet submission outcome unknown: no transaction hash was returned. …" followed by "RPC fee diagnostic (not bound to your wallet's signed transaction): at head N, required priority fee X wei/gas and max fee Y wei/gas. Submission outcome remains unknown; no retry or fee increase was performed." |
+| Refused, data lost by the wallet | the same first sentence, with no "RPC fee diagnostic" |
+
+In the two refused outcomes the page keeps the hold and sends nothing again. The wallet shows the transaction as
+failed. To release the hold: send any transaction from the account in the wallet (for example 0 BLCH to yourself),
+wait for its finality, paste its hash, click "Check cancellation or replacement", then "Close local hold as replaced".
+Then repeat the approval with the fee the diagnostic named, set by hand in the wallet prompt (Edit, Advanced, priority
+fee X, max fee Y).
+
+Harness: `fee-refusal-with-data`, `fee-refusal-data-lost` (the refusal is fabricated by the simulated wallet). Real
+wallet only: everything in this test.
+
+## Test 9: the same-nonce review when the wallet reply was lost
+
+This is the one flow where the page asks the wallet a second time. It is offered only while the page has no hash.
+
+1. Get a quote for `0.01` and click "Swap".
+2. Leave the wallet prompt open and reload the page.
+3. Click "Connect MetaMask". The page shows "Wallet submission outcome unknown: no transaction hash was returned."
+4. Reject the open prompt in the wallet.
+5. Open "Review the original request in your wallet" and compare the listed nonce with `cast nonce <account> --block latest`.
+6. Click "Review same nonce in wallet".
+7. In the wallet prompt, read the nonce. **If it is not the nonce listed on the page, click Reject and stop: record "wallet ignores the requested nonce".**
+8. Confirm in the wallet.
+9. Wait for finality.
+
+Expected: after step 8: "Wallet returned 0x…. All known candidates remain tracked until one is canonically finalized."
+After finality: mined. If the wallet signed another nonce the page says "Your wallet signed nonce M instead of the
+reviewed nonce N (0x…). That is a second, separate transaction, not a replacement: cancel it in your wallet now, or
+the same call can execute twice. The hold remains."
+
+Router calls mined: 1. Harness: `reply-lost-review-honoured-nonce`, `reply-lost-review-wallet-ignores-nonce`
+(two router calls when the simulated wallet ignores the nonce and the user ignores the warning), `queued-reply-lost`.
+Real wallet only: step 7. **If the wallet ignores the requested nonce, the review button must be removed before
+opening** (one line: `review` in `frontend/src/mainnet/pendingswap.ts` returns `undefined`); report it.
+
+## Test 10: account, network and lock changes mid-flow
+
+1. Start a swap as in test 1 and confirm it.
+2. In the wallet, switch to another account.
+3. Read the page: it must show the other account and no hold for it. Do not swap.
+4. Switch back to the first account.
+5. Read the page: the hold of test 1 is shown again and "Swap" is disabled.
+6. In the wallet, switch to another network (for example Ethereum).
+7. Read the page: "Wallet … on chain 1 (it will be asked to switch to chain 700770)".
+8. Switch the wallet back to Bloch L2.
+9. Lock the wallet.
+10. Reload the page and click "Connect MetaMask"; unlock when asked.
+11. Wait for finality.
+
+Expected: the hold follows the account and survives every change; at no point does a wallet prompt appear that the
+user did not click for. After finality: mined.
+
+Router calls mined: 1. Harness: none of the account, network or lock changes (the simulated wallet has one account).
+Real wallet only: this whole test.
+
+## Test 11: WalletConnect is identity-only
+
+1. Open the page on a desktop browser without an injected wallet.
+2. Use the QR wallet button and pair a WalletConnect wallet.
+3. Go to "Mainnet", get a quote for `0.01` and click "Swap".
+
+Expected: no prompt reaches the wallet and nothing is signed. Record the exact page text. If the page keeps a hold
+("Wallet submission outcome unknown: no transaction hash was returned."), record that too: it is a defect to report,
+because nothing can have been sent.
+
+Router calls mined: 0. Harness: not covered.
+
+## Results
+
+| Test | Wallet | Pass / fail | Router calls mined (expected) | Notes, hashes |
+|---|---|---|---|---|
+| 1 one swap | | | (1) | |
+| 2 nonce and hash timing | | | (1) | |
+| 3 second swap refused | | | (1) | |
+| 4 speed up | | | (1) | |
+| 5 cancel | | | (0, then 1) | |
+| 6 reject | | | (1) | |
+| 7 approve then swap | | | (1) | |
+| 8 first approval fee | | | (0 or 1) | |
+| 9 same-nonce review | | | (1) | |
+| 10 account, network, lock | | | (1) | |
+| 11 WalletConnect | | | (0) | |
+
+Do not open the page while any of tests 1 to 7, 9 or 10 fails, or while test 9 step 7 shows that the wallet ignores
+the requested nonce and the review button is still present.
