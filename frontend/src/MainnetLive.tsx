@@ -1469,6 +1469,12 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
         never sends or replaces a transaction. Time passing or an empty explorer result cannot clear
         the hold.
       </p>
+      <p>
+        If your wallet shows no transaction for this request (it was refused, closed or never
+        signed), the hold stays until this account&apos;s next transaction at the same nonce is
+        finalized: send any other transaction from this account in your wallet, then paste its hash
+        here and use the replacement check. Nothing on this page clears the hold without that proof.
+      </p>
       <label>
         Transaction hash from wallet activity
         <input

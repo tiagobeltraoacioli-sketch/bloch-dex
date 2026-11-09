@@ -149,8 +149,8 @@ export async function submissionBoundary(rpc: Rpc, context: SubmissionContext, a
   };
 }
 
-/** A user-requested review keeps the original nonce, body and boundary. Pending
- * nonce may include this same transaction; only canonical state resolves it. */
+/** A user-requested review keeps the original nonce, body and boundary. It is
+ * refused while anything from this account is still queued (round 14 review, H1). */
 export async function verifySameNonceReview(
   rpc: Rpc,
   intent: SubmissionIntent,
@@ -174,6 +174,14 @@ export async function verifySameNonceReview(
   assert(
     nonce === BigInt(intent.nonce),
     'The canonical account nonce no longer matches this request. Recover its transaction hash from wallet activity; no new nonce or wallet request was created.',
+  );
+  // A wallet may ignore the nonce this page asks for and sign the same call at the next one. While the original is
+  // still queued (pending nonce above the canonical nonce) that would execute the call twice, so no second wallet
+  // request is made until the queue holds nothing from this account.
+  const pendingNonce = quantity(await rpc('eth_getTransactionCount', [intent.from, 'pending']));
+  assert(
+    pendingNonce === nonce,
+    'A transaction from this account is still queued at the sequencer. A second wallet request could execute the same call twice. Wait for it to be included, then recover its hash from wallet activity; no wallet request was made.',
   );
   assert(
     deadline === 0n || quantity(rawHead.timestamp) < deadline,

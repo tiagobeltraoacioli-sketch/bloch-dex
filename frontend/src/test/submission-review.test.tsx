@@ -110,6 +110,7 @@ function fixture(initial = saved()) {
   const bodies = new Map<Hex, Record<string, unknown>>();
   const receipts = new Map<Hex, Record<string, unknown>>();
   let nonce = 4n;
+  const queued = { count: 0n };
   let head = HEAD;
   const rpc = vi.fn<Rpc>(async (method, params) => {
     if (method === 'eth_chainId') return '0xab162';
@@ -121,7 +122,8 @@ function fixture(initial = saved()) {
       return head;
     }
     if (method === 'eth_getTransactionCount') {
-      if (params[1] === 'pending') return '0x5'; // An earlier candidate can already be pending.
+      // Round 14 (H1): a review is only offered while nothing from the account is queued.
+      if (params[1] === 'pending') return `0x${(nonce + queued.count).toString(16)}`;
       return `0x${nonce.toString(16)}`;
     }
     if (method === 'eth_getTransactionByHash') return bodies.get(params[0] as Hex) ?? null;
@@ -177,6 +179,7 @@ function fixture(initial = saved()) {
   const mount = () => renderHook((current) => usePendingSwap(current), { initialProps: args });
   return {
     rpc,
+    queued,
     provider,
     bodies,
     receipts,
@@ -313,6 +316,19 @@ describe('allowed same-nonce call reconstruction', () => {
 });
 
 describe('explicit same-nonce wallet review', () => {
+  it('makes no second wallet request while the original is still queued at the sequencer', async () => {
+    const f = fixture(saved(approval(), 0n, [ONE]));
+    f.queued.count = 1n;
+    const hook = f.mount();
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    await expect(hook.result.current.reviewInWallet()).rejects.toThrow(
+      /still queued at the sequencer/,
+    );
+    expect(
+      vi.mocked(f.provider.request).mock.calls.filter(([a]) => a.method === 'eth_sendTransaction'),
+    ).toHaveLength(0);
+    expect(stored()).toMatchObject({ hash: ONE, candidateHashes: [ONE] });
+  });
   it('persists a new attempt before the wallet, retains prior candidates and sends no automatic fees', async () => {
     const f = fixture(saved(approval(), 0n, [ONE]));
     const original = f.provider.request;
@@ -349,7 +365,7 @@ describe('explicit same-nonce wallet review', () => {
     });
     expect(
       f.rpc.mock.calls.some(([m, p]) => m === 'eth_getTransactionCount' && p[1] === 'pending'),
-    ).toBe(false);
+    ).toBe(true);
     expect(hook.result.current.open).toBe(true);
   });
   it.each([
@@ -492,7 +508,7 @@ describe('explicit same-nonce wallet review', () => {
       let release!: () => void;
       const base = f.rpc;
       const slow: Rpc = async (m, p) => {
-        if (m === 'eth_getTransactionCount')
+        if (m === 'eth_getTransactionCount' && p[1] !== 'pending')
           await new Promise<void>((r) => {
             release = r;
           });
