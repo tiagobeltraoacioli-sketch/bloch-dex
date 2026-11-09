@@ -317,7 +317,7 @@ describe('allowed same-nonce call reconstruction', () => {
 
 describe('explicit same-nonce wallet review', () => {
   it('makes no second wallet request while the original is still queued at the sequencer', async () => {
-    const f = fixture(saved(approval(), 0n, [ONE]));
+    const f = fixture();
     f.queued.count = 1n;
     const hook = f.mount();
     await waitFor(() => expect(hook.result.current.open).toBe(true));
@@ -327,15 +327,49 @@ describe('explicit same-nonce wallet review', () => {
     expect(
       vi.mocked(f.provider.request).mock.calls.filter(([a]) => a.method === 'eth_sendTransaction'),
     ).toHaveLength(0);
+    expect(stored()?.hash).toBeUndefined();
+  });
+  it('makes no wallet request and offers no review once the wallet returned a hash', async () => {
+    // Browser harness scenario held-in-wallet-review-refused: a wallet that holds the first request and picks its
+    // own nonce signed the review at the next nonce, and both copies of the swap were mined.
+    const f = fixture(saved(approval(), 0n, [ONE]));
+    const hook = f.mount();
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    expect(hook.result.current.review).toBeUndefined();
+    await expect(hook.result.current.reviewInWallet()).rejects.toThrow(
+      /already returned a transaction hash.*No wallet request was made/,
+    );
+    expect(f.provider.request).not.toHaveBeenCalled();
     expect(stored()).toMatchObject({ hash: ONE, candidateHashes: [ONE] });
   });
+  it('tells the user to cancel when the wallet signed the review at another nonce', async () => {
+    const f = fixture();
+    f.provider.request = vi.fn(async ({ method }) => {
+      if (method === 'eth_chainId') return '0xab162';
+      f.addBody(TWO);
+      f.bodies.set(TWO, {
+        ...f.bodies.get(TWO)!,
+        nonce: '0x5',
+        blockNumber: null,
+        blockHash: null,
+      });
+      return TWO;
+    });
+    const hook = f.mount();
+    await act(async () => {
+      await expect(hook.result.current.reviewInWallet()).rejects.toThrow(
+        /signed nonce 5 instead of the reviewed nonce 4 .*cancel it in your wallet now/,
+      );
+    });
+    expect(stored()).toMatchObject({ hash: TWO, candidateHashes: [TWO] });
+    expect(hook.result.current.open).toBe(true);
+  });
   it('persists a new attempt before the wallet, retains prior candidates and sends no automatic fees', async () => {
-    const f = fixture(saved(approval(), 0n, [ONE]));
+    const f = fixture();
     const original = f.provider.request;
     f.provider.request = vi.fn(async (args) => {
       if (args.method === 'eth_sendTransaction') {
         expect(stored()?.walletAttempt).toMatchObject({ mode: 'review', state: 'awaiting-wallet' });
-        expect(stored()?.candidateHashes).toContain(ONE);
       }
       return original(args);
     });
@@ -359,7 +393,7 @@ describe('explicit same-nonce wallet review', () => {
     });
     expect(stored()).toMatchObject({
       hash: TWO,
-      candidateHashes: [ONE, TWO],
+      candidateHashes: [TWO],
       intent: approval(),
       walletAttempt: { mode: 'review', state: 'returned' },
     });
@@ -373,7 +407,7 @@ describe('explicit same-nonce wallet review', () => {
     new Error('lost wallet reply'),
     Object.assign(new Error('underpriced'), { code: -32000 }),
   ])('retains the original hold after a refused or lost review: %s', async (error) => {
-    const f = fixture(saved(approval(), 0n, [ONE]));
+    const f = fixture();
     f.provider.request = vi.fn(async ({ method }) => {
       if (method === 'eth_chainId') return '0xab162';
       throw error;
@@ -383,17 +417,19 @@ describe('explicit same-nonce wallet review', () => {
       await expect(hook.result.current.reviewInWallet()).rejects.toThrow();
     });
     expect(stored()?.intent).toEqual(approval());
-    expect(stored()?.candidateHashes).toEqual([ONE]);
+    expect(stored()?.candidateHashes ?? []).toEqual([]);
     expect(stored()?.walletAttempt?.state).toBe(
       'code' in error && error.code === 4001 ? 'rejected' : 'unknown',
     );
     expect(hook.result.current.open).toBe(true);
   });
   it('settles an older candidate that wins after a newer candidate was returned', async () => {
-    const f = fixture(saved(approval(), 0n, [ONE]));
+    const f = fixture();
     const hook = f.mount();
     await act(async () => {
       await hook.result.current.reviewInWallet();
+      f.addBody(ONE);
+      await hook.result.current.recover(ONE);
     });
     f.mine(ONE);
     await waitFor(() =>
@@ -403,14 +439,15 @@ describe('explicit same-nonce wallet review', () => {
     expect(f.onMined).toHaveBeenCalledOnce();
   });
   it('retains candidates and resumes polling after reload', async () => {
-    const f = fixture(saved(approval(), 0n, [ONE]));
+    const f = fixture();
     const first = f.mount();
     await act(async () => {
       await first.result.current.reviewInWallet();
     });
     first.unmount();
     const second = f.mount();
-    f.mine(ONE);
+    expect(stored()?.candidateHashes).toEqual([TWO]);
+    f.mine(TWO);
     await waitFor(() => expect(second.result.current.tracked?.state).toBe('mined'));
     expect(localStorage.getItem(key)).toBeNull();
   });
@@ -566,7 +603,7 @@ describe('explicit same-nonce wallet review', () => {
     }
   });
   it('keeps the original hold when the returned candidate cannot be persisted', async () => {
-    const f = fixture(saved(approval(), 0n, [ONE])),
+    const f = fixture(),
       hook = f.mount();
     const set = vi.spyOn(Storage.prototype, 'setItem');
     const original = f.provider.request;
@@ -583,7 +620,7 @@ describe('explicit same-nonce wallet review', () => {
           /hash update could not be saved/,
         );
       });
-      expect(stored()?.candidateHashes).toEqual([ONE]);
+      expect(stored()?.candidateHashes ?? []).toEqual([]);
       expect(hook.result.current.open).toBe(true);
       expect(hook.result.current.tracked?.candidateHashes).toContain(TWO);
     } finally {
@@ -608,7 +645,7 @@ describe('explicit same-nonce wallet review', () => {
     expect(stored()?.intent?.value).toBe('1');
   });
   it('does not revive a hold when an older candidate finalizes while the wallet is open', async () => {
-    const f = fixture(saved(approval(), 0n, [ONE])),
+    const f = fixture(),
       hook = f.mount();
     let release!: (hash: Hex) => void;
     f.provider.request = vi.fn(async ({ method }) =>
@@ -623,6 +660,10 @@ describe('explicit same-nonce wallet review', () => {
       pending = hook.result.current.reviewInWallet().catch((error: unknown) => error);
     });
     await waitFor(() => expect(release).toBeTypeOf('function'));
+    f.addBody(ONE);
+    await act(async () => {
+      await hook.result.current.recover(ONE);
+    });
     f.mine(ONE);
     await waitFor(() => expect(hook.result.current.tracked?.state).toBe('mined'));
     await act(async () => {
@@ -730,6 +771,22 @@ describe('explicit local closure after a finalized replacement', () => {
     expect(f.provider.request).not.toHaveBeenCalled();
     // Refresh canonical balances because the replacement can have different effects.
     expect(f.onMined).toHaveBeenCalledOnce();
+  });
+  it('refuses to close a hold as replaced while the wallet signed the saved call at another nonce', async () => {
+    // Browser harness scenario wallet-own-queue-ignores-nonce: the transaction at the original nonce is another one,
+    // but the request itself is alive at the next nonce.
+    const f = cancelled();
+    f.addBody(TWO);
+    f.bodies.set(TWO, { ...f.bodies.get(TWO)!, nonce: '0x5', blockNumber: null, blockHash: null });
+    const hook = f.mount();
+    const before = localStorage.getItem(key);
+    await act(async () => {
+      await expect(hook.result.current.checkReplacement(ONE)).rejects.toThrow(
+        /signed this request at nonce 5, not nonce 4 .*cannot be closed as replaced/,
+      );
+    });
+    expect(localStorage.getItem(key)).toBe(before);
+    expect(hook.result.current.open).toBe(true);
   });
   it('rechecks consumed nonce and finality on confirmation and retains the hold if they disappear', async () => {
     const f = cancelled(),

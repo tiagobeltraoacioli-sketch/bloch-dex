@@ -102,10 +102,32 @@ function matchTransaction(value: unknown, hash: Hex, intent: SubmissionIntent) {
       tx.input.toLowerCase() === intent.data &&
       quantity(tx.value) === BigInt(intent.value) &&
       quantity(tx.chainId) === BigInt(intent.chainId) &&
-      quantity(tx.nonce) === BigInt(intent.nonce),
-    'This hash does not match the saved sender, destination, call, value, chain and nonce. The submission hold remains.',
+      // A wallet may ignore the nonce this page asks for and sign the saved call at its own next nonce. The account
+      // nonce was intent.nonce at the saved boundary, so the same sender, call and value at that nonce or a later one
+      // is this request, signed after it was made; an earlier nonce is history and never matches.
+      quantity(tx.nonce) >= BigInt(intent.nonce),
+    'This hash does not match the saved sender, destination, call, value and chain at the saved nonce or a later one. The submission hold remains.',
   );
   return tx;
+}
+
+/** The nonce of an RPC transaction body that carries the saved call from the saved sender, or null. Read-only. */
+export function savedCallNonce(value: unknown, intent: SubmissionIntent): bigint | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const tx = value as Record<string, unknown>;
+  try {
+    return typeof tx.from === 'string' &&
+      tx.from.toLowerCase() === intent.from &&
+      typeof tx.to === 'string' &&
+      tx.to.toLowerCase() === intent.to &&
+      typeof tx.input === 'string' &&
+      tx.input.toLowerCase() === intent.data &&
+      quantity(tx.value) === BigInt(intent.value)
+      ? quantity(tx.nonce)
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Observe a canonical head before the wallet request, excluding historical hashes. */

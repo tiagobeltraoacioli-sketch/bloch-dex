@@ -17,6 +17,7 @@ import {
   finalizedSubmissionReceipt,
   finalizedReplacementReceipt,
   isSubmissionHash,
+  savedCallNonce,
   submissionContext,
   submissionBoundary,
   verifySubmissionHash,
@@ -259,6 +260,9 @@ export async function pollPendingSwap(
     }
   return { kind: unavailable ? 'unreachable' : 'waiting' };
 }
+
+export const REVIEW_WITH_HASH =
+  'Your wallet already returned a transaction hash for this request and may still publish it. A second wallet request could execute the same call twice. Speed it up or cancel it in the wallet itself, then check the resulting hash here. No wallet request was made.';
 
 const DO_NOT_RESEND =
   'Do not resend with a new nonce; Swap stays disabled until the outcome is known.';
@@ -714,10 +718,10 @@ export function usePendingSwap({
         checkContext(held.swap);
         const { intent } = held.swap;
         const tx = transactionForSameNonceReview(intent, held.swap.deadline, deployment);
-        if (submissionHashes(held.swap).length >= MAX_CANDIDATES)
-          throw new Error(
-            'The saved candidate limit has been reached. Recover an existing transaction hash instead.',
-          );
+        // A wallet that returned a hash holds that transaction and may publish it later, whatever the sequencer
+        // shows now. Many wallets ignore the nonce a site asks for and would sign this review at their next nonce:
+        // the same call twice. With a hash known, the only safe controls are the wallet's own speed up and cancel.
+        if (submissionHashes(held.swap).length) throw new Error(REVIEW_WITH_HASH);
         await verifySameNonceReview(rpc, intent, context, held.swap.deadline);
         // Priced before the review attempt is journaled: a failure here changes nothing.
         const fee = await priceNewSlots(rpc, tx, newSlotFee);
@@ -790,7 +794,6 @@ export function usePendingSwap({
             throw new Error(
               `The wallet returned ${hash}, but its hash update could not be saved. Keep this hash; the original hold remains.`,
             );
-          return hash;
         } catch (error) {
           const cancelled = !hash && (error as { code?: unknown })?.code === 4001;
           await updateSubmission(
@@ -807,6 +810,17 @@ export function usePendingSwap({
             );
           throw error;
         }
+        // The wallet was asked for the original nonce. If the RPC already shows what it signed and the nonce is
+        // another one, the user holds two separate transactions with this call and must cancel one in the wallet.
+        const signedNonce = savedCallNonce(
+          await rpc('eth_getTransactionByHash', [hash]).catch(() => null),
+          intent,
+        );
+        if (signedNonce !== null && signedNonce !== BigInt(intent.nonce))
+          throw new Error(
+            `Your wallet signed nonce ${signedNonce} instead of the reviewed nonce ${intent.nonce} (${hash}). That is a second, separate transaction, not a replacement: cancel it in your wallet now, or the same call can execute twice. The hold remains.`,
+          );
+        return hash;
       }),
     [
       withWalletRequest,
@@ -825,6 +839,8 @@ export function usePendingSwap({
 
   const review = useMemo(() => {
     if (!visibleTracked?.intent || !deployment || !isOpen(visibleTracked)) return undefined;
+    // Not offered once the wallet returned a hash: see reviewInWallet.
+    if (submissionHashes(visibleTracked).length) return undefined;
     try {
       return {
         details: sameNonceReviewDetails(visibleTracked.intent, visibleTracked.deadline, deployment),
@@ -872,6 +888,19 @@ export function usePendingSwap({
           'This older hold has no saved nonce and body for replacement verification.',
         );
       checkContext(held.swap);
+      // A wallet that ignored the requested nonce signed the saved call at another one. A different transaction at
+      // the original nonce then proves nothing about the request: it can still execute, or already has.
+      for (const candidate of submissionHashes(held.swap)) {
+        if (candidate === hash) continue;
+        const signedNonce = savedCallNonce(
+          await rpc('eth_getTransactionByHash', [candidate]),
+          held.swap.intent,
+        );
+        if (signedNonce !== null && signedNonce !== BigInt(held.swap.intent.nonce))
+          throw new Error(
+            `Your wallet signed this request at nonce ${signedNonce}, not nonce ${held.swap.intent.nonce} (${candidate}). It can still execute or already has, so this hold cannot be closed as replaced; it settles when that transaction is finalized.`,
+          );
+      }
       const proof = await finalizedReplacementReceipt(rpc, hash, held.swap.intent, context);
       assertActive();
       if (!proof)

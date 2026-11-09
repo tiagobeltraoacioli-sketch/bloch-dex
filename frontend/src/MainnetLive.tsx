@@ -1579,7 +1579,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
             nonce can execute on the canonical chain. This never chooses a new nonce or extends the
             deadline. Review the decoded amounts, addresses and gas limit below. If needed, adjust
             fees yourself in the wallet; this page does not apply a fee quote. Cancelling this
-            review keeps the hold. A swap deadline can still expire while the wallet is open.
+            review keeps the hold. A swap deadline can still expire while the wallet is open. Some
+            wallets ignore the nonce a site asks for: if your wallet shows a nonce other than the
+            one below, reject the request there, because it would be a second transaction.
           </p>
           <dl aria-label="Validated original transaction">
             {pendingSwap.review.details.map(([name, value]) => (

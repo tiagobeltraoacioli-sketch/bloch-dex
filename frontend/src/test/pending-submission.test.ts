@@ -315,21 +315,22 @@ describe('wallet submission settlement', () => {
       verifySubmissionHash(rpcWith(), HASH, orphaned.intent, orphaned.intent),
     ).rejects.toThrow(/no longer canonical/);
   });
-  it('does not settle an identical call with a different nonce', async () => {
+  it('does not settle or recover an identical call at an earlier nonce: that is history', async () => {
+    const bound = { ...swap, intent: { ...swap.intent!, nonce: '4' } };
+    const rpc = rpcWith({ eth_getTransactionByHash: { ...tx, nonce: '0x3' } });
+    expect((await pollPendingSwap(rpc, bound, 0)).kind).toBe('unreachable');
+    await expect(verifySubmissionHash(rpc, HASH, bound.intent, bound.intent)).rejects.toThrow(
+      /saved nonce or a later one/,
+    );
+  });
+  it('settles and recovers the saved call when the wallet signed it at a later nonce than requested', async () => {
+    // Browser harness scenario wallet-own-queue-ignores-nonce: the wallet ignored the requested nonce 4.
     const bound = { ...swap, intent: { ...swap.intent!, nonce: '4' } };
     const rpc = rpcWith({ eth_getTransactionByHash: { ...tx, nonce: '0x5' } });
-    expect((await pollPendingSwap(rpc, bound, 0)).kind).toBe('unreachable');
-  });
-  it('does not recover an identical call with a different nonce', async () => {
-    const bound = { ...swap.intent!, nonce: '4' };
+    expect(await pollPendingSwap(rpc, bound, 0)).toMatchObject({ kind: 'receipt', hash: HASH });
     await expect(
-      verifySubmissionHash(
-        rpcWith({ eth_getTransactionByHash: { ...tx, nonce: '0x5' } }),
-        HASH,
-        bound,
-        bound,
-      ),
-    ).rejects.toThrow(/nonce/);
+      verifySubmissionHash(rpc, HASH, bound.intent, bound.intent),
+    ).resolves.toBeUndefined();
   });
 
   it('pins an unused nonce and canonical head before requesting the wallet', async () => {
