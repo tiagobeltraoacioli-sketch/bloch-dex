@@ -83,3 +83,70 @@ test("keeper cannot release a lock that changed ownership", (t) => {
   assert.throws(release, /lock changed/);
   assert.equal(fs.existsSync(`${path}.lock`), true);
 });
+
+// ---- round 14 (agent 307): a lock is taken over only with proof that its owner is gone.
+import { lockOwnerIsGone } from "./keeper-state-store.mjs";
+import { spawnSync } from "node:child_process";
+
+const alive = { bootId: () => "boot-1", processStart: () => "100", kill: () => {} };
+const record = (extra = {}) => ({ pid: 4242, ownerToken: "t", bootId: "boot-1", processStart: "100", ...extra });
+
+test("a lock owner is gone only on a reboot, a missing process, or a reused process ID", () => {
+  assert.equal(lockOwnerIsGone(record(), alive), false);
+  assert.equal(lockOwnerIsGone(record(), { ...alive, bootId: () => "boot-2" }), true);
+  assert.equal(lockOwnerIsGone(record(), { ...alive, kill: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); } }), true);
+  assert.equal(lockOwnerIsGone(record(), { ...alive, kill: () => { throw Object.assign(new Error("other user"), { code: "EPERM" }); } }), false);
+  assert.equal(lockOwnerIsGone(record(), { ...alive, processStart: () => "999" }), true);
+  // No start time on this platform, or in the record: a live process ID is never called gone.
+  assert.equal(lockOwnerIsGone(record({ processStart: null }), { ...alive, processStart: () => "999" }), false);
+  assert.equal(lockOwnerIsGone(record(), { ...alive, processStart: () => null }), false);
+  // Records that cannot be judged: older format, damaged, foreign.
+  for (const bad of [null, {}, { pid: 4242, ownerToken: "t" }, record({ pid: 0 }), record({ pid: "4242" }), record({ ownerToken: undefined })]) {
+    assert.equal(lockOwnerIsGone(bad, { ...alive, kill: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); } }), false);
+  }
+});
+
+test("a lock left by a dead keeper process is taken over; one left by a live process, or unreadable, is not", (t) => {
+  const path = fixture(t);
+  // A real process that has exited: its ID is free (reuse within this test is not plausible).
+  const dead = spawnSync(process.execPath, ["-e", "console.log(process.pid)"], { encoding: "utf8" });
+  const deadPid = Number(dead.stdout.trim());
+  fs.writeFileSync(`${path}.lock`, JSON.stringify({ pid: deadPid, startedAt: "2026-11-09T00:00:00Z", ownerToken: "dead-owner", bootId: null, processStart: null }));
+  const release = acquireLock(path);
+  const mine = JSON.parse(fs.readFileSync(`${path}.lock`, "utf8"));
+  assert.equal(mine.pid, process.pid);
+  assert.notEqual(mine.ownerToken, "dead-owner");
+  assert.equal(fs.existsSync(`${path}.lock.break`), false);
+  // This process is alive: a second acquisition is refused and the lock is untouched.
+  assert.throws(() => acquireLock(path), /lock.*exists/);
+  assert.equal(JSON.parse(fs.readFileSync(`${path}.lock`, "utf8")).ownerToken, mine.ownerToken);
+  release();
+  for (const content of ["", "not json", JSON.stringify({ pid: deadPid, ownerToken: "old-format" })]) {
+    fs.writeFileSync(`${path}.lock`, content);
+    assert.throws(() => acquireLock(path), /lock.*exists/);
+    assert.equal(fs.readFileSync(`${path}.lock`, "utf8"), content);
+  }
+  // Another process is already taking a dead lock over.
+  fs.writeFileSync(`${path}.lock`, JSON.stringify({ pid: deadPid, ownerToken: "dead-owner", bootId: null, processStart: null }));
+  fs.writeFileSync(`${path}.lock.break`, "");
+  assert.throws(() => acquireLock(path), /another process is taking it over/);
+  assert.equal(JSON.parse(fs.readFileSync(`${path}.lock`, "utf8")).ownerToken, "dead-owner");
+});
+
+test("a keeper pass stopped by SIGTERM releases its lock", async (t) => {
+  const path = fixture(t);
+  const script = `
+    import { acquireLock } from ${JSON.stringify(new URL("./keeper-state-store.mjs", import.meta.url).href)};
+    const release = acquireLock(${JSON.stringify(path)});
+    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.once(signal, () => { try { release(); } finally { process.exit(2); } });
+    console.log("locked");
+    setInterval(() => {}, 1000);`;
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+  await new Promise((resolve) => child.stdout.once("data", resolve));
+  assert.equal(fs.existsSync(`${path}.lock`), true);
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  assert.equal(await exited, 2);
+  assert.equal(fs.existsSync(`${path}.lock`), false);
+});

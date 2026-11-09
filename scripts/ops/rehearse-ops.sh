@@ -603,6 +603,73 @@ if [ "$MODE" = anvil ]; then
   must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_USD_IN" 1000000 0 "$PATH_U_W" "$SEEDER" $FUTURE)" 0 400000 > /dev/null
   must "$SEEDER_KEY" "$ROUTER" "$(cast calldata "$SWAP_BLCH_IN" 0 "$PATH_W_U" "$SEEDER" $FUTURE)" 100000000000000000 400000 > /dev/null
   pass "l3: the keeper cleared a closed pair during its backoff; the donation went to the Safe; both directions work"
+
+  log "5 recovery: a keeper transaction is lost from the pool; the keeper recovers by itself on one nonce"
+  settle
+  RSTATE=$WORK/keeper/recovery.json
+  RFLAGS=(--state "$RSTATE" --cooldown-s 1)
+  entry() { node -e 'const t=require(process.argv[1]).txs.at(-1);const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],t);console.log(v===undefined?"":typeof v==="object"?JSON.stringify(v):v)' "$RSTATE" "$1"; }
+  in_pool() { [ "$(cast rpc eth_getTransactionByHash "$1" --rpc-url "$RPC")" != null ]; }
+  expect 0 recovery-clean keeper_run "${RFLAGS[@]}"
+  grep -q nothing-to-do "$EV/recovery-clean.out" || die "the pair was not clean before the recovery drill"
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" $((USD_CAP - $(view "$USD" "$BAL" "$PAIR") + 1)))" 0 100000 > /dev/null
+  R_EXCESS=$(( $(view "$USD" "$BAL" "$PAIR") - $(cast call "$PAIR" "getReserves()(uint112,uint112,uint32)" --rpc-url "$RPC" | sed -n "$([ "$(cast call "$PAIR" "token0()(address)" --rpc-url "$RPC" | tr 'A-F' 'a-f')" = "$USD" ] && echo 1 || echo 2)p" | num) ))
+  SAFE_R0=$(view "$USD" "$BAL" "$SAFE"); KN0=$(cast nonce "$KEEPER" --rpc-url "$RPC")
+  cast rpc evm_setAutomine false --rpc-url "$RPC" > /dev/null
+  expect 0 recovery-send keeper_run "${RFLAGS[@]}" --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"sent"' "$EV/recovery-send.out" || die "the keeper did not send"
+  H1=$(entry hash)
+  cast rpc anvil_dropTransaction "$H1" --rpc-url "$RPC" > /dev/null
+  in_pool "$H1" && die "the transaction was not dropped"
+  expect 0 recovery-wait keeper_run "${RFLAGS[@]}" --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"wait-in-flight"' "$EV/recovery-wait.out" || die "expected wait-in-flight before the re-publication interval"
+  in_pool "$H1" && die "the keeper published before its interval"
+  expect 0 recovery-rebroadcast keeper_run "${RFLAGS[@]}" --rebroadcast-s 0 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"rebroadcast": "accepted"' "$EV/recovery-rebroadcast.out" || { cat "$EV/recovery-rebroadcast.out"; die "the stored transaction was not published again"; }
+  in_pool "$H1" || die "the identical transaction is not back in the pool"
+  [ "$(entry hash)" = "$H1" ] || die "re-publication changed the transaction"
+  pass "recovery: the identical signed transaction is back in the pool ($H1)"
+  cast rpc anvil_dropTransaction "$H1" --rpc-url "$RPC" > /dev/null
+  expect 0 recovery-replace keeper_run "${RFLAGS[@]}" --rebroadcast-s 100000 --replace-after-s 0 --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"replaced"' "$EV/recovery-replace.out" || { cat "$EV/recovery-replace.out"; die "the lost transaction was not replaced"; }
+  H2=$(entry hash)
+  [ "$H2" != "$H1" ] && [ "$(entry attempts.0.hash)" = "$H1" ] || die "the replacement is not recorded on the same entry"
+  [ "$(cast rpc eth_getTransactionByHash "$H2" --rpc-url "$RPC" | node -e 'console.log(Number(JSON.parse(require("fs").readFileSync(0,"utf8")).nonce))')" = "$KN0" ] || die "the replacement uses another nonce"
+  cast rpc evm_mine --rpc-url "$RPC" > /dev/null
+  cast rpc evm_setAutomine true --rpc-url "$RPC" > /dev/null
+  settle
+  expect 0 recovery-settled keeper_run "${RFLAGS[@]}" --execute -- --private-key "$KEEPER_KEY"
+  grep -q nothing-to-do "$EV/recovery-settled.out" || { cat "$EV/recovery-settled.out"; die "expected nothing-to-do after the replacement landed"; }
+  [ "$(entry status)" = effective ] && [ "$(entry hash)" = "$H2" ] || die "the entry did not settle on the mined replacement"
+  [ "$(cast nonce "$KEEPER" --rpc-url "$RPC")" = $((KN0 + 1)) ] || die "the keeper used more than one nonce"
+  [ $(( $(view "$USD" "$BAL" "$SAFE") - SAFE_R0 )) = "$R_EXCESS" ] || die "the Safe did not receive the excess exactly once"
+  [ "$(node -e 'console.log(require(process.argv[1]).txs.length)' "$RSTATE")" = 1 ] || die "more than one keeper entry"
+  pass "recovery: dropped twice, published again, replaced at nonce $KN0, mined once; the Safe received $R_EXCESS base units once"
+
+  log "5 recovery: the open nonce is used by a manual skim the keeper did not record"
+  must "$GRIEFER_KEY" "$USD" "$(cast calldata "$TRANSFER" "$PAIR" $((USD_CAP - $(view "$USD" "$BAL" "$PAIR") + 1)))" 0 100000 > /dev/null
+  SAFE_R1=$(view "$USD" "$BAL" "$SAFE"); KN1=$(cast nonce "$KEEPER" --rpc-url "$RPC")
+  cast rpc evm_setAutomine false --rpc-url "$RPC" > /dev/null
+  expect 0 recovery-send2 keeper_run "${RFLAGS[@]}" --execute -- --private-key "$KEEPER_KEY"
+  grep -q '"sent"' "$EV/recovery-send2.out" || { cat "$EV/recovery-send2.out"; die "the keeper did not send"; }
+  H3=$(entry hash)
+  cast rpc anvil_dropTransaction "$H3" --rpc-url "$RPC" > /dev/null
+  cast rpc evm_setAutomine true --rpc-url "$RPC" > /dev/null
+  must "$KEEPER_KEY" "$PAIR" "$(cast calldata "skim(address)" "$SAFE")" 0 200000 > /dev/null
+  MANUAL=$(cat "$WORK/last.hash")
+  expect 1 recovery-unfinalized keeper_run "${RFLAGS[@]}" --execute -- --private-key "$KEEPER_KEY"
+  grep -q nonce-used-without-receipt "$EV/recovery-unfinalized.out" || die "a used nonce was settled before finality"
+  [ "$(entry status)" = pending ] || die "the reservation was released before finality"
+  settle
+  expect 1 recovery-superseded keeper_run "${RFLAGS[@]}" --execute -- --private-key "$KEEPER_KEY"
+  grep -q nonce-settled-by-other-transaction "$EV/recovery-superseded.out" || { cat "$EV/recovery-superseded.out"; die "the used nonce was not settled from the finalized chain"; }
+  [ "$(entry status)" = superseded ] && [ "$(entry supersededBy)" = "$MANUAL" ] || die "the entry does not name the manual transaction"
+  expect 0 recovery-after keeper_run "${RFLAGS[@]}" --execute -- --private-key "$KEEPER_KEY"
+  grep -q nothing-to-do "$EV/recovery-after.out" || die "expected nothing-to-do"
+  [ "$(cast nonce "$KEEPER" --rpc-url "$RPC")" = $((KN1 + 1)) ] || die "the keeper sent after the manual skim"
+  [ "$(view "$USD" "$BAL" "$SAFE")" != "$SAFE_R1" ] || die "the manual skim did not reach the Safe"
+  expect 0 recovery-monitor node -e 'import("./scripts/ops/dex-monitor.mjs").then(({checkKeeperState})=>{const c=[];checkKeeperState(process.argv[1],Math.floor(Date.now()/1000),(n,l,t)=>c.push([n,l,t]));console.log(JSON.stringify(c));process.exit(c[0][1])})' "$RSTATE"
+  pass "recovery: a nonce used by a manual skim ($MANUAL) was settled at its real cost once finalized; no state edit, no second skim"
 fi
 
 # ---------------------------------------------------------------- anchored swaps (DEX-05)

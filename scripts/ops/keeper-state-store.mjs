@@ -1,5 +1,7 @@
-// Durable local keeper state. An unresolved lock requires operator inspection;
-// wall-clock age cannot establish that its owner has stopped publishing.
+// Durable local keeper state. Wall-clock age never establishes that a lock's owner has
+// stopped publishing. A lock is taken over only when its owner is provably gone: the host
+// was rebooted since, the process ID no longer exists, or (Linux) that ID now belongs to a
+// process with another start time. Anything else requires operator inspection.
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, fstatSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -35,19 +37,55 @@ export function saveState(path, state) {
   }
 }
 
+const readText = (path) => { try { return readFileSync(path, "utf8").trim(); } catch { return null; } };
+const bootId = () => readText("/proc/sys/kernel/random/boot_id");
+/// Linux: the process start time in clock ticks since boot (field 22 of /proc/<pid>/stat).
+function processStart(pid) {
+  const stat = readText(`/proc/${pid}/stat`);
+  return stat ? stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19] ?? null : null;
+}
+
+/// True only with proof that the process which wrote this lock record no longer runs.
+export function lockOwnerIsGone(record, probe = { bootId, processStart, kill: (pid) => process.kill(pid, 0) }) {
+  if (!record || !Number.isSafeInteger(record.pid) || record.pid <= 0 || typeof record.ownerToken !== "string" || !("bootId" in record)) return false;
+  const boot = probe.bootId();
+  if (record.bootId && boot && record.bootId !== boot) return true;
+  try { probe.kill(record.pid); } catch (error) { return error.code === "ESRCH"; }
+  const started = probe.processStart(record.pid);
+  return Boolean(record.processStart && started && started !== record.processStart);
+}
+
 export function acquireLock(path) {
   const directory = dirname(path), lock = `${path}.lock`;
   ensureDirectory(directory);
+  const exclusive = () => openSync(lock, "wx", 0o600);
+  const refuse = (why) => new Error(`keeper lock ${lock} exists${why}; inspect active processes and reconcile the state before manually removing a stale lock`);
   let fd;
-  try { fd = openSync(lock, "wx", 0o600); }
+  try { fd = exclusive(); }
   catch (error) {
-    if (error.code === "EEXIST") throw new Error(`keeper lock ${lock} exists; inspect active processes and reconcile the state before manually removing a stale lock`);
-    throw error;
+    if (error.code !== "EEXIST") throw error;
+    let record = null;
+    try { record = JSON.parse(readFileSync(lock, "utf8")); } catch { /* unreadable: not provably stale */ }
+    if (!lockOwnerIsGone(record)) throw refuse("");
+    // Its owner is gone. One process at a time may break it, and only the lock it examined.
+    const breaker = `${lock}.break`;
+    let breakFd;
+    try { breakFd = openSync(breaker, "wx", 0o600); }
+    catch (inner) { if (inner.code === "EEXIST") throw refuse(" and another process is taking it over"); throw inner; }
+    try {
+      let current = null;
+      try { current = JSON.parse(readFileSync(lock, "utf8")); } catch (inner) { if (inner.code !== "ENOENT") throw refuse(" and changed while it was examined"); }
+      if (current) {
+        if (current.ownerToken !== record.ownerToken || !lockOwnerIsGone(current)) throw refuse(" and changed while it was examined");
+        unlinkSync(lock);
+      }
+      try { fd = exclusive(); } catch (inner) { if (inner.code === "EEXIST") throw refuse(""); throw inner; }
+    } finally { closeSync(breakFd); unlinkSync(breaker); }
   }
   const identity = fstatSync(fd);
   const ownerToken = randomUUID();
   try {
-    writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), ownerToken })}\n`);
+    writeFileSync(fd, `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), ownerToken, bootId: bootId(), processStart: processStart(process.pid) })}\n`);
     fsyncSync(fd);
   } finally { closeSync(fd); }
   syncDirectory(directory);

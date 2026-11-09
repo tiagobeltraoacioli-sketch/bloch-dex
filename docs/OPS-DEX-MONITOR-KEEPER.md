@@ -37,7 +37,7 @@ Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means 
 | `pending_excess[finalized]` | finalized | material | blocking: it has stood about 100 minutes, so the keeper did not clear it |
 | `closed_by_excess` | latest, finalized | soft: only swaps below the floor stop | hard: an excess at or above the floor closes the pair |
 | `k_ceiling` | latest | at the ceiling: swap fees reach neither LPs nor the Safe | |
-| `keeper_budget` | keeper state file, with `--keeper-state` | 3 or more skims that moved nothing in 24 h, half the count used, or unresolved publication older than 2 h | count used up, or the state file is unreadable |
+| `keeper_budget` | keeper state file, with `--keeper-state` | 3 or more skims that moved nothing in 24 h, half the count used, or unresolved publication older than 2 h (the keeper recovers it by itself; the warning says it has not landed yet) | count used up, or the state file is unreadable |
 | `price_drift` | both | 10% between finalized and latest | 50% |
 | `fee_accrued` | finalized | | facts only: minted LP, pending LP, reserve share |
 | `fee_tracking` | finalized | | `kLast` is zero on a seeded pair |
@@ -101,6 +101,9 @@ Signing goes through `cast mktx`; the keeper never sees the key. Use a fresh add
 | Floor at the k ceiling, in wei of the wrapped token at the pool price | `--ceiling-floor-wei` | `--budget-wei` / `--max-tx` = 0.00104 BLCH |
 | Time between transactions | `--cooldown-s` | 1,800 s |
 | Unconfirmed transaction warning threshold; never expires its reservation | `--pending-timeout-s` | 7,200 s |
+| Time between publications of the same stored transaction | `--rebroadcast-s` | 900 s |
+| Time out of the chain before the same nonce may be replaced | `--replace-after-s` | 7,200 s |
+| Replacements of one nonce | `--max-replacements` | 4 |
 
 Exit status: 0 nothing needed, sent, waiting or cooling down; 1 needs attention (budget, count, fee, gas, funding, backoff); 2 refused (identity, code hash, simulation, publication); 3 the node did not answer.
 
@@ -129,21 +132,46 @@ A write or flush failure stops publication. This is an application-level
 durability guarantee using the filesystem's `fsync`; the rehearsal does not
 simulate a power loss or validate storage hardware.
 
-The exclusive `.lock` records its process ID and start time. Its age never
-authorizes another process to take it over. If a lock remains after a crash,
-check for a live keeper and reconcile recorded transactions before manually
-removing it. A process also refuses to remove a lock whose ownership changed
-while it was running.
+The exclusive `.lock` records its process ID, an owner token and, on Linux, the
+boot ID and the process start time. Its age never authorizes another process to
+take it over. A lock is taken over only when its owner is provably gone: the host
+was rebooted since, the process ID no longer exists, or that ID now belongs to a
+process with another start time. A pass stopped by SIGTERM, SIGINT or SIGHUP
+releases its lock. A lock that cannot be judged (written by an older version,
+unreadable, owned by a live process, or a leftover `.lock.break` from a crash in
+the middle of a takeover) still needs an operator: check for a live keeper, then
+remove it. A process also refuses to remove a lock whose ownership changed while
+it was running.
 
-### Crash behaviour
+### Crash behaviour and automatic recovery
 
-State is written before publishing. A crash after that leaves a `pending` entry.
-Every unresolved transaction keeps its full reservation and blocks a new nonce,
-even after 24 hours. `--pending-timeout-s` raises `wait-in-flight` to WARN; it
-does not expire the transaction or authorize a replacement. A higher account
-nonce without the recorded hash's receipt reports `nonce-used-without-receipt`
-and requires investigation. The keeper never bumps fees, cancels or submits a
-new nonce to resolve this uncertainty.
+State is written before publishing, and it holds the signed transaction itself
+(public data: no key). A crash, a lost reply or a transaction that never reached
+the node leaves a `pending` entry. The rule is **one nonce at a time**: every
+unresolved entry keeps its full reservation and blocks a new nonce, even after
+24 hours, and a new nonce is opened only after the previous one is settled from
+finalized data. Inside that rule the keeper recovers by itself; no state edit is
+needed:
+
+| Situation | What the keeper does | Why it cannot skim twice or pay anyone else |
+|---|---|---|
+| The transaction is not in the chain and its nonce is still the account's next one | Every `--rebroadcast-s` it publishes the stored bytes again, unchanged (`"rebroadcast": "accepted"`) | Same bytes, same hash. Before publishing, the bytes are checked again: signed by the keeper, `skim(feeTo)` on a pinned pair, this chain, this nonce, no value; and the factory's `feeTo()` is read again |
+| Still not in the chain after `--replace-after-s`, or the node answered the re-publication with its `sequencer-fee-underpriced` refusal (it gives that answer only for bytes that are not in its spool) | When a skim is next needed, it signs a new `skim(feeTo)` **with the same nonce** and both fee fields at least 12.5% higher (the spool asks 10%), or at the node's quote if that is higher (`"action": "replaced"`) | Only one transaction of a nonce can be mined. The entry reserves the dearer attempt once, never the sum. Fee, tip, gas and budget ceilings are the operator's and are never raised: above them it reports `fee-above-ceiling` and waits |
+| One of the attempts is mined | The entry settles on that hash, with its real cost, once `finalized` reaches its block | As before |
+| The nonce was used by a transaction the keeper did not record (a manual skim with the keeper key, another tool) | Once `finalized` passes it, the keeper finds that transaction by bisecting the account's transaction count, checks its receipt and block, records the entry as `superseded` with `supersededBy`, and charges the real gas of that transaction to the rolling budget (`"action": "nonce-settled-by-other-transaction"`, WARN once) | The recorded transaction can never be mined after that. Before finality it reports `nonce-used-without-receipt` and releases nothing |
+| The first publication was refused by the node's admission price | The entry is `refused` (no spend); after the cooldown the next attempt uses the quoted priority fee if it is within `--max-tip-wei` and `--max-fee-wei` (WARN, `"retry": "automatic, after the cooldown"`); above them it is CRIT and nothing is signed | The refusal is bound to the exact signed hash and is emitted before the spool write |
+| An earlier nonce of the keeper account is open (`nonce-gap`), two entries are unresolved, the entry was written by an older version without the signed bytes, or `--max-replacements` is used up | It waits and warns | No publication |
+
+`--pending-timeout-s` raises `wait-in-flight` to WARN; it does not expire anything.
+A lost transaction with nothing left to skim is not replaced (the keeper only ever
+sends a skim that is needed): it stays recorded with `"replaceable": true`, and
+its nonce is reused when a skim is next needed.
+
+What still needs an operator: a fee quote or a replacement above the ceilings
+(raise `--max-tip-wei` / `--max-fee-wei`, or skim by hand: the keeper then settles
+the entry from the finalized chain as above), a `nonce-gap`, and a state file
+that fails its own checks (stored bytes that are not the keeper's skim are
+refused with CRIT and never published).
 
 A receipt stays pending until both `latest` and `finalized` reach its block.
 Before reducing the reservation to actual gas spent, the keeper verifies the
@@ -157,7 +185,8 @@ receipt data reports `rpc-failed` without releasing it.
 Older `expired` or `replaced` entries, refusals without the verified preflight
 kind, and settled entries without canonical inclusion metadata are unresolved
 on upgrade. They are rechecked one per pass and block publication until the
-history is resolved. Preserve the state file while investigating; resetting it
+history is resolved: by a receipt, or by the finalized transaction that used
+their nonce. Entries without the signed bytes are never re-published or replaced. Preserve the state file while investigating; resetting it
 would discard outstanding reservations. The monitor uses the same accounting
 rules and warns about unresolved entries older than its default two-hour
 threshold.
@@ -165,8 +194,9 @@ threshold.
 A publication timeout, HTTP failure, malformed response, different result hash,
 or generic JSON-RPC error reports `publish-unconfirmed` and keeps that same
 reservation. Errors such as `nonce too low` or `already known` do not establish
-that the transaction was rejected before publication. The keeper waits for
-reconciliation instead of treating those errors as zero spend.
+that the transaction was rejected before publication. The keeper never treats
+those errors as zero spend; later passes publish the same bytes again and
+reconcile as in the table above.
 
 An optional L2 admission preflight can return error code `-32000` with
 `data.kind = "sequencer-fee-underpriced"` before writing the transaction to its
@@ -174,9 +204,10 @@ spool. The keeper accepts that as `publish-refused` only when the correlated
 response identifies its exact signed transaction and contains consistent fee,
 gas, storage-slot and head fields. It reports `feeRequirement` using decimal
 integer strings; fee fields are wei per gas, and `freshSlotPriceWei` is wei per
-new storage slot. Review `requiredPriorityFeePerGas` and `requiredMaxFeePerGas`
-against the existing fee ceiling and budget before signing again. The keeper
-does not raise its limits or retry publication in response to the quote. The
+new storage slot. The keeper never raises its limits in response to the quote. If
+`requiredPriorityFeePerGas` and `requiredMaxFeePerGas` are within its ceilings,
+its next attempt (after the cooldown, a new signature, the same budget rules)
+uses the quoted priority fee; otherwise review the ceilings. The
 quote applies to `latest-state-next-block` at the reported head; changed state
 or policy can change it, and inclusion is not guaranteed. Future nonces are not
 simulated by this preflight and can remain pending.

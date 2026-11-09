@@ -231,7 +231,7 @@ export function checkKeeperState(path, now, add, maxTx = 48) {
     const used = txs.length;
     const charged = txs.reduce((sum, t) => sum + keeperCharge(t), 0n);
     const level = used >= maxTx ? CRIT : overdue || wasted >= 3 || used * 2 >= maxTx ? WARN : OK;
-    add("keeper_budget", level, `${used} of ${maxTx} transactions counted (24 h inclusion window plus ${unresolved.length} unresolved), ${wasted} moved nothing, ${charged} wei spent or reserved${overdue ? "; unresolved publication needs reconciliation; no new nonce is allowed" : ""}${wasted >= 3 ? "; someone is winning skims against the keeper, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}`);
+    add("keeper_budget", level, `${used} of ${maxTx} transactions counted (24 h inclusion window plus ${unresolved.length} unresolved), ${wasted} moved nothing, ${charged} wei spent or reserved${overdue ? "; an unresolved publication is older than the warning threshold: the keeper keeps re-publishing or replacing it on the same nonce, and opens no new nonce until it settles" : ""}${wasted >= 3 ? "; someone is winning skims against the keeper, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}`);
   } catch (error) {
     add("keeper_budget", CRIT, `keeper accounting is unreadable: ${error.message}`);
   }

@@ -35,7 +35,15 @@
 //        [--ceiling-floor-wei <default budget-wei / max-tx>]
 //        [--tip-wei 1000000000] [--max-tip-wei 8000000000]
 //        [--soft-share-bps 2500] [--hard-reserve-bps 2500]
-//        [--cooldown-s 1800] [--pending-timeout-s 7200] -- <cast signer arguments>
+//        [--cooldown-s 1800] [--pending-timeout-s 7200] [--rebroadcast-s 900]
+//        [--replace-after-s 7200] [--max-replacements 4] -- <cast signer arguments>
+//
+// Recovery of a lost transaction is automatic and never opens a second nonce (docs: "Crash
+// behaviour"): the signed bytes are kept in the state file and re-published unchanged; a
+// transaction that stays out of the chain is replaced AT THE SAME NONCE by another
+// skim(Safe) with higher fees inside the same ceilings, so at most one of them can ever be
+// mined; a nonce consumed by a transaction this keeper did not record is settled from the
+// finalized chain. A new nonce is used only after the previous one is settled by finalized data.
 
 import { execFile } from "node:child_process";
 import { randomInt } from "node:crypto";
@@ -75,7 +83,16 @@ export const DEFAULTS = Object.freeze({
   cooldownSeconds: 1_800, // a little over two L2 blocks at 12-15 min
   pendingTimeoutSeconds: KEEPER_PENDING_TIMEOUT_SECONDS,
   backoffCapSeconds: 6 * 3_600,
+  // Recovery of a transaction that did not reach the chain. The same signed bytes are
+  // published again every rebroadcastSeconds (one L2 block). After replaceAfterSeconds
+  // without inclusion, or at once when the node proves the bytes are not in its spool, the
+  // next needed skim reuses the SAME nonce with fees 12.5% higher (the spool asks 10%).
+  rebroadcastSeconds: 900,
+  replaceAfterSeconds: KEEPER_PENDING_TIMEOUT_SECONDS,
+  maxReplacements: 4,
 });
+/// A same-nonce replacement raises both fee fields by at least 1/8 (the L2 spool and geth ask 10%).
+export const replacementFloor = (wei) => (BigInt(wei) * 9n + 7n) / 8n;
 /// Value of a pair's unrecorded balance, in wei of the wrapped token at the pool's own
 /// price (reserves). null when the pair has no wrapped side or an empty reserve.
 export function excessValueWei(pairState, wrapped) {
@@ -143,21 +160,67 @@ async function requireCanonicalReceiptBlock(request, number, hash) {
   return block;
 }
 
-/// Resolve at most one old entry per pass. Every unresolved entry blocks new
-/// publication, including entries expired/replaced by earlier keeper versions.
+const hex = (n) => `0x${n.toString(16)}`;
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+/// Every transaction hash signed for an entry's nonce: the current one, then older attempts.
+const hashesOf = (entry) => [entry.hash, ...(entry.attempts ?? []).map((a) => a.hash).reverse()];
+
+/// The signed bytes kept in the state file are published again only if they are this keeper's
+/// skim(Safe) on a pinned pair: a state file edited by hand cannot make the keeper publish
+/// anything else. Throws IdentityError.
+export async function storedSkim(entry, keeper, deployment) {
+  const refuse = (why) => { throw new IdentityError(`the transaction stored for ${entry.hash} is not this keeper's skim to the Safe (${why}); nothing was published`); };
+  if (typeof entry.raw !== "string" || !/^0x(?:[0-9a-f]{2})+$/.test(entry.raw)) refuse("no signed bytes");
+  if (keccak256(entry.raw) !== entry.hash) refuse("hash");
+  let tx;
+  try { tx = parseTransaction(entry.raw); } catch { refuse("encoding"); }
+  let signer;
+  try { signer = (await recoverTransactionAddress({ serializedTransaction: entry.raw })).toLowerCase(); } catch { refuse("signature"); }
+  if (signer !== keeper) refuse("signer");
+  const pair = deployment.pairs.find((p) => p.address.toLowerCase() === String(entry.pair).toLowerCase());
+  if (!pair || tx.to?.toLowerCase() !== pair.address.toLowerCase()) refuse("pair");
+  if (tx.type !== "eip1559" || BigInt(tx.chainId) !== BigInt(deployment.chainId) || BigInt(tx.nonce ?? 0) !== BigInt(entry.nonce)) refuse("chain or nonce");
+  if ((tx.data ?? "0x").toLowerCase() !== encode("skim", [deployment.feeTo]).toLowerCase() || (tx.value ?? 0n) !== 0n || tx.accessList?.length) refuse("call");
+  return tx;
+}
+
+/// The finalized transaction that used `nonce` of the keeper account, found by bisecting the
+/// account's transaction count over block numbers. null when the node cannot show it.
+async function findNonceConsumer(request, keeper, nonce, from, finalizedNumber) {
+  const countAt = async (n) => BigInt(await request("eth_getTransactionCount", [keeper, hex(n)]));
+  let low = from > 0n && from < finalizedNumber && (await countAt(from)) <= nonce ? from : 0n;
+  if (low === 0n && (await countAt(0n)) > nonce) return null;
+  let high = finalizedNumber; // count(low) <= nonce < count(high)
+  while (high - low > 1n) {
+    const mid = (low + high) / 2n;
+    if ((await countAt(mid)) > nonce) high = mid; else low = mid;
+  }
+  const block = await request("eth_getBlockByNumber", [hex(high), true]);
+  if (!block || receiptQuantity(block.number, "block number") !== high || !Array.isArray(block.transactions)) return null;
+  const tx = block.transactions.find((t) => t && typeof t === "object" && String(t.from).toLowerCase() === keeper &&
+    typeof t.nonce === "string" && /^0x[0-9a-f]+$/.test(t.nonce) && BigInt(t.nonce) === nonce);
+  return tx && typeof tx.hash === "string" && /^0x[0-9a-f]{64}$/.test(tx.hash) ? { block, tx } : null;
+}
+
+/// Resolve at most one old entry per pass. Every unresolved entry blocks a NEW nonce,
+/// including entries expired/replaced by earlier keeper versions. What this may do for a
+/// transaction that is not in the chain: publish its stored bytes again, unchanged, and tell
+/// the caller that the next needed skim may replace it at the same nonce (`replace`).
 async function reconcile(state, keeper, deployment, request, now, options) {
   const open = state.txs.find(keeperNeedsReconciliation);
   if (!open) return null;
-  const pending = (reason = "awaiting-receipt", entry = open) => {
+  const pending = (reason = "awaiting-receipt", entry = open, extra = {}) => {
     const ageSeconds = Math.max(0, now - entry.at);
     const overdue = ageSeconds > options.pendingTimeoutSeconds;
     return { hash: entry.hash, ageSeconds, reason: reason === "awaiting-receipt" && overdue ? "pending-timeout" : reason,
-      level: overdue || reason === "nonce-used-without-receipt" || reason === "legacy-history" ? WARN : OK };
+      level: overdue || ["nonce-used-without-receipt", "legacy-history", "nonce-gap"].includes(reason) ? WARN : OK, ...extra };
   };
-  const receipt = await request("eth_getTransactionReceipt", [open.hash]);
-  if (receipt) {
-    if (receipt.transactionHash !== open.hash || String(receipt.from).toLowerCase() !== keeper ||
-      String(receipt.to).toLowerCase() !== open.pair || !["0x0", "0x1"].includes(receipt.status)) {
+  for (const hash of hashesOf(open)) {
+    const receipt = await request("eth_getTransactionReceipt", [hash]);
+    if (!receipt) continue;
+    const pair = hash === open.hash ? open.pair : open.attempts.find((a) => a.hash === hash).pair;
+    if (receipt.transactionHash !== hash || String(receipt.from).toLowerCase() !== keeper ||
+      String(receipt.to).toLowerCase() !== String(pair).toLowerCase() || !["0x0", "0x1"].includes(receipt.status)) {
       throw new RpcError("keeper receipt identity or status differs from the published transaction");
     }
     const blockNumber = receiptQuantity(receipt.blockNumber, "blockNumber");
@@ -179,6 +242,12 @@ async function reconcile(state, keeper, deployment, request, now, options) {
     if (includedAt > BigInt(Number.MAX_SAFE_INTEGER)) throw new RpcError("keeper receipt timestamp cannot be recorded exactly");
     await requireCanonicalReceiptBlock(request, finalized.number, finalized.hash);
     const moved = (receipt.logs ?? []).some((log) => log.topics?.[0] === TRANSFER_TOPIC && /^0x[0-9a-fA-F]+$/.test(log.data ?? "") && BigInt(log.data) > 0n);
+    if (hash !== open.hash) {
+      // An older attempt of this nonce is the one that was mined: it becomes the entry's transaction.
+      const landed = open.attempts.find((a) => a.hash === hash);
+      open.attempts = [...open.attempts.filter((a) => a !== landed), { hash: open.hash, raw: open.raw, pair: open.pair, tipWei: open.tipWei, maxFeeWei: open.maxFeeWei, gasLimit: open.gasLimit, at: open.replacedAt }];
+      Object.assign(open, { hash, raw: landed.raw, pair: landed.pair, tipWei: landed.tipWei, maxFeeWei: landed.maxFeeWei, gasLimit: landed.gasLimit });
+    }
     open.spentWei = spentWei.toString();
     open.includedAt = Number(includedAt);
     open.includedBlockNumber = blockNumber.toString();
@@ -195,17 +264,79 @@ async function reconcile(state, keeper, deployment, request, now, options) {
     const next = state.txs.find(keeperNeedsReconciliation);
     return next ? pending("legacy-history", next) : null;
   }
-  const nonce = BigInt(await request("eth_getTransactionCount", [keeper, "latest"]));
-  if (nonce > BigInt(open.nonce)) {
-    return pending("nonce-used-without-receipt");
+
+  const nonce = BigInt(open.nonce);
+  const latestNonce = BigInt(await request("eth_getTransactionCount", [keeper, "latest"]));
+  if (latestNonce > nonce) {
+    // The nonce is used and none of this entry's hashes has a receipt: another transaction of
+    // the keeper account took it (a manual skim, another tool). Only the finalized chain can
+    // say which one; until it does, nothing is released and no new nonce is opened.
+    const waiting = pending("nonce-used-without-receipt");
+    const finalized = await readBlock(request, "finalized");
+    if (!finalized) return waiting;
+    if (BigInt(await request("eth_getTransactionCount", [keeper, hex(finalized.number)])) <= nonce) return waiting;
+    const found = await findNonceConsumer(request, keeper, nonce, BigInt(open.sinceBlock ?? 0), finalized.number);
+    if (!found) return waiting;
+    // One of our own hashes without a receipt: the node's receipt index is behind. Wait for it.
+    if (hashesOf(open).includes(found.tx.hash)) return waiting;
+    const receipt = await request("eth_getTransactionReceipt", [found.tx.hash]);
+    if (!receipt || receipt.transactionHash !== found.tx.hash || String(receipt.from).toLowerCase() !== keeper ||
+      receipt.blockHash !== found.block.hash || !["0x0", "0x1"].includes(receipt.status)) return waiting;
+    const blockNumber = receiptQuantity(receipt.blockNumber, "blockNumber");
+    const spentWei = receiptQuantity(receipt.gasUsed, "gasUsed") * receiptQuantity(receipt.effectiveGasPrice, "effectiveGasPrice");
+    if (blockNumber !== BigInt(found.block.number) || blockNumber > finalized.number || spentWei === 0n) return waiting;
+    const included = await requireCanonicalReceiptBlock(request, blockNumber, receipt.blockHash);
+    const includedAt = receiptQuantity(included.timestamp, "block timestamp");
+    if (includedAt > BigInt(Number.MAX_SAFE_INTEGER)) throw new RpcError("keeper receipt timestamp cannot be recorded exactly");
+    await requireCanonicalReceiptBlock(request, finalized.number, finalized.hash);
+    // The recorded transaction can never be mined now. The account did spend this gas, so it
+    // is charged to the rolling budget at its real cost, in the window of its real block.
+    open.status = "superseded";
+    open.supersededBy = found.tx.hash;
+    open.spentWei = spentWei.toString();
+    open.includedAt = Number(includedAt);
+    open.includedBlockNumber = blockNumber.toString();
+    open.includedBlockHash = receipt.blockHash;
+    return { action: "nonce-settled-by-other-transaction", level: WARN, hash: open.hash, supersededBy: found.tx.hash, spentWei: open.spentWei, includedBlockNumber: open.includedBlockNumber };
   }
-  return pending();
+  // An earlier nonce of the account is still open: nothing recorded here can be mined before it.
+  if (latestNonce < nonce) return pending("nonce-gap");
+
+  // Not mined, and the nonce is still free. Publish the same signed bytes again.
+  const lastAttemptAt = open.replacedAt ?? open.at;
+  let notSpooled = Number.isSafeInteger(open.notSpooledAt) && open.notSpooledAt >= lastAttemptAt;
+  let rebroadcast;
+  if (options.execute && open.raw !== undefined && !notSpooled && now - (open.lastBroadcastAt ?? lastAttemptAt) >= options.rebroadcastSeconds) {
+    await storedSkim(open, keeper, deployment);
+    open.lastBroadcastAt = now;
+    open.broadcasts = (open.broadcasts ?? 1) + 1;
+    try {
+      rebroadcast = (await request("eth_sendRawTransaction", [open.raw])) === open.hash ? "accepted" : "unconfirmed";
+    } catch (error) {
+      const feeRequirement = sequencerFeeRequirement(error, open.hash);
+      if (feeRequirement) {
+        // The node answers this only for bytes that are not in its spool (an entry it already
+        // holds gets its hash back). The same nonce may be replaced at once.
+        open.notSpooledAt = now;
+        open.feeRequirement = feeRequirement;
+        notSpooled = true;
+        rebroadcast = "fee-refused";
+      } else rebroadcast = "unconfirmed";
+    }
+  }
+  const stale = now - lastAttemptAt >= options.replaceAfterSeconds;
+  const feesKnown = [open.tipWei, open.maxFeeWei].every((v) => typeof v === "string" && DECIMAL.test(v));
+  const only = state.txs.filter(keeperNeedsReconciliation).length === 1;
+  const exhausted = (open.attempts?.length ?? 0) >= options.maxReplacements;
+  const replace = (stale || notSpooled) && feesKnown && only && !exhausted ? open : undefined;
+  return pending(exhausted && stale ? "replacements-exhausted" : notSpooled ? "not-in-spool" : undefined, open, { ...(rebroadcast ? { rebroadcast } : {}), replace });
 }
 
 /// One keeper pass. `deps`: {request, sign(tx) -> rawHex, now}. Writes state
 /// through `deps.save` before anything is published.
-export async function runKeeper(gate, options, state, deps) {
+export async function runKeeper(gate, givenOptions, state, deps) {
   const { request, sign, save, now } = deps;
+  const options = { rebroadcastSeconds: DEFAULTS.rebroadcastSeconds, replaceAfterSeconds: DEFAULTS.replaceAfterSeconds, maxReplacements: DEFAULTS.maxReplacements, ...givenOptions };
   const deployment = deploymentFromGate(gate);
   const keeper = options.keeper.toLowerCase();
   const result = (level, action, detail = {}) => ({ level, action, ...detail });
@@ -217,9 +348,22 @@ export async function runKeeper(gate, options, state, deps) {
       throw new IdentityError(`the gate file's feeTo ${deployment.feeTo} is not its Bloch Inc Safe ${deployment.safe?.address}`);
     }
     await checkIdentity(request, deployment);
+    const requireFactoryRecipient = async (at) => {
+      const factoryCode = await codeHash(request, deployment.factory.address, at);
+      if (factoryCode !== deployment.factory.codeHash) throw new IdentityError(`factory ${deployment.factory.address} code ${factoryCode} differs from the pin`);
+      const chainFeeTo = (await call(request, deployment.factory.address, "feeTo", [], at)).toLowerCase();
+      if (chainFeeTo !== deployment.feeTo.toLowerCase()) throw new IdentityError(`the factory pays fees to ${chainFeeTo}, the gate file says ${deployment.feeTo}`);
+    };
+    // Before anything is published again: recovery re-publishes stored bytes, and they pay the same recipient.
+    if (state.txs.some(keeperNeedsReconciliation)) await requireFactoryRecipient(blockRef(await readBlock(request, "latest")));
     const inFlight = await reconcile(state, keeper, deployment, request, now, options);
     save(state);
-    if (inFlight) return result(inFlight.level, "wait-in-flight", inFlight);
+    // `replacing`: the one open transaction is not in the chain and its nonce is still free, so
+    // the skim planned below reuses that nonce. Only one transaction per nonce can be mined.
+    const replacing = inFlight?.replace ?? null;
+    if (inFlight) delete inFlight.replace;
+    if (inFlight?.action) return result(inFlight.level, inFlight.action, inFlight);
+    if (inFlight && !replacing) return result(inFlight.level, "wait-in-flight", inFlight);
 
     const latest = await readBlock(request, "latest");
     const at = blockRef(latest);
@@ -227,11 +371,7 @@ export async function runKeeper(gate, options, state, deps) {
       const observed = await codeHash(request, token.address, at);
       if (observed !== token.codeHash) throw new IdentityError(`token ${token.address} code ${observed} differs from the pin`);
     }
-
-    const factoryCode = await codeHash(request, deployment.factory.address, at);
-    if (factoryCode !== deployment.factory.codeHash) throw new IdentityError(`factory ${deployment.factory.address} code ${factoryCode} differs from the pin`);
-    const chainFeeTo = (await call(request, deployment.factory.address, "feeTo", [], at)).toLowerCase();
-    if (chainFeeTo !== deployment.feeTo.toLowerCase()) throw new IdentityError(`the factory pays fees to ${chainFeeTo}, the gate file says ${deployment.feeTo}`);
+    await requireFactoryRecipient(at);
 
     let target = null;
     let ceilingPair = null;
@@ -263,7 +403,8 @@ export async function runKeeper(gate, options, state, deps) {
     if (hardPair) target = hardPair;
     const soft = !target && Boolean(softPair);
     if (soft) target = softPair;
-    if (!target) return result(OK, "nothing-to-do", { seen });
+    // A lost transaction with nothing left to skim stays recorded; its nonce is reused when a skim is next needed.
+    if (!target) return replacing ? result(inFlight.level, "wait-in-flight", { ...inFlight, replaceable: true }) : result(OK, "nothing-to-do", { seen });
 
     // Stopped with a hard closure standing means ordinary swaps stay stopped and nothing
     // here will clear it: that is an operator's problem now, not a warning.
@@ -273,7 +414,8 @@ export async function runKeeper(gate, options, state, deps) {
     // stops only swaps below the floor, and it costs the griefer about 1 USD. The budget
     // and the transaction count always apply.
     if (!hardPair && now < state.nextAllowedAt) return blocked("backoff", { until: state.nextAllowedAt, consecutiveWasted: state.consecutiveWasted });
-    const inWindow = windowTxs(state, now);
+    // A replacement adds no transaction: the entry it replaces is already counted and reserved.
+    const inWindow = windowTxs(state, now).filter((t) => t !== replacing);
     const last = inWindow.at(-1);
     if (!hardPair && last && now - last.at < options.cooldownSeconds) return result(OK, "cooldown", { pair: target.address, seen, until: last.at + options.cooldownSeconds });
     if (inWindow.length >= options.maxTx) return blocked("tx-count-exhausted", { maxTx: options.maxTx });
@@ -292,19 +434,43 @@ export async function runKeeper(gate, options, state, deps) {
 
     if (latest.baseFee + options.tipWei > options.maxFeeWei) return blocked("fee-above-ceiling", { baseFee: latest.baseFee, maxFeeWei: options.maxFeeWei });
     let tip = nextTip(state, options, deps.random);
-    if (latest.baseFee + tip > options.maxFeeWei) tip = options.maxFeeWei - latest.baseFee;
+    // Fee floors, always inside the operator's ceilings (never raised here): a same-nonce
+    // replacement must outbid the attempt it replaces, and the node's own quote for the last
+    // refused skim (its price for new storage slots) is honoured on the next attempt.
+    const quote = replacing?.feeRequirement ?? (state.feeHint && now - state.feeHint.at < 86_400 ? state.feeHint : null);
+    const tipFloor = [replacing ? replacementFloor(replacing.tipWei) : 0n, quote ? BigInt(quote.requiredPriorityFeePerGas) : 0n].reduce((a, b) => (a > b ? a : b));
+    if (tip < tipFloor) tip = tipFloor;
+    if (tip > options.maxTipWei && tipFloor > 0n) return blocked("fee-above-ceiling", { requiredTipWei: tipFloor, maxTipWei: options.maxTipWei, ...(replacing ? { replacesHash: replacing.hash } : {}) });
+    if (latest.baseFee + tip > options.maxFeeWei) {
+      if (tipFloor > 0n) return blocked("fee-above-ceiling", { baseFee: latest.baseFee, requiredTipWei: tipFloor, maxFeeWei: options.maxFeeWei });
+      tip = options.maxFeeWei - latest.baseFee;
+    }
     const wanted = latest.baseFee * 2n + tip;
-    const maxFee = wanted < options.maxFeeWei ? wanted : options.maxFeeWei;
+    let maxFee = wanted < options.maxFeeWei ? wanted : options.maxFeeWei;
+    if (replacing) {
+      const feeFloor = replacementFloor(replacing.maxFeeWei);
+      if (feeFloor > options.maxFeeWei) return blocked("fee-above-ceiling", { requiredMaxFeeWei: feeFloor, maxFeeWei: options.maxFeeWei, replacesHash: replacing.hash });
+      if (maxFee < feeFloor) maxFee = feeFloor;
+    }
+    // The node measures the tip against the NEXT block's base fee, which can be 1/8 above this one.
+    if (tipFloor > 0n && maxFee - replacementFloor(latest.baseFee) < tipFloor) return blocked("fee-above-ceiling", { baseFee: latest.baseFee, requiredTipWei: tipFloor, maxFeeWei: options.maxFeeWei });
     const worstCase = gasLimit * maxFee;
-    const spent = windowSpend(state, now);
-    if (spent + worstCase > options.budgetWei) return blocked("budget-exhausted", { spentWei: spent, worstCaseWei: worstCase, budgetWei: options.budgetWei });
+    // Only one transaction of a nonce can be mined: the entry reserves the dearest attempt once.
+    const priorReserved = replacing ? BigInt(replacing.reservedWei) : 0n;
+    const reserve = worstCase > priorReserved ? worstCase : priorReserved;
+    const spent = windowSpend(state, now) - priorReserved;
+    if (spent + reserve > options.budgetWei) return blocked("budget-exhausted", { spentWei: spent, worstCaseWei: reserve, budgetWei: options.budgetWei });
     const funds = BigInt(await request("eth_getBalance", [keeper, "latest"]));
     if (funds < worstCase) return blocked("keeper-underfunded", { balanceWei: funds, worstCaseWei: worstCase });
 
-    const plan = { pair: target.address, to: deployment.feeTo, closure: hardPair ? "hard" : soft ? "soft" : null, kCeiling: atCeiling, tip, gasLimit, maxFee, worstCaseWei: worstCase, spentWei: spent, budgetWei: options.budgetWei, seen };
+    const plan = { pair: target.address, to: deployment.feeTo, closure: hardPair ? "hard" : soft ? "soft" : null, kCeiling: atCeiling, tip, gasLimit, maxFee, worstCaseWei: worstCase, spentWei: spent, budgetWei: options.budgetWei, seen,
+      ...(replacing ? { replacesHash: replacing.hash, nonce: BigInt(replacing.nonce) } : {}) };
     if (!options.execute) return result(OK, "would-skim", plan);
 
-    const nonce = BigInt(await request("eth_getTransactionCount", [keeper, "pending"]));
+    // A new nonce only when nothing is open; a replacement keeps the open entry's nonce, which
+    // must still be the account's next one (reconcile read it; read again: time has passed).
+    const nonce = replacing ? BigInt(replacing.nonce) : BigInt(await request("eth_getTransactionCount", [keeper, "pending"]));
+    if (replacing && BigInt(await request("eth_getTransactionCount", [keeper, "latest"])) !== nonce) return result(inFlight.level, "wait-in-flight", inFlight);
     const raw = await sign({ chainId: deployment.chainId, nonce, gasLimit, maxFee, tip, to: target.address, data });
     const signer = (await recoverTransactionAddress({ serializedTransaction: raw })).toLowerCase();
     if (signer !== keeper) throw new IdentityError(`the signer is ${signer}, not the configured keeper ${keeper}`);
@@ -316,14 +482,38 @@ export async function runKeeper(gate, options, state, deps) {
       !signed.accessList?.length;
     if (!same) throw new IdentityError("the signed transaction is not the planned skim (chain, nonce, recipient, data, value, gas or fees differ)");
     const hash = keccak256(raw);
-    const entry = { at: now, hash, nonce: nonce.toString(), pair: target.address, reservedWei: worstCase.toString(), kind: hardPair ? "hard" : soft ? "soft" : atCeiling ? "ceiling" : "excess", tipWei: tip.toString(), status: "pending" };
-    state.txs = [...windowTxs(state, now), entry];
+    const kind = hardPair ? "hard" : soft ? "soft" : atCeiling ? "ceiling" : "excess";
+    // The signed bytes are public data. Kept, they let a later pass publish the identical transaction again.
+    const signedFields = { hash, raw, pair: target.address, tipWei: tip.toString(), maxFeeWei: maxFee.toString(), gasLimit: gasLimit.toString() };
+    let entry;
+    if (replacing) {
+      if (hashesOf(replacing).includes(hash)) return result(inFlight.level, "wait-in-flight", inFlight);
+      entry = replacing;
+      entry.attempts = [...(entry.attempts ?? []), { hash: entry.hash, raw: entry.raw, pair: entry.pair, tipWei: entry.tipWei, maxFeeWei: entry.maxFeeWei, gasLimit: entry.gasLimit, at: entry.replacedAt ?? entry.at }];
+      Object.assign(entry, signedFields, { kind, reservedWei: reserve.toString(), replacedAt: now, lastBroadcastAt: now, status: "pending" });
+      delete entry.notSpooledAt;
+      delete entry.feeRequirement;
+    } else {
+      entry = { at: now, ...signedFields, nonce: nonce.toString(), sinceBlock: latest.number.toString(), reservedWei: worstCase.toString(), kind, status: "pending" };
+      state.txs = [...windowTxs(state, now), entry];
+    }
+    delete state.feeHint; // Used by this attempt; a new refusal brings a new quote.
     save(state); // Before publishing: a crash after this point cannot overspend.
     try {
       const publishedHash = await request("eth_sendRawTransaction", [raw]);
       if (publishedHash !== hash) throw new RpcError("eth_sendRawTransaction returned a different transaction hash");
     } catch (error) {
       const feeRequirement = sequencerFeeRequirement(error, hash);
+      // The next attempt stays inside the same ceilings; if the quote is above them an operator must decide.
+      const withinCeilings = feeRequirement && BigInt(feeRequirement.requiredPriorityFeePerGas) <= options.maxTipWei && BigInt(feeRequirement.requiredMaxFeePerGas) <= options.maxFeeWei;
+      if (feeRequirement && replacing) {
+        // These bytes are not in the node's spool, but an older attempt of this nonce may still
+        // be: the entry stays open and reserved, and a later pass replaces it again with this quote.
+        entry.notSpooledAt = now;
+        entry.feeRequirement = feeRequirement;
+        save(state);
+        return result(withinCeilings ? WARN : CRIT, "publish-refused", { hash, detail: error.message, feeRequirement, retry: withinCeilings ? "automatic, at the same nonce" : "needs higher --max-tip-wei / --max-fee-wei" });
+      }
       if (feeRequirement) {
         // This specific admission response is emitted before the node's spool
         // write. Never infer rejection from a generic error message or code.
@@ -331,15 +521,16 @@ export async function runKeeper(gate, options, state, deps) {
         entry.refusalKind = feeRequirement.kind;
         entry.spentWei = "0";
         state.nextAllowedAt = now + options.cooldownSeconds;
+        state.feeHint = { requiredPriorityFeePerGas: feeRequirement.requiredPriorityFeePerGas, requiredMaxFeePerGas: feeRequirement.requiredMaxFeePerGas, transactionHash: hash, at: now };
         save(state);
-        return result(CRIT, "publish-refused", { hash, detail: error.message, feeRequirement });
+        return result(withinCeilings ? WARN : CRIT, "publish-refused", { hash, detail: error.message, feeRequirement, retry: withinCeilings ? "automatic, after the cooldown" : "needs higher --max-tip-wei / --max-fee-wei" });
       }
       // A lost response, a malformed reply, or a generic RPC error can arrive
       // after acceptance. Even "nonce too low" can mean this transaction landed.
       // Keep the saved reservation; a later pass reconciles its hash and nonce.
       return result(WARN, "publish-unconfirmed", { hash, detail: error.message });
     }
-    return result(OK, "sent", { hash, ...plan });
+    return result(OK, replacing ? "replaced" : "sent", { hash, ...plan });
   } catch (error) {
     if (error instanceof RpcError) return result(UNKNOWN, "rpc-failed", { detail: error.message });
     if (error instanceof CallReverted) return result(CRIT, "simulation-reverted", { detail: error.message });
@@ -406,12 +597,19 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       ceilingFloorWei: bigOption(args, "ceiling-floor-wei", DEFAULTS.ceilingFloorWei),
       cooldownSeconds: Number(args["cooldown-s"] ?? DEFAULTS.cooldownSeconds),
       pendingTimeoutSeconds: Number(args["pending-timeout-s"] ?? DEFAULTS.pendingTimeoutSeconds),
+      rebroadcastSeconds: Number(args["rebroadcast-s"] ?? DEFAULTS.rebroadcastSeconds),
+      replaceAfterSeconds: Number(args["replace-after-s"] ?? DEFAULTS.replaceAfterSeconds),
+      maxReplacements: Number(args["max-replacements"] ?? DEFAULTS.maxReplacements),
     };
-    for (const k of ["maxTx", "cooldownSeconds", "pendingTimeoutSeconds"]) {
-      if (!Number.isSafeInteger(options[k]) || options[k] < 0) throw new Error(`--${{ maxTx: "max-tx", cooldownSeconds: "cooldown-s", pendingTimeoutSeconds: "pending-timeout-s" }[k]} must be a non-negative integer`);
+    const integerOptions = { maxTx: "max-tx", cooldownSeconds: "cooldown-s", pendingTimeoutSeconds: "pending-timeout-s", rebroadcastSeconds: "rebroadcast-s", replaceAfterSeconds: "replace-after-s", maxReplacements: "max-replacements" };
+    for (const [k, flag] of Object.entries(integerOptions)) {
+      if (!Number.isSafeInteger(options[k]) || options[k] < 0) throw new Error(`--${flag} must be a non-negative integer`);
     }
     const now = Math.floor(Date.now() / 1000);
     release = acquireLock(args.state);
+    // A stopped pass is the same as a crashed one: the state was written before anything was
+    // published, and the next pass reconciles. Leaving the lock would only block that pass.
+    for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.once(signal, () => { try { release(); } finally { process.exit(CRIT); } });
     const allowed = args.execute ? [...READ_ONLY_METHODS, "eth_sendRawTransaction"] : READ_ONLY_METHODS;
     const outcome = await runKeeper(readGate(args.config), options, loadState(args.state), {
       request: createRequest(args.rpc, { allowed }),

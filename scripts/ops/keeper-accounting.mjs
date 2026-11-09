@@ -1,6 +1,8 @@
 // Shared by the keeper and its monitor. Time alone never resolves a signed
 // transaction; confirmed spend belongs to the canonical inclusion timestamp.
-const SETTLED = new Set(["effective", "wasted", "reverted"]);
+// "superseded": the nonce was used by a finalized transaction this keeper did not record; charged at that
+// transaction's real cost.
+const SETTLED = new Set(["effective", "wasted", "reverted", "superseded"]);
 const HASH = /^0x[0-9a-f]{64}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 export const KEEPER_PENDING_TIMEOUT_SECONDS = 7200;
