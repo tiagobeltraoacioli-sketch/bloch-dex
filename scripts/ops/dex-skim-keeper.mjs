@@ -49,7 +49,7 @@ export { acquireLock, saveState } from "./keeper-state-store.mjs";
 import {
   CRIT, CallReverted, IdentityError, OK, READ_ONLY_METHODS, RpcError, UNKNOWN, WARN,
   blockRef, checkIdentity, classifyExcess, closureOf, codeHash, createRequest, deploymentFromGate, encode, isAtKCeiling, keccak256,
-  parseArgs, readBlock, readBridgeExit, readGate, readPair, recoverTransactionAddress, stringify,
+  call, parseArgs, parseTransaction, readBlock, readBridgeExit, readGate, readPair, recoverTransactionAddress, stringify,
 } from "./dex-ops-lib.mjs";
 
 export const DEFAULTS = Object.freeze({
@@ -178,7 +178,7 @@ async function reconcile(state, keeper, deployment, request, now, options) {
     const includedAt = receiptQuantity(included.timestamp, "block timestamp");
     if (includedAt > BigInt(Number.MAX_SAFE_INTEGER)) throw new RpcError("keeper receipt timestamp cannot be recorded exactly");
     await requireCanonicalReceiptBlock(request, finalized.number, finalized.hash);
-    const moved = (receipt.logs ?? []).some((log) => log.topics?.[0] === TRANSFER_TOPIC && BigInt(log.data || "0x0") > 0n);
+    const moved = (receipt.logs ?? []).some((log) => log.topics?.[0] === TRANSFER_TOPIC && /^0x[0-9a-fA-F]+$/.test(log.data ?? "") && BigInt(log.data) > 0n);
     open.spentWei = spentWei.toString();
     open.includedAt = Number(includedAt);
     open.includedBlockNumber = blockNumber.toString();
@@ -211,6 +211,11 @@ export async function runKeeper(gate, options, state, deps) {
   const result = (level, action, detail = {}) => ({ level, action, ...detail });
 
   try {
+    // The skim recipient is the gate file's feeTo. It must be the Bloch Inc Safe the same file pins, and (below) the
+    // recipient the factory itself pays protocol fees to: a gate file edited by hand cannot redirect the excess.
+    if (typeof deployment.feeTo !== "string" || deployment.feeTo.toLowerCase() !== deployment.safe?.address?.toLowerCase()) {
+      throw new IdentityError(`the gate file's feeTo ${deployment.feeTo} is not its Bloch Inc Safe ${deployment.safe?.address}`);
+    }
     await checkIdentity(request, deployment);
     const inFlight = await reconcile(state, keeper, deployment, request, now, options);
     save(state);
@@ -222,6 +227,11 @@ export async function runKeeper(gate, options, state, deps) {
       const observed = await codeHash(request, token.address, at);
       if (observed !== token.codeHash) throw new IdentityError(`token ${token.address} code ${observed} differs from the pin`);
     }
+
+    const factoryCode = await codeHash(request, deployment.factory.address, at);
+    if (factoryCode !== deployment.factory.codeHash) throw new IdentityError(`factory ${deployment.factory.address} code ${factoryCode} differs from the pin`);
+    const chainFeeTo = (await call(request, deployment.factory.address, "feeTo", [], at)).toLowerCase();
+    if (chainFeeTo !== deployment.feeTo.toLowerCase()) throw new IdentityError(`the factory pays fees to ${chainFeeTo}, the gate file says ${deployment.feeTo}`);
 
     let target = null;
     let ceilingPair = null;
@@ -298,6 +308,13 @@ export async function runKeeper(gate, options, state, deps) {
     const raw = await sign({ chainId: deployment.chainId, nonce, gasLimit, maxFee, tip, to: target.address, data });
     const signer = (await recoverTransactionAddress({ serializedTransaction: raw })).toLowerCase();
     if (signer !== keeper) throw new IdentityError(`the signer is ${signer}, not the configured keeper ${keeper}`);
+    // The signer is an external program: publish only the exact transaction that was planned and reserved.
+    const signed = parseTransaction(raw);
+    const same = signed.type === "eip1559" && BigInt(signed.chainId) === BigInt(deployment.chainId) && BigInt(signed.nonce) === nonce &&
+      signed.to?.toLowerCase() === target.address.toLowerCase() && (signed.data ?? "0x").toLowerCase() === data.toLowerCase() &&
+      (signed.value ?? 0n) === 0n && signed.gas === gasLimit && signed.maxFeePerGas === maxFee && signed.maxPriorityFeePerGas === tip &&
+      !signed.accessList?.length;
+    if (!same) throw new IdentityError("the signed transaction is not the planned skim (chain, nonce, recipient, data, value, gas or fees differ)");
     const hash = keccak256(raw);
     const entry = { at: now, hash, nonce: nonce.toString(), pair: target.address, reservedWei: worstCase.toString(), kind: hardPair ? "hard" : soft ? "soft" : atCeiling ? "ceiling" : "excess", tipWei: tip.toString(), status: "pending" };
     state.txs = [...windowTxs(state, now), entry];
@@ -390,6 +407,9 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
       cooldownSeconds: Number(args["cooldown-s"] ?? DEFAULTS.cooldownSeconds),
       pendingTimeoutSeconds: Number(args["pending-timeout-s"] ?? DEFAULTS.pendingTimeoutSeconds),
     };
+    for (const k of ["maxTx", "cooldownSeconds", "pendingTimeoutSeconds"]) {
+      if (!Number.isSafeInteger(options[k]) || options[k] < 0) throw new Error(`--${{ maxTx: "max-tx", cooldownSeconds: "cooldown-s", pendingTimeoutSeconds: "pending-timeout-s" }[k]} must be a non-negative integer`);
+    }
     const now = Math.floor(Date.now() / 1000);
     release = acquireLock(args.state);
     const allowed = args.execute ? [...READ_ONLY_METHODS, "eth_sendRawTransaction"] : READ_ONLY_METHODS;

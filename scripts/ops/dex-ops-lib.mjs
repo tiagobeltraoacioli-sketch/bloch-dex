@@ -8,7 +8,7 @@ import { createRpcTransport, JsonRpcResponseError } from "../staging/rpc-transpo
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const viem = requireFromFrontend("viem");
-export const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, hashTypedData, recoverAddress, recoverTransactionAddress } = viem;
+export const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, hashTypedData, parseTransaction, recoverAddress, recoverTransactionAddress } = viem;
 
 // Nagios convention, same as deployment/mainnet/l2_monitor.py in bloch-l2-evm.
 export const OK = 0;
@@ -60,6 +60,7 @@ export function createRequest(url, { allowed = READ_ONLY_METHODS, timeoutMs = 20
 export const ABI = parseAbi([
   "function getReserves() view returns (uint112, uint112, uint32)",
   "function reserveCaps() view returns (uint112, uint112)",
+  "function feeTo() view returns (address)",
   "function totalSupply() view returns (uint256)",
   "function kLast() view returns (uint256)",
   "function balanceOf(address) view returns (uint256)",

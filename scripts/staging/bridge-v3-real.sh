@@ -88,6 +88,8 @@ bridge_v3_vault() {
     PIDS+=($!)
     for _ in $(seq 50); do cast chain-id --rpc-url "$BRIDGE_ETH_RPC" > /dev/null 2>&1 && break; sleep 0.2; done
   fi
+  case "$BRIDGE_ETH_RPC" in http://127.0.0.1:*) ;; *) echo "FAIL: the rehearsal Ethereum must be on loopback (http://127.0.0.1:<port>)" >&2; exit 1 ;; esac
+  [ "$(cast rpc anvil_nodeInfo --rpc-url "$BRIDGE_ETH_RPC" 2> /dev/null | head -c 1)" = "{" ] || { echo "FAIL: the rehearsal Ethereum is not an anvil" >&2; exit 1; }
   [ "$(cast chain-id --rpc-url "$BRIDGE_ETH_RPC")" = 1 ] || { echo "FAIL: the rehearsal Ethereum is not chain id 1" >&2; exit 1; }
   for a in "$BRIDGE_ETH_DEPLOYER" "$BRIDGE_ETH_USER"; do cast rpc anvil_setBalance "$a" 0x56bc75e2d63100000 --rpc-url "$BRIDGE_ETH_RPC" > /dev/null; done
   (cd "$BRIDGE_REPO" && forge build > "$BW/bridge-build.log" 2>&1) || { tail -n 20 "$BW/bridge-build.log"; exit 1; }

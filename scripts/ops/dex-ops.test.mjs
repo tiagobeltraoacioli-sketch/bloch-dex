@@ -85,6 +85,7 @@ function fakeNode(overrides = {}) {
     switch (fn) {
       case "getReserves": return [reserves[0], reserves[1], 1];
       case "reserveCaps": return [CAP0, CAP1];
+      case "feeTo": return chain.factoryFeeTo ?? SAFE;
       case "totalSupply": return chain.totalSupply;
       case "kLast": return chain.kLast;
       case "allPairsLength": return chain.pairCount;
@@ -1302,4 +1303,45 @@ test("r10 seeder floor: a removal below the floor is refused unless overridden, 
   assert.equal(planRemoval({ held, shares: 0n, floorShares }).decision, "refuse");
   // A recipient already under the floor may not remove anything without the override.
   assert.equal(planRemoval({ held: 10n, shares: 1n, floorShares }).decision, "refuse-floor");
+});
+
+// Round 14 (review of round 13, M1/M2): the skim recipient and the signed bytes.
+test("keeper refuses a gate file whose feeTo is not its Safe, and a factory that pays another recipient", async () => {
+  const other = address(0xbad);
+  const edited = { ...gate, deployment: { ...gate.deployment, feeTo: other } };
+  let signs = 0;
+  const deps = (node) => ({ ...keeperDeps(node), sign: async (tx) => { signs++; return signer(tx); } });
+  const a = await runKeeper(edited, keeperOptions(), emptyKeeperState(), deps(fakeNode({ balances: ABOVE_CAP })));
+  assert.equal(a.level, CRIT);
+  assert.match(a.detail, /is not its Bloch Inc Safe/);
+  const b = await runKeeper(gate, keeperOptions(), emptyKeeperState(), deps(fakeNode({ balances: ABOVE_CAP, factoryFeeTo: other })));
+  assert.equal(b.level, CRIT);
+  assert.match(b.detail, /the factory pays fees to/);
+  assert.equal(signs, 0);
+});
+
+test("keeper publishes only the planned transaction, whatever the signer returns", async () => {
+  const cases = {
+    recipient: (tx) => ({ ...tx, to: address(0xbad) }),
+    value: (tx) => ({ ...tx, value: 1n }),
+    gas: (tx) => ({ ...tx, gas: 5_000_000n }),
+    fee: (tx) => ({ ...tx, maxFeePerGas: tx.maxFeePerGas * 100n }),
+    tip: (tx) => ({ ...tx, maxPriorityFeePerGas: tx.maxPriorityFeePerGas + 1n }),
+    data: (tx) => ({ ...tx, data: "0x" }),
+    nonce: (tx) => ({ ...tx, nonce: tx.nonce + 1 }),
+    chain: (tx) => ({ ...tx, chainId: 1 }),
+  };
+  for (const [name, change] of Object.entries(cases)) {
+    const node = fakeNode({ balances: ABOVE_CAP });
+    const sent = [];
+    const request = async (method, params) => { if (method === "eth_sendRawTransaction") sent.push(params[0]); return node.request(method, params); };
+    const sign = async ({ chainId, nonce, gasLimit, maxFee, tip, to, data }) =>
+      account.signTransaction(change({ chainId, nonce: Number(nonce), gas: gasLimit, maxFeePerGas: maxFee, maxPriorityFeePerGas: tip, to, data, type: "eip1559" }));
+    const deps = keeperDeps(node);
+    const outcome = await runKeeper(gate, keeperOptions(), emptyKeeperState(), { ...deps, request, sign });
+    assert.equal(outcome.level, CRIT, name);
+    assert.match(outcome.detail, /not the planned skim/, name);
+    assert.equal(sent.length, 0, name);
+    assert.ok(deps.saves.every((s) => JSON.parse(s).txs.length === 0), `${name}: nothing reserved for an unpublished transaction`);
+  }
 });
