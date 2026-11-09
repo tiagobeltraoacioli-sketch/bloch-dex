@@ -55,7 +55,7 @@ import {
   type RouteCheck,
 } from './mainnet/caps';
 import { submissionFeeNote } from './mainnet/submission-fees';
-import { newSlotFeeNote, priceNewSlots } from './mainnet/newslotfee';
+import { newSlotFeeNote } from './mainnet/newslotfee';
 import {
   requireFinality,
   submissionContext,
@@ -542,7 +542,7 @@ function PendingExcess({
             chainId: network.chainId,
           };
           // Priced before the intent is saved: a failure here leaves nothing behind.
-          const fee = await priceNewSlots(rpc, tx, network.newSlotFee);
+          const fee = await pendingSwap.price(tx);
           if (fee && mounted.current)
             setNote(`Confirm in your wallet. ${newSlotFeeNote(fee)}`.trim());
           const reservation = await pendingSwap.reserve(
@@ -975,7 +975,7 @@ function SwapPanel({
             throw new Error('The form changed, so nothing was sent. Get a new quote.');
           const tx = { ...build(), chainId: network.chainId };
           // Priced before the intent is saved: a failure here leaves nothing behind.
-          const fee = await priceNewSlots(rpc, tx, network.newSlotFee);
+          const fee = await pendingSwap.price(tx);
           if (generation !== formGeneration.current)
             throw new Error('The form changed, so nothing was sent. Get a new quote.');
           if (fee)
@@ -1577,11 +1577,13 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
             If no hash is available, you can explicitly ask your wallet to review this same nonce
             and unchanged call. An earlier attempt may still execute; only one transaction at this
             nonce can execute on the canonical chain. This never chooses a new nonce or extends the
-            deadline. Review the decoded amounts, addresses and gas limit below. If needed, adjust
-            fees yourself in the wallet; this page does not apply a fee quote. Cancelling this
-            review keeps the hold. A swap deadline can still expire while the wallet is open. Some
-            wallets ignore the nonce a site asks for: if your wallet shows a nonce other than the
-            one below, reject the request there, because it would be a second transaction.
+            deadline. Review the decoded amounts, addresses and gas limit below. The page suggests a
+            priority fee only when the call creates new storage slots on the L2, from its own
+            simulation and never from an error's figures; you can adjust fees in the wallet.
+            Cancelling this review keeps the hold. A swap deadline can still expire while the wallet
+            is open. Some wallets ignore the nonce a site asks for: if your wallet shows a nonce
+            other than the one below, reject the request there, because it would be a second
+            transaction.
           </p>
           <dl aria-label="Validated original transaction">
             {pendingSwap.review.details.map(([name, value]) => (

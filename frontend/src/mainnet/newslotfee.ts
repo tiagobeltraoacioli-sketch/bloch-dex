@@ -25,7 +25,16 @@
 // transaction. The result is a lower bound of its gas, so the tip is never too small for it.
 //
 // Zero keys are an upper bound of the slots the RPC charges (a new slot is a zero slot the
-// transaction writes), so the result errs towards a slightly higher tip, never a refusal. The
+// transaction leaves non-zero), so the result errs towards a slightly higher tip, never a
+// refusal. Two refinements keep the bound close to the RPC's own count:
+//   * the launch WBLCH has two slots that a router swap sets and clears again inside the
+//     transaction (the router's WBLCH balance and the withdraw latch); they read zero before
+//     and after, the RPC does not charge them, and `transientSlots` excludes them;
+//   * a new slot costs at least 20,000 gas (SSTORE from zero) and refunds never exceed a
+//     fifth of the gas used, so the count is capped at (gasUsed x 5/4 - 21,000) / 20,000.
+// In headless Chrome against a node applying the RPC's rule from a state trace
+// (frontend/integration/browser), a first approve, a first swap and repeat swaps are priced
+// for exactly the slots the node measures. The
 // price per slot is the network file's `newSlotFee.freshSlotPriceWei` (operator policy, not a
 // consensus rule): if the operator raises it above that plus the margin, the RPC refuses once
 // with its exact figures and the page explains them, as before this module.
@@ -33,7 +42,7 @@
 // With no possible new slot, or with the policy off, the wallet request is unchanged and the
 // wallet picks the fee. The fee fields are a suggestion to the wallet: a wallet that ignores
 // them behaves as before.
-import { formatGwei, type Address, type Hex } from 'viem';
+import { encodeAbiParameters, formatGwei, keccak256, type Address, type Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
 
 /** Mainnet settler policy `fresh_slot_price_wei`: 200 µBLCH per new storage slot. */
@@ -53,6 +62,8 @@ const INTRINSIC_GAS = 21_000n;
 /** EIP-2930 intrinsic gas of an access list entry. */
 const ACCESS_LIST_ADDRESS_GAS = 2_400n;
 const ACCESS_LIST_KEY_GAS = 1_900n;
+/** SSTORE of a non-zero value into a zero slot (EIP-2200 / EIP-2929, already warm). */
+const NEW_SLOT_GAS = 20_000n;
 
 export type NewSlotFeePolicy = { enabled: boolean; freshSlotPriceWei: bigint; marginBps: number };
 export const NEW_SLOT_FEE_OFF: NewSlotFeePolicy = {
@@ -72,6 +83,26 @@ export type NewSlotFee = FeeFields & {
   /** possibleNewSlots x price: what the sequencer must receive for the new slots, in wei. */
   slotCostWei: bigint;
 };
+
+/** Storage keys, by lowercase contract address, that a transaction sets and clears again. */
+export type TransientSlots = ReadonlyMap<string, ReadonlySet<string>>;
+
+/**
+ * The launch WBLCH (contracts/assets/WBLCH.sol; the page verifies its code hash): slot 1 is
+ * `balanceOf`, slot 3 the `withdrawing` latch. The router never keeps WBLCH: a swap credits
+ * its balance and moves all of it on in the same transaction, and `withdraw` sets the latch
+ * and clears it. If the router does hold WBLCH (someone sent it some), its balance slot is
+ * not zero and is not counted anyway.
+ */
+export function transientSlots(deployment: { wrapped: Address; router: Address }): TransientSlots {
+  const routerBalance = keccak256(
+    encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [deployment.router, 1n]),
+  );
+  const latch = `0x${'3'.padStart(64, '0')}`;
+  return new Map([
+    [deployment.wrapped.toLowerCase(), new Set([routerBalance.toLowerCase(), latch])],
+  ]);
+}
 
 export class NewSlotFeeError extends Error {}
 function refuse(condition: unknown, message: string): asserts condition {
@@ -141,6 +172,7 @@ export async function priceNewSlots(
   rpc: Rpc,
   tx: PricedCall,
   policy: NewSlotFeePolicy,
+  transient: TransientSlots = new Map(),
 ): Promise<NewSlotFee | null> {
   if (!policy.enabled) return null;
   const call = { from: tx.from, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) };
@@ -166,7 +198,8 @@ export async function priceNewSlots(
         typeof key === 'string' && /^0x[0-9a-fA-F]{64}$/.test(key),
         'the L2 RPC returned a malformed access list',
       );
-      keys.push([item.address, key]);
+      if (!transient.get(item.address.toLowerCase())?.has(key.toLowerCase()))
+        keys.push([item.address, key]);
     }
   }
   const simulated = quantity(reply.gasUsed, 'simulated gas');
@@ -174,9 +207,13 @@ export async function priceNewSlots(
     simulated >= INTRINSIC_GAS && simulated <= tx.gas,
     `the simulated gas (${simulated}) is outside 21000 to the gas limit ${tx.gas}`,
   );
+  const listed = (reply.accessList as { storageKeys: unknown[] }[]).reduce(
+    (n, item) => n + item.storageKeys.length,
+    0,
+  );
   const listGas =
     ACCESS_LIST_ADDRESS_GAS * BigInt(reply.accessList.length) +
-    ACCESS_LIST_KEY_GAS * BigInt(keys.length);
+    ACCESS_LIST_KEY_GAS * BigInt(listed);
   const gasUsed = simulated - listGas > INTRINSIC_GAS ? simulated - listGas : INTRINSIC_GAS;
   let possibleNewSlots = BigInt(keys.length);
   if (keys.length > 0 && keys.length <= MAX_STORAGE_READS) {
@@ -192,6 +229,9 @@ export async function priceNewSlots(
       if (BigInt(word) === 0n) possibleNewSlots += 1n;
     }
   }
+  // Each new slot costs at least 20,000 gas, and refunds are at most a fifth of the gas used.
+  const byGas = ((simulated * 5n) / 4n - INTRINSIC_GAS) / NEW_SLOT_GAS;
+  if (possibleNewSlots > byGas) possibleNewSlots = byGas > 0n ? byGas : 0n;
   if (possibleNewSlots === 0n) return null;
   refuse(
     possibleNewSlots <= MAX_NEW_SLOTS,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Address, Hex } from 'viem';
+import { encodeAbiParameters, keccak256, type Address, type Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
 import { sendTransaction } from '../devnet4/swap';
 import {
@@ -10,6 +10,7 @@ import {
   parseNewSlotFeePolicy,
   priceNewSlots,
   slotTipFor,
+  transientSlots,
   type NewSlotFeePolicy,
 } from '../mainnet/newslotfee';
 // The L2 settled RPC's own refusal of an underpriced first approve (local admission rehearsal).
@@ -112,18 +113,73 @@ describe('new-slot priority fee', () => {
       keys: [key(1), key(2), key(3)],
       zero: [key(1), key(3)],
       tip: '0x4a817c800',
+      gasUsed: '0x15f90',
     });
     const fee = (await priceNewSlots(rpc, CALL, ON))!;
     expect(fee.possibleNewSlots).toBe(2n);
-    // 2 slots need ceil(2 x 200e12 x 1.1 / 37900) = 11,609,498,681 < the published 20 gwei.
+    // 90,000 simulated - 2,400 - 3 x 1,900 = 81,900; 2 slots need ceil(2 x 200e12 x 1.1 / 81900)
+    // = 5,372,405,373 < the published 20 gwei.
+    expect(fee.gasUsed).toBe(81_900n);
     expect(fee.maxPriorityFeePerGas).toBe(20_000_000_000n);
     expect(newSlotFeeNote(fee)).toBe('');
   });
 
+  it('never counts more new slots than the simulated gas can pay for (20,000 gas each)', async () => {
+    // 46,000 gas: (46,000 x 5/4 - 21,000) / 20,000 = 1 slot at most, whatever the list says.
+    const many = node({
+      keys: [key(1), key(2), key(3), key(4)],
+      zero: [key(1), key(2), key(3), key(4)],
+    });
+    expect((await priceNewSlots(many.rpc, CALL, ON))!.possibleNewSlots).toBe(1n);
+    // 30,000 gas cannot hold a single new slot: the wallet picks the fee.
+    const cheap = node({ gasUsed: '0x7530' });
+    expect(await priceNewSlots(cheap.rpc, CALL, ON)).toBeNull();
+  });
+
+  it('skips the slots a router swap sets and clears again in the launch WBLCH', async () => {
+    const wrapped = '0x7f889d9cb335bbdb197b75c74a6409ac2bbbe6e6' as Address;
+    const router = '0xb3a451af23df72f72916064c6d33d1fbe25e7106' as Address;
+    const transient = transientSlots({ wrapped, router });
+    const routerBalance = keccak256(
+      encodeAbiParameters([{ type: 'address' }, { type: 'uint256' }], [router, 1n]),
+    );
+    const latch = key(3);
+    expect([...transient.get(wrapped)!]).toEqual([routerBalance, latch]);
+    const calls: { method: string; params: unknown[] }[] = [];
+    const rpc: Rpc = async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'eth_createAccessList')
+        return {
+          accessList: [
+            {
+              address: wrapped.toUpperCase().replace('0X', '0x'),
+              storageKeys: [routerBalance, latch, key(9)],
+            },
+            { address: TOKEN, storageKeys: [latch] },
+          ],
+          gasUsed: '0x222e0',
+        };
+      if (method === 'eth_getStorageAt') return '0x0';
+      if (method === 'eth_maxPriorityFeePerGas') return '0x5f5e100';
+      return { baseFeePerGas: '0x3b9aca00' };
+    };
+    const fee = (await priceNewSlots(rpc, { ...CALL, gas: 250_000n }, ON, transient))!;
+    // WBLCH key 9 and the other token's slot 3 count; the two transient WBLCH slots do not.
+    expect(fee.possibleNewSlots).toBe(2n);
+    expect(calls.filter((c) => c.method === 'eth_getStorageAt').map((c) => c.params[1])).toEqual([
+      key(9),
+      latch,
+    ]);
+    // The gas of the whole list is still taken off: 140,000 - 2 x 2,400 - 4 x 1,900.
+    expect(fee.gasUsed).toBe(127_600n);
+    // Without the exclusion the same reply counts four.
+    expect((await priceNewSlots(rpc, { ...CALL, gas: 250_000n }, ON))!.possibleNewSlots).toBe(4n);
+  });
+
   it('counts every key without reading when the call touches too many', async () => {
     const keys = Array.from({ length: MAX_STORAGE_READS + 1 }, (_, i) => key(i + 1));
-    const { rpc, n } = node({ keys, zero: [] });
-    const fee = (await priceNewSlots(rpc, CALL, ON))!;
+    const { rpc, n } = node({ keys, zero: [], gasUsed: '0x2dc6c0' });
+    const fee = (await priceNewSlots(rpc, { ...CALL, gas: 5_000_000n }, ON))!;
     expect(fee.possibleNewSlots).toBe(BigInt(keys.length));
     expect(n.calls.some((c) => c.method === 'eth_getStorageAt')).toBe(false);
   });
@@ -136,11 +192,18 @@ describe('new-slot priority fee', () => {
       [{ gasUsed: 'nope' }, /no simulated gas/],
       [{ tip: '0x174876e801' }, /priority fee/],
       [{ baseFee: undefined as unknown as string, tip: '0x' }, /no priority fee/],
-      [{ keys: Array.from({ length: 200 }, (_, i) => key(i + 1)) }, /at most 128/],
+
       [{ keys: ['0x12'] }, /malformed access list/],
     ];
     for (const [change, message] of cases)
       await expect(priceNewSlots(node(change).rpc, CALL, ON)).rejects.toThrow(message);
+    const huge = node({
+      keys: Array.from({ length: 200 }, (_, i) => key(i + 1)),
+      gasUsed: '0x2dc6c0',
+    });
+    await expect(priceNewSlots(huge.rpc, { ...CALL, gas: 5_000_000n }, ON)).rejects.toThrow(
+      /at most 128/,
+    );
     const down: Rpc = async () => {
       throw new Error('RPC down');
     };

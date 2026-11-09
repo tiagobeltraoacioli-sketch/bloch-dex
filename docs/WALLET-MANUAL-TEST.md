@@ -206,27 +206,32 @@ user's choice), and the first-approval fee (test 8).
 ## Test 8: the first approval and the new-slot fee
 
 This applies when the L2 RPC runs with its admission policy (`--required-tip-file`). A first `approve` writes a new
-storage slot and needs a higher priority fee than the wallet's default.
+storage slot and needs a higher priority fee than the wallet's default. The page prices it before opening the wallet
+(`frontend/src/mainnet/newslotfee.ts`) and suggests the fee to the wallet.
 
 1. On a fresh account, do test 7 steps 1 to 3.
-2. Read the page.
+2. Before confirming, read the page under the step: it must say "This transaction creates 1 new storage slot on the L2, which the network charges through the priority fee. The page suggests N gwei to your wallet; keep the suggested fee, a lower one is refused by the network."
+3. In the wallet prompt, open the fee details. Write down the priority fee and max fee shown, and whether the wallet labels them as suggested by the site.
+4. Do not change the fee. Confirm.
+5. Read the page.
 
 Record which of these happened:
 
-| Outcome | Page text |
-|---|---|
-| Accepted at once | "Approve 10 bUSDC: pending …" |
-| Refused, data passed on by the wallet | "Wallet submission outcome unknown: no transaction hash was returned. …" followed by "RPC fee diagnostic (not bound to your wallet's signed transaction): at head N, required priority fee X wei/gas and max fee Y wei/gas. Submission outcome remains unknown; no retry or fee increase was performed." |
-| Refused, data lost by the wallet | the same first sentence, with no "RPC fee diagnostic" |
+| Outcome | Page text | Verdict |
+|---|---|---|
+| Accepted at once, wallet fee equals the page's N gwei | "Approve 10 bUSDC: pending …" | Pass |
+| Accepted, but the wallet showed its own lower fee | the same | Record it: the RPC ran without the admission price |
+| Refused, data passed on by the wallet | "Wallet submission outcome unknown: no transaction hash was returned. …" followed by "RPC fee diagnostic (not bound to your wallet's signed transaction): at head N, required priority fee X wei/gas and max fee Y wei/gas. Submission outcome remains unknown; no retry or fee increase was performed." | The wallet ignored the suggested fee: continue at step 6 |
+| Refused, data lost by the wallet | the same first sentence, with no "RPC fee diagnostic" | The same |
 
-In the two refused outcomes the page keeps the hold and sends nothing again. The wallet shows the transaction as
-failed. To release the hold: send any transaction from the account in the wallet (for example 0 BLCH to yourself),
-wait for its finality, paste its hash, click "Check cancellation or replacement", then "Close local hold as replaced".
-Then repeat the approval with the fee the diagnostic named, set by hand in the wallet prompt (Edit, Advanced, priority
-fee X, max fee Y).
+6. Only after a refusal: in the wallet settings, allow site-suggested fees if there is such a setting. On the page open "Review the original request in your wallet", click "Review same nonce in wallet".
+7. In the wallet prompt check the nonce equals the "Nonce" shown on the page and the priority fee is the page's N gwei. If the wallet still shows its own fee, set priority fee and max fee by hand to the values of the diagnostic (Edit, Advanced), and record that this wallet needs a manual fee.
+8. Confirm, wait for finality. Expected: "Approve 10 bUSDC: mined", exactly one approval mined.
 
-Harness: `fee-refusal-with-data`, `fee-refusal-data-lost` (the refusal is fabricated by the simulated wallet). Real
-wallet only: everything in this test.
+Transactions mined: 1 approval. Harness: `first-approve-priced`, `first-swap-priced` (accepted at once by a node that
+applies the RPC's rule from a state trace), `first-approve-wallet-ignores-fees` (refused once, then the review goes
+through with the page's fee), `fee-refusal-with-data`, `fee-refusal-data-lost`. Real wallet only: whether the wallet
+honours `maxPriorityFeePerGas` and `maxFeePerGas` from the site, what it shows, and what it passes on from a refusal.
 
 ## Test 9: the same-nonce review when the wallet reply was lost
 

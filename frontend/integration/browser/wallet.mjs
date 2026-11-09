@@ -60,7 +60,48 @@ export function createWallet({ rpc, chainId }) {
     /** A wallet that prices every transaction itself. */
     ignoreFees: false,
     fees: { maxFeePerGas: 5_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n },
+    /**
+     * The wallet's node applies the L2 settled RPC's admission rule (bloch-l2-evm
+     * docs/MAINNET-RPC-READINESS.md): gasUsed x effective tip >= new storage slots x priceWei, or the
+     * signed transaction is refused before it is queued. null: no admission rule (plain anvil).
+     */
+    admission: null,
   };
+  const admissions = []; // every admission verdict: { hash, freshSlots, gasUsed, effectiveTip, required, admitted }
+  /**
+   * What the L2 measures, measured independently of the page: the call is traced on the node (prestate diff),
+   * and a new slot is a storage key that was zero before and is non-zero after.
+   */
+  async function admit(entry) {
+    const { tx } = entry;
+    const call = { from: address, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) };
+    const diff = await rpc('debug_traceCall', [call, 'latest', { tracer: 'prestateTracer', tracerConfig: { diffMode: true } }]);
+    let freshSlots = 0n;
+    for (const [account, post] of Object.entries(diff.post ?? {}))
+      for (const [key, value] of Object.entries(post.storage ?? {}))
+        if (BigInt(value) !== 0n && BigInt(diff.pre?.[account]?.storage?.[key] ?? '0x0') === 0n) freshSlots += 1n;
+    const gasUsed = BigInt((await rpc('debug_traceCall', [call, 'latest', { disableStorage: true, disableStack: true, enableMemory: false }])).gas);
+    const head = await rpc('eth_getBlockByNumber', ['latest', false]);
+    const base = BigInt(head.baseFeePerGas);
+    const room = tx.maxFeePerGas > base ? tx.maxFeePerGas - base : 0n;
+    const effectiveTip = tx.maxPriorityFeePerGas < room ? tx.maxPriorityFeePerGas : room;
+    const cost = freshSlots * state.admission.priceWei;
+    const required = (cost + gasUsed - 1n) / gasUsed;
+    const verdict = { hash: entry.hash, freshSlots, gasUsed, effectiveTip, required, admitted: effectiveTip >= required };
+    admissions.push(verdict);
+    if (verdict.admitted) return;
+    entry.refused = true;
+    throw {
+      code: -32000,
+      message: 'transaction underpriced for sequencer policy; use the transaction-specific fee in error.data (inclusion is not guaranteed)',
+      data: {
+        kind: 'sequencer-fee-underpriced', transactionHash: entry.hash, headHash: head.hash, headNumber: head.number,
+        baseFeePerGas: hex(base), requiredPriorityFeePerGas: hex(required), requiredMaxFeePerGas: hex(required + base),
+        effectivePriorityFeePerGas: hex(effectiveTip), gasUsed: hex(gasUsed), freshSlots: hex(freshSlots),
+        chargedFreshSlots: hex(freshSlots), freshSlotPriceWei: hex(state.admission.priceWei), scope: 'latest-state-next-block',
+      },
+    };
+  }
   const requests = []; // every provider request, in order
   const signed = []; // every transaction the wallet signed: { hash, raw, tx, broadcast, origin }
   const open = []; // prompts left open ('never-answer')
@@ -125,6 +166,7 @@ export function createWallet({ rpc, chainId }) {
       if (mode === 'error-fee-data-lost') throw { code: -32603, message: `Internal JSON-RPC error. ${message}` };
       throw { code: -32603, message: 'Internal JSON-RPC error.' };
     }
+    if (state.admission) await admit(entry);
     await broadcast(entry);
     // Published, but the reply to the page is lost.
     if (mode === 'broadcast-reply-lost') throw { code: -32603, message: 'Request expired. Please try again.' };
@@ -137,6 +179,7 @@ export function createWallet({ rpc, chainId }) {
     requests,
     signed,
     open,
+    admissions,
     sends: () => requests.filter((r) => r.method === 'eth_sendTransaction'),
     async handle(method, params) {
       requests.push({ method, params });

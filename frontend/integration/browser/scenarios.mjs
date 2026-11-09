@@ -581,6 +581,91 @@ scenario('wallet-own-queue-ignores-nonce', 'a wallet with its own unpublished tr
   }
 });
 
+// ---- the L2 new-slot price (frontend/src/mainnet/newslotfee.ts): the wallet's node applies the L2 admission rule ----
+const SLOT_PRICE = 200_000_000_000_000n; // the network file's freshSlotPriceWei and the settler's fresh_slot_price_wei
+const feesOf = (request) => ({ tip: request.maxPriorityFeePerGas === undefined ? null : BigInt(request.maxPriorityFeePerGas), max: request.maxFeePerGas === undefined ? null : BigInt(request.maxFeePerGas) });
+
+scenario('first-approve-priced', 'item 2: a first approve passes the L2 admission rule on the first wallet request, with no fee typed', async (w) => {
+  const page = await w.begin({ busdc: 50_000_000n });
+  w.wallet.state.admission = { priceWei: SLOT_PRICE };
+  await w.quote(page, 'bUSDC', 'BLCH', '10');
+  await page.click('Approve 10 bUSDC');
+  await page.waitText(PENDING);
+  const [request] = w.wallet.sends().map((r) => r.params[0]);
+  const fees = feesOf(request);
+  const [verdict] = w.wallet.admissions;
+  w.check('one wallet request, and it carries both fee fields', w.wallet.sends().length === 1 && fees.tip !== null && fees.max !== null, request);
+  w.check('the node measured exactly one new storage slot (the allowance)', verdict?.freshSlots === 1n, verdict);
+  w.check("the page's priority fee meets the node's rule and is admitted", verdict?.admitted === true && fees.tip >= verdict.required, { tip: fees.tip, required: verdict?.required, gasUsed: verdict?.gasUsed });
+  w.check('the fee is not excessive: at most 1.5 x the required priority fee', fees.tip * 2n <= verdict.required * 3n, { tip: fees.tip, required: verdict?.required });
+  w.check('the request still names the saved nonce', request.nonce === '0x0', request.nonce);
+  await mineAndFinalize();
+  await page.waitText('/Approve 10 bUSDC: mined/', 40_000);
+  w.check('the allowance is exactly the quoted amount', (await allowance(w.wallet.address)) === 10_000_000n, await allowance(w.wallet.address));
+  // The swap that follows: priced by the same rule, admitted on its first request.
+  await page.waitText('/Pools at finalized block \\d+/');
+  await w.quote(page, 'bUSDC', 'BLCH', '10');
+  await page.click('Swap');
+  await page.waitText(PENDING);
+  const swapVerdict = w.wallet.admissions[1];
+  w.check('the swap after it is admitted on its first request', w.wallet.sends().length === 2 && swapVerdict?.admitted === true, swapVerdict);
+  await mineAndFinalize();
+  await page.waitText('/Swap 10 bUSDC for BLCH: mined/', 40_000);
+  const f = await w.facts();
+  w.check('two transactions mined at nonces 0 and 1, one router call, nothing refused', f.minedTransactions.length === 2 && f.routerCallsMined === 1 && w.wallet.signed.every((s) => !s.refused), f.minedTransactions);
+  w.record.admission = w.wallet.admissions;
+});
+
+scenario('first-swap-priced', 'item 2: a first swap into a token the account never held creates a balance slot and is admitted on the first request', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.admission = { priceWei: SLOT_PRICE };
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  const [request] = w.wallet.sends().map((r) => r.params[0]);
+  const fees = feesOf(request);
+  const [verdict] = w.wallet.admissions;
+  w.check('the node measured at least one new slot (the bUSDC balance of a new holder)', verdict?.freshSlots >= 1n, verdict);
+  w.check('one wallet request with both fee fields, admitted', w.wallet.sends().length === 1 && fees.tip !== null && verdict?.admitted === true && fees.tip >= verdict.required, { tip: fees.tip, required: verdict?.required, freshSlots: verdict?.freshSlots });
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1 && f.nonceLatest === 1, f);
+  // The same swap again creates no slot: the page leaves the fee to the wallet.
+  await page.waitText('/Pools at finalized block \\d+/');
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  const second = w.wallet.sends()[1].params[0];
+  const again = w.wallet.admissions[1];
+  w.check('a repeat swap creates no slot: the page sends no fee fields and the node admits the wallet fee', again?.admitted === true && again.freshSlots === 0n && feesOf(second).tip === null, { again, second: feesOf(second) });
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  w.record.admission = w.wallet.admissions;
+});
+
+scenario('first-approve-wallet-ignores-fees', 'item 2: a wallet that ignores the suggested fee is refused once; the same-nonce review then goes through without typing a fee', async (w) => {
+  const page = await w.begin({ busdc: 50_000_000n });
+  w.wallet.state.admission = { priceWei: SLOT_PRICE };
+  w.wallet.state.ignoreFees = true;
+  await w.quote(page, 'bUSDC', 'BLCH', '10');
+  await page.click('Approve 10 bUSDC');
+  await page.waitText(NO_HASH);
+  const text = (await page.text()).replace(/\s+/g, ' ');
+  w.check('the refusal is explained with the node figures and nothing was published', /RPC fee diagnostic \(not bound to your wallet's signed transaction\)/.test(text) && w.wallet.admissions[0]?.admitted === false && (await nonceOf(w.wallet.address, 'pending')) === 0, w.wallet.admissions[0]);
+  // The user's wallet now takes the site's fee (or the user accepted "site suggested").
+  w.wallet.state.ignoreFees = false;
+  await openReview(page);
+  await page.click('Review same nonce in wallet');
+  await page.waitText('/Wallet returned 0x[0-9a-f]{64}\\./');
+  const review = w.wallet.sends()[1]?.params[0];
+  w.check('the review asks for the same nonce and carries the page fee', review?.nonce === '0x0' && feesOf(review).tip !== null, review);
+  w.check('the node admits it', w.wallet.admissions[1]?.admitted === true, w.wallet.admissions[1]);
+  await mineAndFinalize();
+  await page.waitText('/Approve 10 bUSDC: mined/', 40_000);
+  const f = await w.facts();
+  w.check('one approval mined at nonce 0, allowance exact', f.minedTransactions.length === 1 && f.nonceLatest === 1 && (await allowance(w.wallet.address)) === 10_000_000n, f.minedTransactions);
+  w.record.admission = w.wallet.admissions;
+});
+
 let failed = 0;
 try {
   await rpc('evm_setAutomine', [false]);

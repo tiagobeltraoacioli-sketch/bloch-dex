@@ -29,7 +29,13 @@ import {
 import { withSubmissionLock, withWalletRequestLock } from './submission-lock';
 import { sameNonceReviewDetails, transactionForSameNonceReview } from './submission-review';
 import { submissionFeeNote } from './submission-fees';
-import { NEW_SLOT_FEE_OFF, priceNewSlots, type NewSlotFeePolicy } from './newslotfee';
+import {
+  NEW_SLOT_FEE_OFF,
+  priceNewSlots,
+  transientSlots,
+  type NewSlotFeePolicy,
+  type PricedCall,
+} from './newslotfee';
 import type { RevertCause, SwapRetryInfo } from './retry';
 
 export type PendingSwap = {
@@ -707,6 +713,13 @@ export function usePendingSwap({
     [key, contextKey, assertActive],
   );
 
+  /** The L2 new-slot fee of one call of this deployment, or null when the wallet picks the fee. */
+  const price = useCallback(
+    (tx: PricedCall) =>
+      priceNewSlots(rpc, tx, newSlotFee, deployment ? transientSlots(deployment) : undefined),
+    [rpc, newSlotFee, deployment],
+  );
+
   const reviewInWallet = useCallback(
     async () =>
       withWalletRequest(async () => {
@@ -724,7 +737,7 @@ export function usePendingSwap({
         if (submissionHashes(held.swap).length) throw new Error(REVIEW_WITH_HASH);
         await verifySameNonceReview(rpc, intent, context, held.swap.deadline);
         // Priced before the review attempt is journaled: a failure here changes nothing.
-        const fee = await priceNewSlots(rpc, tx, newSlotFee);
+        const fee = await price(tx);
         const walletChain = await provider.request({ method: 'eth_chainId' });
         if (
           typeof walletChain !== 'string' ||
@@ -833,7 +846,7 @@ export function usePendingSwap({
       rpc,
       assertActive,
       updateSubmission,
-      newSlotFee,
+      price,
     ],
   );
 
@@ -1023,6 +1036,7 @@ export function usePendingSwap({
     walletBusy,
     review,
     reviewInWallet,
+    price,
     checkReplacement,
     closeReplacement,
   };
