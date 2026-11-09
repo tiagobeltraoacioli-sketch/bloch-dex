@@ -20,7 +20,8 @@
 # bridge's deploy_pontes.py (agent 180 L-3), and refuse a look-alike's record and a record with other signers.
 #
 #   SAFE_ARTIFACTS=<safe 1.4.1 build/artifacts> BRIDGE_OUT=<bridge forge out/ with BridgedStablecoinV3,
-#   ProvenanceSourceVault, MockUsdcA178> scripts/ops/rehearse-opening.sh [port] [work]
+#   ProvenanceSourceVault and its test mock MockStable (a plain `forge build` of the bridge RC)>
+#   scripts/ops/rehearse-opening.sh [port] [work]
 set -euo pipefail
 
 PORT=${1:-37810}
@@ -155,7 +156,12 @@ ecreate() { # KEY ARTIFACT CTOR_HEX -> address on Ethereum
   local init; init=$(node -e 'console.log(require(process.argv[1]).bytecode.object)' "$2")$3
   cast send --private-key "$1" --rpc-url "$ETH" --json --create "$init" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).contractAddress.toLowerCase()))'
 }
-USDC=$(ecreate "$EUSER_KEY" "$BRIDGE_OUT/MockUsdcA178.sol/MockUsdcA178.json" "")
+# The six-decimal mock USDC: agent 178's scratch mock if the out/ has it, else the bridge repository's own test mock
+# (same mintTo / approve / transfer / transferFrom surface), so a plain `forge build` of the bridge RC is enough.
+USDC_ART="$BRIDGE_OUT/MockUsdcA178.sol/MockUsdcA178.json"
+[ -f "$USDC_ART" ] || USDC_ART="$BRIDGE_OUT/BridgedStablecoin.t.sol/MockStable.json"
+[ -f "$USDC_ART" ] || die "BRIDGE_OUT has no mock USDC (MockUsdcA178 or the bridge's MockStable)"
+USDC=$(ecreate "$EUSER_KEY" "$USDC_ART" "")
 ESIGNERS="[$(awk '{print $1}' "$WORK/eth-signers.txt" | paste -sd, -)]"
 LSIGNERS="[$(awk '{print $1}' "$WORK/l2-signers.txt" | paste -sd, -)]"
 VAULT_ART="$BRIDGE_OUT/ProvenanceSourceVault.sol/ProvenanceSourceVault.json"
