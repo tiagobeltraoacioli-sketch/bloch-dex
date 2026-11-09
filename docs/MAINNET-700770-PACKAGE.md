@@ -355,5 +355,55 @@ Bridge revision `bb9abe0` (token creation keccak `0xe560441f…1de7`, the pin).
 | `rehearse-mainnet-package.sh anvil` without `BRIDGE_REPO` | Mac | REHEARSAL OK (stand-in path unchanged) |
 | `rehearse-mainnet-package.sh private-l2` with `BRIDGE_REPO` | build host, launch release binaries (`produce-dev e3f1a290…`, `settled-rpc 53e88565…`), pinned genesis | REHEARSAL OK; **the mainnet gate itself passes** with `busdc.plan.json` / `busdc.record.json` |
 
-`scripts/staging/e2e-settled/drive.sh` uses the same library (steps `bridge-eth`, `bridge-credit`);
-it needs the private settled stack with real proofs and was not run in round 14.
+`scripts/staging/e2e-settled/drive.sh` uses the same library (steps `bridge-eth`, `bridge-credit`,
+`bridge-deposit`). Its run on the private settled stack with real proofs was not made in round 14; its
+money flow was run without proofs and measured (next section).
+
+### Settled driver budget (measured 2026-11-09, no proofs)
+
+`scripts/staging/e2e-settled/proofless.sh` runs the driver's own steps, with the real bridge token, on
+`private-l2.sh` (launch release binaries `produce-dev e3f1a290…`, `settled-rpc 53e88565…`, pinned
+genesis, bridge `bb9abe0`, synthetic finality, `warp` for the 12 h mint delay). The mainnet gate passes
+in the main flow and in the derived flow `f3`. `drive.sh budget` (`budget.mjs`, read-only) replays the
+token's Transfer logs and reports each key's lowest balance.
+
+| Flow | Steps | bUSDC the issuer needs | Bursts (L2 blocks at best) |
+|---|---|---|---|
+| main | deploy, gate, bridge-credit, rec-fund, seed, safe-fee, cap-skim, fund-user, big-swap 30, donate, fill 300 3, close 200 2, keeper, reopened, fill 100 2 | **3,200.164862** (2,100 of it is `rec-fund`) | 19, counting the L1 funding block; `pending-probe` (not run) adds one |
+| `f3` | rec-init, rec-fund, deploy, gate, failed-approve, grief | 2,099.011755 | 6 |
+| `f2` (`ATTACK_CREATEPAIR=1`) | rec-init, rec-fund, deploy | 2,100 | 3 |
+| all three | | **7,399.176617** of the 9,000 deposited | 28 to 29, fewer when the flows share blocks |
+
+BLCH: each `fund` deposit is 100 BLCH per funded key. The issuer pays `rec-fund` (76 BLCH) and its own
+swaps: 78.06 BLCH net in the main flow, so every derived flow needs one more `fund` first. No other key
+spends more than 0.03 BLCH of its own deposit; the third party uses 3.1 of the 40 BLCH it receives.
+
+What the measurement changed in the driver:
+
+- The default deposit stays 9,000 bUSDC and now covers the three flows. `rec-fund` gives the third
+  party 1,500 bUSDC instead of 4,000 (`REC_FUND_THIRD_PARTY`); its largest use is 1,001. With 4,000 the
+  three flows needed 14,899.18 bUSDC, and **one deposit cannot exceed 10,000 USDC** (the vault's
+  `windowLimit`), while the token's mint bucket holds 10,000 bUSDC refilled over 24 h: a second
+  deposit of that size is refused (`RateLimited`) for about a day, then waits its own 12 h.
+  `bridge-deposit` queues one more deposit when the bucket allows it.
+- `keys` makes 13 keys: the DEX config requires a first depositor, so the main flow could not deploy
+  with 10. `rec-init` replaces the depositor, third party and keeper, and carries the bridge keys, plan
+  and record (the gate refused derived flows without them). `rec-fund` is paid by the issuer:
+  `verify-deployment --expect-empty` pins the Safe bootstrap key's nonce, and a derived flow failed
+  there ("bootstrap nonce 20, plan ends at 4").
+- `E2E_RPC`, `E2E_GW` and `E2E_FINALIZE` point the steps at another loopback L2. Without them the
+  settled stack's addresses and waits are unchanged.
+
+Not exercised without proofs, and still owed by the settled run: real settled finality at the gate
+(`wait_final`), L1 deposits (`fund`), the nginx gateway and its replica (`gw`, `poll`,
+`pending-probe`), the browser scenes (`ui-prep`, `ui`), and tip ordering inside one slow block (the
+proofless producer makes a block per second, so `grief` and the seed burst land in other blocks than
+on the settled stack).
+
+Window for the settled run (inferred from the round-3 run on the same stack, not measured this
+round): one host with the stack of `stack.sh` rebuilt on the current L2 release (5 validators,
+relays, follower, settler, settled RPC, gateway pair; ports 25000-25099), the 64 GiB proving scope
+plus 16 GiB for the net, `PROVING.lock` held for the run, and about 24 hours: 20 proofs of 25 to 35
+minutes (up to 29 if the derived flows do not share blocks), one finality wait of about 40 minutes at the
+gate, and the token's 12 h delay between `deploy` and `bridge-credit`, during which nothing else
+can proceed.

@@ -5,7 +5,7 @@
 # after the gate are sent in bursts so that one L2 block (one real proof) covers
 # several of them: the kit's sequential path would take one proof per step.
 #
-#   drive.sh keys|bridge-eth|fund|wait-funded|deploy|gate|bridge-credit|seed|swaps|safe-fee|cap-skim|ui-prep|...
+#   drive.sh keys|bridge-eth|fund|wait-funded|deploy|gate|bridge-credit|bridge-deposit|seed|swaps|safe-fee|cap-skim|ui-prep|budget|...
 # State lives in $F/flow; each step records its result in $F/flow/evidence.
 #
 # bUSDC is the REAL bridge token (scripts/staging/bridge-v3-real.sh): BridgedStablecoinV3 from the bridge's own
@@ -14,6 +14,13 @@
 # for every step. The mainnet gate and the monitor take the bridge's busdc.plan.json and busdc.record.json; without
 # them they refuse (agent 227, L-3). The token's 12 h mint delay is real here (the L2 clock follows the private L1):
 # `deploy` queues the issuer's mint, and `bridge-credit` executes it once the delay has passed, before `seed`.
+#
+# Order of the run of record (one flow, 13 keys): keys, bridge-eth, fund, wait-funded, deploy, gate, [12 h],
+# bridge-credit, rec-fund, seed, safe-fee, cap-skim, fund-user, pending-probe, big-swap 30, ui-prep, donate,
+# fill 300 3, close 200 2, keeper run, reopened, fill 100 2, budget. Derived flows on the same L2 (new DEX, same
+# Safe, infra and token): FLOW=f3 rec-init flow, fund, rec-fund, deploy, gate, failed-approve, grief; and
+# FLOW=f2 ATTACK_CREATEPAIR=1 rec-init flow, fund, rec-fund, deploy. Measured need (proofless.sh, 2026-11-09):
+# 3,200.16 bUSDC for the main flow and 2,100 for each derived flow, 7,399.18 in all, from the one 9,000 bUSDC deposit.
 set -euo pipefail
 F=${F:-$HOME/l2dexbridge-20261030/dex-e2e-r3}
 . "$F/env.sh"
@@ -24,8 +31,13 @@ export SAFE_ARTIFACTS=$F/safe/package/build/artifacts
 # new FLOW (fresh keys, so every contract gets new addresses on the same live L2).
 ROOT=$F/${REPO:-repo}; cd "$ROOT"
 WORK=$F/${FLOW:-flow}; EV=$WORK/evidence; mkdir -p "$EV"
-RPC=http://127.0.0.1:25020
-GW=http://127.0.0.1:25073
+# The settled stack's RPC and gateway. E2E_RPC / E2E_GW point the same steps at another loopback L2 (the proofless
+# measuring run of docs/MAINNET-700770-PACKAGE.md: scripts/staging/private-l2.sh, no L1, no proof); there E2E_FINALIZE
+# is the command that marks the head finalized (`private-l2.sh finalize WORK PORT`), run while waiting for finality.
+RPC=${E2E_RPC:-http://127.0.0.1:25020}
+GW=${E2E_GW:-http://127.0.0.1:25073}
+case "$RPC$GW" in http://127.0.0.1:*http://127.0.0.1:*) ;; *) echo "E2E_RPC and E2E_GW must be loopback (http://127.0.0.1:<port>)" >&2; exit 2 ;; esac
+STACK_KIND=$([ -n "${E2E_FINALIZE:-}" ] && echo "private L2, no proofs, synthetic finality" || echo "private stack, real settlement")
 REVISION=${REVISION:-$(node -e 'console.log(require(process.argv[1]).source.revision)' "$ROOT/deployments/mainnet/dex-mainnet.config.json")}
 MAXFEE=5000000000; TIP=1000000000; USD_BUCKET=10000000000
 ZERO=0x0000000000000000000000000000000000000000
@@ -45,12 +57,15 @@ if [ -f "$WORK/keys.json" ]; then
     DEPOSITOR_KEY=$(key 10); DEPOSITOR=$(addr 10); ATTACKER_KEY=$(key 11); ATTACKER=$(addr 11); KEEPER_KEY=$(key 12); KEEPER=$(addr 12)
   fi
 fi
-numtag() { cast rpc eth_getBlockByNumber "$1" false --rpc-url "${2:-$RPC}" | node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(b?BigInt(b.number).toString():"none")'; }
+# A closed level (-32001 before the first settlement) reads as "none", like a null block.
+numtag() { (cast rpc eth_getBlockByNumber "$1" false --rpc-url "${2:-$RPC}" 2> /dev/null || echo null) | node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(b?BigInt(b.number).toString():"none")'; }
 heads() { echo "latest $(numtag latest) safe $(numtag safe) finalized $(numtag finalized)"; }
 # Wait until the settled RPC's finalized tag reaches block $1; prints how long it took.
 wait_final() {
   local want=$1 t0; t0=$(date +%s)
-  until [ "$(numtag finalized)" != none ] && [ "$(numtag finalized)" -ge "$want" ]; do sleep 5; done
+  until [ "$(numtag finalized)" != none ] && [ "$(numtag finalized)" -ge "$want" ]; do
+    if [ -n "${E2E_FINALIZE:-}" ]; then $E2E_FINALIZE > /dev/null; else sleep 5; fi
+  done
   note "finalized reached $want after $(( $(date +%s) - t0 ))s ($(heads))"
 }
 
@@ -94,6 +109,7 @@ flush() {
   printf '%s\n' "${hashes[@]%%|*}" > "$WORK/last-hashes"
   Q=()
   note "burst done in $(( $(date +%s) - t0 ))s, last block $last ($(heads))"
+  echo "$cmd ${#hashes[@]} $last" >> "$EV/bursts.txt"
 }
 # The kit's raw-tx file, published from the signer's next nonce in one burst, with the kit's checks
 # on each receipt and the kit's hash file. For this rehearsal only: PROVING.lock is contended here
@@ -148,6 +164,11 @@ mon_note() { # label [flags] -> stores the JSON and logs level and non-OK checks
 : "${BRIDGE_REPO:?BRIDGE_REPO=<clean bridge checkout> is required (the mainnet gate takes bUSDC from the bridge deployment record)}"
 : "${ETH_PORT:?ETH_PORT=<free loopback port for the rehearsal Ethereum anvil> is required}"
 BRIDGE_ETH_RPC=http://127.0.0.1:$ETH_PORT
+# The issuer's bUSDC: `deploy` queues one vault deposit of BRIDGE_ISSUER_NET units (net of the vault's fee), and each
+# `bridge-deposit` queues one more. The mainnet limits are real here: one deposit is at most the vault's windowLimit
+# (10,000 USDC gross) and the token's mint bucket holds 10,000 bUSDC refilled over 24 h, so a second deposit of this
+# size is refused (RateLimited) until about a day after the first. Measured need of each flow:
+# docs/MAINNET-700770-PACKAGE.md, "Settled driver budget".
 BRIDGE_ISSUER_NET=${BRIDGE_ISSUER_NET:-9000000000}
 must() { q "$1" "$2" "$3" "$4" "$5" 0x1; flush; }
 # shellcheck source=scripts/staging/bridge-v3-real.sh
@@ -160,7 +181,9 @@ cmd=${1:?command}; shift || true
 case "$cmd" in
 keys)
   [ ! -e "$WORK/keys.json" ] || { echo "keys exist"; exit 1; }
-  umask 077; cast wallet new --number 10 --json > "$WORK/keys.json"; umask 022
+  # 0 Safe bootstrap, 1 DEX deployer, 2 issuer, 3-7 Safe owners, 8 infra, 9 browser user, 10 first depositor (the
+  # DEX config requires one), 11 third party, 12 keeper. 10-12 get gas and bUSDC from `rec-fund` after `bridge-credit`.
+  umask 077; cast wallet new --number 13 --json > "$WORK/keys.json"; umask 022
   bridge_v3_keys
   echo "keys generated (throwaway) in $WORK/keys.json and $WORK/bridge/keys.json"
   ;;
@@ -210,7 +233,7 @@ wait-funded)
   ;;
 deploy)
   GENESIS=$(cast block 0 --field hash --rpc-url "$RPC")
-  log "chain $(cast chain-id --rpc-url "$RPC") genesis $GENESIS (private stack, real settlement)"
+  log "chain $(cast chain-id --rpc-url "$RPC") genesis $GENESIS ($STACK_KIND)"
   forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
   if [ ! -e "$WORK/infra.txs.json" ]; then
   # infra
@@ -333,12 +356,31 @@ gate)
 bridge-credit)
   # The issuer's queued mint, executed by the issuer as the relayer once the token's delay has passed on the L2 clock.
   state_load
-  ID=$(cat "$WORK/bridge/issuer-deposit-id")
-  if [ "$(cast call "$ASSET" "balanceOf(address)(uint256)" "$ISSUER" --rpc-url "$RPC" | awk '{print $1}')" = 0 ]; then
-    bridge_v3_credit "$ID" "$ISSUER_KEY"
-  fi
-  [ "$(cast call "$ASSET" "balanceOf(address)(uint256)" "$ISSUER" --rpc-url "$RPC" | awk '{print $1}')" = "$BRIDGE_ISSUER_NET" ] || { echo "FAIL: the issuer's bUSDC did not credit (is the 12 h delay over?)"; exit 1; }
-  log "bridge: $BRIDGE_ISSUER_NET bUSDC units credited to the issuer (deposit $ID) ($(heads))"
+  # Every queued deposit not yet credited, in one burst (one L2 block). A mint whose delay is not over reverts.
+  touch "$WORK/bridge/issuer-credited"
+  BEFORE=$(cast call "$ASSET" "balanceOf(address)(uint256)" "$ISSUER" --rpc-url "$RPC" | awk '{print $1}'); COUNT=0
+  while read -r ID; do
+    grep -qx "$ID" "$WORK/bridge/issuer-credited" && continue
+    q "$ISSUER_KEY" "$ASSET" "$(cast calldata "executeMint(bytes32)" "$ID")" 0 1500000 0x1; COUNT=$((COUNT + 1))
+  done < "$WORK/bridge/issuer-deposit-id"
+  [ "$COUNT" -gt 0 ] || { echo "bridge: every queued deposit is already credited"; exit 0; }
+  flush
+  [ "$(cast call "$ASSET" "balanceOf(address)(uint256)" "$ISSUER" --rpc-url "$RPC" | awk '{print $1}')" = "$((BEFORE + COUNT * BRIDGE_ISSUER_NET))" ] || { echo "FAIL: the issuer's bUSDC did not credit"; exit 1; }
+  cp "$WORK/bridge/issuer-deposit-id" "$WORK/bridge/issuer-credited"
+  log "bridge: $((COUNT * BRIDGE_ISSUER_NET)) bUSDC units credited to the issuer ($COUNT deposit(s)) ($(heads))"
+  ;;
+bridge-deposit)
+  # One more vault deposit for the issuer, queued on the L2 (the delay starts now). Refused while the token's mint
+  # bucket has less than the deposit: on the settled stack that is about a day after the previous one.
+  state_load
+  AVAILABLE=$(cast call "$ASSET" "availableToMint()(uint256)" --rpc-url "$RPC" | awk '{print $1}')
+  [ "$AVAILABLE" -ge "$BRIDGE_ISSUER_NET" ] || { echo "FAIL: the token's mint bucket holds $AVAILABLE units, the deposit needs $BRIDGE_ISSUER_NET (10,000 bUSDC refill over 24 h)"; exit 1; }
+  bridge_v3_deposit "$BRIDGE_ISSUER_NET" "$ISSUER" "$ISSUER_KEY"
+  echo "$BRIDGE_DEPOSIT_ID" >> "$WORK/bridge/issuer-deposit-id"
+  # The fee of this deposit too reaches the immutable recipient (bridge_v3_fees checks a first sweep only).
+  cast send "$VAULT" "sweepFees()" --private-key "$BRIDGE_ETH_USER_KEY" --rpc-url "$BRIDGE_ETH_RPC" > /dev/null
+  [ "$(cast call "$BRIDGE_USDC" "balanceOf(address)(uint256)" "$BRIDGE_FEE_TO" --rpc-url "$BRIDGE_ETH_RPC" | awk '{print $1}')" = "$BRIDGE_FEE_TOTAL" ] || { echo "FAIL: sweepFees did not pay the fee recipient"; exit 1; }
+  log "bridge: one more deposit of $BRIDGE_ISSUER_NET bUSDC units queued for the issuer (deposit $BRIDGE_DEPOSIT_ID); run bridge-credit after the $BRIDGE_MINT_DELAY s delay"
   ;;
 seed)
   state_load
@@ -535,26 +577,33 @@ ui)
   exec timeout 21600 node scripts/staging/e2e-settled/ui.mjs "$@"
   ;;
 rec-init)
-  # New flow on the live L2 reusing a finished flow's Safe, infra and bUSDC stand-in (their addresses
+  # New flow on the live L2 reusing a finished flow's Safe, infra and bridge bUSDC (their addresses
   # do not depend on the pair), with fresh DEX deployer, user, first depositor, third party, keeper.
   SRC=$F/${1:?source flow}; [ ! -e "$WORK/keys.json" ] || { echo "$WORK has keys"; exit 1; }
   umask 077; cast wallet new --number 5 --json > "$WORK/new.json"
   node -e '
 const s=require(process.argv[1]),n=require(process.argv[2]);
-s[1]=n[0];s[9]=n[1];s.push(n[2],n[3],n[4]);require("fs").writeFileSync(process.argv[3],JSON.stringify(s));' "$SRC/keys.json" "$WORK/new.json" "$WORK/keys.json"
+s[1]=n[0];s[9]=n[1];s[10]=n[2];s[11]=n[3];s[12]=n[4];require("fs").writeFileSync(process.argv[3],JSON.stringify(s));' "$SRC/keys.json" "$WORK/new.json" "$WORK/keys.json"
   rm -f "$WORK/new.json"; umask 022
   cp "$SRC/asset" "$SRC/safe.txs.json" "$SRC/infra.txs.json" "$WORK/"
   for f in infra.config.json infra.plan.json infra.hashes.txt safe.config.json safe.plan.json safe.hashes.txt blochinc.json; do cp "$SRC/evidence/$f" "$EV/"; done
+  # The real bridge token of the source flow: its keys, plan, record and vault files (the gate and the monitor take them).
+  cp "$SRC/bridge/keys.json" "$SRC/bridge/totals" "$WORK/bridge/"
+  cp "$SRC"/evidence/busdc*.json "$EV/"
   echo "$WORK ready"
   ;;
 rec-fund)
-  # Fresh accounts from a funded one, plus bUSDC for the depositor, the third party and the user.
+  # Fresh accounts get gas and bUSDC from the issuer: 76 BLCH and 2,100 bUSDC (500 depositor, 1,500 third party, 100
+  # user). Run it after `bridge-credit`. The payer is not the Safe bootstrap key: verify-deployment --expect-empty pins
+  # that key's nonce to the Safe plan. The third party's largest use is 1,001 bUSDC (failed-approve + grief); with the
+  # 4,000 of the stand-in era, the main flow and two derived flows needed 14,899 bUSDC, more than one bridge deposit
+  # (10,000 USDC window, 10,000 bUSDC mint bucket per 24 h).
   state_asset=$(cat "$WORK/asset")
   for a in "$DEPLOYER:10" "$DEPOSITOR:20" "$ATTACKER:40" "$USER_ADDR:5" "$KEEPER:1"; do
-    q "$BOOT_KEY" "${a%%:*}" 0x "${a##*:}000000000000000000" 100000 0x1
+    q "$ISSUER_KEY" "${a%%:*}" 0x "${a##*:}000000000000000000" 100000 0x1
   done
   q "$ISSUER_KEY" "$state_asset" "$(cast calldata "transfer(address,uint256)" "$DEPOSITOR" 500000000)" 0 100000 0x1
-  q "$ISSUER_KEY" "$state_asset" "$(cast calldata "transfer(address,uint256)" "$ATTACKER" 4000000000)" 0 100000 0x1
+  q "$ISSUER_KEY" "$state_asset" "$(cast calldata "transfer(address,uint256)" "$ATTACKER" "${REC_FUND_THIRD_PARTY:-1500000000}")" 0 100000 0x1
   q "$ISSUER_KEY" "$state_asset" "$(cast calldata "transfer(address,uint256)" "$USER_ADDR" 100000000)" 0 100000 0x1
   flush
   ;;
@@ -655,6 +704,22 @@ grief)
   set +e
   node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/grief.verify.txt" 2>&1; note "verify exit $?: $(head -c 400 "$EV/grief.verify.txt")"
   set -e
+  ;;
+budget)
+  # Measured from chain state (budget.mjs): every key's bUSDC in, out and lowest balance, its transaction count and
+  # BLCH left of the 100 BLCH deposit, the head, and the bursts this flow published (one L2 block each at best).
+  state_load
+  ACCOUNTS=$(node -e '
+const k = require(process.argv[1]); const [pair, safe, bridgeDeployer] = process.argv.slice(2);
+const names = ["boot", "deployer", "issuer", "owner0", "owner1", "owner2", "owner3", "owner4", "infra", "user", "depositor", "thirdParty", "keeper"];
+const o = Object.fromEntries(k.map((x, i) => [names[i] ?? `key${i}`, x.address.toLowerCase()]));
+console.log(JSON.stringify({ ...o, pair, safe, bridgeDeployer }));' "$WORK/keys.json" "$PAIR" "$BLOCH_INC" "$BRIDGE_L2_DEPLOYER")
+  node scripts/staging/e2e-settled/budget.mjs --rpc "$RPC" --token "$ASSET" --accounts "$ACCOUNTS" --source issuer --funded-wei 100000000000000000000 > "$EV/budget.json"
+  node -e '
+const r = require(process.argv[1]); const fs = require("fs");
+const bursts = fs.existsSync(process.argv[2]) ? fs.readFileSync(process.argv[2], "utf8").trim().split("\n").map((l) => l.split(" ")) : [];
+console.log(`budget: bUSDC needed by ${r.budget.source} ${r.budget.neededUnits} of ${r.budget.creditedUnits} units credited (lowest balance ${r.budget.lowestUnits}); head ${r.head}; ` +
+  `${bursts.length} bursts, ${bursts.reduce((n, b) => n + Number(b[1]), 0)} burst transactions`);' "$EV/budget.json" "$EV/bursts.txt" | tee -a "$EV/steps.log"
   ;;
 wait-last-final)
   wait_final "$(cat "$WORK/last-block")"
