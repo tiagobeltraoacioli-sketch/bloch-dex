@@ -322,6 +322,25 @@ No fund-loss finding.
 | bUSDC V3 effects (section 5) | Documented and monitored |
 | Agent 180 (independent V3 review, tests `test/V3Interaction*.t.sol`): L-1 a bridge deposit whose L2 recipient is the pair, router, WBLCH or token is lost to the depositor and can be captured by any skimmer or flash borrower; L-2 after a token migration a pair of the new token in the launch factory is uncapped with no k ceiling; L-3 the gate's code-hash pin does not pin signer or guardian sets | L-1: bridge page tooling (separate frontend line) and incident doc; L-2: policy, a migration means a new DEX factory; L-3: addresses and code hashes only from the bridge deployment record; since agent 227 the gate also compares signers, guardians, thresholds, T and the reviewed build with that record (section 3.6). No contract change |
 
+### 7.6 Review of the round 13 tooling and submission path (round 14, 2026-11-09)
+
+Round 13 (26 commits, `29758f5..a95ef47`) hardened the keeper, the gate's RPC transport and the frontend's
+submission path without a review. Round 14 had it reviewed independently. Contracts were not touched.
+
+| Finding | Status |
+|---|---|
+| H1 (frontend): "Review same nonce in wallet" was offered while the original could still be queued; a wallet that ignores the page's nonce would execute the same call twice | Fixed `2ad78cf`: no wallet request unless the pending nonce equals the canonical nonce. Real-wallet behaviour is not tested (jsdom only) |
+| M1 (keeper): the skim recipient came from the gate file's `feeTo` unchecked | Fixed `e6fddb8`: `feeTo` must be the pinned Safe and the factory's `feeTo()` at the acting block |
+| M2 (keeper): whatever the external signer returned was published if the sender matched | Fixed `e6fddb8`: only the planned skim (chain, nonce, recipient, data, zero value, gas, both fees) is published |
+| M3 (keeper): one lost transaction keeps the keeper waiting until an operator edits the state file | Open, by design of round 13 (never resend without proof). Operator procedure in `OPS-DEX-MONITOR-KEEPER.md`; candidate improvement: persist the signed bytes and rebroadcast the identical transaction |
+| M4 (frontend): a hold without any wallet transaction had no stated exit | Fixed `2ad78cf` (guidance in the recovery panel; the rule itself is unchanged) |
+| L1, L4, L6 | Fixed `e6fddb8` |
+| L2 (keeper leaves `.lock` after SIGTERM), L3 (the systemd unit uses the built-in 48 tx / 0.05 BLCH defaults, not the form's values), L5 (pre-round-13 pending records) | Open, low: the defaults equal the decided budget; no such records exist on 700770 |
+
+No finding above Low in `finality-gate.mjs`, `rpc-transport.mjs`, `publish-recorded.mjs`, `sign-and-publish.sh`,
+`sequencer-fee-error.mjs`, `keeper-accounting.mjs`, `keeper-state-store.mjs` or the opening-form quoting.
+Not reviewed: `dex-monitor.mjs` and `dex-seed-plan.mjs` beyond their diffs, `rehearse-reth-dex.mjs`, the tests.
+
 ## 8. Areas where we most want the auditor's attention
 
 1. `_applyCeiling` (`UniswapV2Pair.sol:203-220`): every branch, rounding direction, and the claim that a recorded reserve on a side that grew is never below its previous reserve (so excess is never LP principal).
@@ -378,6 +397,13 @@ runs on the deployed bytecode: 5 suites, 26 passed. SHA-256 of the gate files on
 9fe96dc5fdfbbee3cba383fc6e6018d209b8b8970058d654a2ca27901b75b55d  scripts/staging/bridge-token-identity.mjs
 de19b5b9a7d652a014db339e2fa694328c5091e41e7bee51066132cc3e1bd5e4  deployments/mainnet/bridge-token.pin.json
 ```
+
+Release line `codex/dex-r14-20261109` (round 14), same contracts again (`git diff 86c6f2c6 HEAD -- contracts
+foundry.toml` is empty, same init code hash): forge **33 suites, 233 passed**; `node --test scripts/staging/*.test.mjs`
+**194: 193 passed, 1 skipped**; `node --test scripts/ops/*.test.mjs` **133 passed**; frontend `npx vitest run`
+**405 passed, 1 skipped**. The bridge token pin is unchanged and was re-asserted against bridge revision `bb9abe0`
+with a token created by the bridge's own `deploy_pontes.py` (section 7.6, `docs/MAINNET-700770-PACKAGE.md`). The gate
+file hashes above are those of r11; recompute them at the commit you audit with `shasum -a 256`.
 
 Use a fresh `FOUNDRY_INVARIANT_FAILURE_PERSIST_DIR` per run: forge otherwise replays
 a cached invariant counterexample from `cache/invariant/` on every later run,
