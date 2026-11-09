@@ -27,6 +27,13 @@
 #     utility contracts work in real calls.
 #   With RENDER_HOOK=scripts/staging/render/render-hook.sh: browser phase.
 #
+# The bridge token. With BRIDGE_REPO=<clean git checkout of the bridge repository at its release candidate> and
+# ETH_PORT=<free port>, bUSDC is the REAL BridgedStablecoinV3, deployed by the bridge's own deploy_pontes.py over a
+# ProvenanceSourceVault on a loopback "Ethereum" under the mainnet policy (scripts/staging/bridge-v3-real.sh): the
+# gates then take the bridge's busdc.plan.json and busdc.record.json, as on mainnet. private-l2 mode requires it (the
+# mainnet gate refuses a token without its bridge deployment). Without BRIDGE_REPO, anvil mode keeps the stand-in
+# RehearsalBridgedToken and only shows the genesis refusal and the generic gate.
+#
 #   SAFE_ARTIFACTS=<safe-contracts 1.4.1 build/artifacts> \
 #     scripts/staging/rehearse-mainnet-package.sh anvil <revision> [port] [work]
 #   SAFE_ARTIFACTS=… PRODUCE_DEV=… SETTLED_RPC=… \
@@ -61,6 +68,17 @@ OWNERS=("$(addr 3)" "$(addr 4)" "$(addr 5)" "$(addr 6)" "$(addr 7)")
 INFRA_KEY=$(key 8); INFRA=$(addr 8)
 DEPOSITOR_KEY=$(key 9); DEPOSITOR=$(addr 9)
 
+if [ -n "${BRIDGE_REPO:-}" ]; then
+  [ -z "${HOLD_TOKEN:-}" ] || { echo "BRIDGE_REPO and HOLD_TOKEN are two different bridge tokens: set one" >&2; exit 2; }
+  # shellcheck source=scripts/staging/bridge-v3-real.sh
+  . scripts/staging/bridge-v3-real.sh
+  bridge_v3_keys
+elif [ "$MODE" = private-l2 ]; then
+  echo "private-l2 mode needs BRIDGE_REPO: the mainnet gate takes the token from the bridge's own deployment record" >&2; exit 2
+fi
+FUNDED=("$BOOT" "$DEPLOYER" "$ISSUER" "$INFRA" "$DEPOSITOR")
+[ -z "${BRIDGE_REPO:-}" ] || FUNDED+=("$BRIDGE_L2_DEPLOYER")
+
 PIDS=()
 cleanup() {
   [ "$MODE" = private-l2 ] && scripts/staging/private-l2.sh stop "$WORK/l2" > /dev/null 2>&1 || true
@@ -71,21 +89,21 @@ trap cleanup EXIT
 forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
 case "$MODE" in
   anvil)
-    # HOLD_TOKEN (agent 144): the V3 token's 12 h mint delay passes on the chain clock, so the chain starts that far back.
+    # The V3 token's 12 h mint delay passes on the chain clock, so the chain starts that far back (agent 144).
     ANVIL_ARGS=(--chain-id 700770 --port "$PORT" --host 127.0.0.1)
-    [ -n "${HOLD_TOKEN:-}" ] && ANVIL_ARGS+=(--timestamp $(( $(date +%s) - 43900 )))
+    [ -n "${HOLD_TOKEN:-}${BRIDGE_REPO:-}" ] && ANVIL_ARGS+=(--timestamp $(( $(date +%s) - 43900 )))
     anvil "${ANVIL_ARGS[@]}" --silent > "$WORK/anvil.log" 2>&1 &
     PIDS+=($!)
     node scripts/fixtures/anvil-finality-shim.mjs "$RPC" $((PORT + 1)) > "$WORK/shim.log" 2>&1 &
     PIDS+=($!)
     for _ in $(seq 50); do cast chain-id --rpc-url "$RPC" > /dev/null 2>&1 && break; sleep 0.2; done
-    for a in "$BOOT" "$DEPLOYER" "$ISSUER" "$INFRA" "$DEPOSITOR"; do cast rpc anvil_setBalance "$a" 0x56bc75e2d63100000 --rpc-url "$RPC" > /dev/null; done
+    for a in "${FUNDED[@]}"; do cast rpc anvil_setBalance "$a" 0x56bc75e2d63100000 --rpc-url "$RPC" > /dev/null; done
     ;;
   private-l2)
     : "${PRODUCE_DEV:?}" "${SETTLED_RPC:?}"
     export PRODUCE_DEV SETTLED_RPC
     mkdir -p "$WORK/l2"
-    scripts/staging/private-l2.sh init "$WORK/l2" "$BOOT,$DEPLOYER,$ISSUER,$INFRA,$DEPOSITOR" 10000000000 | tee -a "$EV/steps.log"
+    scripts/staging/private-l2.sh init "$WORK/l2" "$(IFS=,; echo "${FUNDED[*]}")" 10000000000 | tee -a "$EV/steps.log"
     scripts/staging/private-l2.sh start "$WORK/l2" "$PORT" | tee -a "$EV/steps.log"
     ;;
   *) echo "mode must be anvil or private-l2" >&2; exit 2 ;;
@@ -178,12 +196,30 @@ BLOCH_INC=$(jsonget "$EV/blochinc.json" address)
 log "0 Safe: Bloch Inc = $BLOCH_INC"
 
 # ---------------------------------------------------------------- 1 DEX
-log "1 DEX: test bUSDC with bucketCapacity() (stands in for the bridge token)"
-if [ -n "${HOLD_TOKEN:-}" ]; then
+BRIDGE_ARGS=()
+if [ -n "${BRIDGE_REPO:-}" ]; then
+  log "1 bridge: the real bUSDC (BridgedStablecoinV3 from deploy_pontes.py, vault from vault_pontes.py, mainnet policy)"
+  bridge_v3_vault "$BLOCH_INC"
+  bridge_v3_token "$GENESIS" "$BLOCH_INC"
+  bridge_v3_open
+  # The issuer's 9,000 bUSDC: a real vault deposit, the committee's mint, and the relayer's execute after the 12 h delay.
+  bridge_v3_deposit 9000000000 "$ISSUER" "$ISSUER_KEY"
+  if [ "$MODE" = anvil ]; then
+    cast rpc evm_increaseTime $((BRIDGE_MINT_DELAY + 100)) --rpc-url "$RPC" > /dev/null; cast rpc evm_mine --rpc-url "$RPC" > /dev/null
+  else
+    scripts/staging/private-l2.sh warp "$WORK/l2" $((BRIDGE_MINT_DELAY + 100)) | tee -a "$EV/steps.log"
+  fi
+  bridge_v3_credit "$BRIDGE_DEPOSIT_ID" "$ISSUER_KEY"
+  [ "$(cast call "$ASSET" "balanceOf(address)(uint256)" "$ISSUER" --rpc-url "$RPC" | awk '{print $1}')" = 9000000000 ] || { echo "FAIL: the bridged bUSDC did not credit"; exit 1; }
+  log "1 bridge: 9000 bUSDC credited to the issuer after the 12 h delay (deposit $BRIDGE_DEPOSIT_ID)"
+  bridge_v3_fees
+elif [ -n "${HOLD_TOKEN:-}" ]; then
+  log "1 DEX: test bUSDC with bucketCapacity() (stands in for the bridge token)"
   # agent 144: BridgedStablecoinV3 over a ProvenanceSourceVault on a second anvil (scripts/staging/render/hold-token.sh)
   # shellcheck source=/dev/null
   . "$HOLD_TOKEN"
 else
+  log "1 DEX: test bUSDC with bucketCapacity() (stands in for the bridge token)"
   TOKEN_INIT=$(node -e 'const a=require(process.argv[1]);console.log(a.bytecode.object)' "$ROOT/out/RehearsalBridgedToken.sol/RehearsalBridgedToken.json")$(cast abi-encode "c(string,string,uint8,uint256,address,uint256)" "Rehearsal bUSDC" bUSDC 6 1000000000000 "$ISSUER" $USD_BUCKET | cut -c3-)
   ASSET=$(must "$ISSUER_KEY" create "$TOKEN_INIT" 0 3000000 | awk '{print tolower($2)}')
   ASSET_CODE=$(cast keccak "$(cast code "$ASSET" --rpc-url "$RPC")")
@@ -238,25 +274,42 @@ node -e 'const r=require(process.argv[1]);console.log(r.decision, r.checks.lengt
 GATE=node\ scripts/staging/check-finality-gate-mainnet.mjs
 if [ "$MODE" = private-l2 ]; then
   log "2 mainnet gate before finality is refused"
-  if $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" 2> "$EV/gate.early.txt"; then echo "FAIL: gate passed before finality"; exit 1; fi
+  if $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$RPC" 2> "$EV/gate.early.txt"; then echo "FAIL: gate passed before finality"; exit 1; fi
   cat "$EV/gate.early.txt"
+  log "2 mainnet gate without the bridge deployment record is refused"
+  if $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" > /dev/null 2> "$EV/gate.no-bridge.txt"; then echo "FAIL: gate ran without the bridge record"; exit 1; fi
   log "2 finality (synthetic follower status on the private L2)"
   scripts/staging/private-l2.sh finalize "$WORK/l2" "$PORT" | tee -a "$EV/steps.log"
   cast rpc bloch_finality --rpc-url "$RPC" > "$EV/bloch_finality.json"
-  log "2 mainnet gate (chain 700770, pinned genesis, pinned Safe)"
-  $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" > "$EV/gate-report.json"
+  bridge_v3_verify
+  log "2 mainnet gate (chain 700770, pinned genesis, pinned Safe, the bridge's plan and record)"
+  $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$RPC" > "$EV/gate-report.json"
   GATE_RPC=$RPC
 else
   log "2 mainnet gate refuses a chain whose genesis is not the pin"
-  if $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" 2> "$EV/gate.pin-refusal.txt"; then echo "FAIL: mainnet gate accepted anvil"; exit 1; fi
+  if [ -n "${BRIDGE_REPO:-}" ]; then
+    if $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$RPC" 2> "$EV/gate.pin-refusal.txt"; then echo "FAIL: mainnet gate accepted anvil"; exit 1; fi
+    grep -q 'is not the pinned' "$EV/gate.pin-refusal.txt" || { echo "FAIL: the mainnet gate did not name the genesis pin"; cat "$EV/gate.pin-refusal.txt"; exit 1; }
+  elif $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" 2> "$EV/gate.pin-refusal.txt"; then echo "FAIL: mainnet gate accepted anvil"; exit 1; fi
   cat "$EV/gate.pin-refusal.txt"
   GATE_RPC=http://127.0.0.1:$((PORT + 1))
   log "2 generic gate before finality is refused"
-  if node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$GATE_RPC" 2> "$EV/gate.early.txt"; then echo "FAIL: gate passed before finality"; exit 1; fi
+  if node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$GATE_RPC" 2> "$EV/gate.early.txt"; then echo "FAIL: gate passed before finality"; exit 1; fi
   cat "$EV/gate.early.txt"
   cast rpc anvil_mine 0x80 --rpc-url "$RPC" > /dev/null
   log "2 generic gate after finality (anvil shim)"
-  node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$GATE_RPC" > "$EV/gate-report.json"
+  node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$GATE_RPC" > "$EV/gate-report.json"
+  if [ -n "${BRIDGE_REPO:-}" ]; then
+    bridge_v3_verify
+    log "2 the mainnet gate's own checks (Safe pin, bridge plan and record, reviewed token build, 5 of 7 / 6 / 3 guardians / T = 0) pass with only the genesis pin replaced"
+    node scripts/fixtures/mainnet-gate-rehearsal-genesis.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$GATE_RPC" > "$EV/gate-mainnet-checks.json"
+    node -e 'const r=require(process.argv[1]);const b=r.bridgeTokens[0];if(r.decision!=="liquidity-enabled"||r.bridgeTokens.length!==1)process.exit(1);console.log("bridge token", b.address, "template", b.template, b.threshold, "of", b.signers.length, "switch", b.switchThreshold, "guardians", b.guardians.length, "T", b.largeMintThreshold, "MAX_PENDING", b.maxPending)' "$EV/gate-mainnet-checks.json" | tee -a "$EV/steps.log"
+    # A plan with one other signer is refused at the finalized block.
+    node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1]));p.expected.signers=[...p.expected.signers];p.expected.signers[0]="0x"+"1".repeat(40);fs.writeFileSync(process.argv[2],JSON.stringify(p))' "$EV/busdc.plan.json" "$WORK/other-signer.plan.json"
+    if node scripts/fixtures/mainnet-gate-rehearsal-genesis.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --bridge-plan "$WORK/other-signer.plan.json" --bridge-record "$EV/busdc.record.json" --rpc "$GATE_RPC" > /dev/null 2> "$EV/gate.other-signer.txt"; then echo "FAIL: a plan with another signer passed"; exit 1; fi
+    grep -q 'signers() differ from the bridge plan' "$EV/gate.other-signer.txt" || { echo "FAIL: other signer not named"; cat "$EV/gate.other-signer.txt"; exit 1; }
+    echo "a bridge plan with another signer is refused" | tee -a "$EV/steps.log"
+  fi
 fi
 node -e 'const r=require(process.argv[1]);console.log(r.decision, "finalized", r.finalized.number, r.genesisHash)' "$EV/gate-report.json" | tee -a "$EV/steps.log"
 [ "$(jsonget "$EV/gate-report.json" decision)" = liquidity-enabled ] || { echo "FAIL: gate"; exit 1; }

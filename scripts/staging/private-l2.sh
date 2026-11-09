@@ -11,7 +11,11 @@
 #   PRODUCE_DEV=… SETTLED_RPC=… scripts/staging/private-l2.sh init     WORK ADDR[,ADDR…] [SATS_EACH]
 #   PRODUCE_DEV=… SETTLED_RPC=… scripts/staging/private-l2.sh start    WORK PORT
 #   PRODUCE_DEV=… SETTLED_RPC=… scripts/staging/private-l2.sh finalize WORK PORT
+#                               scripts/staging/private-l2.sh warp     WORK SECONDS
 #                               scripts/staging/private-l2.sh stop     WORK
+#
+# `warp` moves the rehearsal clock forward: block timestamps follow the anchor slot (timestamp rule), so every later
+# block is anchored SECONDS further ahead. It lets a rehearsal pass the bridge token's 12 h mint delay.
 set -euo pipefail
 
 CMD=${1:?usage: private-l2.sh init|start|finalize|stop WORK ...}
@@ -24,7 +28,7 @@ NET=(--rules mainnet --domain "$DOMAIN" --genesis-time "$GENESIS_TIME")
 RULE=1:$L1_GENESIS:$SLOT_MS
 
 head_hash() { "$PRODUCE_DEV" head --target "$WORK/canonical" "${NET[@]}" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).hash)'; }
-slot_now() { echo $(( ($(date +%s) - L1_GENESIS) * 1000 / SLOT_MS )); }
+slot_now() { echo $(( ($(date +%s) - L1_GENESIS) * 1000 / SLOT_MS + $(cat "$WORK/slot-offset" 2> /dev/null || echo 0) )); }
 anchor() { printf '%064x' "$1"; }
 
 case "$CMD" in
@@ -94,6 +98,13 @@ require("fs").renameSync(process.argv[6] + ".tmp", process.argv[6]);
       sleep 1
     done
     echo "finalized block $F (head $HEAD)"
+    ;;
+  warp)
+    SECONDS_AHEAD=${3:?SECONDS required}
+    case "$SECONDS_AHEAD" in ''|*[!0-9]*) echo "SECONDS must be a positive integer" >&2; exit 2 ;; esac
+    SLOTS=$(( (SECONDS_AHEAD * 1000 + SLOT_MS - 1) / SLOT_MS + $(cat "$WORK/slot-offset" 2> /dev/null || echo 0) ))
+    echo "$SLOTS" > "$WORK/slot-offset.tmp"; mv "$WORK/slot-offset.tmp" "$WORK/slot-offset"
+    echo "rehearsal clock: later blocks are anchored $SLOTS slot(s) ahead of the wall clock"
     ;;
   stop)
     for f in producer rpc; do
