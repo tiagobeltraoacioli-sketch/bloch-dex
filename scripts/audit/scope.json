@@ -1,0 +1,111 @@
+{
+  "comment": "Audit scope of postern-dex, read by scripts/audit/make-package.mjs. Paths are relative to the repository root. A relative import of a tier B, C or D file must itself be listed in a tier or under outOfScope, or the generator fails: the scope cannot silently miss code that runs.",
+  "tiers": {
+    "A": {
+      "title": "On-chain code (required)",
+      "files": [
+        "contracts/UniswapV2Pair.sol",
+        "contracts/UniswapV2ERC20.sol",
+        "contracts/UniswapV2Factory.sol",
+        "contracts/libraries/Math.sol",
+        "contracts/libraries/UQ112x112.sol",
+        "contracts/periphery/BDexRouter.sol",
+        "contracts/periphery/BDexLibrary.sol",
+        "contracts/periphery/BDexLens.sol",
+        "contracts/assets/WBLCH.sol",
+        "contracts/interfaces/IERC20.sol",
+        "contracts/interfaces/IUniswapV2Callee.sol",
+        "contracts/interfaces/IUniswapV2ERC20.sol",
+        "contracts/interfaces/IUniswapV2Factory.sol",
+        "contracts/interfaces/IUniswapV2Pair.sol",
+        "contracts/periphery/interfaces/IBDexRouter.sol",
+        "contracts/periphery/interfaces/IWBLCH.sol",
+        "foundry.toml"
+      ]
+    },
+    "B": {
+      "title": "Deployment path and finality gate (required)",
+      "files": [
+        "script/DeployMainnet.s.sol",
+        "scripts/staging/dex-deploy-config.mjs",
+        "scripts/staging/deploy-dex.mjs",
+        "scripts/staging/sign-and-publish.sh",
+        "scripts/staging/publish-recorded.mjs",
+        "scripts/staging/rpc-transport.mjs",
+        "scripts/staging/sequencer-fee-error.mjs",
+        "scripts/staging/verify-deployment.mjs",
+        "scripts/staging/manifest.mjs",
+        "scripts/staging/finality-gate.mjs",
+        "scripts/staging/check-finality-gate-mainnet.mjs",
+        "scripts/staging/bridge-token-identity.mjs",
+        "scripts/staging/safe-deploy-config.mjs",
+        "scripts/ops/dex-seed-plan.mjs",
+        "scripts/ops/dex-ops-lib.mjs",
+        "deployments/networks.json",
+        "deployments/mainnet/dex-mainnet.config.json",
+        "deployments/mainnet/bridge-token.pin.json",
+        "deployments/mainnet/700770/pins.json",
+        "deployments/mainnet/700770/safe.config.json"
+      ]
+    },
+    "C": {
+      "title": "Operations tooling (optional, recommended)",
+      "files": [
+        "scripts/ops/dex-skim-keeper.mjs",
+        "scripts/ops/keeper-accounting.mjs",
+        "scripts/ops/keeper-state-store.mjs",
+        "scripts/ops/dex-monitor.mjs",
+        "scripts/ops/dex-fee-redeem.mjs",
+        "scripts/ops/opening-form.mjs",
+        "scripts/staging/frontend-record.mjs",
+        "scripts/ops/systemd/bloch-dex-skim-keeper.service",
+        "scripts/ops/systemd/bloch-dex-skim-keeper.timer",
+        "scripts/ops/systemd/bloch-dex-monitor.service",
+        "scripts/ops/systemd/bloch-dex-monitor.timer"
+      ]
+    },
+    "D": {
+      "title": "Frontend transaction path (optional)",
+      "files": [
+        "frontend/src/MainnetLive.tsx",
+        "frontend/src/devnet4/swap.ts",
+        "frontend/src/devnet4/chain.ts",
+        "frontend/src/devnet4/record.ts",
+        "frontend/src/mainnet/config.ts",
+        "frontend/src/mainnet/caps.ts",
+        "frontend/src/mainnet/quotecheck.ts",
+        "frontend/src/mainnet/reads.ts",
+        "frontend/src/mainnet/retry.ts",
+        "frontend/src/mainnet/headers.ts",
+        "frontend/src/mainnet/bridgehold.ts",
+        "frontend/src/mainnet/txhistory.ts",
+        "frontend/src/mainnet/newslotfee.ts",
+        "frontend/src/mainnet/pendingswap.ts",
+        "frontend/src/mainnet/submission-fees.ts",
+        "frontend/src/mainnet/submission-lock.ts",
+        "frontend/src/mainnet/submission-outcome.ts",
+        "frontend/src/mainnet/submission-review.ts",
+        "frontend/src/network-identity.ts",
+        "deployments/mainnet/frontend.network.json"
+      ]
+    }
+  },
+  "outOfScope": [
+    { "path": "contracts/TreasuryFeeCollector.sol", "why": "in the tree, not deployed; the protocol fee goes directly to the Safe" },
+    { "path": "contracts/assets/BlochAsset.sol", "why": "not on the mainnet path" },
+    { "path": "script/CreatePair.s.sol", "why": "not on the mainnet path" },
+    { "path": "script/LocalDeployment.s.sol", "why": "not on the mainnet path" },
+    { "path": "script/DeployAsset.s.sol", "why": "not on the mainnet path" },
+    { "path": "scripts/staging/deploy-infra.mjs", "why": "ordinary deployment of reviewed third-party code (Multicall3, CREATE2 deployer), verified by code hash" },
+    { "path": "scripts/staging/infra-deploy-config.mjs", "why": "as deploy-infra.mjs" },
+    { "path": "scripts/staging/deploy-safe.mjs", "why": "ordinary deployment of Safe v1.4.1, verified by code hash" },
+    { "path": "scripts/fixtures/", "why": "rehearsal fixtures, loopback only" },
+    { "path": "scripts/staging/rehearse-*", "why": "rehearsal drivers" },
+    { "path": "scripts/ops/rehearse-*", "why": "rehearsal drivers" },
+    { "path": "scripts/publication-quorum*", "why": "legacy publication tooling" },
+    { "path": "scripts/devnet4/", "why": "legacy devnet tooling" },
+    { "path": "deployments/devnet4/", "why": "devnet deployment records bundled for the preview route" },
+    { "path": "frontend/ (everything not in tier D)", "why": "presentation, preview data and wallet connection; no transaction is built outside tier D" }
+  ],
+  "contracts": ["UniswapV2Pair", "UniswapV2Factory", "BDexRouter", "BDexLens", "WBLCH"]
+}
