@@ -28,6 +28,7 @@ import {
 import { withSubmissionLock, withWalletRequestLock } from './submission-lock';
 import { sameNonceReviewDetails, transactionForSameNonceReview } from './submission-review';
 import { submissionFeeNote } from './submission-fees';
+import { NEW_SLOT_FEE_OFF, priceNewSlots, type NewSlotFeePolicy } from './newslotfee';
 import type { RevertCause, SwapRetryInfo } from './retry';
 
 export type PendingSwap = {
@@ -304,6 +305,7 @@ export function usePendingSwap({
   now,
   onMined,
   explain,
+  newSlotFee = NEW_SLOT_FEE_OFF,
   intervalMs = POLL_INTERVAL_MS,
 }: {
   rpc: Rpc;
@@ -316,6 +318,8 @@ export function usePendingSwap({
   onMined: () => void;
   /** Reads why a reverted swap failed; only called for a swap that carries retry fields. */
   explain?: (swap: PendingSwap, receipt: Receipt) => Promise<RevertCause>;
+  /** The network file's new-slot fee policy: a same-nonce review is priced like a first request. */
+  newSlotFee?: NewSlotFeePolicy;
   intervalMs?: number;
 }) {
   const key = account ? pendingSwapKey(chainId, account) : null;
@@ -715,6 +719,8 @@ export function usePendingSwap({
             'The saved candidate limit has been reached. Recover an existing transaction hash instead.',
           );
         await verifySameNonceReview(rpc, intent, context, held.swap.deadline);
+        // Priced before the review attempt is journaled: a failure here changes nothing.
+        const fee = await priceNewSlots(rpc, tx, newSlotFee);
         const walletChain = await provider.request({ method: 'eth_chainId' });
         if (
           typeof walletChain !== 'string' ||
@@ -765,7 +771,16 @@ export function usePendingSwap({
               'The saved review changed before the wallet request. Nothing further was sent.',
             );
           // No await between the last context/journal checks and the wallet call.
-          hash = await sendTransaction(provider, tx);
+          hash = await sendTransaction(
+            provider,
+            fee
+              ? {
+                  ...tx,
+                  maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
+                  maxFeePerGas: fee.maxFeePerGas,
+                }
+              : tx,
+          );
           if (
             !(await updateSubmission(intent.id, hash, undefined, {
               id: attempt.id,
@@ -804,6 +819,7 @@ export function usePendingSwap({
       rpc,
       assertActive,
       updateSubmission,
+      newSlotFee,
     ],
   );
 

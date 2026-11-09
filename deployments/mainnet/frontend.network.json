@@ -8,6 +8,7 @@
   "genesisHash": null,
   "rpc": { "url": "https://l2rpc.blochl1.com", "status": "placeholder" },
   "explorer": { "url": null },
+  "newSlotFee": { "enabled": true, "freshSlotPriceWei": "200000000000000", "marginBps": 1000 },
   "bridges": [
     {
       "symbol": "bUSDC",

@@ -31,6 +31,12 @@ export type TransactionRequest = {
   chainId?: number;
   /** Mainnet binds reconciliation to this nonce before opening the wallet. */
   nonce?: bigint;
+  /**
+   * EIP-1559 fee fields suggested to the wallet. Absent, the wallet picks the fee. Set only
+   * by the L2 new-slot pricing (mainnet/newslotfee.ts), always both together.
+   */
+  maxPriorityFeePerGas?: bigint;
+  maxFeePerGas?: bigint;
 };
 export type SwapSide = { token: Address; native: boolean };
 
@@ -181,6 +187,12 @@ export async function sendTransaction(provider: Provider, tx: TransactionRequest
         gas: hex(tx.gas),
         ...(tx.chainId === undefined ? {} : { chainId: `0x${tx.chainId.toString(16)}` }),
         ...(tx.nonce === undefined ? {} : { nonce: hex(tx.nonce) }),
+        ...(tx.maxPriorityFeePerGas === undefined || tx.maxFeePerGas === undefined
+          ? {}
+          : {
+              maxPriorityFeePerGas: hex(tx.maxPriorityFeePerGas),
+              maxFeePerGas: hex(tx.maxFeePerGas),
+            }),
       },
     ],
   });

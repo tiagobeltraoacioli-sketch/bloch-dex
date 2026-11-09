@@ -21,6 +21,7 @@ import { DEX_MAINNET_CHAIN_ID } from '../network-identity';
 import { verifyDeploymentRecord, type DevnetDeployment } from '../devnet4/record';
 import type { AddChainParameters } from '../devnet4/swap';
 import type { BridgeStatusConfig } from './bridgehold';
+import { parseNewSlotFeePolicy, type NewSlotFeePolicy } from './newslotfee';
 
 export const NETWORK_DOMAIN = 'postern.dex.frontend-network.v1';
 export const RECORD_DOMAIN = 'postern.dex.frontend-record.v1';
@@ -62,6 +63,8 @@ export type MainnetNetwork = {
   rpcLive: boolean;
   explorerUrl: string | null;
   bridges: BridgeLink[];
+  /** L2 new-slot priority fee (mainnet/newslotfee.ts); off when the network file has no block. */
+  newSlotFee: NewSlotFeePolicy;
 };
 export type PlannedCap = { symbol: string; cap: bigint; decimals: number };
 export type MainnetState =
@@ -147,6 +150,7 @@ export function parseNetwork(input: unknown): MainnetNetwork {
     rpcLive: n.rpc.status === 'live',
     explorerUrl: safeUrl(n.explorer?.url ?? null, 'explorer.url'),
     bridges,
+    newSlotFee: parseNewSlotFeePolicy(n.newSlotFee),
   };
 }
 

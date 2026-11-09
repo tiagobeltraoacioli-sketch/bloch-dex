@@ -55,6 +55,7 @@ import {
   type RouteCheck,
 } from './mainnet/caps';
 import { submissionFeeNote } from './mainnet/submission-fees';
+import { newSlotFeeNote, priceNewSlots } from './mainnet/newslotfee';
 import {
   requireFinality,
   submissionContext,
@@ -202,6 +203,7 @@ export default function MainnetLive({
     account: wallet.account?.address.toLowerCase() as Address | undefined,
     enabled: live && !!snapshot,
     now,
+    newSlotFee: network.newSlotFee,
     onMined: () => setGeneration((g) => g + 1),
     explain: (swap, receipt) =>
       state?.status === 'live' && swap.retry
@@ -539,6 +541,10 @@ function PendingExcess({
             ...skimTransaction(pool.address, to),
             chainId: network.chainId,
           };
+          // Priced before the intent is saved: a failure here leaves nothing behind.
+          const fee = await priceNewSlots(rpc, tx, network.newSlotFee);
+          if (fee && mounted.current)
+            setNote(`Confirm in your wallet. ${newSlotFeeNote(fee)}`.trim());
           const reservation = await pendingSwap.reserve(
             { label: 'Skim to my wallet', deadline: 0n, sentAtMs: now() },
             'skim',
@@ -557,7 +563,13 @@ function PendingExcess({
               'The wallet or page context changed before the request. Nothing was sent.',
             );
           }
-          hash = await sendTransaction(provider, { ...tx, nonce: reservation.nonce });
+          hash = await sendTransaction(provider, {
+            ...tx,
+            nonce: reservation.nonce,
+            ...(fee
+              ? { maxPriorityFeePerGas: fee.maxPriorityFeePerGas, maxFeePerGas: fee.maxFeePerGas }
+              : {}),
+          });
           await pendingSwap.updateSubmission(intentId, hash);
           setNote('Skim submitted. Its outcome is tracked below; do not repeat it.');
         } catch (error) {
@@ -962,6 +974,16 @@ function SwapPanel({
           if (generation !== formGeneration.current)
             throw new Error('The form changed, so nothing was sent. Get a new quote.');
           const tx = { ...build(), chainId: network.chainId };
+          // Priced before the intent is saved: a failure here leaves nothing behind.
+          const fee = await priceNewSlots(rpc, tx, network.newSlotFee);
+          if (generation !== formGeneration.current)
+            throw new Error('The form changed, so nothing was sent. Get a new quote.');
+          if (fee)
+            update({
+              label,
+              state: 'waiting',
+              detail: `Confirm in your wallet. ${newSlotFeeNote(fee)}`.trim(),
+            });
           const reservation = await pendingSwap.reserve(
             {
               label,
@@ -985,7 +1007,13 @@ function SwapPanel({
               'The form or wallet context changed before the wallet request. Nothing was sent. Get a new quote.',
             );
           }
-          hash = await sendTransaction(provider, { ...tx, nonce: reservation.nonce });
+          hash = await sendTransaction(provider, {
+            ...tx,
+            nonce: reservation.nonce,
+            ...(fee
+              ? { maxPriorityFeePerGas: fee.maxPriorityFeePerGas, maxFeePerGas: fee.maxFeePerGas }
+              : {}),
+          });
           await pendingSwap.updateSubmission(intentId, hash);
           setSteps((all) => all.slice(0, index));
           // The shared tracker authenticates the call and its finalized receipt.

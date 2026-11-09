@@ -58,7 +58,12 @@ const LENS = '0xb97473777fcf1f4b5be453ba1661b70b191a75cd' as Address;
 const GSMH_PAIR = '0xd71fc81263ba585561ad4d784a4bc096739927b4' as Address;
 const USD_PAIR = '0xd98230d9a13cb72f6d75e3bf46c01415027c8033' as Address;
 const ACCOUNT = '0x72dc623d4c03c996a3d20ed2674f24570e8acf44' as Address;
-const FINALIZED = { number: '0x1b8', hash: `0x${'f'.repeat(64)}`, timestamp: '0x6ad1a000' };
+const FINALIZED = {
+  number: '0x1b8',
+  hash: `0x${'f'.repeat(64)}`,
+  timestamp: '0x6ad1a000',
+  baseFeePerGas: '0x3b9aca00',
+};
 const INCLUDED = { ...FINALIZED, number: '0x1ba', hash: `0x${'b'.repeat(64)}` };
 const NEXT_INCLUDED = { ...FINALIZED, number: '0x1bc', hash: `0x${'d'.repeat(64)}` };
 const NOW_MS = 1_792_200_000_000;
@@ -142,6 +147,10 @@ type ChainState = {
   sent: { method: string; params: unknown[] }[];
   transactions: Map<string, Record<string, unknown>>;
   finalizedBlock?: typeof FINALIZED;
+  /** eth_createAccessList reply; by default the call touches no storage key (nothing to price). */
+  accessList?: (call: Record<string, unknown>) => unknown;
+  /** eth_getStorageAt reply for a touched key. */
+  storageAt?: (address: string, key: string) => string;
 };
 
 const fakeState: { current: ChainState | null } = { current: null };
@@ -194,6 +203,17 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
         return fakeCode.get(params[0] as Address) ?? '0x';
       case 'eth_getBalance':
         return '0xde0b6b3a7640000';
+      case 'eth_createAccessList':
+        return (
+          state.accessList?.(params[0] as Record<string, unknown>) ?? {
+            accessList: [],
+            gasUsed: '0xb3b0',
+          }
+        );
+      case 'eth_getStorageAt':
+        return state.storageAt?.(String(params[0]), String(params[1])) ?? '0x0';
+      case 'eth_maxPriorityFeePerGas':
+        return '0x5f5e100';
       case 'eth_getTransactionCount':
         return `0x${state.transactions.size.toString(16)}`;
       case 'eth_getTransactionByHash':
@@ -2893,5 +2913,162 @@ describe('bUSDC exits held or paused at the bridge (agent 144)', () => {
     };
     expect(() => parseNetwork(json)).toThrow(/vault/);
     expect(bundledNetwork().bridges[0].status).toBeNull();
+  });
+});
+
+describe('new-slot priority fee on the page (round-12 task 259)', () => {
+  const ALLOWANCE_SLOT = `0x${'5a'.repeat(32)}`;
+  const firstApprove = (call: Record<string, unknown>) => ({
+    accessList: call.to === BUSDC ? [{ address: BUSDC, storageKeys: [ALLOWANCE_SLOT] }] : [],
+    gasUsed: '0xb3b0',
+  });
+  const mount = async (rpc: Rpc, chain: ChainState, net: MainnetNetwork = network) => {
+    const user = userEvent.setup();
+    const { wallet, requests } = fakeWallet(chain);
+    render(
+      <MainnetLive
+        network={net}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => NOW_MS}
+        receiptPollMs={5}
+      />,
+    );
+    await screen.findByRole('table');
+    await screen.findByLabelText('Finalized balances');
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    const sends = () =>
+      requests
+        .filter((r) => r.method === 'eth_sendTransaction')
+        .map((r) => r.params![0] as Record<string, unknown>);
+    return { user, sends };
+  };
+
+  it('the committed network file turns it on at 200 µBLCH per slot with a 10% margin', () => {
+    expect(bundledNetwork().newSlotFee).toEqual({
+      enabled: true,
+      freshSlotPriceWei: 200_000_000_000_000n,
+      marginBps: 1000,
+    });
+    const json = JSON.parse(JSON.stringify(networkJson));
+    delete json.newSlotFee;
+    expect(parseNetwork(json).newSlotFee.enabled).toBe(false);
+    json.newSlotFee = { enabled: true, method: 'bloch_newSlotTip' };
+    expect(() => parseNetwork(json)).toThrow(/newSlotFee\.method is not known/);
+  });
+
+  it('a first approve reaches the wallet already priced for its new allowance slot', async () => {
+    const { rpc, state } = fakeChain({ accessList: firstApprove });
+    const { user, sends } = await mount(rpc, state);
+    await user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
+    await waitFor(() => expect(sends()).toHaveLength(1));
+    const [approve] = sends();
+    expect(approve.to).toBe(BUSDC);
+    // 46,000 simulated - 4,300 access-list gas = 41,700; ceil(200e12 x 1.1 / 41700); 2 x 1 gwei base.
+    expect(BigInt(approve.maxPriorityFeePerGas as string)).toBe(5_275_779_377n);
+    expect(BigInt(approve.maxFeePerGas as string)).toBe(7_275_779_377n);
+    expect(approve).toHaveProperty('nonce', '0x0');
+    // The simulation is of the exact call the wallet is asked to sign, at `latest`.
+    const priced = state.sent.find((s) => s.method === 'eth_createAccessList')!;
+    expect(priced.params[1]).toBe('latest');
+    expect(priced.params[0]).toMatchObject({ from: ACCOUNT, to: BUSDC, data: approve.data });
+    // The saved intent holds no fee: fees stay the wallet's, a speed-up there is still recognised.
+    const saved = localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT)) ?? '';
+    expect(saved).not.toContain('maxPriorityFeePerGas');
+  });
+
+  it('a call that creates no slot, and a network file without the block, leave the fee to the wallet', async () => {
+    const repeat = fakeChain({ accessList: firstApprove, storageAt: () => '0x01' });
+    const a = await mount(repeat.rpc, repeat.state);
+    await a.user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
+    await waitFor(() => expect(a.sends()).toHaveLength(1));
+    expect(a.sends()[0]).not.toHaveProperty('maxPriorityFeePerGas');
+    expect(a.sends()[0]).not.toHaveProperty('maxFeePerGas');
+  });
+
+  it('with the policy off the page makes no pricing request', async () => {
+    localStorage.clear();
+    const off = fakeChain({ accessList: firstApprove });
+    const b = await mount(off.rpc, off.state, {
+      ...network,
+      newSlotFee: { ...network.newSlotFee, enabled: false },
+    });
+    await b.user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
+    await waitFor(() => expect(b.sends()).toHaveLength(1));
+    expect(b.sends()[0]).not.toHaveProperty('maxPriorityFeePerGas');
+    expect(off.state.sent.some((s) => s.method === 'eth_createAccessList')).toBe(false);
+  });
+
+  it('when the transaction cannot be priced nothing is saved and nothing reaches the wallet', async () => {
+    localStorage.clear();
+    const { rpc, state } = fakeChain({
+      accessList: () => {
+        throw new Error('RPC down');
+      },
+    });
+    const { user, sends } = await mount(rpc, state);
+    await user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
+    await screen.findByText(/RPC down/);
+    expect(sends()).toHaveLength(0);
+    expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+    // Not held: the user can simply try again.
+    expect(
+      (screen.getByRole('button', { name: 'Approve 1 bUSDC' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+  });
+
+  it('a refused, hashless first approve is re-priced when reviewed at the same nonce', async () => {
+    localStorage.clear();
+    const { rpc, state } = fakeChain({ accessList: firstApprove });
+    const user = userEvent.setup();
+    const { wallet } = fakeWallet(state);
+    const attempted: Record<string, unknown>[] = [];
+    const original = wallet.provider!;
+    const refusing: Devnet4Wallet = {
+      ...wallet,
+      provider: {
+        async request(args) {
+          if (args.method === 'eth_sendTransaction') {
+            attempted.push(args.params![0] as Record<string, unknown>);
+            // A wallet that ignored the suggested fee and got the RPC's refusal back.
+            if (attempted.length === 1) throw feeRefusal.error;
+          }
+          return original.request(args);
+        },
+      },
+    };
+    const quiet: Rpc = async (m, p) => (m === 'eth_getTransactionReceipt' ? null : rpc(m, p));
+    render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={quiet}
+        wallet={refusing}
+        planned={PLANNED}
+        now={() => NOW_MS}
+        receiptPollMs={5}
+      />,
+    );
+    await screen.findByRole('table');
+    await screen.findByLabelText('Finalized balances');
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await user.click(await screen.findByRole('button', { name: 'Approve 1 bUSDC' }));
+    await screen.findByText(/no transaction hash was returned/);
+    const recovery = screen.getByLabelText('Recover transaction tracking');
+    await user.click(within(recovery).getByText('Review the original request in your wallet'));
+    await user.click(within(recovery).getByRole('button', { name: 'Review same nonce in wallet' }));
+    await waitFor(() => expect(attempted).toHaveLength(2));
+    // Same call, same nonce, and the same page-computed fee suggestion: no typing in the wallet.
+    expect(attempted[1]).toEqual(attempted[0]);
+    expect(BigInt(attempted[1].maxPriorityFeePerGas as string)).toBe(5_275_779_377n);
+    expect(attempted[1]).toHaveProperty('nonce', '0x0');
   });
 });

@@ -370,10 +370,10 @@ it sends **no RPC request and no transaction**.
 
 **Inputs, bundled at build time** (never fetched at run time):
 
-| File                                          | Content                                                                                                                                                                                |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `deployments/mainnet/frontend.network.json`   | Chain name and currency for `wallet_addEthereumChain`, the public RPC URL and its status (`placeholder` or `live`), the explorer URL, the pinned L2 genesis hash and the bridge links. |
-| `deployments/mainnet/dex-mainnet.record.json` | `status: "not-deployed"` until the deployment; then the plan, config and schema-2 gate report, assembled by `scripts/staging/frontend-record.mjs`.                                     |
+| File                                          | Content                                                                                                                                                                                                         |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deployments/mainnet/frontend.network.json`   | Chain name and currency for `wallet_addEthereumChain`, the public RPC URL and its status (`placeholder` or `live`), the explorer URL, the pinned L2 genesis hash, the bridge links and the new-slot fee policy. |
+| `deployments/mainnet/dex-mainnet.record.json` | `status: "not-deployed"` until the deployment; then the plan, config and schema-2 gate report, assembled by `scripts/staging/frontend-record.mjs`.                                                              |
 
 `src/mainnet/config.ts` keeps the route "not yet live" while the record is the
 placeholder, the RPC is a placeholder or the genesis is not pinned. Otherwise it
@@ -419,11 +419,32 @@ an error, never a fallback. URLs must be `https` without credentials.
   intent or fixed nonce remain blocked and require independent reconciliation. Do not clear
   browser storage to bypass an unresolved submission. Browser storage belongs to
   this origin/profile; it does not coordinate other devices or unrelated apps.
+- **New-slot priority fee** (`src/mainnet/newslotfee.ts`, network file block
+  `"newSlotFee": {"enabled": true, "freshSlotPriceWei": "200000000000000", "marginBps": 1000}`;
+  absent or `"enabled": false` turns it off). The L2 settled RPC admits a transaction only if
+  `gasUsed x effective tip >= new storage slots x fresh_slot_price_wei`
+  (bloch-l2-evm `docs/MAINNET-RPC-READINESS.md`), and a wallet's default tip does not
+  cover the one new allowance slot of a first `approve`. The RPC publishes no price or
+  quote method, so before opening the wallet for an approval, a swap, a skim or a
+  same-nonce review the page simulates that exact call with `eth_createAccessList` at
+  `latest`, counts the touched storage keys that read zero (`eth_getStorageAt`; an upper
+  bound of the slots the RPC charges), and suggests
+  `maxPriorityFeePerGas = max(eth_maxPriorityFeePerGas, ceil(zeroKeys x price x 1.1 / gas))`
+  and `maxFeePerGas = 2 x base fee + that` to the wallet, where `gas` is the simulated gas
+  less the access list's own intrinsic cost. With no zero key the request is unchanged
+  and the wallet picks the fee. If the call cannot be priced or would revert, nothing is
+  saved and nothing is sent, and the user can try again. The fee is not part of the saved
+  intent: it stays the wallet's. A wallet that ignores suggested fees, or a slot price the
+  operator raised above the network file's value plus the margin, still gets the RPC's
+  refusal once; the page then shows the RPC's figures and the same-nonce review sends the
+  re-priced request. Keep `freshSlotPriceWei` equal to the settler's
+  `fresh_slot_price_wei` (200 µBLCH in `install-settler-mainnet.py`).
 - **Explicit review of the same nonce.** A separate “Review same nonce in wallet”
   action checks canonical state and opens a new wallet confirmation for the
   original sender, destination, calldata, value, gas limit and nonce. It never
   sends automatically, chooses a new nonce, adopts a fee diagnostic or extends
-  the original swap deadline. The user can review fees in their wallet. Before
+  the original swap deadline. Its fee suggestion comes from the page's own new-slot
+  pricing (above), never from an error's figures; the user can review fees in their wallet. Before
   opening it, the page reconstructs an allowed exact approval, swap or self-skim
   from the verified deployment and shows details decoded from those bytes; stored
   labels and retry metadata cannot authorize a call. Unlimited approvals and

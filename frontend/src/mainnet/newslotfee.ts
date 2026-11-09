@@ -1,0 +1,235 @@
+// New-slot priority fee for L2 user transactions (review A243-11 part b, round-12 task 259).
+//
+// The L2 settled RPC admits a transaction only when
+//
+//   gasUsed x effective tip >= charged new storage slots x fresh_slot_price_wei
+//
+// (bloch-l2-evm docs/MAINNET-RPC-READINESS.md, "Transaction-specific storage price"; the
+// mainnet settler installs 200 µBLCH per slot). A wallet's own tip is far below that for a
+// first `approve` (one new allowance slot), so the RPC refuses it with
+// `sequencer-fee-underpriced` and the user would have to type a fee into the wallet.
+//
+// The RPC publishes no price or quote method: its exact figures exist only inside that
+// refusal, which needs a signed transaction. So the page prices the transaction itself,
+// before it asks the wallet, with standard methods the RPC does serve:
+//
+//   eth_createAccessList  -> the storage keys the call touches, and the gas it used
+//   eth_getStorageAt      -> every touched key that reads zero at `latest` MAY be a new slot
+//   eth_maxPriorityFeePerGas, eth_getBlockByNumber(latest) -> the published tip and base fee
+//
+//   maxPriorityFeePerGas = max(published tip, ceil(zeroKeys x price x (1 + margin) / gasUsed))
+//   maxFeePerGas         = 2 x base fee + maxPriorityFeePerGas
+//
+// `gasUsed` is the simulated gas less the access list's own intrinsic cost (2,400 per address
+// and 1,900 per key, EIP-2930): the wallet sends no access list, and the RPC measures that
+// transaction. The result is a lower bound of its gas, so the tip is never too small for it.
+//
+// Zero keys are an upper bound of the slots the RPC charges (a new slot is a zero slot the
+// transaction writes), so the result errs towards a slightly higher tip, never a refusal. The
+// price per slot is the network file's `newSlotFee.freshSlotPriceWei` (operator policy, not a
+// consensus rule): if the operator raises it above that plus the margin, the RPC refuses once
+// with its exact figures and the page explains them, as before this module.
+//
+// With no possible new slot, or with the policy off, the wallet request is unchanged and the
+// wallet picks the fee. The fee fields are a suggestion to the wallet: a wallet that ignores
+// them behaves as before.
+import { formatGwei, type Address, type Hex } from 'viem';
+import type { Rpc } from '../devnet4/chain';
+
+/** Mainnet settler policy `fresh_slot_price_wei`: 200 µBLCH per new storage slot. */
+export const DEFAULT_FRESH_SLOT_PRICE_WEI = 200n * 10n ** 12n;
+/** Above 0.01 BLCH per slot the network file is refused: a typo must not drain a wallet. */
+export const MAX_FRESH_SLOT_PRICE_WEI = 10n ** 16n;
+/** Policy `fresh_slots_per_block`: no admissible transaction creates more. */
+export const MAX_NEW_SLOTS = 128n;
+/** Gas used at inclusion can be lower than simulated (a slot written meanwhile, refunds). */
+export const DEFAULT_MARGIN_BPS = 1_000;
+export const MAX_MARGIN_BPS = 5_000;
+/** Above this many touched keys every key counts as new instead of being read one by one. */
+export const MAX_STORAGE_READS = 48;
+/** The published tip is refused above this: a broken RPC must not set an absurd fee. */
+export const MAX_PUBLISHED_TIP_WEI = 100n * 10n ** 9n;
+const INTRINSIC_GAS = 21_000n;
+/** EIP-2930 intrinsic gas of an access list entry. */
+const ACCESS_LIST_ADDRESS_GAS = 2_400n;
+const ACCESS_LIST_KEY_GAS = 1_900n;
+
+export type NewSlotFeePolicy = { enabled: boolean; freshSlotPriceWei: bigint; marginBps: number };
+export const NEW_SLOT_FEE_OFF: NewSlotFeePolicy = {
+  enabled: false,
+  freshSlotPriceWei: DEFAULT_FRESH_SLOT_PRICE_WEI,
+  marginBps: DEFAULT_MARGIN_BPS,
+};
+
+export type PricedCall = { from: Address; to: Address; data: Hex; value: bigint; gas: bigint };
+export type FeeFields = { maxPriorityFeePerGas: bigint; maxFeePerGas: bigint };
+export type NewSlotFee = FeeFields & {
+  /** Touched storage keys that read zero: an upper bound of the slots the RPC charges. */
+  possibleNewSlots: bigint;
+  gasUsed: bigint;
+  publishedTip: bigint;
+  baseFee: bigint;
+  /** possibleNewSlots x price: what the sequencer must receive for the new slots, in wei. */
+  slotCostWei: bigint;
+};
+
+export class NewSlotFeeError extends Error {}
+function refuse(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new NewSlotFeeError(message);
+}
+
+/** Read the optional `newSlotFee` block of the network file; absent means off. */
+export function parseNewSlotFeePolicy(value: unknown, field = 'newSlotFee'): NewSlotFeePolicy {
+  if (value === undefined || value === null) return NEW_SLOT_FEE_OFF;
+  refuse(typeof value === 'object' && !Array.isArray(value), `${field} must be an object`);
+  const v = value as Record<string, unknown>;
+  for (const key of Object.keys(v))
+    refuse(
+      ['enabled', 'freshSlotPriceWei', 'marginBps'].includes(key),
+      `${field}.${key} is not known`,
+    );
+  refuse(typeof v.enabled === 'boolean', `${field}.enabled must be true or false`);
+  const price = v.freshSlotPriceWei ?? DEFAULT_FRESH_SLOT_PRICE_WEI.toString();
+  refuse(
+    typeof price === 'string' && /^[1-9][0-9]{0,17}$/.test(price),
+    `${field}.freshSlotPriceWei must be a positive decimal string of wei`,
+  );
+  refuse(
+    BigInt(price) <= MAX_FRESH_SLOT_PRICE_WEI,
+    `${field}.freshSlotPriceWei is above ${MAX_FRESH_SLOT_PRICE_WEI} wei (0.01 BLCH) per slot`,
+  );
+  const marginBps = v.marginBps ?? DEFAULT_MARGIN_BPS;
+  refuse(
+    Number.isSafeInteger(marginBps) &&
+      (marginBps as number) >= 0 &&
+      (marginBps as number) <= MAX_MARGIN_BPS,
+    `${field}.marginBps must be an integer from 0 to ${MAX_MARGIN_BPS}`,
+  );
+  return { enabled: v.enabled, freshSlotPriceWei: BigInt(price), marginBps: marginBps as number };
+}
+
+/** ceil(slots x price x (10000 + marginBps) / (gasUsed x 10000)). */
+export function slotTipFor(
+  slots: bigint,
+  gasUsed: bigint,
+  priceWei: bigint,
+  marginBps: number,
+): bigint {
+  if (slots <= 0n) return 0n;
+  refuse(gasUsed > 0n, 'gas used must be positive');
+  const numerator = slots * priceWei * (10_000n + BigInt(marginBps));
+  const denominator = gasUsed * 10_000n;
+  return (numerator + denominator - 1n) / denominator;
+}
+
+function quantity(value: unknown, field: string): bigint {
+  refuse(
+    typeof value === 'string' && /^0x(0|[1-9a-f][0-9a-f]{0,63})$/i.test(value),
+    `the L2 RPC returned no ${field}`,
+  );
+  return BigInt(value);
+}
+const hex = (value: bigint) => `0x${value.toString(16)}`;
+
+/**
+ * Price one L2 transaction, or null when it can create no new slot (the wallet then picks
+ * the fee as before). Throws when the RPC cannot price it or the call would revert: the
+ * caller sends nothing, because an unpriced first approve is refused by the RPC and leaves a
+ * submission with an unknown outcome.
+ */
+export async function priceNewSlots(
+  rpc: Rpc,
+  tx: PricedCall,
+  policy: NewSlotFeePolicy,
+): Promise<NewSlotFee | null> {
+  if (!policy.enabled) return null;
+  const call = { from: tx.from, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) };
+  const reply = (await rpc('eth_createAccessList', [call, 'latest'])) as {
+    accessList?: unknown;
+    gasUsed?: unknown;
+    error?: unknown;
+  } | null;
+  refuse(reply && Array.isArray(reply.accessList), 'the L2 RPC returned no access list');
+  refuse(
+    reply.error === undefined || reply.error === null,
+    'this transaction would fail if sent now, so nothing was sent',
+  );
+  const keys: [string, string][] = [];
+  for (const item of reply.accessList as { address?: unknown; storageKeys?: unknown }[]) {
+    refuse(
+      item && typeof item.address === 'string' && /^0x[0-9a-fA-F]{40}$/.test(item.address),
+      'the L2 RPC returned a malformed access list',
+    );
+    refuse(Array.isArray(item.storageKeys), 'the L2 RPC returned a malformed access list');
+    for (const key of item.storageKeys as unknown[]) {
+      refuse(
+        typeof key === 'string' && /^0x[0-9a-fA-F]{64}$/.test(key),
+        'the L2 RPC returned a malformed access list',
+      );
+      keys.push([item.address, key]);
+    }
+  }
+  const simulated = quantity(reply.gasUsed, 'simulated gas');
+  refuse(
+    simulated >= INTRINSIC_GAS && simulated <= tx.gas,
+    `the simulated gas (${simulated}) is outside 21000 to the gas limit ${tx.gas}`,
+  );
+  const listGas =
+    ACCESS_LIST_ADDRESS_GAS * BigInt(reply.accessList.length) +
+    ACCESS_LIST_KEY_GAS * BigInt(keys.length);
+  const gasUsed = simulated - listGas > INTRINSIC_GAS ? simulated - listGas : INTRINSIC_GAS;
+  let possibleNewSlots = BigInt(keys.length);
+  if (keys.length > 0 && keys.length <= MAX_STORAGE_READS) {
+    const words = await Promise.all(
+      keys.map(([address, key]) => rpc('eth_getStorageAt', [address, key, 'latest'])),
+    );
+    possibleNewSlots = 0n;
+    for (const word of words) {
+      refuse(
+        typeof word === 'string' && /^0x[0-9a-fA-F]{1,64}$/.test(word),
+        'the L2 RPC returned no storage word',
+      );
+      if (BigInt(word) === 0n) possibleNewSlots += 1n;
+    }
+  }
+  if (possibleNewSlots === 0n) return null;
+  refuse(
+    possibleNewSlots <= MAX_NEW_SLOTS,
+    `this transaction may create ${possibleNewSlots} new storage slots; the L2 takes at most ${MAX_NEW_SLOTS} in one transaction`,
+  );
+  const publishedTip = quantity(await rpc('eth_maxPriorityFeePerGas', []), 'priority fee');
+  refuse(
+    publishedTip <= MAX_PUBLISHED_TIP_WEI,
+    `the L2 RPC asks a ${formatGwei(publishedTip)} gwei priority fee, above ${formatGwei(MAX_PUBLISHED_TIP_WEI)} gwei`,
+  );
+  const block = (await rpc('eth_getBlockByNumber', ['latest', false])) as {
+    baseFeePerGas?: unknown;
+  } | null;
+  refuse(block, 'the latest L2 block could not be read');
+  const baseFee = quantity(block.baseFeePerGas, 'base fee');
+  const slotTip = slotTipFor(possibleNewSlots, gasUsed, policy.freshSlotPriceWei, policy.marginBps);
+  const maxPriorityFeePerGas = slotTip > publishedTip ? slotTip : publishedTip;
+  return {
+    maxPriorityFeePerGas,
+    maxFeePerGas: 2n * baseFee + maxPriorityFeePerGas,
+    possibleNewSlots,
+    gasUsed,
+    publishedTip,
+    baseFee,
+    slotCostWei: possibleNewSlots * policy.freshSlotPriceWei,
+  };
+}
+
+/** What the page says while the wallet is open; empty when the wallet picks the fee. */
+export function newSlotFeeNote(fee: NewSlotFee | null): string {
+  if (!fee || fee.maxPriorityFeePerGas === fee.publishedTip) return '';
+  const slots =
+    fee.possibleNewSlots === 1n
+      ? '1 new storage slot'
+      : `up to ${fee.possibleNewSlots} new storage slots`;
+  return (
+    `This transaction creates ${slots} on the L2, which the network charges through the priority fee. ` +
+    `The page suggests ${formatGwei(fee.maxPriorityFeePerGas)} gwei to your wallet; keep the suggested fee, ` +
+    'a lower one is refused by the network.'
+  );
+}
