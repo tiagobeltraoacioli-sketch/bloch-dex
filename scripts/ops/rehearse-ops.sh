@@ -153,7 +153,10 @@ settle() {
   else scripts/staging/private-l2.sh finalize "$WORK/l2" "$PORT" >> "$EV/steps.log"; fi
 }
 monitor() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --lp-recipient "$SEEDER" "${GATE_FLAGS[@]}" "$@"; }
-keeper_run() { node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --keeper "$KEEPER" "$@"; }
+# REHEARSAL_CLOCK is empty until section 10, whose scenes move the anvil clock days ahead of this host's clock (mint
+# delays, pause terms, the switch delay). Up to there the keeper runs with its own --max-clock-skew-s default.
+REHEARSAL_CLOCK=()
+keeper_run() { node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --keeper "$KEEPER" ${REHEARSAL_CLOCK[@]+"${REHEARSAL_CLOCK[@]}"} "$@"; }
 
 # ---------------------------------------------------------------- deployment
 log "deploy: Safe, real $TOKEN_KIND ($(cast keccak "$(node -e 'console.log(require(require("path").resolve(process.argv[1])).bytecode.object)' "$BUSDC_ARTIFACT")") creation), DEX, gate file, with the deployment package's own tools"
@@ -865,6 +868,16 @@ if [ "$IS_V3" = 1 ]; then
     must "${GUARDIAN_KEYS[$2]}" "$USD" "$(cast calldata "voteCancelMint(bytes32,address,uint64,uint64)" "$1" "$r" "$a" "$t")" 0 200000 > /dev/null
   }
 
+  log "10 keeper clock guard: a chain clock far from this host's clock stops the keeper; the scenes below then say so explicitly"
+  SNAP_CLOCK=$(snapshot)
+  cast rpc evm_increaseTime 172800 --rpc-url "$RPC" > /dev/null; cast rpc evm_mine --rpc-url "$RPC" > /dev/null
+  expect 1 keeper-clock-guard keeper_run --state "$WORK/keeper/clock.json" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
+  grep -q clock-or-head-stale "$EV/keeper-clock-guard.out" || die "the keeper acted with the chain clock two days from the host clock"
+  [ ! -e "$WORK/keeper/clock.json" ] || [ "$(node -e 'console.log(require(process.argv[1]).txs.length)' "$WORK/keeper/clock.json")" = 0 ] || die "the keeper recorded a transaction under a stale clock"
+  restore "$SNAP_CLOCK"
+  pass "keeper clock guard: no action two days from the host clock"
+  # From here the rehearsal's own time travel is declared to the keeper; the default is not changed.
+  REHEARSAL_CLOCK=(--max-clock-skew-s 100000000)
   log "10a V3 held mint: a mint queued to the pair adds nothing until it credits; then it is excess the keeper sends to the Safe"
   scene_start
   R_USD=$(view "$USD" "$BAL" "$PAIR")
