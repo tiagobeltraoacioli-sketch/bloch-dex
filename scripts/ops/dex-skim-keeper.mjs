@@ -645,8 +645,9 @@ if (isMain(import.meta.url)) {
     };
     for (const k of ["budgetWei", "maxFeeWei", "tipWei", "maxTipWei", "maxGas", "floorBps", "softShareBps", "hardReserveBps"]) if (options[k] < 0n) throw new Error(`${k} must not be negative`);
     if (options.ceilingFloorWei !== null && options.ceilingFloorWei < 0n) throw new Error("--ceiling-floor-wei must not be negative");
-    // --max-fee-wei is enforced per pass against the base fee ("fee-above-ceiling"); the tip range must be a range.
-    if (options.tipWei > options.maxTipWei) throw new Error("--tip-wei must not exceed --max-tip-wei");
+    // The ceilings must be coherent before anything is read or signed: a tip range above the
+    // fee ceiling is an operator mistake, refused at start (exit 2), never resolved by a pass.
+    if (options.tipWei > options.maxTipWei || options.maxTipWei > options.maxFeeWei) throw new Error("--tip-wei must not exceed --max-tip-wei, and --max-tip-wei must not exceed --max-fee-wei");
     const integerOptions = { maxClockSkewSeconds: "max-clock-skew-s", maxTx: "max-tx", cooldownSeconds: "cooldown-s", pendingTimeoutSeconds: "pending-timeout-s", rebroadcastSeconds: "rebroadcast-s", replaceAfterSeconds: "replace-after-s", maxReplacements: "max-replacements" };
     for (const [k, flag] of Object.entries(integerOptions)) {
       if (!Number.isSafeInteger(options[k]) || options[k] < 0) throw new Error(`--${flag} must be a non-negative integer`);

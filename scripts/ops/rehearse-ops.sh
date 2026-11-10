@@ -488,11 +488,16 @@ expect 1 monitor-donation-latest monitor --expect-seeded
 settle
 expect 2 monitor-donation-finalized monitor --expect-seeded
 log "5 keeper: limits refuse, a dry run sends nothing, then it clears the donation"
-for spec in "budget-exhausted --budget-wei 1" "fee-above-ceiling --max-fee-wei 1" "gas-limit-exceeded --max-gas 1000" "tx-count-exhausted --max-tx 0"; do
+# The fee-ceiling case lowers the whole range (tip <= max tip <= max fee): the base fee alone is then above the ceiling.
+for spec in "budget-exhausted --budget-wei 1" "fee-above-ceiling --max-fee-wei 1 --max-tip-wei 1 --tip-wei 1" "gas-limit-exceeded --max-gas 1000" "tx-count-exhausted --max-tx 0"; do
   set -- $spec
-  expect 1 "keeper-$1" keeper_run "${KFLAGS[@]}" "$2" "$3" --execute -- --private-key "$KEEPER_KEY"
-  grep -q "$1" "$EV/keeper-$1.out" || die "expected $1"
+  name=$1; shift
+  expect 1 "keeper-$name" keeper_run "${KFLAGS[@]}" "$@" --execute -- --private-key "$KEEPER_KEY"
+  grep -q "$name" "$EV/keeper-$name.out" || die "expected $name"
 done
+# Ceilings that contradict each other (a tip ceiling above the fee ceiling) are refused at start, before any read.
+expect 2 keeper-incoherent-ceilings keeper_run "${KFLAGS[@]}" --max-fee-wei 1 --execute -- --private-key "$KEEPER_KEY"
+grep -q "must not exceed --max-fee-wei" "$EV/keeper-incoherent-ceilings.out" || die "expected the ceiling refusal"
 expect 0 keeper-dry-run keeper_run "${KFLAGS[@]}"
 grep -q would-skim "$EV/keeper-dry-run.out" || die "expected would-skim"
 [ "$(cast nonce "$KEEPER" --rpc-url "$RPC")" = 0 ] || die "limits or the dry run sent a transaction"

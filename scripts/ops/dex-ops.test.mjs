@@ -1823,3 +1823,21 @@ test("review L8: a pinned pair that belongs to another factory is refused", asyn
   assert.match(outcome.detail, /belongs to factory/);
   assert.equal(node.chain.sent.length, 0);
 });
+
+test("keeper CLI: ceilings that contradict each other are refused at start, before any file or node is read", () => {
+  const cli = fileURLToPath(new URL("./dex-skim-keeper.mjs", import.meta.url));
+  const base = [cli, "--config", "/nonexistent/gate.json", "--rpc", "http://127.0.0.1:9", "--keeper", KEEPER, "--state", "/nonexistent/keeper/state.json"];
+  for (const [flags, message] of [
+    [["--max-fee-wei", "1"], /--max-tip-wei must not exceed --max-fee-wei/],
+    [["--max-tip-wei", "30000000000"], /--max-tip-wei must not exceed --max-fee-wei/],
+    [["--tip-wei", "9000000000"], /--tip-wei must not exceed --max-tip-wei/],
+    [["--budget-wei", "-1"], /must not be negative/],
+  ]) {
+    const run = spawnSync(process.execPath, [...base, ...flags], { encoding: "utf8" });
+    assert.equal(run.status, CRIT, flags.join(" "));
+    assert.match(run.stderr, message);
+  }
+  // A coherent, lowered range gets past the check (and then fails on the missing gate file, not on the ceilings).
+  const coherent = spawnSync(process.execPath, [...base, "--max-fee-wei", "1", "--max-tip-wei", "1", "--tip-wei", "1"], { encoding: "utf8" });
+  assert.doesNotMatch(coherent.stderr, /must not exceed/);
+});
