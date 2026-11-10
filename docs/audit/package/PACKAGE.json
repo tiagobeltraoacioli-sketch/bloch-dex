@@ -1,0 +1,197 @@
+{
+  "schema": "postern.dex.audit-package.v1",
+  "commit": "9990adf06c7a498b97849d636c8d20bae7a9ad69",
+  "contractsCommit": "d18ab04f1db68350427362128829f88dba8bac9b",
+  "tree": "21bc8b286a991fcc867baaffb2534d1f8b9eb604",
+  "generatedAt": "2026-11-10T15:07:13.968Z",
+  "generator": {
+    "path": "scripts/audit/make-package.mjs",
+    "sha256": "9c89eec31191f3b7642b57527322cccf1d09d2dbd075db83a81452e0d8b98760",
+    "scopeFrom": "the audited commit"
+  },
+  "toolchain": {
+    "forge": "forge Version: 1.7.1",
+    "node": "v24.21.0",
+    "platform": "darwin x64"
+  },
+  "initCodeHash": "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683",
+  "codeHashes": [
+    {
+      "contract": "UniswapV2Pair",
+      "creationKeccak": "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683",
+      "creationBytes": 10247,
+      "runtimeKeccak": "0x7430d38c0cae8577ce0caa0dd73c08ff668a6f0a849f3418a76f2993e0588d16",
+      "runtimeBytes": 10192
+    },
+    {
+      "contract": "UniswapV2Factory",
+      "creationKeccak": "0x6dc63b494cdfc7b3962e651b80e66dac4042871f9f84b2b7940aac5c1cffeb03",
+      "creationBytes": 12967,
+      "runtimeKeccak": "0xf6eb95c7e7872c9ea9de03d77e65a424eb228094b8afeb2c7f3ab20863b6b695",
+      "runtimeBytes": 11747
+    },
+    {
+      "contract": "BDexRouter",
+      "creationKeccak": "0x9d2ccb89a9a88716369c124492aa17042ae12d70d2fcc36f1c32c4303612c33f",
+      "creationBytes": 19345,
+      "runtimeKeccak": "0x578d97445e8f0c475101cac45a6a58d7f998cfd088e0dc6bcffc499a22b7249e",
+      "runtimeBytes": 18636
+    },
+    {
+      "contract": "BDexLens",
+      "creationKeccak": "0x52e232637401ad53411c73358cb41dd2813cefead7884c6fcc2c17430dac70c9",
+      "creationBytes": 10472,
+      "runtimeKeccak": "0x6f0e7f812b99f23a9f7dc741afdb63bcecf313c6f50afbb17f2385ccff3f6f1b",
+      "runtimeBytes": 10180
+    },
+    {
+      "contract": "WBLCH",
+      "creationKeccak": "0x9946e0055b0872f93404a801850f387f3b741ef35f90d0bc71b8c165fcd9b007",
+      "creationBytes": 2620,
+      "runtimeKeccak": "0x09b5b121f866f2c565e1ffead9867bb0a5a08e07369b239ccd38e8d1a73a928c",
+      "runtimeBytes": 2588
+    }
+  ],
+  "bridge": {
+    "revision": "1aef47cc0236aebe8ca31a425a7bc4caf31f20d0",
+    "dirty": false,
+    "v3CreationKeccak": "0xe560441f37e247e387cebd23bb3dd798a29d34174a9fb19a4bb3877c6c721de7"
+  },
+  "scopeOpenImports": [],
+  "absentFiles": [],
+  "knownIssues": "KNOWN-ISSUES.md",
+  "tests": [
+    {
+      "name": "forge-build",
+      "command": "forge build",
+      "exit": 0,
+      "ok": true,
+      "logSha256": "f37774aa3a184163bce623c8f3ec400db8a6618debc94e24bdecb02418aa4cf1"
+    },
+    {
+      "name": "forge-test",
+      "command": "forge test --offline",
+      "exit": 0,
+      "ok": true,
+      "summary": "33 suites, 233 passed, 0 failed, 0 skipped",
+      "suites": 33,
+      "pass": 233,
+      "fail": 0,
+      "skipped": 0,
+      "logSha256": "372db949c42e2a2537404cf9c65bbd170a00340ded247bf200a02dfb71f68102"
+    },
+    {
+      "name": "forge-test-v3-real-token",
+      "command": "forge test --offline --evm-version shanghai --match-path 'test/V3*.t.sol'",
+      "exit": 0,
+      "ok": true,
+      "summary": "5 suites, 26 passed, 0 failed, 0 skipped",
+      "suites": 5,
+      "pass": 26,
+      "fail": 0,
+      "skipped": 0,
+      "logSha256": "a03d08192c7a661243b9f48c82e41b4ca40461551dad4f2e1d5c9253cf9f0f6c"
+    },
+    {
+      "name": "node-staging",
+      "command": "node --test scripts/staging/*.test.mjs",
+      "exit": 0,
+      "ok": true,
+      "summary": "198 tests, 197 passed, 0 failed, 1 skipped",
+      "tests": 198,
+      "pass": 197,
+      "fail": 0,
+      "skipped": 1,
+      "logSha256": "718155281281c7b4776c68d8aaa0ae4ea8e9e058afda10685852f6bdc1597d26"
+    },
+    {
+      "name": "node-ops",
+      "command": "node --test scripts/ops/*.test.mjs",
+      "exit": 0,
+      "ok": true,
+      "summary": "158 tests, 158 passed, 0 failed, 0 skipped",
+      "tests": 158,
+      "pass": 158,
+      "fail": 0,
+      "skipped": 0,
+      "logSha256": "8bfc3e77f4d1184d7624d6207c1625c3ff7786cf94c2d8dfaf75900121d0030d"
+    },
+    {
+      "name": "frontend-vitest",
+      "command": "npx vitest run",
+      "exit": 0,
+      "ok": true,
+      "summary": "425 passed | 1 skipped (426)",
+      "pass": 425,
+      "fail": 0,
+      "skipped": 1,
+      "logSha256": "a0cf90a181b3bf3643239940014ece19c129d51432e6b52f46004825de930f27"
+    },
+    {
+      "name": "frontend-tsc",
+      "command": "npx tsc --noEmit",
+      "exit": 0,
+      "ok": true,
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "frontend-build",
+      "command": "npx vite build",
+      "exit": 0,
+      "ok": true,
+      "logSha256": "e1e6125108054187fb54a41e44f1fd9b56142a233b9fa008d7af8e83d3a46d4e"
+    },
+    {
+      "name": "frontend-bundle-check",
+      "command": "node scripts/check-production-bundle.mjs dist",
+      "exit": 0,
+      "ok": true,
+      "summary": "0 hit(s) in 87 files of dist",
+      "logSha256": "99525697bb7e8cdab1628626a1caaf4b370819392034ce0ca9fce34aa02e58f4"
+    },
+    {
+      "name": "rehearse-opening",
+      "command": "scripts/ops/rehearse-opening.sh 40730 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-bvldqL/rehearsal-opening",
+      "exit": 0,
+      "ok": true,
+      "summary": "REHEARSAL OK, 40 checks",
+      "checks": 40,
+      "logSha256": "ce239bea3cc62f08b0b76109e697e012d6f2cee35c18ac5d01335b68f74f08b7"
+    },
+    {
+      "name": "rehearse-ops-anvil",
+      "command": "scripts/ops/rehearse-ops.sh anvil 40740 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-bvldqL/rehearsal-ops",
+      "exit": 0,
+      "ok": true,
+      "summary": "REHEARSAL OK (anvil, 142 checks, <export>/rehearsal-ops)",
+      "checks": 142,
+      "logSha256": "d8d2245f219e63ae056c4945ab0ca6280d1606bf3e2ef27baffe2b9ed70fd1a3"
+    },
+    {
+      "name": "rehearse-package-standin",
+      "command": "scripts/staging/rehearse-mainnet-package.sh anvil d18ab04f1db68350427362128829f88dba8bac9b 40750 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-bvldqL/rehearsal-package-standin",
+      "exit": 0,
+      "ok": true,
+      "summary": "REHEARSAL OK (anvil, <export>/rehearsal-package-standin)",
+      "checks": null,
+      "logSha256": "480cf3844a0ab26e05f9a8fb449d8f22db46e466d4a8efc3b6fdc1461585c20e"
+    },
+    {
+      "name": "rehearse-package-real-v3",
+      "command": "scripts/staging/rehearse-mainnet-package.sh anvil d18ab04f1db68350427362128829f88dba8bac9b 40760 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-bvldqL/rehearsal-package-real",
+      "exit": 0,
+      "ok": true,
+      "summary": "REHEARSAL OK (anvil, <export>/rehearsal-package-real)",
+      "checks": null,
+      "logSha256": "82497a1c34fc3158486b974eda893713985c28c50b9102f61224fe1518bbc0bc"
+    }
+  ],
+  "notRun": [],
+  "files": {
+    "SCOPE.md": "f64004c6c4bfa552435abeca1b6d4fb338751888e3291736c57d980eac4a7d44",
+    "MANIFEST.tsv": "cd45ab314348db70049ac9213cca4914ed12c6f0d0c24997ab44660fc51dd125",
+    "TEST-EVIDENCE.md": "2b770285d7ab8ca9427ada94a539a5b014d493857333d6958450646ec81a46c9",
+    "KNOWN-ISSUES.md": "f6f4008c5875f2fb43b60e985150e70a450cbc54e767adad99d4f3f0a4ccbd9c"
+  },
+  "result": "passed"
+}
