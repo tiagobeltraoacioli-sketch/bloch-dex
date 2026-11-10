@@ -45,6 +45,8 @@
 // skim(Safe) with higher fees inside the same ceilings, so at most one of them can ever be
 // mined; a nonce consumed by a transaction this keeper did not record is settled from the
 // finalized chain. A new nonce is used only after the previous one is settled by finalized data.
+// That includes a first publication the node refused with its admission price: the refusal is
+// the node's word, so the entry keeps its nonce and reservation and the retry replaces it.
 
 import { execFile } from "node:child_process";
 import { randomInt } from "node:crypto";
@@ -215,7 +217,8 @@ async function reconcile(state, keeper, deployment, request, now, options) {
   if (!open) return null;
   const pending = (reason = "awaiting-receipt", entry = open, extra = {}) => {
     const ageSeconds = Math.max(0, now - entry.at);
-    const overdue = ageSeconds > options.pendingTimeoutSeconds;
+    // A refused first publication holds a free nonce and nothing in any spool: waiting is its normal state.
+    const overdue = ageSeconds > options.pendingTimeoutSeconds && reason !== "refused-not-in-spool";
     return { hash: entry.hash, ageSeconds, reason: reason === "awaiting-receipt" && overdue ? "pending-timeout" : reason,
       level: overdue || ["nonce-used-without-receipt", "legacy-history", "nonce-gap"].includes(reason) ? WARN : OK, ...extra };
   };
@@ -308,14 +311,19 @@ async function reconcile(state, keeper, deployment, request, now, options) {
 
   // Not mined, and the nonce is still free. Publish the same signed bytes again.
   const lastAttemptAt = open.replacedAt ?? open.at;
+  // `refusedFirst`: the node refused these bytes with its admission price at their FIRST
+  // publication. The keeper never publishes them again by itself (a skim that is no longer
+  // needed would only burn gas); the nonce stays reserved and the next needed skim reuses it.
+  const refusedFirst = open.refusedFirst === true;
   // The node's "not in my spool" answer and its quote describe one head. After one
   // re-publication interval they are forgotten and the stored bytes are published again, so
-  // an old quote above the ceilings cannot hold the entry for ever.
-  if (Number.isSafeInteger(open.notSpooledAt) && now - open.notSpooledAt >= options.rebroadcastSeconds) {
-    delete open.notSpooledAt;
+  // an old quote above the ceilings cannot hold the entry for ever. For a refused first
+  // publication only a quote inside the ceilings is kept, for a day at most.
+  if (Number.isSafeInteger(open.notSpooledAt) && now - open.notSpooledAt >= (refusedFirst ? 86_400 : options.rebroadcastSeconds)) {
+    if (!refusedFirst) delete open.notSpooledAt;
     delete open.feeRequirement;
   }
-  let notSpooled = Number.isSafeInteger(open.notSpooledAt) && open.notSpooledAt >= lastAttemptAt;
+  let notSpooled = Number.isSafeInteger(open.notSpooledAt) && open.notSpooledAt >= lastAttemptAt; // kept for good when refusedFirst
   let rebroadcast;
   if (options.execute && open.raw !== undefined && !notSpooled && now - (open.lastBroadcastAt ?? lastAttemptAt) >= options.rebroadcastSeconds) {
     await storedSkim(open, keeper, deployment);
@@ -340,8 +348,12 @@ async function reconcile(state, keeper, deployment, request, now, options) {
   const only = state.txs.filter(keeperNeedsReconciliation).length === 1;
   const exhausted = (open.attempts?.length ?? 0) >= options.maxReplacements;
   const spaced = !(Number.isSafeInteger(open.noReplaceBefore) && now < open.noReplaceBefore);
-  const replace = (stale || notSpooled) && feesKnown && only && !exhausted && spaced ? open : undefined;
-  return pending(exhausted && stale ? "replacements-exhausted" : notSpooled ? "not-in-spool" : undefined, open, { ...(rebroadcast ? { rebroadcast } : {}), replace });
+  // An entry written by a keeper that did not keep the signed bytes cannot be published again.
+  // Once stale it is replaced at its own nonce like any other (only one transaction of a nonce
+  // can be mined); the replacement's fees are chosen in runKeeper without the unknown figures.
+  const legacy = open.raw === undefined;
+  const replace = (stale || notSpooled) && (feesKnown || legacy) && only && !exhausted && spaced ? open : undefined;
+  return pending(exhausted && stale ? "replacements-exhausted" : refusedFirst ? "refused-not-in-spool" : notSpooled ? "not-in-spool" : undefined, open, { ...(rebroadcast ? { rebroadcast } : {}), replace });
 }
 
 /// One keeper pass. `deps`: {request, sign(tx) -> rawHex, now}. Writes state
@@ -461,8 +473,20 @@ export async function runKeeper(gate, givenOptions, state, deps) {
     // Fee floors, always inside the operator's ceilings (never raised here): a same-nonce
     // replacement must outbid the attempt it replaces, and the node's own quote for the last
     // refused skim (its price for new storage slots) is honoured on the next attempt.
-    const quote = replacing?.feeRequirement ?? (state.feeHint && now - state.feeHint.at < 86_400 ? state.feeHint : null);
-    const tipFloor = [replacing ? replacementFloor(replacing.tipWei) : 0n, quote ? BigInt(quote.requiredPriorityFeePerGas) : 0n].reduce((a, b) => (a > b ? a : b));
+    const quote = replacing?.feeRequirement ?? null;
+    // What a same-nonce replacement must outbid. Two kinds of entry have no binding figure:
+    //   * bytes the node refused at their first publication are in no spool, so the 12.5% is
+    //     only a precaution against a node that kept them anyway: it is capped at the ceilings;
+    //   * an entry without its signed bytes or fees (written by an older keeper) is outbid with
+    //     the operator's own ceilings, which no transaction of this keeper can exceed.
+    const known = (v) => typeof v === "string" && DECIMAL.test(v);
+    const outbid = (field, ceiling) => {
+      if (!replacing) return 0n;
+      if (!known(replacing[field])) return ceiling;
+      const floor = replacementFloor(replacing[field]);
+      return replacing.refusedFirst === true && floor > ceiling ? ceiling : floor;
+    };
+    const tipFloor = [outbid("tipWei", options.maxTipWei), quote ? BigInt(quote.requiredPriorityFeePerGas) : 0n].reduce((a, b) => (a > b ? a : b));
     if (tip < tipFloor) tip = tipFloor;
     if (tip > options.maxTipWei && tipFloor > 0n) return blocked("fee-above-ceiling", { requiredTipWei: tipFloor, maxTipWei: options.maxTipWei, ...(replacing ? { replacesHash: replacing.hash } : {}) });
     if (latest.baseFee + tip > options.maxFeeWei) {
@@ -472,7 +496,7 @@ export async function runKeeper(gate, givenOptions, state, deps) {
     const wanted = latest.baseFee * 2n + tip;
     let maxFee = wanted < options.maxFeeWei ? wanted : options.maxFeeWei;
     if (replacing) {
-      const feeFloor = replacementFloor(replacing.maxFeeWei);
+      const feeFloor = outbid("maxFeeWei", options.maxFeeWei);
       if (feeFloor > options.maxFeeWei) return blocked("fee-above-ceiling", { requiredMaxFeeWei: feeFloor, maxFeeWei: options.maxFeeWei, replacesHash: replacing.hash });
       if (maxFee < feeFloor) maxFee = feeFloor;
     }
@@ -515,6 +539,7 @@ export async function runKeeper(gate, givenOptions, state, deps) {
     // The signed bytes are public data. Kept, they let a later pass publish the identical transaction again.
     const signedFields = { hash, raw, pair: target.address, tipWei: tip.toString(), maxFeeWei: maxFee.toString(), gasLimit: gasLimit.toString() };
     let entry;
+    const wasRefusedFirst = replacing?.refusedFirst === true;
     if (replacing) {
       if (hashesOf(replacing).includes(hash)) return result(inFlight.level, "wait-in-flight", inFlight);
       entry = replacing;
@@ -522,11 +547,12 @@ export async function runKeeper(gate, givenOptions, state, deps) {
       Object.assign(entry, signedFields, { kind, reservedWei: reserve.toString(), replacedAt: now, lastBroadcastAt: now, status: "pending" });
       delete entry.notSpooledAt;
       delete entry.feeRequirement;
+      delete entry.refusedFirst;
     } else {
       entry = { at: now, ...signedFields, nonce: nonce.toString(), sinceBlock: latest.number.toString(), reservedWei: worstCase.toString(), kind, status: "pending" };
       state.txs = [...windowTxs(state, now), entry];
     }
-    delete state.feeHint; // Used by this attempt; a new refusal brings a new quote.
+    delete state.feeHint; // Written by the round 14 keeper only; quotes now live in the open entry.
     save(state); // Before publishing: a crash after this point cannot overspend.
     try {
       const publishedHash = await request("eth_sendRawTransaction", [raw]);
@@ -546,20 +572,31 @@ export async function runKeeper(gate, givenOptions, state, deps) {
         entry.notSpooledAt = now;
         entry.feeRequirement = feeRequirement;
         entry.noReplaceBefore = now + options.rebroadcastSeconds;
+        if (wasRefusedFirst) {
+          // Back to the bytes the node refused at their first publication: same rules as below.
+          entry.refusedFirst = true;
+          if (!withinCeilings) delete entry.feeRequirement;
+          entry.noReplaceBefore = now + (hardPair ? options.rebroadcastSeconds : Math.max(options.rebroadcastSeconds, options.cooldownSeconds));
+        }
         save(state);
         return result(withinCeilings ? WARN : CRIT, "publish-refused", { hash, detail: error.message, feeRequirement, retry: withinCeilings ? "automatic, at the same nonce" : "needs higher --max-tip-wei / --max-fee-wei" });
       }
       if (feeRequirement) {
         // This specific admission response is emitted before the node's spool
         // write. Never infer rejection from a generic error message or code.
-        entry.status = "refused";
+        // The refusal is still only the node's word, so nothing is released on it: the entry
+        // stays open with its nonce and its reservation, and the next attempt is a replacement
+        // AT THE SAME NONCE. If the node kept these bytes after all and they are mined, the
+        // entry settles on their receipt like any other; a second nonce is never opened.
+        entry.refusedFirst = true;
         entry.refusalKind = feeRequirement.kind;
-        entry.spentWei = "0";
-        state.nextAllowedAt = now + options.cooldownSeconds;
+        entry.notSpooledAt = now;
         // A quote above the ceilings is reported, never remembered: the next attempt is priced afresh.
-        if (withinCeilings) state.feeHint = { requiredPriorityFeePerGas: feeRequirement.requiredPriorityFeePerGas, requiredMaxFeePerGas: feeRequirement.requiredMaxFeePerGas, transactionHash: hash, at: now };
+        if (withinCeilings) entry.feeRequirement = feeRequirement;
+        // A hard closure skips the cooldown here as everywhere else: the next pass replaces at once.
+        entry.noReplaceBefore = hardPair ? now : now + options.cooldownSeconds;
         save(state);
-        return result(withinCeilings ? WARN : CRIT, "publish-refused", { hash, detail: error.message, feeRequirement, retry: withinCeilings ? "automatic, after the cooldown" : "needs higher --max-tip-wei / --max-fee-wei" });
+        return result(withinCeilings ? WARN : CRIT, "publish-refused", { hash, detail: error.message, feeRequirement, retry: withinCeilings ? "automatic, at the same nonce, after the cooldown" : "needs higher --max-tip-wei / --max-fee-wei" });
       }
       // A lost response, a malformed reply, or a generic RPC error can arrive
       // after acceptance. Even "nonce too low" can mean this transaction landed.

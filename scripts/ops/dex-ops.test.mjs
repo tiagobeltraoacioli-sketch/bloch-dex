@@ -513,15 +513,72 @@ for (const status of ["pending", "expired", "replaced", "refused"]) test(`keeper
   state.txs[0].status = status;
   if (status === "refused") state.txs[0].spentWei = "0"; // Legacy generic-error refusal is not proof.
   // Records written before round 14 hold neither the signed bytes nor the fee cap: they are never
-  // re-published or replaced, and still wait (a used nonce is settled from the finalized chain).
+  // re-published. With no skim needed they wait, reservation intact, for ever.
   for (const field of ["raw", "maxFeeWei", "gasLimit", "sinceBlock"]) delete state.txs[0][field];
+  const legacyHash = state.txs[0].hash;
+  const reserved = BigInt(state.txs[0].reservedWei);
+  node.chain.balances = [500_000_000n, 5n * 10n ** 18n];
   const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_086_401));
   assert.equal(outcome.action, "wait-in-flight");
   assert.equal(outcome.level, WARN);
   assert.equal(outcome.reason, "pending-timeout");
+  assert.equal(outcome.replaceable, true);
   assert.equal(state.txs.length, 1);
-  assert.ok(BigInt(state.txs[0].reservedWei) > 0n);
+  assert.equal(BigInt(state.txs[0].reservedWei), reserved);
+  assert.equal(keeperWindowSpend(state, 1_086_401), reserved);
   assert.equal(node.chain.sent.length, 1);
+
+  // K-L6: when a skim is needed again the open entry is replaced AT ITS OWN NONCE (never a second
+  // nonce). Its fee cap is unknown, so the replacement carries the operator's fee ceiling, which no
+  // transaction of this keeper can exceed, and at least 12.5% more tip than the recorded one.
+  node.chain.balances = ABOVE_CAP;
+  const legacyTip = BigInt(state.txs[0].tipWei);
+  const replaced = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_086_500));
+  assert.equal(replaced.action, "replaced");
+  assert.equal(replaced.replacesHash, legacyHash);
+  assert.equal(state.txs.length, 1);
+  assert.equal(state.txs[0].nonce, "0");
+  assert.deepEqual(state.txs[0].attempts.map((a) => a.hash), [legacyHash]);
+  const replacement = skimOf(node.chain.sent.at(-1));
+  assert.equal(replacement.nonce, 0);
+  assert.equal(replacement.tx.maxFeePerGas, DEFAULTS.maxFeeWei);
+  assert.ok(replacement.tx.maxPriorityFeePerGas * 8n >= legacyTip * 9n && replacement.tx.maxPriorityFeePerGas <= DEFAULTS.maxTipWei);
+  // One nonce, one charge: the dearer of the two reservations, never the sum.
+  const worst = replacement.tx.gas * replacement.tx.maxFeePerGas;
+  assert.equal(BigInt(state.txs[0].reservedWei), worst > reserved ? worst : reserved);
+  assert.equal(keeperWindowSpend(state, 1_086_500), BigInt(state.txs[0].reservedWei));
+  assertOnlySkimsToSafe(node);
+  // If the old transaction is the one that lands after all, the entry settles on it.
+  node.chain.receipts[legacyHash] = keeperReceipt(node, legacyHash, { logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01" }] });
+  node.chain.nonce = 1n;
+  node.chain.balances = [500_000_000n, 5n * 10n ** 18n];
+  const settled = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_086_600));
+  assert.equal(settled.action, "nothing-to-do");
+  assert.equal(state.txs[0].hash, legacyHash);
+  assert.equal(state.txs[0].status, "effective");
+});
+
+test("K-L6: a legacy entry without any recorded fee is replaced at the operator's ceilings, and two open legacy entries are never replaced", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node));
+  for (const field of ["raw", "maxFeeWei", "tipWei", "gasLimit", "sinceBlock"]) delete state.txs[0][field];
+  const two = structuredClone(state);
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, 1_000_000 + 7_200));
+  assert.equal(outcome.action, "replaced");
+  const replacement = skimOf(node.chain.sent.at(-1));
+  assert.equal(replacement.nonce, 0);
+  assert.equal(replacement.tx.maxFeePerGas, DEFAULTS.maxFeeWei);
+  assert.equal(replacement.tx.maxPriorityFeePerGas, DEFAULTS.maxTipWei);
+  // Not before it is stale.
+  const early = structuredClone(two);
+  assert.equal((await runKeeper(gate, keeperOptions(), early, keeperDeps(node, 1_000_000 + 7_199))).action, "wait-in-flight");
+  // Two unresolved entries: nothing is signed.
+  two.txs.push({ ...two.txs[0], hash: blockHash(124n), nonce: "1" });
+  const sentBefore = node.chain.sent.length;
+  const held = await runKeeper(gate, keeperOptions(), two, { ...keeperDeps(node, 1_000_000 + 90_000), sign: async () => { throw new Error("must not sign"); } });
+  assert.equal(held.action, "wait-in-flight");
+  assert.equal(node.chain.sent.length, sentBefore);
 });
 
 test("keeper: a used nonce without a canonical receipt cannot open another nonce", async () => {
@@ -722,14 +779,18 @@ for (const valid of [true, false]) test(`keeper: ${valid ? "verified" : "unrelat
   assert.equal(outcome.action, valid ? "publish-refused" : "publish-unconfirmed");
   // The quote (2 gwei tip) is inside the keeper's ceilings: the next attempt follows by itself.
   assert.equal(outcome.level, WARN);
-  if (valid) assert.equal(outcome.retry, "automatic, after the cooldown");
-  assert.equal(state.txs[0].status, valid ? "refused" : "pending");
-  assert.equal(state.txs[0].spentWei, valid ? "0" : undefined);
+  if (valid) assert.equal(outcome.retry, "automatic, at the same nonce, after the cooldown");
+  // K-L1: the refusal is the node's word. Either way the entry stays open with its reservation.
+  assert.equal(state.txs[0].status, "pending");
+  assert.equal(state.txs[0].refusedFirst, valid ? true : undefined);
+  assert.equal(state.txs[0].spentWei, undefined);
+  assert.equal(keeperWindowSpend(state, deps.now), BigInt(state.txs[0].reservedWei));
   if (valid) {
     assert.equal(outcome.feeRequirement.requiredPriorityFeePerGas, "2000000000");
     assert.equal(outcome.feeRequirement.requiredMaxFeePerGas, "3000000000");
     assert.equal(outcome.feeRequirement.transactionHash, state.txs[0].hash);
-    assert.equal(state.nextAllowedAt, deps.now + options.cooldownSeconds);
+    assert.equal(state.txs[0].noReplaceBefore, deps.now + options.cooldownSeconds);
+    assert.equal(state.nextAllowedAt, 0);
   } else assert.equal(outcome.feeRequirement, undefined);
   assert.equal(signs, 1);
   assert.equal(publishes, 1);
@@ -1360,6 +1421,15 @@ test("keeper publishes only the planned transaction, whatever the signer returns
 
 import { storedSkim } from "./dex-skim-keeper.mjs";
 import { keeperNeedsReconciliation, keeperWindowSpend } from "./keeper-accounting.mjs";
+import { mkdtempSync as makeTempDir, writeFileSync as writeTempFile } from "node:fs";
+import { tmpdir as tempRoot } from "node:os";
+import { join as joinPath } from "node:path";
+/// The monitor's keeper_budget check on an in-memory keeper state.
+function checkKeeperStateOf(state, now, add) {
+  const path = joinPath(makeTempDir(joinPath(tempRoot(), "keeper-")), "state.json");
+  writeTempFile(path, JSON.stringify(state, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
+  checkKeeperState(path, now, add);
+}
 import { JsonRpcResponseError } from "../staging/rpc-transport.mjs";
 
 const T0_SENT = 1_000_000;
@@ -1567,33 +1637,139 @@ test("recovery: a node that proves the bytes are not in its spool lets the same 
   assert.equal(high.state.txs[0].hash, keccak256(raw));
 });
 
-test("recovery: a refused first publication is followed, after the cooldown, by one attempt at the node's quote", async () => {
+test("K-L1: a refused first publication keeps its nonce and reservation; after the cooldown it is replaced at the SAME nonce at the node's quote", async () => {
   const node = fakeNode({ balances: ABOVE_CAP });
   const state = emptyKeeperState();
   node.chain.publish = (raw) => { if (skimOf(raw).tx.maxPriorityFeePerGas < 2_000_000_000n) throw feeRefusal(raw); return keccak256(raw); };
   const refused = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT));
   assert.equal(refused.action, "publish-refused");
   assert.equal(refused.level, WARN);
-  assert.equal(state.feeHint.requiredPriorityFeePerGas, "2000000000");
-  assert.equal((await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 100))).action, "backoff");
-  const retry = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 1_800));
-  assert.equal(retry.action, "sent");
-  assert.equal(retry.tip, 2_000_000_000n);
+  const refusedHash = state.txs[0].hash;
+  assert.equal(state.txs[0].status, "pending");
+  assert.equal(state.txs[0].refusedFirst, true);
+  assert.equal(state.txs[0].feeRequirement.requiredPriorityFeePerGas, "2000000000");
   assert.equal(state.feeHint, undefined);
-  assert.deepEqual(state.txs.map((t) => t.status), ["refused", "pending"]);
-  // The refused bytes were never spooled, so the same nonce is free and is used again.
-  assert.deepEqual(node.chain.sent.map((raw) => skimOf(raw).nonce), [0, 0]);
+  assert.equal(keeperNeedsReconciliation(state.txs[0]), true);
+  // Inside the cooldown nothing is signed and nothing is published again.
+  const waiting = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node, T0_SENT + 1_000), sign: async () => { throw new Error("must not sign"); } });
+  assert.equal(waiting.action, "wait-in-flight");
+  assert.equal(waiting.reason, "refused-not-in-spool");
+  assert.equal(waiting.level, OK);
+  assert.equal(waiting.rebroadcast, undefined);
+  assert.equal(node.chain.sent.length, 1); // the fake counts the refused publication itself
+  const retry = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 1_800));
+  assert.equal(retry.action, "replaced");
+  assert.equal(retry.replacesHash, refusedHash);
+  assert.equal(retry.tip, 2_000_000_000n);
+  // One entry, one nonce, one reservation: the refused bytes are an older attempt of the same entry.
+  assert.equal(state.txs.length, 1);
+  assert.equal(state.txs[0].refusedFirst, undefined);
+  assert.deepEqual(state.txs[0].attempts.map((a) => a.hash), [refusedHash]);
+  assert.equal(skimOf(node.chain.sent.at(-1)).nonce, 0);
+  assert.equal(keeperWindowSpend(state, T0_SENT + 1_800), BigInt(state.txs[0].reservedWei));
 
   // A quote above the ceilings stays a CRIT for the operator and is never followed.
   const dear = fakeNode({ balances: ABOVE_CAP });
   dear.chain.publish = (raw) => { throw feeRefusal(raw, { required: 50_000_000_000n }); };
   const dearState = emptyKeeperState();
   assert.equal((await runKeeper(gate, keeperOptions(), dearState, keeperDeps(dear, T0_SENT))).level, CRIT);
-  // ...and it is not remembered: the next attempt is priced afresh, inside the ceilings, and counted like any other.
-  assert.equal(dearState.feeHint, undefined);
-  const again = await runKeeper(gate, keeperOptions(), dearState, keeperDeps(dear, T0_SENT + 1_800));
-  assert.equal(again.action, "publish-refused");
-  assert.ok(dear.chain.sent.every((raw) => skimOf(raw).tx.maxPriorityFeePerGas <= DEFAULTS.maxTipWei));
+  // ...and it is not remembered: the next attempt is priced afresh, inside the ceilings, at the same nonce.
+  assert.equal(dearState.txs[0].feeRequirement, undefined);
+  const firstHash = dearState.txs[0].hash;
+  let now = T0_SENT;
+  for (let i = 0; i < 6; i++) {
+    now += 1_800;
+    const again = await runKeeper(gate, keeperOptions(), dearState, keeperDeps(dear, now));
+    assert.equal(again.action, "publish-refused");
+    assert.equal(again.level, CRIT);
+  }
+  // Refused replacements are not attempts: still one entry on the first bytes, never exhausted.
+  assert.equal(dearState.txs.length, 1);
+  assert.equal(dearState.txs[0].hash, firstHash);
+  assert.equal(dearState.txs[0].attempts, undefined);
+  assert.equal(dearState.txs[0].refusedFirst, true);
+  assert.deepEqual([...new Set(dear.chain.sent.map((raw) => skimOf(raw).nonce))], [0]);
+  assert.ok(dear.chain.sent.every((raw) => skimOf(raw).tx.maxPriorityFeePerGas <= DEFAULTS.maxTipWei && skimOf(raw).tx.maxFeePerGas <= DEFAULTS.maxFeeWei));
+});
+
+test("K-L1: a node that refuses a first publication and mines it anyway gets no second nonce and no free budget", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  // The lying node: answers with its admission refusal, keeps the bytes, and mines them later.
+  node.chain.publish = (raw) => { throw feeRefusal(raw); };
+  const refused = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT));
+  assert.equal(refused.action, "publish-refused");
+  const hash = state.txs[0].hash;
+  const reserved = BigInt(state.txs[0].reservedWei);
+  node.chain.receipts[hash] = keeperReceipt(node, hash, { logs: [{ topics: ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"], data: "0x01" }] });
+  node.chain.nonce = 1n;
+  node.chain.finalizedNumber = 8n; // the receipt's block (9) is not final yet
+  const signs = [];
+  const deps = (at) => ({ ...keeperDeps(node, at), sign: async (tx) => { signs.push(tx); return signer(tx); } });
+  const before = await runKeeper(gate, keeperOptions(), state, deps(T0_SENT + 1_800));
+  // Excess still shows at latest in this fake; the keeper must not sign nonce 1 on the node's word.
+  assert.equal(before.action, "wait-in-flight");
+  assert.equal(before.reason, "awaiting-finality");
+  assert.equal(signs.length, 0);
+  assert.equal(keeperWindowSpend(state, T0_SENT + 1_800), reserved);
+  node.chain.finalizedNumber = 9n;
+  node.chain.balances = [500_000_000n, 5n * 10n ** 18n];
+  const after = await runKeeper(gate, keeperOptions(), state, deps(T0_SENT + 3_600));
+  assert.equal(after.action, "nothing-to-do");
+  assert.equal(state.txs.length, 1);
+  assert.equal(state.txs[0].status, "effective");
+  // The gas the "refused" transaction really used is charged to the rolling budget.
+  assert.ok(BigInt(state.txs[0].spentWei) > 0n);
+  assert.equal(keeperWindowSpend(state, T0_SENT + 3_600), BigInt(state.txs[0].spentWei));
+  assert.equal(signs.length, 0);
+});
+
+test("K-L1: a refused first publication with nothing left to skim waits without a warning and is never published again by itself", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP });
+  const state = emptyKeeperState();
+  node.chain.publish = (raw) => { throw feeRefusal(raw); };
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT));
+  node.chain.balances = [500_000_000n, 5n * 10n ** 18n];
+  delete node.chain.publish;
+  for (const later of [1_800, 7_300, 90_000, 200_000]) {
+    const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + later));
+    assert.equal(outcome.action, "wait-in-flight", String(later));
+    assert.equal(outcome.reason, "refused-not-in-spool");
+    assert.equal(outcome.replaceable, true);
+    assert.equal(outcome.level, OK);
+  }
+  assert.equal(node.chain.sent.length, 1); // only the refused first publication
+  assert.equal(keeperWindowSpend(state, T0_SENT + 200_000), BigInt(state.txs[0].reservedWei));
+  const checks = [];
+  checkKeeperStateOf(state, T0_SENT + 200_000, (name, level) => checks.push(level));
+  assert.deepEqual(checks, [OK]);
+  // The day-old quote is forgotten; the next needed skim reuses the nonce.
+  assert.equal(state.txs[0].feeRequirement, undefined);
+  node.chain.balances = ABOVE_CAP;
+  const reuse = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 200_100));
+  assert.equal(reuse.action, "replaced");
+  assert.equal(skimOf(node.chain.sent.at(-1)).nonce, 0);
+  assert.equal(state.txs.length, 1);
+});
+
+test("K-L1: the precautionary 12.5% over refused bytes is capped at the operator's ceilings instead of blocking", async () => {
+  const node = fakeNode({ balances: ABOVE_CAP, baseFee: 9_500_000_000n });
+  const state = emptyKeeperState();
+  let refuse = true;
+  node.chain.publish = (raw) => { if (refuse) throw feeRefusal(raw, { required: 1_000_000_000n, base: 9_500_000_000n }); return keccak256(raw); };
+  await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT));
+  // The refused attempt already carried the fee ceiling; 12.5% above it does not exist.
+  assert.equal(BigInt(state.txs[0].maxFeeWei), DEFAULTS.maxFeeWei);
+  refuse = false;
+  const retry = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 1_800));
+  assert.equal(retry.action, "replaced");
+  const replacement = skimOf(node.chain.sent.at(-1));
+  assert.equal(replacement.nonce, 0);
+  assert.equal(replacement.tx.maxFeePerGas, DEFAULTS.maxFeeWei);
+  // An entry that WAS accepted keeps the binding rule: no replacement above the ceiling.
+  const sent = await sentOnce({ baseFee: 9_500_000_000n });
+  const blocked = await runKeeper(gate, keeperOptions(), sent.state, { ...keeperDeps(sent.node, T0_SENT + 7_200), sign: async () => { throw new Error("must not sign"); } });
+  assert.equal(blocked.action, "fee-above-ceiling");
 });
 
 test("recovery: stored bytes that are not this keeper's skim to the Safe are never published", async () => {

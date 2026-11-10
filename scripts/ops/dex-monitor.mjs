@@ -227,7 +227,8 @@ export function checkKeeperState(path, now, add, maxTx = 48) {
   try {
     const txs = keeperWindow({ txs: state.txs ?? [] }, now);
     const unresolved = txs.filter(keeperNeedsReconciliation);
-    const overdue = unresolved.some((tx) => Number(now) - tx.at > KEEPER_PENDING_TIMEOUT_SECONDS);
+    // A first publication the node refused waits, with a free nonce, for the next needed skim: not overdue.
+    const overdue = unresolved.some((tx) => tx.refusedFirst !== true && Number(now) - tx.at > KEEPER_PENDING_TIMEOUT_SECONDS);
     const wasted = txs.filter((t) => t.status === "wasted" || t.status === "reverted").length;
     const used = txs.length;
     const charged = txs.reduce((sum, t) => sum + keeperCharge(t), 0n);

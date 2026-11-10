@@ -161,13 +161,16 @@ needed:
 | Still not in the chain after `--replace-after-s`, or the node answered the re-publication with its `sequencer-fee-underpriced` refusal (it gives that answer only for bytes that are not in its spool) | When a skim is next needed, it signs a new `skim(feeTo)` **with the same nonce** and both fee fields at least 12.5% higher (the spool asks 10%), or at the node's quote if that is higher (`"action": "replaced"`) | Only one transaction of a nonce can be mined. The entry reserves the dearer attempt once, never the sum. Fee, tip, gas and budget ceilings are the operator's and are never raised: above them it reports `fee-above-ceiling` and waits |
 | One of the attempts is mined | The entry settles on that hash, with its real cost, once `finalized` reaches its block | As before |
 | The nonce was used by a transaction the keeper did not record (a manual skim with the keeper key, another tool) | Once `finalized` passes it, the keeper finds that transaction by bisecting the account's transaction count, checks its receipt and block, records the entry as `superseded` with `supersededBy`, and charges the real gas of that transaction to the rolling budget (`"action": "nonce-settled-by-other-transaction"`, WARN once) | The recorded transaction can never be mined after that. Before finality it reports `nonce-used-without-receipt` and releases nothing |
-| The first publication was refused by the node's admission price | The entry is `refused` (no spend); after the cooldown the next attempt uses the quoted priority fee if it is within `--max-tip-wei` and `--max-fee-wei` (WARN, `"retry": "automatic, after the cooldown"`); above them it is CRIT and nothing is signed | The refusal is bound to the exact signed hash and is emitted before the spool write |
-| An earlier nonce of the keeper account is open (`nonce-gap`), two entries are unresolved, the entry was written by an older version without the signed bytes, or `--max-replacements` is used up | It waits and warns | No publication |
+| The first publication was refused by the node's admission price | The entry stays open (`"refusedFirst": true`) with its nonce and its reservation; nothing is released on the node's answer. The refused bytes are not published again by the keeper. After the cooldown (at once for a hard closure), when a skim is still needed, it signs a replacement **with the same nonce** at the quoted priority fee if that is within `--max-tip-wei` and `--max-fee-wei` (WARN, `"retry": "automatic, at the same nonce, after the cooldown"`); a quote above them is CRIT, is not remembered, and the next attempt is priced afresh inside the ceilings | The refusal is bound to the exact signed hash, but it is still the node's word: if the node kept the bytes and they are mined, the entry settles on their receipt at their real cost, and no second nonce was ever signed. The 12.5% over the refused bytes is a precaution only (they are in no spool) and is capped at the ceilings |
+| The entry was written by an older keeper without the signed bytes | It cannot be published again. Once older than `--replace-after-s`, when a skim is needed, it is replaced **at its own nonce**: the replacement carries `--max-fee-wei` as its fee cap when the old cap is unknown (and `--max-tip-wei` when the old tip is unknown), so it outbids anything this keeper could have signed | One nonce; the entry reserves the dearer attempt once. If the old transaction lands after all, the entry settles on it |
+| An earlier nonce of the keeper account is open (`nonce-gap`), two entries are unresolved, or `--max-replacements` is used up | It waits and warns | No publication |
 
 `--pending-timeout-s` raises `wait-in-flight` to WARN; it does not expire anything.
 A lost transaction with nothing left to skim is not replaced (the keeper only ever
 sends a skim that is needed): it stays recorded with `"replaceable": true`, and
-its nonce is reused when a skim is next needed.
+its nonce is reused when a skim is next needed. The same holds for a refused first
+publication (`"reason": "refused-not-in-spool"`): it keeps one place of `--max-tx` and its
+reservation until then, and neither the keeper nor the monitor warns about its age.
 
 Further rules of the recovery, from the round 14 review:
 
@@ -204,7 +207,9 @@ Older `expired` or `replaced` entries, refusals without the verified preflight
 kind, and settled entries without canonical inclusion metadata are unresolved
 on upgrade. They are rechecked one per pass and block publication until the
 history is resolved: by a receipt, or by the finalized transaction that used
-their nonce. Entries without the signed bytes are never re-published or replaced. Preserve the state file while investigating; resetting it
+their nonce. Entries without the signed bytes are never re-published; a single one is
+replaced at its own nonce as in the table above. A `refused` entry written by the round 14
+keeper (released on the node's answer) is not reopened; none exists on 700770. Preserve the state file while investigating; resetting it
 would discard outstanding reservations. The monitor uses the same accounting
 rules and warns about unresolved entries older than its default two-hour
 threshold.
@@ -224,8 +229,8 @@ gas, storage-slot and head fields. It reports `feeRequirement` using decimal
 integer strings; fee fields are wei per gas, and `freshSlotPriceWei` is wei per
 new storage slot. The keeper never raises its limits in response to the quote. If
 `requiredPriorityFeePerGas` and `requiredMaxFeePerGas` are within its ceilings,
-its next attempt (after the cooldown, a new signature, the same budget rules)
-uses the quoted priority fee; otherwise review the ceilings. The
+its next attempt (after the cooldown, a new signature at the same nonce, the same
+reservation) uses the quoted priority fee; otherwise review the ceilings. The
 quote applies to `latest-state-next-block` at the reported head; changed state
 or policy can change it, and inclusion is not guaranteed. Future nonces are not
 simulated by this preflight and can remain pending.
