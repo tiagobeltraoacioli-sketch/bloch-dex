@@ -353,7 +353,9 @@ safe-deployments' canonical `codeHash`.
 8. **Record:**
    `node scripts/staging/deploy-dex.mjs record --config <config> --plan <plan> --rpc <own-node-url> --broadcast-file broadcast/DeployMainnet.s.sol/700770/run-latest.json --write deployments/mainnet/finality-gate.mainnet.json`.
 9. **Wait for finality, then run the gate:**
-   `node scripts/staging/check-finality-gate.mjs --config deployments/mainnet/finality-gate.mainnet.json --rpc <own-node-url>`.
+   `node scripts/staging/check-finality-gate-mainnet.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan deployments/mainnet/busdc.plan.json --bridge-record deployments/mainnet/busdc.record.json --rpc <own-node-url>`
+   (the mainnet gate: pinned chain and genesis, the official Safe build, the bridge token against its own
+   deployment record and the launch policy; the generic `check-finality-gate.mjs` refuses this file).
    Only `"decision": "liquidity-enabled"` allows the separate initial
    liquidity ceremony (≤ 50% of the tighter cap per pool, §3) and a separate,
    reviewed frontend change. Commit the plan, gate config and gate report.

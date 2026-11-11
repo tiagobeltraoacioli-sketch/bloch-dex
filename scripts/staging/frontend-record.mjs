@@ -2,7 +2,8 @@
 // Assemble the frontend's mainnet deployment record
 // (deployments/mainnet/dex-mainnet.record.json) from the reviewed config, the
 // committed plan, the infra plan (Multicall3 and the CREATE2 deployer) and the
-// schema-2 finality gate report (the JSON printed by check-finality-gate.mjs). The frontend re-verifies everything (config hash,
+// schema-2 finality gate report: on mainnet the JSON printed by check-finality-gate-mainnet.mjs (required for the
+// pinned genesis), on a rehearsal chain that of check-finality-gate.mjs. The frontend re-verifies everything (config hash,
 // chain, gate decision, pairs, code hashes) and again against the RPC at the
 // finalized block; this script refuses obvious mismatches early so a wrong
 // file is never proposed for review.
