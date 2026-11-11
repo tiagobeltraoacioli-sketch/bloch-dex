@@ -463,9 +463,17 @@ gateway of the L2 candidate line routes it (bloch-l2-evm `3d4cfd6`, agents/R15-C
 Two values of `deployments/mainnet/frontend.network.json` are pinned to the L2 settler's policy and must move
 **before** the settler's, with a page release (review R309-3P-1, 3P-4): `newSlotFee.freshSlotPriceWei` (a settler
 price above twice the file's makes the page refuse first approvals and first swaps: it sends nothing when the node
-asks more than twice its own figure) and `l2Idle.heartbeatSeconds` (the settler's idle heartbeat, 86,400 s: a swap
-is refused only when the device clock is ahead of the latest block by more than this plus 2 h, so a file value below
-the settler's would close the page on a quiet chain).
+asks more than twice its own figure) and the `l2Idle` block, which mirrors the settler's
+`/etc/bloch-l2-mainnet-settler/config.json` (launch kit `install-settler-mainnet.py`):
+
+| Network file | Settler | Used for |
+|---|---|---|
+| `l2Idle.skipIdleBlocks` (true) | `skip_idle_blocks` (`--skip-idle-blocks`) | true: a block only when there is work, plus the heartbeat; false: a block every cycle, no heartbeat |
+| `l2Idle.heartbeatSeconds` (86400) | `max_idle_seconds` (`--max-idle-seconds`; 86,400 is the installer's default, the value is the operator's) | a swap is refused only when the device clock is ahead of the latest block by more than this plus 2 h (with idle blocks not skipped: one block interval plus 2 h) |
+| `l2Idle.blockIntervalSeconds` (1800) | the larger of `min_block_interval_seconds` and the measured build-and-prove time of a block | on an idle chain the first swap lands in the block after the next: the deadline is raised to two intervals plus half an interval (75 minutes) and the page names the wait |
+
+A file heartbeat below the settler's closes the page on a quiet chain; a file interval below the real one lets a
+swap sent on an idle chain revert `EXPIRED`. Compare the three before opening (go-live checklist).
 
 Not shown by this check: a browser and a wallet (the fees are signed by the script, as a wallet that honours the
 page's suggestion would), the public gateway, inclusion under load, and real finality.

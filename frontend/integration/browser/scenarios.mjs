@@ -680,24 +680,6 @@ scenario('first-approve-wallet-ignores-fees', 'item 2: a wallet that ignores the
   w.record.admission = w.wallet.admissions;
 });
 
-scenario('idle-chain-swap-opens-next-block', 'R309-3P-1: an L2 with no block for three hours does not close the page: the swap is sent with a deadline from the device clock, the user is told the chain is idle, and the swap is mined in the next block', async (w) => {
-  w.clockAheadSeconds = 3 * 3600;
-  const page = await w.begin();
-  const before = await tokenBalance(w.wallet.address);
-  await swapNative(w, page);
-  await page.waitText('/The L2 has made no block for 3 hours: it is idle, and it makes a block only when it has work\\. Your swap will open the next block/');
-  await page.waitText(PENDING);
-  await w.note(page, 'idle-notice');
-  w.check('the wallet was asked once', w.wallet.sends().length === 1, w.wallet.sends().length);
-  const text = (await page.text()).replace(/\s+/g, ' ');
-  w.check('the waiting user is told what ends the wait on a quiet chain', /on a quiet chain the finalized block that ends this wait can be up to 24 hours away/.test(text));
-  await mineAndFinalize();
-  await page.waitText(`/${SWAP}: mined/`, 40_000);
-  const f = await w.facts();
-  w.check('exactly one router call was mined', f.routerCallsMined === 1, f.routerCallsMined);
-  w.check('bUSDC arrived', (await tokenBalance(w.wallet.address)) > before);
-});
-
 scenario('clock-beyond-heartbeat-refused', 'R309-2P-5 kept: a device clock more than the heartbeat plus its margin ahead of the latest block builds no swap', async (w) => {
   w.clockAheadSeconds = 27 * 3600;
   const page = await w.begin();
@@ -741,6 +723,34 @@ scenario('reply-lost-never-published-expires', 'R309-A1: a swap the wallet never
   await mineAndFinalize();
   const late = await w.facts();
   w.check('the held request, published after the deadline, executes nothing', late.routerCallsMined === 0, late.minedTransactions);
+});
+
+// After the expiry scenario (the chain clock is already ahead there) and last of all: it sets the next block's time.
+scenario('idle-chain-swap-lands-in-the-second-block', 'R309-3P-1, 4P-3: an idle L2 does not close the page; the deadline is raised to cover the block after the next, the user is told the wait, and the swap is mined at a block time a 60-minute deadline would have missed', async (w) => {
+  // The page's clock is 5 hours ahead of the wall clock: hours ahead of the latest block, as on a quiet chain.
+  w.clockAheadSeconds = 5 * 3600;
+  const page = await w.begin();
+  const before = await tokenBalance(w.wallet.address);
+  const deviceNow = Math.floor(Date.now() / 1000) + w.clockAheadSeconds;
+  await swapNative(w, page);
+  await page.waitText('/The L2 has made no block for \\d+ (hours|minutes): it is idle, and it makes a block only when it has work\\. Your swap starts it again: the first block after a pause takes no transactions, so the swap is included in the block after it, in about 60 minutes/');
+  await page.waitText('/The deadline was raised from 60 to 75 minutes to cover that wait/');
+  await page.waitText(PENDING);
+  await w.note(page, 'idle-notice');
+  w.check('the wallet was asked once', w.wallet.sends().length === 1, w.wallet.sends().length);
+  // swapExactBLCHForTokens(amountOutMin, path, to, deadline): the deadline is the fourth head word.
+  const signedDeadline = Number(BigInt(`0x${w.wallet.sends()[0].params[0].data.slice(10 + 3 * 64, 10 + 4 * 64)}`));
+  w.check('the signed deadline is 75 minutes from the page clock', Math.abs(signedDeadline - (deviceNow + 75 * 60)) <= 90, signedDeadline - deviceNow);
+  const text = (await page.text()).replace(/\s+/g, ' ');
+  w.check('the waiting user is told what ends the wait on a quiet chain', /on a quiet chain the finalized block that ends this wait can be up to 24 hours away/.test(text));
+  // The block that takes the swap is the second after the pause: its time is 65 minutes after the swap was signed,
+  // past what the default 60 minutes would have allowed and inside the raised deadline.
+  await rpc('evm_setNextBlockTimestamp', [hex(deviceNow + 65 * 60)]);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined (not reverted EXPIRED)', f.routerCallsMined === 1, f.minedTransactions);
+  w.check('bUSDC arrived', (await tokenBalance(w.wallet.address)) > before);
 });
 
 let failed = 0;

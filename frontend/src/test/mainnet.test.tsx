@@ -2653,11 +2653,12 @@ describe('swap panel safety fixes', () => {
       await user.click(swapButton());
       await waitFor(() => expect(sends()).toHaveLength(1));
       await screen.findByText(
-        /The L2 has made no block for 24 hours: it is idle.*Your swap will open the next block/,
+        /The L2 has made no block for 24 hours: it is idle.*included in the block after it, in about 60 minutes.*The deadline was raised from 60 to 75 minutes/,
       );
       const sent = sends()[0].params![0] as { data: Hex };
       const { args } = decodeFunctionData({ abi: ROUTER_ABI, data: sent.data });
-      expect(args.at(-1)).toBe(BigInt(NOW_MS / 1000 + 60 * 60));
+      // R309-4P-3: 75 minutes on an idle chain (two block intervals and a margin), from the device clock.
+      expect(args.at(-1)).toBe(BigInt(NOW_MS / 1000 + 75 * 60));
     });
 
     it('R309-2P-5: builds no swap when the device clock is beyond the heartbeat of the latest L2 block', async () => {

@@ -17,10 +17,13 @@ import {
   type PendingSwap,
 } from '../mainnet/pendingswap';
 import {
-  DEFAULT_IDLE_HEARTBEAT_SECONDS,
+  DEFAULT_IDLE_POLICY,
   IDLE_MARGIN_SECONDS,
-  parseIdleHeartbeat,
+  idleDeadlineSeconds,
+  longestQuiet,
+  parseIdlePolicy,
   swapClock,
+  type SwapClock,
 } from '../mainnet/config';
 import {
   expiredSwap,
@@ -569,66 +572,160 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
   });
 });
 
-describe('R309-2P-5 and R309-3P-1: the swap deadline and a device clock far from the chain', () => {
+describe('the swap deadline: device clock, idle chain, settler policy (R309-2P-5, 3P-1, 4P-1 to 4P-4)', () => {
   const T = 1_792_200_000n;
   const at = (seconds: number) => (Number(T) + seconds) * 1000;
-  it('counts the deadline from the device clock while it is within the heartbeat of the latest block', () => {
-    expect(swapClock(at(30), T)).toEqual({
+  const ok = (clock: SwapClock) => {
+    if (!clock.ok) throw new Error(clock.problem);
+    return clock;
+  };
+  it('counts the deadline from the device clock on a busy chain, and never from before the chain', () => {
+    expect(swapClock(at(30), T, DEFAULT_IDLE_POLICY, 10)).toEqual({
       ok: true,
       base: T + 30n,
+      deadline: T + 30n + 600n,
+      deadlineMinutes: 10,
       idleSeconds: 30n,
       notice: null,
     });
-    // Up to two minutes behind the chain: the chain's own time is the base, never an earlier one.
-    expect(swapClock(at(-120), T)).toEqual({ ok: true, base: T, idleSeconds: 0n, notice: null });
+    // Up to two minutes behind the chain: the chain's own time is the base.
+    expect(ok(swapClock(at(-120), T, DEFAULT_IDLE_POLICY, 10)).deadline).toBe(T + 600n);
+    expect(ok(swapClock(at(29 * 60), T)).notice).toBeNull();
   });
 
-  // The reviewer's demonstration (2cc1536) with the assertions turned: a quiet chain does not close the page.
-  it('R309-3P-1: a correct clock on a quiet L2 (latest block 151 minutes, 18 hours, 25 hours old) builds the swap and says the chain is idle', () => {
+  // Third pass, the reviewer's demonstration (2cc1536) turned: a quiet chain does not close the page.
+  it('R309-3P-1: a correct clock on a quiet L2 (151 minutes, 18 hours, 25 hours without a block) builds the swap and says the chain is idle', () => {
     for (const [age, words] of [
-      [151 * 60, /no block for 2 hours: it is idle.*Your swap will open the next block/],
+      [151 * 60, /no block for 2 hours: it is idle/],
       [18 * 3_600, /no block for 18 hours/],
       [25 * 3_600, /no block for 25 hours/],
       [45 * 60, /no block for 45 minutes/],
     ] as [number, RegExp][]) {
-      const clock = swapClock(at(age), T);
-      expect(clock.ok).toBe(true);
-      if (clock.ok) {
-        expect(clock.base).toBe(T + BigInt(age));
-        expect(clock.notice).toMatch(words);
-      }
+      const clock = ok(swapClock(at(age), T));
+      expect(clock.base).toBe(T + BigInt(age));
+      expect(clock.notice).toMatch(words);
     }
-    // Below the L2's minimum block interval nothing is said.
-    const fresh = swapClock(at(29 * 60), T);
-    expect(fresh.ok && fresh.notice).toBeNull();
   });
 
-  it('refuses only beyond the heartbeat plus its margin, or behind the chain', () => {
-    const limit = DEFAULT_IDLE_HEARTBEAT_SECONDS + IDLE_MARGIN_SECONDS;
+  it('R309-4P-3: on an idle chain the deadline covers the block after the next, and the user is told the wait', () => {
+    expect(idleDeadlineSeconds(DEFAULT_IDLE_POLICY)).toBe(4_500); // 2 x 1800 + 900
+    // A 10 or 15 minute deadline would revert in the second block: it is raised to 75 minutes.
+    for (const minutes of [10, 15, 60]) {
+      const clock = ok(swapClock(at(5 * 3_600), T, DEFAULT_IDLE_POLICY, minutes));
+      expect(clock.deadlineMinutes).toBe(75);
+      expect(clock.deadline).toBe(T + BigInt(5 * 3_600 + 75 * 60));
+      expect(clock.notice).toMatch(
+        new RegExp(
+          `the first block after a pause takes no transactions, so the swap is included in the block after it, in about 60 minutes.*The deadline was raised from ${minutes} to 75 minutes to cover that wait`,
+        ),
+      );
+    }
+    // A longer deadline of the user stands, and nothing is said about raising it.
+    const long = ok(swapClock(at(5 * 3_600), T, DEFAULT_IDLE_POLICY, 120));
+    expect(long.deadlineMinutes).toBe(120);
+    expect(long.notice).not.toMatch(/was raised/);
+    // The figures follow the network file's block interval.
+    const fast = { ...DEFAULT_IDLE_POLICY, blockIntervalSeconds: 660 };
+    expect(ok(swapClock(at(3_600), T, fast, 10)).deadlineMinutes).toBe(28); // ceil((1320 + 330) / 60)
+    expect(ok(swapClock(at(3_600), T, fast, 10)).notice).toMatch(/in about 22 minutes/);
+    // On a busy chain a short deadline is the user's choice.
+    expect(ok(swapClock(at(300), T, DEFAULT_IDLE_POLICY, 10)).deadlineMinutes).toBe(10);
+  });
+
+  it('R309-4P-4: follows the settler policy of the network file, with idle blocks skipped or not', () => {
+    // Idle blocks skipped (the launch setting): refused only beyond the heartbeat plus its margin.
+    const limit = 86_400 + IDLE_MARGIN_SECONDS;
     expect(swapClock(at(limit), T).ok).toBe(true);
     const far = swapClock(at(limit + 1), T);
-    expect(far).toMatchObject({ ok: false });
     expect(!far.ok && far.problem).toMatch(
       /26 hours ahead of the latest L2 block\. The L2 makes a block at least every 24 hours even when it is idle, so either this clock is wrong or this RPC is not showing the current chain\. Nothing was sent\./,
     );
-    const behind = swapClock(at(-121), T);
-    expect(!behind.ok && behind.problem).toMatch(/121 seconds behind the latest L2 block/);
-    // The limit follows the network file's heartbeat.
-    expect(swapClock(at(7 * 3_600), T, 4 * 3_600).ok).toBe(false);
-    expect(swapClock(at(6 * 3_600), T, 4 * 3_600).ok).toBe(true);
+    // An operator's own heartbeat (the kit's idle rehearsal used 8 h).
+    const eight = { ...DEFAULT_IDLE_POLICY, heartbeatSeconds: 8 * 3_600 };
+    expect(swapClock(at(10 * 3_600), T, eight).ok).toBe(true);
+    expect(swapClock(at(10 * 3_600 + 1), T, eight).ok).toBe(false);
+    // Idle blocks NOT skipped: every cycle makes a block, there is no heartbeat, and a head older than one
+    // interval plus the margin is a wrong clock or a stale RPC, whatever heartbeat the file carries.
+    const every = { ...DEFAULT_IDLE_POLICY, skipIdleBlocks: false };
+    expect(longestQuiet(every)).toBe(1_800);
+    expect(swapClock(at(1_800 + IDLE_MARGIN_SECONDS), T, every).ok).toBe(true);
+    const stale = swapClock(at(1_800 + IDLE_MARGIN_SECONDS + 1), T, every);
+    expect(!stale.ok && stale.problem).toMatch(
+      /The L2 makes a block at least every 30 minutes, so either this clock is wrong/,
+    );
+    expect(longestQuiet(DEFAULT_IDLE_POLICY)).toBe(86_400);
   });
 
-  it('reads the heartbeat from the network file, with the settler default and bounds', () => {
-    expect(parseIdleHeartbeat(undefined)).toBe(86_400);
-    expect(parseIdleHeartbeat({ heartbeatSeconds: 43_200 })).toBe(43_200);
+  it('refuses a clock behind the chain, and never sends a deadline that is not after the latest block (R309-4P-2)', () => {
+    const behind = swapClock(at(-121), T);
+    expect(!behind.ok && behind.problem).toMatch(/121 seconds behind the latest L2 block/);
+    const past = swapClock(at(-60), T, DEFAULT_IDLE_POLICY, 0);
+    expect(!past.ok && past.problem).toMatch(
+      /would not be after the latest L2 block's time, so the swap could only revert/,
+    );
+    expect(swapClock(at(-60), T, DEFAULT_IDLE_POLICY, -5).ok).toBe(false);
+    // Whatever the device clock inside the tolerance, an accepted deadline is after the chain's time by the full minutes.
+    for (const lag of [-120, -1, 0, 1])
+      expect(ok(swapClock(at(lag), T, DEFAULT_IDLE_POLICY, 10)).deadline >= T + 600n).toBe(true);
+  });
+
+  // Fourth pass, the reviewer's demonstrations (355683f): what the rule still lets through, and what it now covers.
+  it('R309-4P-1, 4P-2 (known residuals): a clock 25 h 50 min ahead on a busy chain is accepted; a clock 60 minutes behind on a chain idle for 5 h is covered by the idle deadline only up to its margin', () => {
+    const TRUE_NOW = 1_800_000_000;
+    const busy = ok(
+      swapClock(
+        (TRUE_NOW + 25 * 3_600 + 50 * 60) * 1000,
+        BigInt(TRUE_NOW - 60),
+        DEFAULT_IDLE_POLICY,
+        10,
+      ),
+    );
+    expect(busy.base - BigInt(TRUE_NOW)).toBe(BigInt(25 * 3_600 + 50 * 60)); // listed in KNOWN-ISSUES
+    const slow = ok(
+      swapClock((TRUE_NOW - 3_600) * 1000, BigInt(TRUE_NOW - 5 * 3_600), DEFAULT_IDLE_POLICY, 10),
+    );
+    // Before: 10 minutes from a clock an hour slow was already past. Now 75 minutes: 15 minutes after the true time,
+    // which is still before the second block (about 60 minutes away): this lag reverts, gas only (listed).
+    expect(slow.deadline - BigInt(TRUE_NOW)).toBe(900n);
+    // A lying RPC cannot move the deadline.
+    expect(swapClock(TRUE_NOW * 1000, BigInt(TRUE_NOW + 121)).ok).toBe(false);
+    expect(ok(swapClock(TRUE_NOW * 1000, BigInt(TRUE_NOW + 120))).base).toBe(
+      BigInt(TRUE_NOW + 120),
+    );
+    expect(ok(swapClock(TRUE_NOW * 1000, BigInt(TRUE_NOW - 20 * 3_600))).base).toBe(
+      BigInt(TRUE_NOW),
+    );
+    expect(swapClock(TRUE_NOW * 1000, BigInt(TRUE_NOW - 26 * 3_600 - 1)).ok).toBe(false);
+  });
+
+  it('reads the settler policy from the network file, with the launch values as default and bounds', () => {
+    expect(parseIdlePolicy(undefined)).toEqual(DEFAULT_IDLE_POLICY);
+    expect(parseIdlePolicy({ heartbeatSeconds: 43_200 })).toEqual({
+      ...DEFAULT_IDLE_POLICY,
+      heartbeatSeconds: 43_200,
+    });
+    expect(
+      parseIdlePolicy({
+        skipIdleBlocks: false,
+        blockIntervalSeconds: 660,
+        heartbeatSeconds: 86_400,
+      }),
+    ).toEqual({
+      skipIdleBlocks: false,
+      blockIntervalSeconds: 660,
+      heartbeatSeconds: 86_400,
+    });
     for (const bad of [
       { heartbeatSeconds: 60 },
       { heartbeatSeconds: 8 * 86_400 },
       { heartbeatSeconds: '86400' },
+      { blockIntervalSeconds: 30 },
+      { blockIntervalSeconds: 7 * 3_600 },
+      { skipIdleBlocks: 'yes' },
       { other: 1 },
       [],
     ])
-      expect(() => parseIdleHeartbeat(bad)).toThrow(/l2Idle\.heartbeatSeconds/);
+      expect(() => parseIdlePolicy(bad)).toThrow(/l2Idle/);
   });
 
   it('R309-3P-3: a waiting swap hold says what ends the wait on a quiet chain; other requests do not', () => {

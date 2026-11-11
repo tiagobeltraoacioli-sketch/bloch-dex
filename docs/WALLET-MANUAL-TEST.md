@@ -265,7 +265,8 @@ and do not use another browser or device for the same account, while a swap requ
 would accept a second swap, and the old request, confirmed later inside its deadline, would execute too.
 
 On a quiet L2 (no block for more than 30 minutes) the page says "The L2 has made no block for N minutes: it is idle …
-Your swap will open the next block" and sends the swap; a hold then ends at the first finalized block after the
+the swap is included in the block after it, in about 60 minutes", raises a shorter deadline to 75 minutes, and sends
+the swap; a hold then ends at the first finalized block after the
 deadline, which on a quiet chain can be up to 24 hours away (the heartbeat) unless anyone transacts.
 
 ## Test 9b: the same-nonce review of an approval
