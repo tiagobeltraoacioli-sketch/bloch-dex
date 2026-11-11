@@ -61,7 +61,7 @@ const ACCOUNT = '0x72dc623d4c03c996a3d20ed2674f24570e8acf44' as Address;
 const FINALIZED = {
   number: '0x1b8',
   hash: `0x${'f'.repeat(64)}`,
-  timestamp: '0x6ad1a000',
+  timestamp: '0x6ad2cd04', // one minute before NOW_MS: the swap form refuses a clock far from the chain
   baseFeePerGas: '0x3b9aca00',
 };
 const INCLUDED = { ...FINALIZED, number: '0x1ba', hash: `0x${'b'.repeat(64)}` };
@@ -2639,6 +2639,19 @@ describe('swap panel safety fixes', () => {
       receipt = () => REVERTED;
       expect((await why()).textContent).toContain('BDEX: EXPIRED');
       expect(retryButton()).toBeNull();
+    });
+
+    it('R309-2P-5: builds no swap when the device clock is a day ahead of the latest L2 block', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const old = { ...FINALIZED, timestamp: `0x${(NOW_MS / 1000 - 86_400).toString(16)}` };
+      const chain: Rpc = async (m, p) =>
+        m === 'eth_getBlockByNumber' && p[0] === 'latest' ? old : rpc(m, p);
+      const { user, sends } = await mount(chain, state);
+      await quoted(user);
+      await user.click(swapButton());
+      await screen.findByText(/1440 minutes ahead of the latest L2 block/);
+      expect(sends()).toHaveLength(0);
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
     });
 
     it('offers no retry when the chain does not show the minimum failing', async () => {

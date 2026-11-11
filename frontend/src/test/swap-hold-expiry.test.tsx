@@ -9,12 +9,16 @@ import { approveTransaction, swapTransaction, type TransactionRequest } from '..
 import {
   parsePendingSwap,
   pendingSwapKey,
+  REPLACEMENT_NOT_FOR_UNSEEN_SWAPS,
   REVIEW_NOT_FOR_SWAPS,
+  UNREADABLE_RECORD,
   usePendingSwap,
   type PendingSwap,
 } from '../mainnet/pendingswap';
+import { swapClockProblem } from '../mainnet/config';
 import {
   expiredSwap,
+  savedSwapDeadline,
   submissionContext,
   type SubmissionIntent,
 } from '../mainnet/submission-outcome';
@@ -230,7 +234,7 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     expect(hook.result.current.open).toBe(false);
     expect(stored()).toBeNull();
     expect(hook.result.current.tracked?.detail).toMatch(
-      /did not execute and can no longer execute/,
+      /no transaction of this account used nonce 4 before it: sent from an ordinary wallet account this swap did not execute, and it can no longer execute/,
     );
     expect(onMined).toHaveBeenCalledTimes(1);
     expect(wallet.request).not.toHaveBeenCalled();
@@ -335,9 +339,16 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     });
     c.state.bodies.clear();
     expect(await expiredSwap(c.rpc, swapIntent, context, DEADLINE, [ONE])).not.toBeNull();
-    // A hash whose body is another call is contradictory evidence, not expiry.
-    c.state.bodies.set(ONE, { ...body(ONE, false), input: '0x1234' });
-    await expect(expiredSwap(c.rpc, swapIntent, context, DEADLINE, [ONE])).rejects.toThrow();
+    // R309-2P-3: a hash whose body is not the saved call (a wrapper transaction, appended calldata) says
+    // nothing about the saved call and does not keep the hold for ever, even when it is included.
+    c.state.bodies.set(ONE, { ...body(ONE, true), input: `${SWAP.data}00` });
+    expect(await expiredSwap(c.rpc, swapIntent, context, DEADLINE, [ONE])).toMatchObject({
+      blockNumber: '20',
+    });
+    // R309-2P-4: never on a deadline other than the one inside the saved call.
+    expect(await expiredSwap(c.rpc, swapIntent, context, DEADLINE - 1n, [])).toBeNull();
+    c.state.finalized = c.state.latest = { number: 21n, hash: hash('7'), timestamp: 10n };
+    expect(await expiredSwap(c.rpc, swapIntent, context, 5n, [])).toBeNull();
   });
 
   it('refuses evidence that changes while it is read, and non-swaps', async () => {
@@ -429,5 +440,145 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     expect(stored()).toBeNull();
     store({ ...hold('unknown', [TWO]), nonceSeen: [TWO] });
     expect(stored()?.nonceSeen).toEqual([TWO]);
+  });
+
+  // Review R309-2P-1, the reviewer's demonstration (bfeb942) turned into a regression test.
+  it('R309-2P-1: a swap hold WITHOUT any wallet hash is never closed through the replacement check', async () => {
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 17n, hash: hash('c'), timestamp: 300n };
+    store(hold('awaiting-wallet')); // the first prompt may still be open in the wallet
+    // The user sent another transaction at nonce 4, as the panel used to suggest; it is finalized.
+    c.state.bodies.set(ONE, {
+      hash: ONE,
+      from: FROM,
+      to: FROM,
+      input: '0x',
+      value: '0x0',
+      chainId: '0xab162',
+      nonce: '0x4',
+      blockNumber: '0x11',
+      blockHash: hash('c'),
+    });
+    c.state.receipts.set(ONE, {
+      transactionHash: ONE,
+      from: FROM,
+      to: FROM,
+      blockNumber: '0x11',
+      blockHash: hash('c'),
+      status: '0x1',
+      gasUsed: '0x5208',
+    });
+    c.state.nonce = 5n;
+    const wallet = walletThatMustNotBeAsked();
+    const { hook } = mount(c, wallet.provider, () => 300_000);
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    await act(async () => {
+      await expect(hook.result.current.checkReplacement(ONE)).rejects.toThrow(
+        REPLACEMENT_NOT_FOR_UNSEEN_SWAPS,
+      );
+    });
+    // The hold stays: no new swap can be reserved, so the old prompt signed at nonce 5 stays the only swap.
+    expect(stored()?.intent?.id).toBe(swapIntent.id);
+    expect(hook.result.current.open).toBe(true);
+    expect(wallet.request).not.toHaveBeenCalled();
+    // It ends at the deadline in a finalized block, and only there.
+    c.state.finalized = c.state.latest = { number: 30n, hash: hash('6'), timestamp: DEADLINE + 1n };
+    await waitFor(() => expect(hook.result.current.tracked?.state).toBe('expired'));
+    expect(hook.result.current.tracked?.detail).toMatch(/may have been this swap/);
+  });
+
+  it('R309-2P-1: an approval hold without a hash can still be closed by a finalized replacement', async () => {
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 17n, hash: hash('c'), timestamp: 300n };
+    store(hold('unknown', [], intentOf(APPROVE, 'approval')));
+    c.state.bodies.set(ONE, {
+      hash: ONE,
+      from: FROM,
+      to: FROM,
+      input: '0x',
+      value: '0x0',
+      chainId: '0xab162',
+      nonce: '0x4',
+      blockNumber: '0x11',
+      blockHash: hash('c'),
+    });
+    c.state.receipts.set(ONE, {
+      transactionHash: ONE,
+      from: FROM,
+      to: FROM,
+      blockNumber: '0x11',
+      blockHash: hash('c'),
+      status: '0x1',
+      gasUsed: '0x5208',
+    });
+    c.state.nonce = 5n;
+    const { hook } = mount(c, walletThatMustNotBeAsked().provider, () => 300_000);
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    await act(async () => {
+      expect((await hook.result.current.checkReplacement(ONE)).transactionHash).toBe(ONE);
+    });
+  });
+
+  // Review R309-2P-4 (bfeb942): the stored deadline must be the one inside the saved call.
+  it('R309-2P-4: a record whose deadline field is not the saved call deadline is unreadable: nothing is sent, and only a deliberate discard removes it', async () => {
+    const c = chain();
+    // A finalized block past the LOWER stored deadline but before the deadline a wallet would sign.
+    c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: 2_000n };
+    store({ ...hold('unknown'), deadline: 1_000n });
+    expect(parsePendingSwap(localStorage.getItem(key))).toBeNull();
+    expect(savedSwapDeadline(SWAP.data)).toBe(DEADLINE);
+    const wallet = walletThatMustNotBeAsked();
+    const { hook } = mount(c, wallet.provider, () => 3_000_000);
+    await waitFor(() => expect(hook.result.current.storageProblem).toBe(UNREADABLE_RECORD));
+    // Fail safe: the page counts as holding (Swap disabled), the record stays, the wallet is not asked.
+    expect(hook.result.current.open).toBe(true);
+    expect(hook.result.current.unreadable).toBe(true);
+    await settle();
+    expect(localStorage.getItem(key)).not.toBeNull();
+    expect(wallet.request).not.toHaveBeenCalled();
+    await act(async () => {
+      await expect(hook.result.current.reviewInWallet()).rejects.toThrow();
+    });
+    // The manual clear removes exactly this unreadable record.
+    await act(async () => {
+      expect(await hook.result.current.discardUnreadable()).toBe(true);
+    });
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(hook.result.current.storageProblem).toBeNull();
+    expect(hook.result.current.open).toBe(false);
+  });
+
+  it('never discards a readable hold, and a non-swap record with a deadline is unreadable too', async () => {
+    const c = chain();
+    store(hold('unknown'));
+    const { hook } = mount(c, walletThatMustNotBeAsked().provider, () => 300_000);
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    expect(hook.result.current.unreadable).toBe(false);
+    await act(async () => {
+      expect(await hook.result.current.discardUnreadable()).toBe(false);
+    });
+    expect(stored()?.intent?.id).toBe(swapIntent.id);
+    store({ ...hold('unknown', [], intentOf(APPROVE, 'approval')), deadline: 5n });
+    expect(parsePendingSwap(localStorage.getItem(key))).toBeNull();
+  });
+});
+
+describe('R309-2P-5: a swap is not built on a device clock far from the chain', () => {
+  const T = 1_792_200_000n;
+  it.each([
+    ['in step', Number(T) * 1000 + 30_000, null],
+    ['behind by two minutes exactly', (Number(T) - 120) * 1000, null],
+    ['ahead by the stale-chain threshold exactly', (Number(T) + 150 * 60) * 1000, null],
+    [
+      'behind by more than two minutes',
+      (Number(T) - 121) * 1000,
+      /121 seconds behind the latest L2 block/,
+    ],
+    ['a day ahead', (Number(T) + 86_400) * 1000, /1440 minutes ahead of the latest L2 block/],
+    ['just past the threshold', (Number(T) + 150 * 60 + 60) * 1000, /151 minutes ahead/],
+  ] as [string, number, RegExp | null][])('%s', (_name, nowMs, problem) => {
+    const answer = swapClockProblem(nowMs, T);
+    if (problem === null) expect(answer).toBeNull();
+    else expect(answer).toMatch(problem);
   });
 });

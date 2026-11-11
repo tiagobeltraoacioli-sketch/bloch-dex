@@ -1,9 +1,9 @@
 // A wallet hash is an observation, not proof that it identifies the requested
 // transaction. Keep the durable hold until its exact call is canonically finalized.
-import { sha256, stringToBytes, type Address, type Hex } from 'viem';
+import { decodeFunctionData, sha256, stringToBytes, type Address, type Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
 import { stableJson, type DevnetDeployment } from '../devnet4/record';
-import type { Receipt } from '../devnet4/swap';
+import { ROUTER_ABI, type Receipt } from '../devnet4/swap';
 
 export type SubmissionContext = { chainId: number; genesisHash: Hex; deploymentId: Hex };
 export type SubmissionIntent = SubmissionContext & {
@@ -220,6 +220,19 @@ export async function verifySameNonceReview(
   await recheckFinality(rpc, finalized, head);
 }
 
+/** The deadline inside a saved router swap call, or null when the data is not one of the router's swaps.
+ * The record's own `deadline` field must equal it: the field ends the hold, the calldata is what a wallet
+ * signs (review R309-2P-4). */
+export function savedSwapDeadline(data: Hex): bigint | null {
+  try {
+    const call = decodeFunctionData({ abi: ROUTER_ABI, data });
+    const deadline = call.args[call.args.length - 1];
+    return typeof deadline === 'bigint' ? deadline : null;
+  } catch {
+    return null;
+  }
+}
+
 export type ExpiredSwap = {
   /** The canonical finalized block whose timestamp is past the deadline. */
   blockNumber: string;
@@ -245,6 +258,8 @@ export async function expiredSwap(
 ): Promise<ExpiredSwap | null> {
   assertSubmissionContext(intent, context);
   if (intent.kind !== 'swap' || deadline <= 0n) return null;
+  // Never on a deadline other than the one in the call a wallet may have signed.
+  if (savedSwapDeadline(intent.data) !== deadline) return null;
   const read = async () => {
     const raw = object(await rpc('eth_getBlockByNumber', ['finalized', false]));
     return { ...block(raw), timestamp: quantity(raw.timestamp) };
@@ -259,7 +274,14 @@ export async function expiredSwap(
   for (const hash of hashes) {
     const body = await rpc('eth_getTransactionByHash', [hash]);
     if (body === null) continue;
-    const tx = matchTransaction(body, hash, intent);
+    // A hash whose body is not the saved call (a wrapper transaction, appended calldata) says nothing about
+    // the saved call: no copy of that call can execute after the deadline, whatever this hash is (R309-2P-3).
+    let tx: Record<string, unknown>;
+    try {
+      tx = matchTransaction(body, hash, intent);
+    } catch {
+      continue;
+    }
     // Included somewhere: its finalized receipt decides, not the deadline.
     if (tx.blockNumber !== null || tx.blockHash !== null) return null;
   }

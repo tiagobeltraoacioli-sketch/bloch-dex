@@ -15,6 +15,7 @@ import type { Provider } from '../wallet';
 import {
   assertSubmissionContext,
   expiredSwap,
+  savedSwapDeadline,
   finalizedSubmissionReceipt,
   finalizedReplacementReceipt,
   isSubmissionHash,
@@ -192,7 +193,12 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
       typeof v.deadline !== 'string' ||
       !/^[0-9]{1,20}$/.test(v.deadline) ||
       typeof v.sentAtMs !== 'number' ||
-      !Number.isFinite(v.sentAtMs)
+      !Number.isFinite(v.sentAtMs) ||
+      // The field that ends a swap hold is the deadline of the saved call itself; other requests carry none.
+      // A record where they differ is corrupt or edited and is unreadable as a whole (review R309-2P-4).
+      (intent !== null &&
+        intent !== undefined &&
+        BigInt(v.deadline) !== (intent.kind === 'swap' ? savedSwapDeadline(intent.data) : 0n))
     )
       return null;
     const retry = parseRetry(v.retry);
@@ -216,10 +222,7 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
 function readStored(key: string): PendingSwap | null {
   const raw = localStorage.getItem(key);
   const parsed = parsePendingSwap(raw);
-  if (raw !== null && !parsed)
-    throw new Error(
-      'The saved submission record is unreadable. Check wallet activity before using this page again.',
-    );
+  if (raw !== null && !parsed) throw new Error(UNREADABLE_RECORD);
   return parsed;
 }
 
@@ -320,6 +323,13 @@ export async function walletOnChain(provider: Provider, chainId: number): Promis
 
 export const REVIEW_NOT_FOR_SWAPS =
   'A swap is never requested from the wallet a second time: an earlier request may still be open or signed there, and two copies inside the deadline would both execute. This hold ends by itself once the swap deadline has passed in a finalized block. No wallet request was made.';
+
+export const REPLACEMENT_NOT_FOR_UNSEEN_SWAPS =
+  'This swap has no transaction hash from your wallet, so nothing shows which nonce the wallet would sign it with: another transaction at the saved nonce does not prove that the swap cannot execute. The hold ends by itself once the swap deadline has passed in a finalized block; if you find the swap in your wallet activity, check its hash instead. The hold remains.';
+
+/** A stored record this page cannot read (corrupt, edited, or a deadline that is not the saved call's). */
+export const UNREADABLE_RECORD =
+  'The saved submission record is unreadable. Check wallet activity before using this page again.';
 
 export const REVIEW_WITH_HASH =
   'Your wallet already returned a transaction hash for this request and may still publish it. A second wallet request could execute the same call twice. Speed it up or cancel it in the wallet itself, then check the resulting hash here. No wallet request was made.';
@@ -683,7 +693,7 @@ export function usePendingSwap({
               state: 'expired',
               detail: expired.nonceUsed
                 ? `The swap deadline passed in canonical finalized block ${expired.blockNumber}, so this request can no longer execute. A transaction of this account used nonce ${swap.intent!.nonce} before that: it may have been this swap. Check your wallet activity and the finalized balances below before swapping again. Nothing was sent.`
-                : `The swap deadline passed in canonical finalized block ${expired.blockNumber} with nonce ${swap.intent!.nonce} still unused: this swap did not execute and can no longer execute. If your wallet still shows the request, reject it there; signed now it would only revert. Nothing was sent.`,
+                : `The swap deadline passed in canonical finalized block ${expired.blockNumber}, and no transaction of this account used nonce ${swap.intent!.nonce} before it: sent from an ordinary wallet account this swap did not execute, and it can no longer execute. If your wallet still shows the request, reject it there; signed now it would only revert. Nothing was sent.`,
             });
             latest.current.onMined();
             return;
@@ -1079,6 +1089,12 @@ export function usePendingSwap({
           'This older hold has no saved nonce and body for replacement verification.',
         );
       checkContext(held.swap);
+      // A swap hold without any wallet hash ends ONLY at its deadline in a finalized block, or when the chain
+      // shows the saved call itself (hash recovery). Another transaction at the nonce proves nothing: the first
+      // prompt may still be open, and a wallet that assigns its own nonce would sign it at the next one inside
+      // the deadline, after a second swap was sent (review R309-2P-1, coordinator decision).
+      if (held.swap.intent.kind === 'swap' && submissionHashes(held.swap).length === 0)
+        throw new Error(REPLACEMENT_NOT_FOR_UNSEEN_SWAPS);
       // A wallet that ignored the requested nonce signed the saved call at another one. A different transaction at
       // the original nonce then proves nothing about the request: it can still execute, or already has.
       for (const candidate of submissionHashes(held.swap)) {
@@ -1211,10 +1227,29 @@ export function usePendingSwap({
     return true;
   }, [key, recall, checkContext]);
 
+  /** The stored record of this account is unreadable: no hold can be shown, nothing can be sent, and nothing
+   * on the chain can end it. The user may discard it, knowingly. Only an unreadable record is ever removed. */
+  const unreadable = storageProblem === UNREADABLE_RECORD;
+  const discardUnreadable = useCallback(async () => {
+    if (!key) return false;
+    return withSubmissionLock(key, () => {
+      const raw = localStorage.getItem(key);
+      if (raw === null || parsePendingSwap(raw)) return false;
+      localStorage.removeItem(key);
+      if (localStorage.getItem(key) !== null) return false;
+      memory.current.delete(key);
+      setStorageProblem(null);
+      setTracked(null);
+      return true;
+    }).catch(() => false);
+  }, [key]);
+
   return {
     tracked: visibleTracked,
     contextKey,
     storageProblem,
+    unreadable,
+    discardUnreadable,
     open: isOpen(visibleTracked) || storageProblem !== null,
     reserve,
     updateSubmission,

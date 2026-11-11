@@ -43,6 +43,24 @@ export const DEFAULT_DEADLINE_MINUTES = 60;
 export const MIN_DEADLINE_MINUTES = 10;
 /** The page warns at the same finalized age as scripts/ops/dex-monitor.mjs (finalizedAgeWarn). */
 export const FINALIZED_AGE_WARN_SECONDS = 150 * 60;
+/** The device clock may be this far behind the latest L2 block before a swap is refused. */
+export const CLOCK_BEHIND_TOLERANCE_SECONDS = 120;
+
+/**
+ * A swap's deadline is built from the device clock, and since round 15 a swap hold lasts until
+ * that deadline is final. A device clock far from the chain's would make the deadline (and the
+ * hold) arbitrarily long, or already past (review R309-2P-5). The L2 only makes a block when it
+ * has transactions, so its latest timestamp may honestly lag the clock; the page already treats
+ * a chain older than FINALIZED_AGE_WARN_SECONDS as stale. Returns the reason to refuse, or null.
+ */
+export function swapClockProblem(nowMs: number, latestBlockTimestamp: bigint): string | null {
+  const now = BigInt(Math.floor(nowMs / 1000));
+  if (now + BigInt(CLOCK_BEHIND_TOLERANCE_SECONDS) < latestBlockTimestamp)
+    return `This device's clock is ${latestBlockTimestamp - now} seconds behind the latest L2 block, so the swap deadline would be wrong. Correct the clock and get a new quote. Nothing was sent.`;
+  if (now > latestBlockTimestamp + BigInt(FINALIZED_AGE_WARN_SECONDS))
+    return `This device's clock is ${(now - latestBlockTimestamp) / 60n} minutes ahead of the latest L2 block. Either the clock is wrong or the L2 has not made a block for that long; a swap sent now would hold this account until a deadline that far away is final. Check the clock, or wait for the L2. Nothing was sent.`;
+  return null;
+}
 export const MAX_DEADLINE_MINUTES = 180;
 
 export type BridgeLink = {

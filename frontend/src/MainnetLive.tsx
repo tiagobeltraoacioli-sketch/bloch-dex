@@ -43,6 +43,7 @@ import {
   type MainnetNetwork,
   type MainnetState,
   type PlannedCap,
+  swapClockProblem,
 } from './mainnet/config';
 import {
   atKCeiling,
@@ -1077,6 +1078,13 @@ function SwapPanel({
       if (blocksSwap(fresh)) return;
       const signed = signedQuote(active, fresh);
       const label = `Swap ${formatAmount(signed.amountIn, input!.token.decimals)} ${input!.label} for ${output!.label}`;
+      const head = (await rpc('eth_getBlockByNumber', ['latest', false])) as {
+        timestamp?: unknown;
+      } | null;
+      if (!head || typeof head.timestamp !== 'string' || !/^0x[0-9a-f]+$/i.test(head.timestamp))
+        return setQuoteNote('The latest L2 block could not be read, so nothing was sent.');
+      const clock = swapClockProblem(now(), BigInt(head.timestamp));
+      if (clock) return setQuoteNote(clock);
       const deadline = deadlineFrom(now(), deadlineMinutes);
       const retry: SwapRetryInfo = {
         tokenIn: input!.token.address,
@@ -1377,6 +1385,7 @@ function SwapPanel({
           {pendingSwap.storageProblem} No new transaction can be sent.
         </p>
       )}
+      {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
       {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
         <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
       )}
@@ -1434,6 +1443,57 @@ function SwapPanel({
         </ol>
       )}
     </div>
+  );
+}
+
+/** The only manual way out of a stored record the page cannot read. It removes that record and nothing else. */
+function DiscardUnreadable({ pendingSwap }: { pendingSwap: ReturnType<typeof usePendingSwap> }) {
+  const [understood, setUnderstood] = useState(false);
+  const [note, setNote] = useState('');
+  return (
+    <details aria-label="Discard the unreadable saved record">
+      <summary>Discard the unreadable saved record</summary>
+      <p>
+        This browser holds a saved record of an earlier wallet request of this account that the page
+        cannot read (it is damaged, was edited, or names a deadline that is not the one in its saved
+        call). The page cannot tell what that request was or whether it can still execute, so it
+        sends nothing while the record is there, and nothing on the chain can clear it.
+      </p>
+      <p>
+        Discarding it removes the page&apos;s only memory of that request. If the request was a swap
+        that your wallet still holds, or that is still queued, it can still execute; if you then
+        swap again, both swaps execute. Before you discard: open your wallet&apos;s activity, reject
+        every open request from this site, and make sure no transaction of this account is pending.
+        This makes no wallet request and sends nothing.
+      </p>
+      <label>
+        <input
+          type="checkbox"
+          checked={understood}
+          onChange={(event) => setUnderstood(event.target.checked)}
+        />{' '}
+        I checked my wallet: no request from this site is open and no transaction of this account is
+        pending.
+      </label>
+      <button
+        className="button secondary"
+        disabled={!understood}
+        onClick={() =>
+          void pendingSwap
+            .discardUnreadable()
+            .then((done) =>
+              setNote(
+                done
+                  ? 'The unreadable record was removed.'
+                  : 'The record could not be removed, or it is readable now. Reload the page.',
+              ),
+            )
+        }
+      >
+        Discard the unreadable record
+      </button>
+      {note && <p role="status">{note}</p>}
+    </details>
   );
 }
 
@@ -1516,11 +1576,13 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
         the hold.
       </p>
       <p>
-        If your wallet shows no transaction for this request (it was refused, closed or never
-        signed), the hold stays until this account&apos;s next transaction at the same nonce is
-        finalized: send any other transaction from this account in your wallet, then paste its hash
-        here and use the replacement check. A swap hold also ends by itself, with nothing sent, once
-        the swap deadline has passed in a finalized block. Nothing else on this page clears a hold.
+        A swap for which your wallet returned no hash ends in one of two ways only: its hash, found
+        in your wallet activity and checked here, or its deadline passing in a finalized block
+        (nothing to do: the page then releases the hold by itself). Another transaction at the same
+        nonce does not release it, because an open wallet request could still be signed at another
+        nonce. For an approval or a skim your wallet never signed, send any other transaction from
+        this account, paste its hash and use the replacement check. Nothing else on this page
+        clears a hold.
       </p>
       <label>
         Transaction hash from wallet activity

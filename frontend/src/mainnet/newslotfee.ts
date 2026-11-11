@@ -47,11 +47,16 @@
 // `bloch_admissionQuote(call)` (agents/R15-CROSS-AREA.md, 2026-11-11 01:15 UTC, bloch-l2-evm
 // 24a116e): the node executes the call as the sender's next transaction and answers with the
 // figures a refusal would carry (`requiredPriorityFeePerGas`, `chargedFreshSlots`, `gasUsed`,
-// …). When the RPC serves it, the page uses the node's own count and requirement (plus the
-// margin, inside the same bounds) instead of the upper bound above. When it does not (the
-// launch release, the public gateway until it routes the method, an endpoint without an
-// admission policy, a sender whose balance the quote refuses, any malformed answer), the
-// access-list computation above is used unchanged: it is the fallback, not a second opinion.
+// …). The node's answer never wins alone (review R309-2P-2, coordinator decision): the page
+// always makes its own access-list computation, and when the RPC also serves a quote the
+// suggestion is the LARGER of the two, inside the same absolute bound (15 gwei of tip). The
+// two must agree within a factor of two: a quote above twice the page's figure, or a quote
+// that charges slots where the page's upper bound finds none, sends nothing. A quote that
+// charges no slot does not lower the page's own figure. So an RPC can raise the suggestion
+// to at most twice the page's bound and can never lower it; the quote protects against an
+// operator price above the network file's. When the RPC serves no quote (the launch release,
+// a gateway without the route, no admission policy, a sender whose balance the quote
+// refuses, an answer that contradicts itself), the access-list figure stands alone.
 //
 // With no possible new slot, or with the policy off, the wallet request is unchanged and the
 // wallet picks the fee. The fee fields are a suggestion to the wallet: a wallet that ignores
@@ -184,6 +189,8 @@ function quantity(value: unknown, field: string): bigint {
 const hex = (value: bigint) => `0x${value.toString(16)}`;
 
 export const ADMISSION_QUOTE_METHOD = 'bloch_admissionQuote';
+/** The node's quote may exceed the page's own figure by at most this factor; beyond it nothing is sent. */
+export const QUOTE_DISAGREEMENT_FACTOR = 2n;
 
 /**
  * The node's own admission quote for one call, or undefined when this RPC does not serve one
@@ -277,9 +284,32 @@ export async function priceNewSlots(
   transient: TransientSlots = new Map(),
 ): Promise<NewSlotFee | null> {
   if (!policy.enabled) return null;
-  // The node's own quote when it serves one; otherwise the access-list computation below.
+  // The node's quote, when it serves one, is combined with the page's own figure; it never replaces it.
   const quoted = await quoteNewSlots(rpc, tx, policy);
-  if (quoted !== undefined) return quoted;
+  const own = await priceByAccessList(rpc, tx, policy, transient);
+  if (quoted === undefined || quoted === null) return own;
+  refuse(
+    own !== null,
+    `the L2 charges ${quoted.possibleNewSlots} new storage slot(s) for this transaction, but the page finds none it could create; nothing was sent`,
+  );
+  refuse(
+    quoted.maxPriorityFeePerGas <= QUOTE_DISAGREEMENT_FACTOR * own.maxPriorityFeePerGas,
+    `the L2 asks a priority fee of ${formatGwei(quoted.maxPriorityFeePerGas)} gwei, more than ${QUOTE_DISAGREEMENT_FACTOR} times the ${formatGwei(own.maxPriorityFeePerGas)} gwei the page computes for this transaction; nothing was sent`,
+  );
+  if (quoted.maxPriorityFeePerGas <= own.maxPriorityFeePerGas) return own;
+  // The node asks more than the page's bound (an operator price above the network file's): its
+  // tip, on the larger of the two base fees.
+  const baseFee = quoted.baseFee > own.baseFee ? quoted.baseFee : own.baseFee;
+  return { ...quoted, baseFee, maxFeePerGas: 2n * baseFee + quoted.maxPriorityFeePerGas };
+}
+
+/** The page's own figure: an upper bound of the slots, a lower bound of the gas. */
+async function priceByAccessList(
+  rpc: Rpc,
+  tx: PricedCall,
+  policy: NewSlotFeePolicy,
+  transient: TransientSlots,
+): Promise<NewSlotFee | null> {
   const call = { from: tx.from, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) };
   const reply = (await rpc('eth_createAccessList', [call, 'latest'])) as {
     accessList?: unknown;
@@ -361,6 +391,11 @@ export async function priceNewSlots(
   );
   const slotTip = slotTipFor(possibleNewSlots, gasUsed, policy.freshSlotPriceWei, policy.marginBps);
   const maxPriorityFeePerGas = slotTip > publishedTip ? slotTip : publishedTip;
+  // The absolute bound holds whatever the network file's price and margin are (review R309-2P-6).
+  refuse(
+    maxPriorityFeePerGas <= MAX_PUBLISHED_TIP_WEI,
+    `this transaction would need a priority fee of ${formatGwei(maxPriorityFeePerGas)} gwei for its new storage slots, above the ${formatGwei(MAX_PUBLISHED_TIP_WEI)} gwei this page will suggest; nothing was sent`,
+  );
   return {
     source: 'access-list',
     maxPriorityFeePerGas,
