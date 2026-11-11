@@ -407,3 +407,45 @@ plus 16 GiB for the net, `PROVING.lock` held for the run, and about 24 hours: 20
 minutes (up to 29 if the derived flows do not share blocks), one finality wait of about 40 minutes at the
 gate, and the token's 12 h delay between `deploy` and `bridge-credit`, during which nothing else
 can proceed.
+
+### New-slot fee on a real settled RPC (measured 2026-11-11, no proofs)
+
+`scripts/staging/newslot-rpc-check.mjs` prices each call with the page's own module
+(`frontend/src/mainnet/newslotfee.ts`) against a settled RPC on a private L2 (`private-l2.sh`, pinned genesis, the
+real bridge token from the bridge freeze `1aef47c`, the DEX deployed and seeded by `e2e-settled/drive.sh`), and
+compares the page's figure with what the node decides for a signed transaction. Two runs on 45.77.142.123:
+
+| RPC | Admission rule | Result |
+|---|---|---|
+| Launch release `926d2cf` (settled-rpc `53e88565…`, produce-dev `e3f1a290…`) | **not enforced**: the launch release is deposit-only and has no new-slot rule; every transaction was admitted at the wallet's own fee | `eth_createAccessList` is served at `latest`; a zero-balance and a low-balance account get the same answer as a funded one (the balance is not checked against gas), with or without fee fields; a call whose value exceeds the balance answers `"error": "EVM error: OutOfFunds"`, and the page then refuses to price and sends nothing |
+| User-transaction candidate `6b75a4c` (built on the host, settled-rpc `0ffafb33…`, produce-dev `1cee819f…`), started with `REQUIRED_TIP_FILE` (policy v2 `admission.version` 1, 200 µBLCH per slot, the rig's own keys exempt as operators) | **enforced** | below |
+
+Candidate run, a fresh account, real `BridgedStablecoinV3`:
+
+| Call | Slots: page / node | Gas: page's lower bound / node | Tip: page / node requires (wei per gas) | Page over node | Wallet's own fee | Node's figure less 1 wei | Page's fee |
+|---|---|---|---|---|---|---|---|
+| First `approve` of bUSDC | 1 / 1 | 44,037 / 46,137 | 4,995,798,988 / 4,334,915,578 | 1.152 | refused | refused | admitted at the first request |
+| Swap bUSDC for BLCH after it (first sale in the pool) | 2 / 2 | 134,606 / 174,226 | 3,268,799,311 / 2,295,868,585 | 1.424 | refused | refused | admitted |
+| First `approve` by an account holding 0.002 BLCH | 1 / 1 | 44,037 / 46,137 | 4,995,798,988 / 4,334,915,578 | 1.152 | refused | refused | admitted |
+| First native swap BLCH for bUSDC (the account never held bUSDC) | 1 / 1 | 106,289 / 142,289 | 2,069,828,487 / 1,405,590,032 | 1.472 | refused | refused | admitted |
+| The same native swap again | 0 / 0 | | wallet's fee | | admitted | | |
+| Skim of a donation to the caller | 1 / 0 | 41,586 / 62,586 | 5,290,241,909 / none | | admitted | | not needed |
+
+What this shows: the page counts exactly the slots the node charges for approvals and swaps of the real token, its
+fee is admitted at the first request, and it is 15% to 47% above the node's own requirement (10% is the margin; the
+rest is the gas lower bound, which subtracts the access list's intrinsic cost: 2,400 gas per address and 1,900 per
+key that the simulation carries and the wallet's transaction does not). For the skim the page counts one slot the
+node does not charge (a slot that reads zero and stays zero): the page suggests 5.29 gwei where the wallet's own
+fee would do, 0.00033 BLCH on that transaction. This is the documented upper bound; an exact figure needs the
+node's own quote (the admission quote method requested from the L2 line).
+
+Not shown by this check: a browser and a wallet (the fees are signed by the script, as a wallet that honours the
+page's suggestion would), the public gateway, inclusion under load, and real finality.
+
+```
+REQUIRED_TIP_FILE=<sequencer-policy.json> PRODUCE_DEV=<candidate produce-dev> SETTLED_RPC=<candidate settled-rpc> scripts/staging/private-l2.sh start <work>/l2 <port>
+```
+
+```
+node scripts/staging/newslot-rpc-check.mjs --rpc http://127.0.0.1:<port> --gate <work>/flow/evidence/gate.json --funder-key-file <file with the rig's issuer key> --out <result.json>
+```
