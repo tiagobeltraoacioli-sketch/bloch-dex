@@ -43,6 +43,16 @@
 // consensus rule): if the operator raises it above that plus the margin, the RPC refuses once
 // with its exact figures and the page explains them, as before this module.
 //
+// Since round 15 the user-transaction candidate of the L2 serves a read-only quote,
+// `bloch_admissionQuote(call)` (agents/R15-CROSS-AREA.md, 2026-11-11 01:15 UTC, bloch-l2-evm
+// 24a116e): the node executes the call as the sender's next transaction and answers with the
+// figures a refusal would carry (`requiredPriorityFeePerGas`, `chargedFreshSlots`, `gasUsed`,
+// …). When the RPC serves it, the page uses the node's own count and requirement (plus the
+// margin, inside the same bounds) instead of the upper bound above. When it does not (the
+// launch release, the public gateway until it routes the method, an endpoint without an
+// admission policy, a sender whose balance the quote refuses, any malformed answer), the
+// access-list computation above is used unchanged: it is the fallback, not a second opinion.
+//
 // With no possible new slot, or with the policy off, the wallet request is unchanged and the
 // wallet picks the fee. The fee fields are a suggestion to the wallet: a wallet that ignores
 // them behaves as before.
@@ -83,7 +93,10 @@ export const NEW_SLOT_FEE_OFF: NewSlotFeePolicy = {
 export type PricedCall = { from: Address; to: Address; data: Hex; value: bigint; gas: bigint };
 export type FeeFields = { maxPriorityFeePerGas: bigint; maxFeePerGas: bigint };
 export type NewSlotFee = FeeFields & {
-  /** Touched storage keys that read zero: an upper bound of the slots the RPC charges. */
+  /** `quote`: the node's own figures (bloch_admissionQuote). `access-list`: the page's upper bound. */
+  source: 'quote' | 'access-list';
+  /** Touched storage keys that read zero: an upper bound of the slots the RPC charges. With a
+   * quote, the slots the node charges. */
   possibleNewSlots: bigint;
   gasUsed: bigint;
   publishedTip: bigint;
@@ -170,6 +183,87 @@ function quantity(value: unknown, field: string): bigint {
 }
 const hex = (value: bigint) => `0x${value.toString(16)}`;
 
+export const ADMISSION_QUOTE_METHOD = 'bloch_admissionQuote';
+
+/**
+ * The node's own admission quote for one call, or undefined when this RPC does not serve one
+ * for it (method unknown, no admission policy, the sender's balance, busy, or an answer that
+ * does not hold together): the caller then prices with the access list. Null: the node charges
+ * no new slot, the wallet picks the fee. Throws only when the node's requirement is outside
+ * the page's bounds, where falling back to a lower figure would be refused by the node anyway.
+ */
+export async function quoteNewSlots(
+  rpc: Rpc,
+  tx: PricedCall,
+  policy: NewSlotFeePolicy,
+): Promise<NewSlotFee | null | undefined> {
+  let reply: Record<string, unknown>;
+  let figures: Record<string, bigint>;
+  try {
+    const answer = await rpc(ADMISSION_QUOTE_METHOD, [
+      { from: tx.from, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) },
+    ]);
+    if (!answer || typeof answer !== 'object' || Array.isArray(answer)) return undefined;
+    reply = answer as Record<string, unknown>;
+    if (reply.kind !== 'sequencer-admission-quote' || reply.scope !== 'latest-state-next-block')
+      return undefined;
+    figures = Object.fromEntries(
+      [
+        'baseFeePerGas',
+        'requiredPriorityFeePerGas',
+        'requiredMaxFeePerGas',
+        'minimumPriorityFeePerGas',
+        'gasUsed',
+        'freshSlots',
+        'chargedFreshSlots',
+        'freshSlotPriceWei',
+      ].map((name) => [name, quantity(reply[name], name)]),
+    );
+  } catch {
+    return undefined;
+  }
+  const q = figures;
+  // An answer that contradicts itself is not a quote: use the access list.
+  if (
+    q.gasUsed < INTRINSIC_GAS ||
+    q.gasUsed > tx.gas ||
+    q.chargedFreshSlots > q.freshSlots ||
+    q.freshSlots > MAX_NEW_SLOTS ||
+    q.requiredPriorityFeePerGas < q.minimumPriorityFeePerGas ||
+    q.requiredMaxFeePerGas !== q.requiredPriorityFeePerGas + q.baseFeePerGas ||
+    q.requiredPriorityFeePerGas * q.gasUsed < q.chargedFreshSlots * q.freshSlotPriceWei
+  )
+    return undefined;
+  if (q.chargedFreshSlots === 0n) return null;
+  refuse(
+    q.baseFeePerGas <= MAX_BASE_FEE_WEI,
+    `the L2 RPC reports a base fee of ${formatGwei(q.baseFeePerGas)} gwei, above ${formatGwei(MAX_BASE_FEE_WEI)} gwei`,
+  );
+  refuse(
+    q.minimumPriorityFeePerGas <= MAX_PUBLISHED_TIP_WEI,
+    `the L2 RPC asks a ${formatGwei(q.minimumPriorityFeePerGas)} gwei priority fee, above ${formatGwei(MAX_PUBLISHED_TIP_WEI)} gwei`,
+  );
+  // The margin covers a head that moves between the quote and the signature.
+  const withMargin =
+    (q.requiredPriorityFeePerGas * (10_000n + BigInt(policy.marginBps)) + 9_999n) / 10_000n;
+  refuse(
+    withMargin <= MAX_PUBLISHED_TIP_WEI,
+    `the L2 asks a priority fee of ${formatGwei(q.requiredPriorityFeePerGas)} gwei for this transaction's new storage slots, above the ${formatGwei(MAX_PUBLISHED_TIP_WEI)} gwei this page will suggest; nothing was sent`,
+  );
+  const maxPriorityFeePerGas =
+    withMargin > q.minimumPriorityFeePerGas ? withMargin : q.minimumPriorityFeePerGas;
+  return {
+    source: 'quote',
+    maxPriorityFeePerGas,
+    maxFeePerGas: 2n * q.baseFeePerGas + maxPriorityFeePerGas,
+    possibleNewSlots: q.chargedFreshSlots,
+    gasUsed: q.gasUsed,
+    publishedTip: q.minimumPriorityFeePerGas,
+    baseFee: q.baseFeePerGas,
+    slotCostWei: q.chargedFreshSlots * q.freshSlotPriceWei,
+  };
+}
+
 /**
  * Price one L2 transaction, or null when it can create no new slot (the wallet then picks
  * the fee as before). Throws when the RPC cannot price it or the call would revert: the
@@ -183,6 +277,9 @@ export async function priceNewSlots(
   transient: TransientSlots = new Map(),
 ): Promise<NewSlotFee | null> {
   if (!policy.enabled) return null;
+  // The node's own quote when it serves one; otherwise the access-list computation below.
+  const quoted = await quoteNewSlots(rpc, tx, policy);
+  if (quoted !== undefined) return quoted;
   const call = { from: tx.from, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) };
   const reply = (await rpc('eth_createAccessList', [call, 'latest'])) as {
     accessList?: unknown;
@@ -265,6 +362,7 @@ export async function priceNewSlots(
   const slotTip = slotTipFor(possibleNewSlots, gasUsed, policy.freshSlotPriceWei, policy.marginBps);
   const maxPriorityFeePerGas = slotTip > publishedTip ? slotTip : publishedTip;
   return {
+    source: 'access-list',
     maxPriorityFeePerGas,
     maxFeePerGas: 2n * baseFee + maxPriorityFeePerGas,
     possibleNewSlots,
@@ -281,7 +379,7 @@ export function newSlotFeeNote(fee: NewSlotFee | null): string {
   const slots =
     fee.possibleNewSlots === 1n
       ? '1 new storage slot'
-      : `up to ${fee.possibleNewSlots} new storage slots`;
+      : `${fee.source === 'quote' ? '' : 'up to '}${fee.possibleNewSlots} new storage slots`;
   return (
     `This transaction creates ${slots} on the L2, which the network charges through the priority fee. ` +
     `The page suggests ${formatGwei(fee.maxPriorityFeePerGas)} gwei to your wallet; keep the suggested fee, ` +

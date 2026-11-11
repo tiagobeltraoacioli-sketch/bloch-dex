@@ -68,13 +68,15 @@ describe('new-slot priority fee', () => {
     expect(fee.slotCostWei).toBe(DEFAULT_FRESH_SLOT_PRICE_WEI);
     // What the RPC checks: gasUsed x tip >= slots x price.
     expect(fee.gasUsed * fee.maxPriorityFeePerGas).toBeGreaterThanOrEqual(fee.slotCostWei);
+    // The node's quote is asked first; this node does not serve it, so the access list prices the call.
     expect(n.calls.map((c) => c.method)).toEqual([
+      'bloch_admissionQuote',
       'eth_createAccessList',
       'eth_getStorageAt',
       'eth_maxPriorityFeePerGas',
       'eth_getBlockByNumber',
     ]);
-    expect(n.calls[0].params).toEqual([
+    expect(n.calls[1].params).toEqual([
       { from: FROM, to: TOKEN, data: '0x095ea7b3', value: '0x0', gas: '0x186a0' },
       'latest',
     ]);
@@ -109,7 +111,10 @@ describe('new-slot priority fee', () => {
     expect(await priceNewSlots(repeat.rpc, CALL, ON)).toBeNull();
     const none = node({ keys: [] });
     expect(await priceNewSlots(none.rpc, CALL, ON)).toBeNull();
-    expect(none.n.calls.map((c) => c.method)).toEqual(['eth_createAccessList']);
+    expect(none.n.calls.map((c) => c.method)).toEqual([
+      'bloch_admissionQuote',
+      'eth_createAccessList',
+    ]);
     expect(newSlotFeeNote(null)).toBe('');
   });
 
