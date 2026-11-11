@@ -662,7 +662,13 @@ scenario('reply-lost-never-published-expires', 'R309-A1: a swap the wallet never
   await mineAndFinalize();
   await page.waitText('/with nonce 0 still unused: this swap did not execute and can no longer execute/', 40_000);
   await w.note(page, 'expired');
-  w.check('the hold is gone: Swap is offered again', !(await disabled(page, 'Swap')));
+  // The release refreshes the finalized view; the button comes back when that read is done.
+  let offered = false;
+  for (let i = 0; i < 60 && !offered; i++) {
+    offered = !(await disabled(page, 'Swap'));
+    if (!offered) await delay(500);
+  }
+  w.check('the hold is gone: Swap is offered again', offered);
   const f = await w.facts();
   w.check('no router call of this account was mined', f.routerCallsMined === 0, f.routerCallsMined);
   w.check('the account nonce is still 0', f.nonceLatest === 0, f.nonceLatest);
