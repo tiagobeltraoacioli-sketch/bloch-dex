@@ -233,29 +233,42 @@ applies the RPC's rule from a state trace), `first-approve-wallet-ignores-fees` 
 through with the page's fee), `fee-refusal-with-data`, `fee-refusal-data-lost`. Real wallet only: whether the wallet
 honours `maxPriorityFeePerGas` and `maxFeePerGas` from the site, what it shows, and what it passes on from a refusal.
 
-## Test 9: the same-nonce review when the wallet reply was lost
+## Test 9: a swap whose wallet reply was lost: no second request, the hold ends at the deadline
 
-This is the one flow where the page asks the wallet a second time. It is offered only while the page has no hash.
+Since round 15 (review R309-A1) the page never asks the wallet for a swap a second time: nothing it can read shows
+whether the first request is still open or signed in the wallet, and many wallets ignore a requested nonce. The
+same-nonce review exists for approvals and skims only (test 9b).
 
-1. Get a quote for `0.01` and click "Swap".
+1. Set "Deadline (minutes)" to `5`. Get a quote for `0.01` and click "Swap".
 2. Leave the wallet prompt open and reload the page.
 3. Click "Connect MetaMask". The page shows "Wallet submission outcome unknown: no transaction hash was returned."
-4. Reject the open prompt in the wallet.
-5. Open "Review the original request in your wallet" and compare the listed nonce with `cast nonce <account> --block latest`.
-6. Click "Review same nonce in wallet".
-7. In the wallet prompt, read the nonce. **If it is not the nonce listed on the page, click Reject and stop: record "wallet ignores the requested nonce".**
-8. Confirm in the wallet.
-9. Wait for finality.
+   and "The hold ends by itself once the swap deadline has passed in a finalized block."
+4. Confirm that there is **no** "Review the original request in your wallet" section and that "Swap" is disabled.
+5. Reject the open prompt in the wallet.
+6. Wait until a finalized L2 block is past the deadline (the page needs no action).
 
-Expected: after step 8: "Wallet returned 0x…. All known candidates remain tracked until one is canonically finalized."
-After finality: mined. If the wallet signed another nonce the page says "Your wallet signed nonce M instead of the
-reviewed nonce N (0x…). That is a second, separate transaction, not a replacement: cancel it in your wallet now, or
-the same call can execute twice. The hold remains."
+Expected after step 6: "The swap deadline passed in canonical finalized block N with nonce M still unused: this swap
+did not execute and can no longer execute. If your wallet still shows the request, reject it there; signed now it
+would only revert. Nothing was sent." and "Swap" is offered again.
 
-Router calls mined: 1. Harness: `reply-lost-review-honoured-nonce`, `reply-lost-review-wallet-ignores-nonce`
-(two router calls when the simulated wallet ignores the nonce and the user ignores the warning), `queued-reply-lost`.
-Real wallet only: step 7. **If the wallet ignores the requested nonce, the review button must be removed before
-opening** (one line: `review` in `frontend/src/mainnet/pendingswap.ts` returns `undefined`); report it.
+Variant: at step 5 confirm in the wallet instead. The swap is mined; paste its hash from the wallet activity into
+"Transaction hash from wallet activity" and click "Check transaction hash": mined, one router call.
+
+Router calls mined: 0 (1 in the variant). Harness: `reply-lost-never-published-expires`,
+`reply-lost-wallet-ignores-nonce-no-review`, `queued-reply-lost`.
+
+## Test 9b: the same-nonce review of an approval
+
+1. With an account that has no allowance, get a quote that needs an approval and click "Approve".
+2. Leave the wallet prompt open, reload the page, connect again, and reject the open prompt in the wallet.
+3. Open "Review the original request in your wallet" and compare the listed nonce with `cast nonce <account> --block latest`.
+4. Click "Review same nonce in wallet". In the wallet prompt, read the nonce and record whether it is the listed one.
+5. Confirm in the wallet and wait for finality.
+
+Expected: "Wallet returned 0x…. All known candidates remain tracked until one is canonically finalized.", then mined.
+If the wallet signed another nonce the page says so, at once or on a later poll ("Your wallet signed this request at
+another nonce than the reviewed nonce N … Cancel it in your wallet if it has not been included."). A second copy of
+an approval sets the same allowance again and costs only gas. Harness: `first-approve-wallet-ignores-fees`.
 
 ## Test 10: account, network and lock changes mid-flow
 
@@ -301,9 +314,10 @@ Router calls mined: 0. Harness: not covered.
 | 6 reject | | | (1) | |
 | 7 approve then swap | | | (1) | |
 | 8 first approval fee | | | (0 or 1) | |
-| 9 same-nonce review | | | (1) | |
+| 9 lost reply: no second request, expiry | | | (0; variant 1) | |
+| 9b same-nonce review of an approval | | | (0) | |
 | 10 account, network, lock | | | (1) | |
 | 11 WalletConnect | | | (0) | |
 
-Do not open the page while any of tests 1 to 7, 9 or 10 fails, or while test 9 step 7 shows that the wallet ignores
-the requested nonce and the review button is still present.
+Do not open the page while any of tests 1 to 7, 9 or 10 fails. Test 9b only records how the wallet treats a
+requested nonce; it does not block the opening.
