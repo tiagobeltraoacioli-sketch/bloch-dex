@@ -19,6 +19,10 @@ const { privateKeyToAccount } = require("viem/accounts");
 const account = privateKeyToAccount("0x" + "07".repeat(32)); // Public test fixture, never a funded real account.
 const CHAIN_ID = 700771;
 const DOMAIN = "0x" + "d3".repeat(32);
+// The Pair creation code hash every deployment document pins (docs/AUDIT-PACKAGE-DEX.md section 1).
+const PAIR_INIT_CODE_HASH = "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683";
+// A protocol fee recipient that is not the sender, so fee shares are told apart from the sender's (review R309-I1).
+const FEE_TO = "0x00000000000000000000000000000000000fee70";
 const MAX_FEE = 2_000_000_000n;
 const TIP = 100_000_000n;
 const args = process.argv.slice(2);
@@ -156,12 +160,16 @@ try {
   const factoryA = artifact("UniswapV2Factory", "UniswapV2Factory");
   const routerA = artifact("BDexRouter", "BDexRouter");
   const pairA = artifact("UniswapV2Pair", "UniswapV2Pair");
+  // The rehearsal runs the build the mainnet package pins, not merely some build.
+  assert.equal(keccak256(pairA.bytecode.object), PAIR_INIT_CODE_HASH, "the compiled Pair is not the pinned build");
   await start(true);
   const token = await deploy("TestToken", tokenA);
   const wrapped = await deploy("WBLCH", wrappedA);
-  const factory = await deploy("Factory", factoryA, [zeroAddress, account.address, [wrapped, token], [10n ** 17n, 1000n * 10n ** 18n]]);
+  // Protocol fee ON, as on mainnet (the recipient there is the Bloch Inc Safe).
+  const factory = await deploy("Factory", factoryA, [FEE_TO, account.address, [wrapped, token], [10n ** 17n, 1000n * 10n ** 18n]]);
   const router = await deploy("Router", routerA, [factory, wrapped]);
-  assert.equal(await read(factory, factoryA, "feeTo"), zeroAddress);
+  assert.equal((await read(factory, factoryA, "feeTo")).toLowerCase(), FEE_TO);
+  assert.equal(await read(factory, factoryA, "INIT_CODE_PAIR_HASH"), PAIR_INIT_CODE_HASH, "the factory derives pairs from another Pair build");
   await invoke("mint synthetic test token", token, tokenA, "mint", [account.address, 1000n * 10n ** 18n]);
   await invoke("approve router", token, tokenA, "approve", [router, 1000n * 10n ** 18n]);
   const latest = await rpc("eth_getBlockByNumber", ["latest", false]);
@@ -183,6 +191,11 @@ try {
     [1n, [wrapped, token], account.address, deadline, BigInt(anchor.number), "0x" + "ee".repeat(32)], 10n ** 15n, "0x0");
   const afterRevert = await read(pair, pairA, "getReserves");
   assert.deepEqual(afterRevert, afterSwap, "reverted swap leaves reserves unchanged");
+  // Reserve cap: the wrapped side is capped at 0.1; a swap that would lift its reserve above the cap reverts.
+  await invoke("swap above the wrapped reserve cap reverts", router, routerA, "swapExactBLCHForTokensAnchored",
+    [1n, [wrapped, token], account.address, deadline, BigInt(anchor.number), anchor.hash], 2n * 10n ** 17n, "0x0");
+  assert.deepEqual(await read(pair, pairA, "getReserves"), afterSwap, "a swap refused by the cap leaves reserves unchanged");
+  assert.equal(await read(pair, pairA, "balanceOf", [FEE_TO]), 0n, "no fee share exists before a liquidity event");
   const donated = 10n ** 18n;
   const recipientBeforeDonation = await read(token, tokenA, "balanceOf", [account.address]);
   const pairBeforeDonation = await read(token, tokenA, "balanceOf", [pair]);
@@ -210,6 +223,12 @@ try {
     "burned wrapped supply reaches the recipient as native currency after gas");
   assert.ok(await read(token, tokenA, "balanceOf", [account.address]) > tokensBefore);
   assert.equal(await read(pair, pairA, "balanceOf", [account.address]), liquidity - liquidity / 2n);
+  // Revenue path: the swap's fee grew k, and this liquidity event minted the protocol's share to feeTo.
+  const feeShares = await read(pair, pairA, "balanceOf", [FEE_TO]);
+  assert.ok(feeShares > 0n, "the protocol fee share was minted to feeTo on the liquidity event after a swap");
+  const supplyAfter = await read(pair, pairA, "totalSupply");
+  assert.ok(feeShares * 1000n < supplyAfter, "the fee share is a small fraction of the supply");
+  evidence.protocolFee = { feeTo: FEE_TO, shares: feeShares.toString(), totalSupply: supplyAfter.toString() };
   const remaining = await read(pair, pairA, "getReserves");
   assert.ok(remaining[0] > 0n && remaining[1] > 0n);
   assert.ok(remaining[0] < afterSwap[0] && remaining[1] < afterSwap[1]);
@@ -217,7 +236,8 @@ try {
   for (const address of [token, wrapped, factory, router, pair]) codeHashes[address] = keccak256(await rpc("eth_getCode", [address, "latest"]));
   evidence.contracts = { token, wrapped, factory, router, pair, codeHashes };
   evidence.assertions.push("deployments", "approve", "native-wrapping", "anchored-swap", "wrong-anchor-reverts",
-    "constant-product", "skim", "skim-exact-excess-returned", "liquidity-removal", "native-unwrapping");
+    "constant-product", "skim", "skim-exact-excess-returned", "liquidity-removal", "native-unwrapping",
+    "pinned-pair-init-code-hash", "reserve-cap-refusal", "protocol-fee-shares-minted-to-feeTo");
   await stop();
   await start(false);
   assert.deepEqual(await read(pair, pairA, "getReserves"), remaining, "reopen preserves reserves");

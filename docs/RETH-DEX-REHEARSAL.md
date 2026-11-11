@@ -4,7 +4,9 @@
 contracts through the real Bloch Reth HTTP handlers and canonical database.
 It starts its own `bloch-evm-dev --synthetic-dev` process on a fresh loopback
 port and funds a public test key with synthetic native currency. It accepts
-neither an existing RPC endpoint nor a private key. Protocol fees stay off.
+neither an existing RPC endpoint nor a private key. The protocol fee is on (a
+fixed test recipient), as on mainnet, and the compiled Pair must be the pinned
+build (creation hash `0x16bd5cad…6683`), which the factory must report too.
 
 Prerequisites are Node 24, the frontend's locked dependencies, `forge build`
 with this repository's pinned compiler settings, and a locally built
@@ -22,7 +24,11 @@ The output directory must not exist. The driver retains `result.json`,
 retries a transaction whose reply was lost. On failure, use a new output
 directory after reviewing the recorded hashes.
 
+It uses a test token, not the bridge token, and does not reach the k ceiling.
+
 The rehearsal checks deployment of TestToken, WBLCH, Factory and Router;
+a swap refused by the wrapped reserve cap without reserve changes; the protocol
+fee share minted to the fee recipient on the liquidity event after a swap;
 approval and liquidity provision with native wrapping; a swap bound to the
 real preceding block hash; rejection of an incorrect anchor without reserve
 changes; the constant-product lower bound; donation and skim with exact token
