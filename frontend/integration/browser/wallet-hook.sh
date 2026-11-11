@@ -14,7 +14,7 @@ GATEWAY=$((PORT + 10)); STATIC=$((PORT + 11)); DEBUG=$((PORT + 12))
 
 log "browser wallet: finality, then the frontend record and network files of this chain"
 $FINALIZE_CMD > /dev/null
-node scripts/staging/frontend-record.mjs --config "$EV/dex.config.json" --plan "$EV/dex.plan.json" --infra-plan "$EV/infra.plan.json" --gate-report "$EV/gate-report.json" --write "$EV/wallet.frontend.record.json"
+node scripts/staging/frontend-record.mjs ${RECORD_FLAGS[@]+"${RECORD_FLAGS[@]}"} --config "$EV/dex.config.json" --plan "$EV/dex.plan.json" --infra-plan "$EV/infra.plan.json" --gate-report "$EV/gate-report.json" --write "$EV/wallet.frontend.record.json"
 node -e '
 const n = JSON.parse(require("fs").readFileSync("deployments/mainnet/frontend.network.json", "utf8"));
 n.genesisHash = process.argv[1]; n.rpc = { url: process.argv[2], status: "live" };
