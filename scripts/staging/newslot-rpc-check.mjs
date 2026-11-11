@@ -10,6 +10,8 @@
 //        --funder-key-file <file holding one 0x private key of a throwaway account with BLCH and bUSDC>
 //        --out <result.json> [--price-wei 200000000000000] [--margin-bps 1000] [--quote-method <name>]
 //        [--finalize "<command that marks the head finalized>"]
+// When the RPC serves bloch_admissionQuote the page's module uses it (source "quote" in the result); --quote-method
+// only adds the raw answer of that method to each case.
 import { execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -49,6 +51,11 @@ const big = (v) => (typeof v === "bigint" ? v.toString() : v);
 const result = { schema: "postern.dex.newslot-rpc-check.v1", rpc: args.rpc, chainId, policy: { ...policy, freshSlotPriceWei: policy.freshSlotPriceWei.toString() }, addresses: A, cases: [], accessListProbes: [] };
 const save = () => writeFileSync(args.out, `${JSON.stringify(result, (_, v) => big(v), 2)}\n`);
 
+// Does this RPC serve the node's own quote (bloch_admissionQuote)? Then the page uses it, and falls back otherwise.
+const quoteProbe = await raw("bloch_admissionQuote", [{ from: `0x${"11".repeat(20)}`, to: A.token, data: "0x", value: "0x0", gas: "0x186a0" }]);
+const quoteServed = quoteProbe.result?.kind === "sequencer-admission-quote" || (quoteProbe.error && quoteProbe.error.code !== -32601 && !/no sequencer admission policy|not found/i.test(quoteProbe.error.message ?? ""));
+result.quoteMethod = { served: Boolean(quoteServed), probe: quoteProbe.result ?? quoteProbe.error };
+console.log(`bloch_admissionQuote: ${quoteServed ? "served" : "not served (the page prices with the access list)"}`);
 const funder = privateKeyToAccount(readFileSync(args["funder-key-file"], "utf8").trim());
 const fresh = () => privateKeyToAccount(`0x${randomBytes(32).toString("hex")}`);
 const nonceOf = async (a, tag = "latest") => BigInt(await rpc("eth_getTransactionCount", [a, tag]));
@@ -125,7 +132,7 @@ async function runCase(name, account, call) {
     if (fee) entry.pageGasLowerBoundHolds = fee.gasUsed <= BigInt(receipt.gasUsed);
   }
   save();
-  console.log(`${name}: page slots ${fee?.possibleNewSlots ?? 0n}, tip ${fee?.maxPriorityFeePerGas ?? "wallet"}; wallet-default ${entry.walletDefault.admitted ? "admitted" : `refused (${entry.walletDefault.kind ?? entry.walletDefault.message})`}${entry.pageFees ? `; page fees ${entry.pageFees.admitted ? "admitted" : "REFUSED"}; node tip ${entry.nodeRequiredTip ?? "?"}, ratio ${entry.pageOverNodeRatio ?? "?"}` : ""}`);
+  console.log(`${name}: page (${fee?.source ?? (quoteServed ? "quote" : "access-list")}) slots ${fee?.possibleNewSlots ?? 0n}, tip ${fee?.maxPriorityFeePerGas ?? "wallet"}; wallet-default ${entry.walletDefault.admitted ? "admitted" : `refused (${entry.walletDefault.kind ?? entry.walletDefault.message})`}${entry.pageFees ? `; page fees ${entry.pageFees.admitted ? "admitted" : "REFUSED"}; node tip ${entry.nodeRequiredTip ?? "?"}, ratio ${entry.pageOverNodeRatio ?? "?"}` : ""}`);
   return entry;
 }
 
@@ -173,7 +180,7 @@ await runCase("skim of a donation to the caller", native, { from: native.address
 const enforced = result.cases.some((c) => c.walletDefault.kind === "sequencer-fee-underpriced");
 result.admissionRuleEnforced = enforced;
 const bad = result.cases.filter((c) => (c.pageFees && !c.pageFees.admitted) || c.oneWeiBelow?.admitted || c.pageGasLowerBoundHolds === false || (c.walletDefault.admitted === false && !c.pageFees));
-result.summary = { cases: result.cases.length, admissionRuleEnforced: enforced, pageFeesRefused: bad.length, result: bad.length === 0 ? "PASS" : "FAIL" };
+result.summary = { cases: result.cases.length, admissionRuleEnforced: enforced, quoteServed: Boolean(quoteServed), sources: result.cases.map((c) => c.page.source ?? "none"), pageFeesRefused: bad.length, result: bad.length === 0 ? "PASS" : "FAIL" };
 save();
 console.log(`new-slot RPC check: ${result.summary.result}; admission rule ${enforced ? "enforced" : "NOT enforced by this RPC"}; ${args.out}`);
 void keccak256;
