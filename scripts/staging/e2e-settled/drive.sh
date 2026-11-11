@@ -7,6 +7,9 @@
 #
 #   drive.sh keys|bridge-eth|fund|wait-funded|deploy|gate|bridge-credit|bridge-deposit|seed|swaps|safe-fee|cap-skim|ui-prep|budget|...
 # State lives in $F/flow; each step records its result in $F/flow/evidence.
+# Needs: $F/env.sh (forge, cast, anvil, node on PATH), this repository WITH frontend/node_modules (the kit's tools
+# load viem from there: `npm ci --ignore-scripts` in frontend/, or a link to an installed copy), a clean bridge
+# checkout (BRIDGE_REPO) and Safe 1.4.1 artifacts under $F/safe.
 #
 # bUSDC is the REAL bridge token (scripts/staging/bridge-v3-real.sh): BridgedStablecoinV3 from the bridge's own
 # deploy_pontes.py under the mainnet policy, over a ProvenanceSourceVault on a loopback "Ethereum" anvil. Set
@@ -34,8 +37,13 @@ WORK=$F/${FLOW:-flow}; EV=$WORK/evidence; mkdir -p "$EV"
 # The settled stack's RPC and gateway. E2E_RPC / E2E_GW point the same steps at another loopback L2 (the proofless
 # measuring run of docs/MAINNET-700770-PACKAGE.md: scripts/staging/private-l2.sh, no L1, no proof); there E2E_FINALIZE
 # is the command that marks the head finalized (`private-l2.sh finalize WORK PORT`), run while waiting for finality.
-RPC=${E2E_RPC:-http://127.0.0.1:25020}
-GW=${E2E_GW:-http://127.0.0.1:25073}
+# Ports: E2E_PORT_BASE (default 25000, the range of stack.sh) moves every loopback port this driver names itself:
+# +20 and +21 the two settled RPCs, +57 and +58 the committed and live builds, +73 the gateway. E2E_RPC and E2E_GW
+# still override the two URLs alone. (stack.sh and the L2 kit's pair.sh carry their own ports.)
+E2E_PORT_BASE=${E2E_PORT_BASE:-25000}
+case "$E2E_PORT_BASE" in ''|*[!0-9]*) echo "E2E_PORT_BASE must be a port number" >&2; exit 2 ;; esac
+RPC=${E2E_RPC:-http://127.0.0.1:$((E2E_PORT_BASE + 20))}
+GW=${E2E_GW:-http://127.0.0.1:$((E2E_PORT_BASE + 73))}
 case "$RPC$GW" in http://127.0.0.1:*http://127.0.0.1:*) ;; *) echo "E2E_RPC and E2E_GW must be loopback (http://127.0.0.1:<port>)" >&2; exit 2 ;; esac
 STACK_KIND=$([ -n "${E2E_FINALIZE:-}" ] && echo "private L2, no proofs, synthetic finality" || echo "private stack, real settlement")
 REVISION=${REVISION:-$(node -e 'console.log(require(process.argv[1]).source.revision)' "$ROOT/deployments/mainnet/dex-mainnet.config.json")}
@@ -585,7 +593,7 @@ out.bad=out.bad.slice(0,40);console.log(JSON.stringify(out,null,1))' "$F/gw-poll
 ui)
   # node ui.mjs <scene> <device> [args] with the browser and this flow's keys.
   export BROWSER_EXE=$F/tools/browser/browsers/chromium_headless_shell-1194/chrome-linux/headless_shell PLAYWRIGHT_DIR=$F/tools/browser
-  export OUT=$EV/ui GW LIVE=http://127.0.0.1:25058 COMMITTED=http://127.0.0.1:25057 USER_ADDR USER_KEY
+  export OUT=$EV/ui GW LIVE=http://127.0.0.1:$((E2E_PORT_BASE + 58)) COMMITTED=http://127.0.0.1:$((E2E_PORT_BASE + 57)) USER_ADDR USER_KEY
   export LD_LIBRARY_PATH=$(find "$F/tools/browser/libs" -type f -name '*.so*' -printf '%h\n' | sort -u | paste -sd:)
   exec timeout 21600 node scripts/staging/e2e-settled/ui.mjs "$@"
   ;;
@@ -762,13 +770,13 @@ console.log(JSON.stringify(n, null, 2));' "$GENESIS" "$GW" > "$EV/frontend.netwo
   POSTERN_MAINNET_NETWORK=$EV/frontend.network.json POSTERN_MAINNET_RECORD=$EV/frontend.record.json npx vite build --outDir "$WORK/dist-live" --emptyOutDir > "$WORK/build-live.log" 2>&1
   sed -i "s#https://l2rpc.blochl1.com#$GW#; s#; *upgrade-insecure-requests##" "$WORK/dist-live/_headers"
   cd "$ROOT"
-  for p in committed:25057 live:25058; do
+  for p in committed:$((E2E_PORT_BASE + 57)) live:$((E2E_PORT_BASE + 58)); do
     n=${p%%:*}; port=${p##*:}
     [ -f "$WORK/serve-$n.pid" ] && kill "$(cat "$WORK/serve-$n.pid")" 2>/dev/null || true
     setsid nohup node scripts/staging/render/serve.mjs "$WORK/dist-$n" "$port" > "$WORK/serve-$n.log" 2>&1 < /dev/null &
     echo $! > "$WORK/serve-$n.pid"
   done
-  log "builds served on 25057 (committed) and 25058 (live)"
+  log "builds served on $((E2E_PORT_BASE + 57)) (committed) and $((E2E_PORT_BASE + 58)) (live)"
   ;;
 gw)
   # Production gateway pair; backend B is a replica rebuilt from L1 data only.
@@ -787,7 +795,7 @@ d.up('rpcb')
 PY
       ;;
     start|stop)
-      HOME=$HOME_REAL WORK=$F/gateway NJS_SO=$F/ngx/root/usr/lib/nginx/modules/ngx_http_js_module.so A_RPC=127.0.0.1:25020 B_RPC=127.0.0.1:25021 EXTRA="--cors-any" bash "$F/src/public-rpc/tests/pair.sh" "$1"
+      HOME=$HOME_REAL WORK=$F/gateway NJS_SO=$F/ngx/root/usr/lib/nginx/modules/ngx_http_js_module.so A_RPC=127.0.0.1:$((E2E_PORT_BASE + 20)) B_RPC=127.0.0.1:$((E2E_PORT_BASE + 21)) EXTRA="--cors-any" bash "$F/src/public-rpc/tests/pair.sh" "$1"
       ;;
   esac
   ;;

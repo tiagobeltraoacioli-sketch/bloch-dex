@@ -6,6 +6,11 @@
 # It reuses the L2 drill harness (bloch-l2-evm deployment/mainnet/rehearsal),
 # copied to $F/src/rehearsal; `patch` moves it onto this port range.
 #
+# The harness (deployment/mainnet/rehearsal/drills/drillctl.py) lives on the L2 drill branch
+# (codex/l2-drills-20261030), not on the L2 release line: on another stack run drive.sh alone, with F, E2E_RPC,
+# E2E_GW (or E2E_PORT_BASE) and E2E_FINALIZE unset, over whatever serves a settled RPC and a funding step (agent
+# 315, round 15, drove it over the bridge E2E stack with a small shim for `fund` and the gateway).
+#
 #   stack.sh patch|net|up|down UNIT...|cut|heal|stop|check [--deep]
 set -euo pipefail
 F=${F:-$HOME/l2dexbridge-20261030/dex-e2e-r3}
