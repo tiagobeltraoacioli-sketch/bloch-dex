@@ -874,15 +874,19 @@ if [ "$IS_V3" = 1 ]; then
   }
 
   log "10 keeper clock guard: a chain clock far from this host's clock stops the keeper; the scenes below then say so explicitly"
-  SNAP_CLOCK=$(snapshot)
-  cast rpc evm_increaseTime 172800 --rpc-url "$RPC" > /dev/null; cast rpc evm_mine --rpc-url "$RPC" > /dev/null
-  expect 1 keeper-clock-guard keeper_run --state "$WORK/keeper/clock.json" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
-  grep -q clock-or-head-stale "$EV/keeper-clock-guard.out" || die "the keeper acted with the chain clock two days from the host clock"
-  [ ! -e "$WORK/keeper/clock.json" ] || [ "$(node -e 'console.log(require(process.argv[1]).txs.length)' "$WORK/keeper/clock.json")" = 0 ] || die "the keeper recorded a transaction under a stale clock"
-  restore "$SNAP_CLOCK"
-  pass "keeper clock guard: no action two days from the host clock"
-  # From here the rehearsal's own time travel is declared to the keeper; the default is not changed.
-  REHEARSAL_CLOCK=(--max-clock-skew-s 100000000)
+  # The scene needs a snapshot and a clock jump: anvil only. The private L2 keeps its clock near this host's
+  # (its mint delay is waited out in real time), so there the keeper runs with its default guard throughout.
+  if [ "$MODE" = anvil ]; then
+    SNAP_CLOCK=$(snapshot)
+    cast rpc evm_increaseTime 172800 --rpc-url "$RPC" > /dev/null; cast rpc evm_mine --rpc-url "$RPC" > /dev/null
+    expect 1 keeper-clock-guard keeper_run --state "$WORK/keeper/clock.json" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
+    grep -q clock-or-head-stale "$EV/keeper-clock-guard.out" || die "the keeper acted with the chain clock two days from the host clock"
+    [ ! -e "$WORK/keeper/clock.json" ] || [ "$(node -e 'console.log(require(process.argv[1]).txs.length)' "$WORK/keeper/clock.json")" = 0 ] || die "the keeper recorded a transaction under a stale clock"
+    restore "$SNAP_CLOCK"
+    pass "keeper clock guard: no action two days from the host clock"
+    # From here the rehearsal's own time travel is declared to the keeper; the default is not changed.
+    REHEARSAL_CLOCK=(--max-clock-skew-s 100000000)
+  fi
   log "10a V3 held mint: a mint queued to the pair adds nothing until it credits; then it is excess the keeper sends to the Safe"
   scene_start
   R_USD=$(view "$USD" "$BAL" "$PAIR")
