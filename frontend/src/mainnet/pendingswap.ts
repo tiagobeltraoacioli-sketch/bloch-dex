@@ -268,6 +268,25 @@ export async function pollPendingSwap(
   return { kind: unavailable ? 'unreachable' : 'waiting' };
 }
 
+/** After a same-nonce review: which known candidates the wallet signed at another nonce than the saved one.
+ * Read on every poll, not once: the RPC may show a transaction body only some time after the wallet returned
+ * its hash. Never throws; an RPC that cannot answer adds nothing. */
+export async function otherNonceWarning(rpc: Rpc, swap: PendingSwap): Promise<string> {
+  if (!swap.intent || swap.walletAttempt?.mode !== 'review') return '';
+  const found: string[] = [];
+  for (const hash of submissionHashes(swap)) {
+    const nonce = savedCallNonce(
+      await rpc('eth_getTransactionByHash', [hash]).catch(() => null),
+      swap.intent,
+    );
+    if (nonce !== null && nonce !== BigInt(swap.intent.nonce))
+      found.push(`${hash} at nonce ${nonce}`);
+  }
+  return found.length
+    ? ` Your wallet signed this request at another nonce than the reviewed nonce ${swap.intent.nonce} (${found.join(', ')}): that is a second, separate transaction, not a replacement. Cancel it in your wallet if it has not been included.`
+    : '';
+}
+
 export const REVIEW_NOT_FOR_SWAPS =
   'A swap is never requested from the wallet a second time: an earlier request may still be open or signed there, and two copies inside the deadline would both execute. This hold ends by itself once the swap deadline has passed in a finalized block. No wallet request was made.';
 
@@ -523,7 +542,10 @@ export function usePendingSwap({
         }
         return;
       }
-      setTracked(describeOpen(swap, poll.kind, latest.current.now(), saved));
+      const warning = await otherNonceWarning(rpc, swap);
+      if (!live) return;
+      const open = describeOpen(swap, poll.kind, latest.current.now(), saved);
+      setTracked({ ...open, detail: `${open.detail}${warning}` });
       timer = setTimeout(() => void tick(), intervalMs);
     };
     void tick();

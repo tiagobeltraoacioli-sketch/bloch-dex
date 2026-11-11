@@ -364,6 +364,31 @@ describe('explicit same-nonce wallet review', () => {
     expect(stored()).toMatchObject({ hash: TWO, candidateHashes: [TWO] });
     expect(hook.result.current.open).toBe(true);
   });
+  it('warns on a later poll when the RPC shows the other nonce only after the wallet returned', async () => {
+    const f = fixture();
+    // The wallet signs at nonce 5, but the RPC does not serve the body yet: the read right after the wallet finds nothing.
+    f.provider.request = vi.fn(async ({ method }) => {
+      if (method === 'eth_chainId') return '0xab162';
+      return TWO;
+    });
+    const hook = f.mount();
+    await act(async () => {
+      await hook.result.current.reviewInWallet();
+    });
+    expect(hook.result.current.tracked?.detail).not.toMatch(/another nonce/);
+    f.addBody(TWO);
+    f.bodies.set(TWO, { ...f.bodies.get(TWO)!, nonce: '0x5', blockNumber: null, blockHash: null });
+    await waitFor(() =>
+      expect(hook.result.current.tracked?.detail).toMatch(
+        /signed this request at another nonce than the reviewed nonce 4 \(0x2{64} at nonce 5\).*Cancel it in your wallet/,
+      ),
+    );
+    // The same body at the reviewed nonce is not a warning.
+    f.bodies.set(TWO, { ...f.bodies.get(TWO)!, nonce: '0x4' });
+    await waitFor(() => expect(hook.result.current.tracked?.detail).not.toMatch(/another nonce/));
+    expect(hook.result.current.open).toBe(true);
+  });
+
   it('persists a new attempt before the wallet, retains prior candidates and sends no automatic fees', async () => {
     const f = fixture();
     const original = f.provider.request;
