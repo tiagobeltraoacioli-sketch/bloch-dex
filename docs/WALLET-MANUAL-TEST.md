@@ -260,6 +260,14 @@ Variant: at step 5 confirm in the wallet instead. The swap is mined; paste its h
 Router calls mined: 0 (1 in the variant). Harness: `reply-lost-never-published-expires`,
 `reply-lost-wallet-ignores-nonce-no-review`, `queued-reply-lost`.
 
+Known limit, not a test (review R309-3P-5): the hold lives in this browser's storage only. Do not clear site data,
+and do not use another browser or device for the same account, while a swap request is open in the wallet: the page
+would accept a second swap, and the old request, confirmed later inside its deadline, would execute too.
+
+On a quiet L2 (no block for more than 30 minutes) the page says "The L2 has made no block for N minutes: it is idle …
+Your swap will open the next block" and sends the swap; a hold then ends at the first finalized block after the
+deadline, which on a quiet chain can be up to 24 hours away (the heartbeat) unless anyone transacts.
+
 ## Test 9b: the same-nonce review of an approval
 
 1. With an account that has no allowance, get a quote that needs an approval and click "Approve".

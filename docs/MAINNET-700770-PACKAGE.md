@@ -460,6 +460,13 @@ limit … pass a smaller gas`) and the page's own figure stands alone. The launc
 gateway of the L2 candidate line routes it (bloch-l2-evm `3d4cfd6`, agents/R15-CROSS-AREA.md 2026-11-11 02:05 UTC:
 "the candidate gateway routes it to the sequencer first and counts it as a simulation"; not exercised here).
 
+Two values of `deployments/mainnet/frontend.network.json` are pinned to the L2 settler's policy and must move
+**before** the settler's, with a page release (review R309-3P-1, 3P-4): `newSlotFee.freshSlotPriceWei` (a settler
+price above twice the file's makes the page refuse first approvals and first swaps: it sends nothing when the node
+asks more than twice its own figure) and `l2Idle.heartbeatSeconds` (the settler's idle heartbeat, 86,400 s: a swap
+is refused only when the device clock is ahead of the latest block by more than this plus 2 h, so a file value below
+the settler's would close the page on a quiet chain).
+
 Not shown by this check: a browser and a wallet (the fees are signed by the script, as a wallet that honours the
 page's suggestion would), the public gateway, inclusion under load, and real finality.
 

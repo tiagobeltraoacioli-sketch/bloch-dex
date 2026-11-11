@@ -43,7 +43,7 @@ import {
   type MainnetNetwork,
   type MainnetState,
   type PlannedCap,
-  swapClockProblem,
+  swapClock,
 } from './mainnet/config';
 import {
   atKCeiling,
@@ -205,6 +205,7 @@ export default function MainnetLive({
     enabled: live && !!snapshot,
     now,
     newSlotFee: network.newSlotFee,
+    idleHeartbeatSeconds: network.idleHeartbeatSeconds,
     onMined: () => setGeneration((g) => g + 1),
     explain: (swap, receipt) =>
       state?.status === 'live' && swap.retry
@@ -1083,9 +1084,11 @@ function SwapPanel({
       } | null;
       if (!head || typeof head.timestamp !== 'string' || !/^0x[0-9a-f]+$/i.test(head.timestamp))
         return setQuoteNote('The latest L2 block could not be read, so nothing was sent.');
-      const clock = swapClockProblem(now(), BigInt(head.timestamp));
-      if (clock) return setQuoteNote(clock);
-      const deadline = deadlineFrom(now(), deadlineMinutes);
+      const clock = swapClock(now(), BigInt(head.timestamp), network.idleHeartbeatSeconds);
+      if (!clock.ok) return setQuoteNote(clock.problem);
+      // An idle L2 does not close the page: the user is told, and this swap opens the next block.
+      if (clock.notice) setQuoteNote(clock.notice);
+      const deadline = deadlineFrom(Number(clock.base) * 1000, deadlineMinutes);
       const retry: SwapRetryInfo = {
         tokenIn: input!.token.address,
         tokenOut: output!.token.address,

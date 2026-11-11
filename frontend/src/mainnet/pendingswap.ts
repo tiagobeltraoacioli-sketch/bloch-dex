@@ -337,18 +337,27 @@ export const REVIEW_WITH_HASH =
 const DO_NOT_RESEND =
   'Do not resend with a new nonce; Swap stays disabled until the outcome is known.';
 
-function describeOpen(
+/** What ends the wait of a swap hold on a quiet chain, said to the user who is waiting (review R309-3P-3). */
+export function idleWaitNote(swap: PendingSwap, heartbeatSeconds: number): string {
+  if (swap.intent?.kind !== 'swap' || swap.deadline <= 0n) return '';
+  const hours = Math.max(1, Math.round(heartbeatSeconds / 3_600));
+  return ` The L2 makes a block only when it has work: on a quiet chain the finalized block that ends this wait can be up to ${hours} hours away (the L2's heartbeat, then its proof), and comes sooner when anyone transacts.`;
+}
+
+function describeHold(
   swap: PendingSwap,
   poll: 'waiting' | 'unreachable',
   nowMs: number,
   saved: boolean,
+  heartbeatSeconds: number,
 ): TrackedSwap {
   const late = nowMs - swap.sentAtMs >= RECEIPT_TIMEOUT_MS;
+  const wait = idleWaitNote(swap, heartbeatSeconds);
   if (!swap.hash)
     return {
       ...swap,
       state: 'unknown',
-      detail: `Wallet submission outcome unknown: no transaction hash was returned. ${DO_NOT_RESEND} Check your wallet activity and explorer; a timeout or fee error does not prove that nothing was sent.${swap.intent?.kind === 'swap' && swap.deadline > 0n ? ' If your wallet still shows this request and you do not want it, reject it there. The hold ends by itself once the swap deadline has passed in a finalized block.' : ''}${swap.note ? ` ${swap.note}` : ''}`,
+      detail: `Wallet submission outcome unknown: no transaction hash was returned. ${DO_NOT_RESEND} Check your wallet activity and explorer; a timeout or fee error does not prove that nothing was sent.${swap.intent?.kind === 'swap' && swap.deadline > 0n ? ' If your wallet still shows this request and you do not want it, reject it there. The hold ends by itself once the swap deadline has passed in a finalized block.' : ''}${wait}${swap.note ? ` ${swap.note}` : ''}`,
     };
   const what =
     poll === 'unreachable'
@@ -362,7 +371,7 @@ function describeOpen(
   return {
     ...swap,
     state: late || poll === 'unreachable' ? 'unknown' : 'pending',
-    detail: `${what} ${DO_NOT_RESEND}${lost}`,
+    detail: `${what} ${DO_NOT_RESEND}${lost}${swap.hash && wait ? ` This hold ends with the swap's finalized receipt, or once its deadline has passed in a finalized block.${wait}` : ''}`,
   };
 }
 
@@ -380,6 +389,7 @@ export function usePendingSwap({
   onMined,
   explain,
   newSlotFee = NEW_SLOT_FEE_OFF,
+  idleHeartbeatSeconds = 86_400,
   intervalMs = POLL_INTERVAL_MS,
 }: {
   rpc: Rpc;
@@ -394,9 +404,18 @@ export function usePendingSwap({
   explain?: (swap: PendingSwap, receipt: Receipt) => Promise<RevertCause>;
   /** The network file's new-slot fee policy: a same-nonce review is priced like a first request. */
   newSlotFee?: NewSlotFeePolicy;
+  /** The L2's idle heartbeat (network file): how long a quiet chain can go without a block. */
+  idleHeartbeatSeconds?: number;
   intervalMs?: number;
 }) {
   const key = account ? pendingSwapKey(chainId, account) : null;
+  const heartbeat = useRef(idleHeartbeatSeconds);
+  heartbeat.current = idleHeartbeatSeconds;
+  const describeOpen = useCallback(
+    (swap: PendingSwap, poll: 'waiting' | 'unreachable', nowMs: number, saved: boolean) =>
+      describeHold(swap, poll, nowMs, saved, heartbeat.current),
+    [],
+  );
   const context = useMemo(
     () => (deployment ? submissionContext(deployment) : undefined),
     [deployment],

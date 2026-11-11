@@ -45,21 +45,82 @@ export const MIN_DEADLINE_MINUTES = 10;
 export const FINALIZED_AGE_WARN_SECONDS = 150 * 60;
 /** The device clock may be this far behind the latest L2 block before a swap is refused. */
 export const CLOCK_BEHIND_TOLERANCE_SECONDS = 120;
+/** The settler's idle policy: with nothing to do it still makes a block this often (`skip_idle_blocks` heartbeat). */
+export const DEFAULT_IDLE_HEARTBEAT_SECONDS = 86_400;
+/** Building, proving and settling the heartbeat block, on top of the heartbeat itself. */
+export const IDLE_MARGIN_SECONDS = 2 * 3_600;
+/** Past this age of the latest block the page tells the user that the L2 is idle (its minimum block interval). */
+export const IDLE_NOTICE_SECONDS = 30 * 60;
+
+/** Read the optional `l2Idle` block of the network file: the L2's heartbeat, pinned to the settler's. */
+export function parseIdleHeartbeat(value: unknown): number {
+  if (value === undefined || value === null) return DEFAULT_IDLE_HEARTBEAT_SECONDS;
+  const v = value as AnyRecord;
+  refuse(
+    typeof v === 'object' &&
+      !Array.isArray(v) &&
+      Object.keys(v).every((key) => key === 'heartbeatSeconds') &&
+      Number.isSafeInteger(v.heartbeatSeconds) &&
+      v.heartbeatSeconds >= IDLE_NOTICE_SECONDS &&
+      v.heartbeatSeconds <= 7 * 86_400,
+    'l2Idle.heartbeatSeconds must be a whole number of seconds from 1800 to 604800',
+  );
+  return v.heartbeatSeconds;
+}
+
+export type SwapClock =
+  | { ok: false; problem: string }
+  /** `base`: the time a swap deadline counts from. `idleSeconds`: age of the latest block. */
+  | { ok: true; base: bigint; idleSeconds: bigint; notice: string | null };
 
 /**
- * A swap's deadline is built from the device clock, and since round 15 a swap hold lasts until
- * that deadline is final. A device clock far from the chain's would make the deadline (and the
- * hold) arbitrarily long, or already past (review R309-2P-5). The L2 only makes a block when it
- * has transactions, so its latest timestamp may honestly lag the clock; the page already treats
- * a chain older than FINALIZED_AGE_WARN_SECONDS as stale. Returns the reason to refuse, or null.
+ * The time a swap's deadline is counted from, or the reason no swap can be built (reviews
+ * R309-2P-5 and R309-3P-1). The deadline bounds how long a swap can execute and how long its hold
+ * lasts, so it must not come from a device clock that is far from the chain's. But the L2 makes
+ * a block only when it has work, so an old latest block is the normal state of a quiet chain and
+ * must not close the page: the next swap is what opens the next block.
+ *
+ *   - device clock more than 2 minutes BEHIND the latest block: refused (the clock is wrong, and
+ *     a deadline from it could already be past);
+ *   - device clock ahead of the latest block by more than the L2's heartbeat plus a margin:
+ *     refused (within that time the L2 must have made a block: the clock is wrong, or this RPC
+ *     serves an old chain);
+ *   - otherwise the deadline counts from max(latest block time, device time), which is therefore
+ *     never before the chain's own time and never more than heartbeat + margin after it.
+ *
+ * Residual: on a chain idle for a time t, a device clock that is wrong by less than
+ * (heartbeat + margin - t) ahead is not detected, and the deadline is late by that much.
  */
-export function swapClockProblem(nowMs: number, latestBlockTimestamp: bigint): string | null {
+export function swapClock(
+  nowMs: number,
+  latestBlockTimestamp: bigint,
+  heartbeatSeconds: number = DEFAULT_IDLE_HEARTBEAT_SECONDS,
+): SwapClock {
   const now = BigInt(Math.floor(nowMs / 1000));
-  if (now + BigInt(CLOCK_BEHIND_TOLERANCE_SECONDS) < latestBlockTimestamp)
-    return `This device's clock is ${latestBlockTimestamp - now} seconds behind the latest L2 block, so the swap deadline would be wrong. Correct the clock and get a new quote. Nothing was sent.`;
-  if (now > latestBlockTimestamp + BigInt(FINALIZED_AGE_WARN_SECONDS))
-    return `This device's clock is ${(now - latestBlockTimestamp) / 60n} minutes ahead of the latest L2 block. Either the clock is wrong or the L2 has not made a block for that long; a swap sent now would hold this account until a deadline that far away is final. Check the clock, or wait for the L2. Nothing was sent.`;
-  return null;
+  const head = latestBlockTimestamp;
+  if (now + BigInt(CLOCK_BEHIND_TOLERANCE_SECONDS) < head)
+    return {
+      ok: false,
+      problem: `This device's clock is ${head - now} seconds behind the latest L2 block, so the swap deadline would be wrong. Correct the clock and get a new quote. Nothing was sent.`,
+    };
+  const limit = BigInt(heartbeatSeconds + IDLE_MARGIN_SECONDS);
+  if (now > head + limit)
+    return {
+      ok: false,
+      problem: `This device's clock is ${(now - head) / 3_600n} hours ahead of the latest L2 block. The L2 makes a block at least every ${Math.round(heartbeatSeconds / 3_600)} hours even when it is idle, so either this clock is wrong or this RPC is not showing the current chain. Nothing was sent.`,
+    };
+  const base = now > head ? now : head;
+  const idleSeconds = now > head ? now - head : 0n;
+  const minutes = idleSeconds / 60n;
+  return {
+    ok: true,
+    base,
+    idleSeconds,
+    notice:
+      idleSeconds > BigInt(IDLE_NOTICE_SECONDS)
+        ? `The L2 has made no block for ${minutes >= 120n ? `${minutes / 60n} hours` : `${minutes} minutes`}: it is idle, and it makes a block only when it has work. Your swap will open the next block; it is included when that block is built, and final after it is proven and settled, which takes longer than on a busy chain. The deadline counts from this device's clock, so check that the clock is right.`
+        : null,
+  };
 }
 export const MAX_DEADLINE_MINUTES = 180;
 
@@ -84,6 +145,8 @@ export type MainnetNetwork = {
   bridges: BridgeLink[];
   /** L2 new-slot priority fee (mainnet/newslotfee.ts); off when the network file has no block. */
   newSlotFee: NewSlotFeePolicy;
+  /** The L2's idle heartbeat in seconds (network file `l2Idle.heartbeatSeconds`, the settler's value). */
+  idleHeartbeatSeconds: number;
 };
 export type PlannedCap = { symbol: string; cap: bigint; decimals: number };
 export type MainnetState =
@@ -170,6 +233,7 @@ export function parseNetwork(input: unknown): MainnetNetwork {
     explorerUrl: safeUrl(n.explorer?.url ?? null, 'explorer.url'),
     bridges,
     newSlotFee: parseNewSlotFeePolicy(n.newSlotFee),
+    idleHeartbeatSeconds: parseIdleHeartbeat(n.l2Idle),
   };
 }
 

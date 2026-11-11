@@ -2643,7 +2643,7 @@ describe('swap panel safety fixes', () => {
       expect(retryButton()).toBeNull();
     });
 
-    it('R309-2P-5: builds no swap when the device clock is a day ahead of the latest L2 block', async () => {
+    it('R309-3P-1: a quiet L2 does not close the page: with the latest block a day old the swap is sent, with a deadline from the device clock, and the user is told', async () => {
       const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
       const old = { ...FINALIZED, timestamp: `0x${(NOW_MS / 1000 - 86_400).toString(16)}` };
       const chain: Rpc = async (m, p) =>
@@ -2651,7 +2651,24 @@ describe('swap panel safety fixes', () => {
       const { user, sends } = await mount(chain, state);
       await quoted(user);
       await user.click(swapButton());
-      await screen.findByText(/1440 minutes ahead of the latest L2 block/);
+      await waitFor(() => expect(sends()).toHaveLength(1));
+      await screen.findByText(
+        /The L2 has made no block for 24 hours: it is idle.*Your swap will open the next block/,
+      );
+      const sent = sends()[0].params![0] as { data: Hex };
+      const { args } = decodeFunctionData({ abi: ROUTER_ABI, data: sent.data });
+      expect(args.at(-1)).toBe(BigInt(NOW_MS / 1000 + 60 * 60));
+    });
+
+    it('R309-2P-5: builds no swap when the device clock is beyond the heartbeat of the latest L2 block', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const old = { ...FINALIZED, timestamp: `0x${(NOW_MS / 1000 - 27 * 3_600).toString(16)}` };
+      const chain: Rpc = async (m, p) =>
+        m === 'eth_getBlockByNumber' && p[0] === 'latest' ? old : rpc(m, p);
+      const { user, sends } = await mount(chain, state);
+      await quoted(user);
+      await user.click(swapButton());
+      await screen.findByText(/27 hours ahead of the latest L2 block/);
       expect(sends()).toHaveLength(0);
       expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
     });

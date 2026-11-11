@@ -121,7 +121,9 @@ async function runScenario({ name, covers, run }) {
       /** A tab of this scenario's browser profile, with the wallet injected. */
       async tab() {
         const page = await openPage(browser, browserContextId, {
-          initScript: PROVIDER_SCRIPT,
+          // world.clockAheadSeconds: the page's clock runs that far ahead of the chain's, which is what a correct
+          // clock sees on an L2 that has made no block for that long (the chain here cannot be made old instead).
+          initScript: `${world.clockAheadSeconds ? `(() => { const shift = ${Number(world.clockAheadSeconds) * 1000}; const Real = Date; const real = Real.now.bind(Real); class Shifted extends Real { constructor(...a) { if (a.length) super(...a); else super(real() + shift); } static now() { return real() + shift; } } globalThis.Date = Shifted; })();` : ''}\n${PROVIDER_SCRIPT}`,
           url: config.page,
           log: say,
           onBinding: (bridge, payload, from) => {
@@ -676,6 +678,33 @@ scenario('first-approve-wallet-ignores-fees', 'item 2: a wallet that ignores the
   const f = await w.facts();
   w.check('one approval mined at nonce 0, allowance exact', f.minedTransactions.length === 1 && f.nonceLatest === 1 && (await allowance(w.wallet.address)) === 10_000_000n, f.minedTransactions);
   w.record.admission = w.wallet.admissions;
+});
+
+scenario('idle-chain-swap-opens-next-block', 'R309-3P-1: an L2 with no block for three hours does not close the page: the swap is sent with a deadline from the device clock, the user is told the chain is idle, and the swap is mined in the next block', async (w) => {
+  w.clockAheadSeconds = 3 * 3600;
+  const page = await w.begin();
+  const before = await tokenBalance(w.wallet.address);
+  await swapNative(w, page);
+  await page.waitText('/The L2 has made no block for 3 hours: it is idle, and it makes a block only when it has work\\. Your swap will open the next block/');
+  await page.waitText(PENDING);
+  await w.note(page, 'idle-notice');
+  w.check('the wallet was asked once', w.wallet.sends().length === 1, w.wallet.sends().length);
+  const text = (await page.text()).replace(/\s+/g, ' ');
+  w.check('the waiting user is told what ends the wait on a quiet chain', /on a quiet chain the finalized block that ends this wait can be up to 24 hours away/.test(text));
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1, f.routerCallsMined);
+  w.check('bUSDC arrived', (await tokenBalance(w.wallet.address)) > before);
+});
+
+scenario('clock-beyond-heartbeat-refused', 'R309-2P-5 kept: a device clock more than the heartbeat plus its margin ahead of the latest block builds no swap', async (w) => {
+  w.clockAheadSeconds = 27 * 3600;
+  const page = await w.begin();
+  await swapNative(w, page);
+  await page.waitText('/27 hours ahead of the latest L2 block\\. The L2 makes a block at least every 24 hours even when it is idle/');
+  w.check('the wallet was not asked', w.wallet.sends().length === 0, w.wallet.sends().length);
+  w.check('no hold was created: Swap is still offered', !(await disabled(page, 'Swap')));
 });
 
 // Kept last: it moves the chain clock two hours ahead of the wall clock, which later scenarios' deadlines would not survive.

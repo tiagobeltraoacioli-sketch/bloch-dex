@@ -12,10 +12,16 @@ import {
   REPLACEMENT_NOT_FOR_UNSEEN_SWAPS,
   REVIEW_NOT_FOR_SWAPS,
   UNREADABLE_RECORD,
+  idleWaitNote,
   usePendingSwap,
   type PendingSwap,
 } from '../mainnet/pendingswap';
-import { swapClockProblem } from '../mainnet/config';
+import {
+  DEFAULT_IDLE_HEARTBEAT_SECONDS,
+  IDLE_MARGIN_SECONDS,
+  parseIdleHeartbeat,
+  swapClock,
+} from '../mainnet/config';
 import {
   expiredSwap,
   savedSwapDeadline,
@@ -563,22 +569,73 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
   });
 });
 
-describe('R309-2P-5: a swap is not built on a device clock far from the chain', () => {
+describe('R309-2P-5 and R309-3P-1: the swap deadline and a device clock far from the chain', () => {
   const T = 1_792_200_000n;
-  it.each([
-    ['in step', Number(T) * 1000 + 30_000, null],
-    ['behind by two minutes exactly', (Number(T) - 120) * 1000, null],
-    ['ahead by the stale-chain threshold exactly', (Number(T) + 150 * 60) * 1000, null],
-    [
-      'behind by more than two minutes',
-      (Number(T) - 121) * 1000,
-      /121 seconds behind the latest L2 block/,
-    ],
-    ['a day ahead', (Number(T) + 86_400) * 1000, /1440 minutes ahead of the latest L2 block/],
-    ['just past the threshold', (Number(T) + 150 * 60 + 60) * 1000, /151 minutes ahead/],
-  ] as [string, number, RegExp | null][])('%s', (_name, nowMs, problem) => {
-    const answer = swapClockProblem(nowMs, T);
-    if (problem === null) expect(answer).toBeNull();
-    else expect(answer).toMatch(problem);
+  const at = (seconds: number) => (Number(T) + seconds) * 1000;
+  it('counts the deadline from the device clock while it is within the heartbeat of the latest block', () => {
+    expect(swapClock(at(30), T)).toEqual({
+      ok: true,
+      base: T + 30n,
+      idleSeconds: 30n,
+      notice: null,
+    });
+    // Up to two minutes behind the chain: the chain's own time is the base, never an earlier one.
+    expect(swapClock(at(-120), T)).toEqual({ ok: true, base: T, idleSeconds: 0n, notice: null });
+  });
+
+  // The reviewer's demonstration (2cc1536) with the assertions turned: a quiet chain does not close the page.
+  it('R309-3P-1: a correct clock on a quiet L2 (latest block 151 minutes, 18 hours, 25 hours old) builds the swap and says the chain is idle', () => {
+    for (const [age, words] of [
+      [151 * 60, /no block for 2 hours: it is idle.*Your swap will open the next block/],
+      [18 * 3_600, /no block for 18 hours/],
+      [25 * 3_600, /no block for 25 hours/],
+      [45 * 60, /no block for 45 minutes/],
+    ] as [number, RegExp][]) {
+      const clock = swapClock(at(age), T);
+      expect(clock.ok).toBe(true);
+      if (clock.ok) {
+        expect(clock.base).toBe(T + BigInt(age));
+        expect(clock.notice).toMatch(words);
+      }
+    }
+    // Below the L2's minimum block interval nothing is said.
+    const fresh = swapClock(at(29 * 60), T);
+    expect(fresh.ok && fresh.notice).toBeNull();
+  });
+
+  it('refuses only beyond the heartbeat plus its margin, or behind the chain', () => {
+    const limit = DEFAULT_IDLE_HEARTBEAT_SECONDS + IDLE_MARGIN_SECONDS;
+    expect(swapClock(at(limit), T).ok).toBe(true);
+    const far = swapClock(at(limit + 1), T);
+    expect(far).toMatchObject({ ok: false });
+    expect(!far.ok && far.problem).toMatch(
+      /26 hours ahead of the latest L2 block\. The L2 makes a block at least every 24 hours even when it is idle, so either this clock is wrong or this RPC is not showing the current chain\. Nothing was sent\./,
+    );
+    const behind = swapClock(at(-121), T);
+    expect(!behind.ok && behind.problem).toMatch(/121 seconds behind the latest L2 block/);
+    // The limit follows the network file's heartbeat.
+    expect(swapClock(at(7 * 3_600), T, 4 * 3_600).ok).toBe(false);
+    expect(swapClock(at(6 * 3_600), T, 4 * 3_600).ok).toBe(true);
+  });
+
+  it('reads the heartbeat from the network file, with the settler default and bounds', () => {
+    expect(parseIdleHeartbeat(undefined)).toBe(86_400);
+    expect(parseIdleHeartbeat({ heartbeatSeconds: 43_200 })).toBe(43_200);
+    for (const bad of [
+      { heartbeatSeconds: 60 },
+      { heartbeatSeconds: 8 * 86_400 },
+      { heartbeatSeconds: '86400' },
+      { other: 1 },
+      [],
+    ])
+      expect(() => parseIdleHeartbeat(bad)).toThrow(/l2Idle\.heartbeatSeconds/);
+  });
+
+  it('R309-3P-3: a waiting swap hold says what ends the wait on a quiet chain; other requests do not', () => {
+    expect(idleWaitNote(hold('unknown'), 86_400)).toMatch(
+      /only when it has work: on a quiet chain the finalized block that ends this wait can be up to 24 hours away/,
+    );
+    expect(idleWaitNote(hold('unknown'), 43_200)).toMatch(/up to 12 hours away/);
+    expect(idleWaitNote(hold('unknown', [], intentOf(APPROVE, 'approval')), 86_400)).toBe('');
   });
 });
