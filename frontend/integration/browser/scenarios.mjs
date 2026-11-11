@@ -252,24 +252,19 @@ scenario('queued-at-sequencer', '(a) queued; (e) reload: no second swap and no w
   w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
 });
 
-scenario('queued-reply-lost', '(a) published and queued, but the wallet reply was lost: the same-nonce review is refused while it is queued (H1); (e) reload', async (w) => {
+scenario('queued-reply-lost', '(a) published and queued, but the wallet reply was lost: a swap is never requested again (R309-A1); (e) reload', async (w) => {
   const page = await w.begin();
   w.wallet.state.next.push('broadcast-reply-lost');
   await swapNative(w, page);
   await page.waitText(NO_HASH);
   w.check('queued: the node counts it as pending', (await nonceOf(w.wallet.address, 'pending')) === 1 && (await nonceOf(w.wallet.address)) === 0);
   w.check('queued: Swap is disabled', await disabled(page, 'Swap'));
-  w.check('no hash known: the review section is offered', await openReview(page));
-  await page.click('Review same nonce in wallet');
-  await page.waitText('/A transaction from this account is still queued at the sequencer\\. A second wallet request could execute the same call twice\\./');
-  w.check('queued: the same-nonce review made no wallet request', w.wallet.sends().length === 1, w.wallet.sends().length);
+  w.check('no hash known: no same-nonce wallet review is offered for a swap', (await openReview(page)) === false && (await page.button('Review same nonce in wallet')) === null);
+  w.check('queued: one wallet request only', w.wallet.sends().length === 1, w.wallet.sends().length);
   await page.reload();
   await w.connect(page);
   await page.waitText(NO_HASH);
-  await openReview(page);
-  await page.click('Review same nonce in wallet');
-  await page.waitText('/still queued at the sequencer/');
-  w.check('after a reload the review is still refused without a wallet request', w.wallet.sends().length === 1, w.wallet.sends().length);
+  w.check('after a reload still no review is offered and no wallet request was made', (await openReview(page)) === false && w.wallet.sends().length === 1, w.wallet.sends().length);
   await mineAndFinalize();
   await pasteHash(page, w.wallet.signed[0].hash);
   await page.click('Check transaction hash');
@@ -305,43 +300,55 @@ scenario('held-in-wallet-review-refused', '(a) queued in the wallet only: the no
   w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
 });
 
-scenario('reply-lost-review-honoured-nonce', '(a) the wallet queued the request but its reply was lost; a wallet that honours the requested nonce cannot double', async (w) => {
+scenario('reply-lost-wallet-ignores-nonce-no-review', 'R309-A1: the wallet holds the request, its reply was lost, and it would ignore a requested nonce: the page never asks it again, so one swap at most', async (w) => {
   const page = await w.begin();
   w.wallet.state.next.push('hold-reply-lost');
   await swapNative(w, page);
   await page.waitText(NO_HASH);
+  w.wallet.state.ignoreNonce = true;
   w.check('reply lost: Swap is disabled', await disabled(page, 'Swap'));
-  await openReview(page);
-  await page.click('Review same nonce in wallet');
-  await page.waitText('/Wallet returned 0x[0-9a-f]{64}\\./');
-  w.check('review: the wallet was asked for the original nonce', w.wallet.sends()[1]?.params[0].nonce === '0x0', w.wallet.sends()[1]?.params[0].nonce);
-  // The wallet now also publishes the request it had queued: same nonce, so the node keeps one of the two.
-  await w.wallet.release(w.wallet.signed[0]).catch(() => {});
+  w.check('reply lost: no same-nonce wallet review is offered for a swap', (await openReview(page)) === false && (await page.button('Review same nonce in wallet')) === null);
+  await page.reload();
+  await w.connect(page);
+  await page.waitText(NO_HASH);
+  w.check('after a reload: still no review, still one wallet request', (await openReview(page)) === false && w.wallet.sends().length === 1, w.wallet.sends().length);
+  await w.note(page, 'no-review');
+  // The wallet publishes what it held. Recovered by its hash from wallet activity.
+  await w.wallet.release(w.wallet.signed[0]);
   await mineAndFinalize();
+  await pasteHash(page, w.wallet.signed[0].hash);
+  await page.click('Check transaction hash');
   await page.waitText(`/${SWAP}: mined/`, 40_000);
   const f = await w.facts();
   w.check('exactly one router call was mined', f.routerCallsMined === 1, f.routerCallsMined);
   w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
 });
 
-scenario('reply-lost-review-wallet-ignores-nonce', 'RESIDUAL RISK probe: reply lost, then a review in a wallet that ignores the requested nonce', async (w) => {
+scenario('reply-lost-never-published-expires', 'R309-A1: a swap the wallet never publishes: the hold ends by itself, with no wallet request, once the deadline has passed in a finalized block', async (w) => {
   const page = await w.begin();
   w.wallet.state.next.push('hold-reply-lost');
   await swapNative(w, page);
   await page.waitText(NO_HASH);
-  w.wallet.state.ignoreNonce = true;
-  await openReview(page);
-  await page.click('Review same nonce in wallet');
-  await delay(3000);
-  await w.note(page, 'after-review');
-  const text = await page.text();
-  w.check('the page tells the user the wallet used another nonce and to cancel it', /Your wallet signed nonce 1 instead of the reviewed nonce 0 .*cancel it in your wallet now/.test(text.replace(/\s+/g, ' ')), (await page.labelled('Recover transaction tracking'))?.slice(-400));
-  // The user does NOT cancel: both copies are published. The page cannot stop a wallet from doing this.
-  await w.wallet.release(w.wallet.signed[0]);
+  w.check('reply lost: Swap is disabled', await disabled(page, 'Swap'));
+  // Finalized blocks before the deadline release nothing.
   await mineAndFinalize();
+  await delay(2500);
+  w.check('before the deadline the hold stays', (await disabled(page, 'Swap')) && NO_HASH.test((await page.text()).replace(/\s+/g, ' ')));
+  // Chain time passes the deadline (the default deadline is 60 minutes) and that block becomes final.
+  await rpc('evm_increaseTime', [hex(2 * 3600)]);
+  await mineAndFinalize();
+  await page.waitText('/with nonce 0 still unused: this swap did not execute and can no longer execute/', 40_000);
+  await w.note(page, 'expired');
+  w.check('the hold is gone: Swap is offered again', !(await disabled(page, 'Swap')));
   const f = await w.facts();
-  w.record.residual = 'A wallet that ignores the nonce of eth_sendTransaction and already holds the first request signs the review at the next nonce. The page cannot prevent it; it can only warn after the wallet answers. Whether a real wallet honours the nonce is a manual test (docs/WALLET-MANUAL-TEST.md, test 9).';
-  w.check('documented residual: both copies were mined (2 router calls) when the user ignores the warning', f.routerCallsMined === 2, f.routerCallsMined);
+  w.check('no router call of this account was mined', f.routerCallsMined === 0, f.routerCallsMined);
+  w.check('the account nonce is still 0', f.nonceLatest === 0, f.nonceLatest);
+  w.check('the wallet was asked exactly once', f.walletSendRequests === 1, f.walletSendRequests);
+  // Signed late, the held request can only revert: it never becomes a second swap.
+  await w.wallet.release(w.wallet.signed[0]).catch(() => {});
+  await mineAndFinalize();
+  const late = await w.facts();
+  w.check('the held request, published after the deadline, executes nothing', late.routerCallsMined === 0, late.minedTransactions);
 });
 
 scenario('speed-up', '(b) speed-up in the wallet; (e) reload before recovery', async (w) => {

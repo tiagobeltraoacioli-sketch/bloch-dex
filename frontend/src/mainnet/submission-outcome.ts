@@ -220,6 +220,72 @@ export async function verifySameNonceReview(
   await recheckFinality(rpc, finalized, head);
 }
 
+export type ExpiredSwap = {
+  /** The canonical finalized block whose timestamp is past the deadline. */
+  blockNumber: string;
+  blockHash: Hex;
+  timestamp: string;
+  /** False: the account nonce of the request is still unused there, so the swap did not execute.
+   * True: a transaction of the account used that nonce; it may have been this swap. */
+  nonceUsed: boolean;
+};
+
+/** A swap whose deadline lies before the timestamp of a canonical FINALIZED block can no longer
+ * execute: the router refuses it in that block and in every later one (block timestamps never
+ * decrease). This is what ends a swap hold without any wallet request (review R309-A1); it says
+ * nothing about approvals or skims, which carry no deadline. Null: not established yet. A known
+ * hash that is already included keeps the hold for the receipt path. Read-only; never throws for
+ * "not yet", throws for evidence that contradicts itself. */
+export async function expiredSwap(
+  rpc: Rpc,
+  intent: SubmissionIntent,
+  context: SubmissionContext,
+  deadline: bigint,
+  hashes: readonly Hex[] = [],
+): Promise<ExpiredSwap | null> {
+  assertSubmissionContext(intent, context);
+  if (intent.kind !== 'swap' || deadline <= 0n) return null;
+  const read = async () => {
+    const raw = object(await rpc('eth_getBlockByNumber', ['finalized', false]));
+    return { ...block(raw), timestamp: quantity(raw.timestamp) };
+  };
+  // One read per pass until the deadline is behind a finalized block; everything else after that.
+  const finalized = await read();
+  const boundary = { number: BigInt(intent.afterBlockNumber), hash: intent.afterBlockHash };
+  if (finalized.timestamp <= deadline || finalized.number < boundary.number) return null;
+  await checkChain(rpc, context);
+  await canonical(rpc, boundary);
+  await canonical(rpc, finalized);
+  for (const hash of hashes) {
+    const body = await rpc('eth_getTransactionByHash', [hash]);
+    if (body === null) continue;
+    const tx = matchTransaction(body, hash, intent);
+    // Included somewhere: its finalized receipt decides, not the deadline.
+    if (tx.blockNumber !== null || tx.blockHash !== null) return null;
+  }
+  const nonce = quantity(
+    await rpc('eth_getTransactionCount', [
+      intent.from,
+      { blockHash: finalized.hash, requireCanonical: true },
+    ]),
+  );
+  const again = await read();
+  assert(
+    again.number >= finalized.number &&
+      (again.number !== finalized.number ||
+        (again.hash === finalized.hash && again.timestamp === finalized.timestamp)),
+    'Finality moved backwards or changed while checking the swap deadline. The submission hold remains.',
+  );
+  await canonical(rpc, finalized);
+  await checkChain(rpc, context);
+  return {
+    blockNumber: finalized.number.toString(),
+    blockHash: finalized.hash,
+    timestamp: finalized.timestamp.toString(),
+    nonceUsed: nonce > BigInt(intent.nonce),
+  };
+}
+
 function afterSubmission(tx: Record<string, unknown>, intent: SubmissionIntent) {
   if (tx.blockNumber === null && tx.blockHash === null) return;
   assert(

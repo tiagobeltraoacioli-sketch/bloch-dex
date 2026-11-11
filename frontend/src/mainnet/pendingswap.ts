@@ -14,6 +14,7 @@ import { stableJson, type DevnetDeployment } from '../devnet4/record';
 import type { Provider } from '../wallet';
 import {
   assertSubmissionContext,
+  expiredSwap,
   finalizedSubmissionReceipt,
   finalizedReplacementReceipt,
   isSubmissionHash,
@@ -56,7 +57,7 @@ export type PendingSwap = {
   note?: string;
 };
 export type TrackedSwap = PendingSwap & {
-  state: 'pending' | 'unknown' | 'mined' | 'failed' | 'replaced';
+  state: 'pending' | 'unknown' | 'mined' | 'failed' | 'replaced' | 'expired';
   detail: string;
   /** Set on a failed swap once the page has read why it reverted. */
   cause?: RevertCause;
@@ -267,6 +268,9 @@ export async function pollPendingSwap(
   return { kind: unavailable ? 'unreachable' : 'waiting' };
 }
 
+export const REVIEW_NOT_FOR_SWAPS =
+  'A swap is never requested from the wallet a second time: an earlier request may still be open or signed there, and two copies inside the deadline would both execute. This hold ends by itself once the swap deadline has passed in a finalized block. No wallet request was made.';
+
 export const REVIEW_WITH_HASH =
   'Your wallet already returned a transaction hash for this request and may still publish it. A second wallet request could execute the same call twice. Speed it up or cancel it in the wallet itself, then check the resulting hash here. No wallet request was made.';
 
@@ -284,7 +288,7 @@ function describeOpen(
     return {
       ...swap,
       state: 'unknown',
-      detail: `Wallet submission outcome unknown: no transaction hash was returned. ${DO_NOT_RESEND} Check your wallet activity and explorer; a timeout or fee error does not prove that nothing was sent.${swap.note ? ` ${swap.note}` : ''}`,
+      detail: `Wallet submission outcome unknown: no transaction hash was returned. ${DO_NOT_RESEND} Check your wallet activity and explorer; a timeout or fee error does not prove that nothing was sent.${swap.intent?.kind === 'swap' && swap.deadline > 0n ? ' If your wallet still shows this request and you do not want it, reject it there. The hold ends by itself once the swap deadline has passed in a finalized block.' : ''}${swap.note ? ` ${swap.note}` : ''}`,
     };
   const what =
     poll === 'unreachable'
@@ -529,6 +533,73 @@ export function usePendingSwap({
     };
   }, [enabled, key, openHash, rpc, intervalMs, recall, checkContext, context, contextKey]);
 
+  // A swap hold also ends, with no wallet request, once its deadline has passed at a canonical
+  // finalized block: no copy of it can execute after that (review R309-A1).
+  const expiring =
+    isOpen(visibleTracked) &&
+    visibleTracked!.intent?.kind === 'swap' &&
+    visibleTracked!.deadline > 0n
+      ? visibleTracked!.intent.id
+      : null;
+  useEffect(() => {
+    if (!enabled || !key || !expiring || !context) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      if (!live) return;
+      try {
+        const held = recall(key);
+        if (!held?.swap.intent || held.swap.intent.id !== expiring) return;
+        checkContext(held.swap);
+        const { swap } = held;
+        // Decided by a finalized block's timestamp only, never by this device's clock.
+        const expired = await expiredSwap(
+          rpc,
+          swap.intent!,
+          context,
+          swap.deadline,
+          submissionHashes(swap),
+        );
+        if (!live) return;
+        if (expired) {
+          const cleared = await withSubmissionLock(key, () => {
+            if (!live || activeKey.current !== contextKey) return false;
+            const current = recall(key);
+            if (!current || !sameIntent(current.swap, swap)) return false;
+            // A hash that arrived meanwhile is checked on the next pass.
+            if (submissionHashes(current.swap).join(',') !== submissionHashes(swap).join(','))
+              return false;
+            if (!removeStored(key, swap)) return false;
+            settled.current.set(key, swap.intent!.id);
+            memory.current.delete(key);
+            return true;
+          }).catch(() => false);
+          if (!live) return;
+          if (cleared) {
+            setStorageProblem(null);
+            setTracked({
+              ...swap,
+              state: 'expired',
+              detail: expired.nonceUsed
+                ? `The swap deadline passed in canonical finalized block ${expired.blockNumber}, so this request can no longer execute. A transaction of this account used nonce ${swap.intent!.nonce} before that: it may have been this swap. Check your wallet activity and the finalized balances below before swapping again. Nothing was sent.`
+                : `The swap deadline passed in canonical finalized block ${expired.blockNumber} with nonce ${swap.intent!.nonce} still unused: this swap did not execute and can no longer execute. If your wallet still shows the request, reject it there; signed now it would only revert. Nothing was sent.`,
+            });
+            latest.current.onMined();
+            return;
+          }
+        }
+      } catch {
+        /* Unverifiable evidence never ends a hold; try again. */
+      }
+      if (live) timer = setTimeout(() => void tick(), intervalMs);
+    };
+    void tick();
+    return () => {
+      live = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [enabled, key, expiring, rpc, intervalMs, recall, checkContext, context, contextKey]);
+
   /** Persist before invoking eth_sendTransaction. A storage failure prevents sending. */
   const reserve = useCallback(
     async (
@@ -730,6 +801,10 @@ export function usePendingSwap({
           throw new Error('This hold has no saved nonce and transaction body to review.');
         checkContext(held.swap);
         const { intent } = held.swap;
+        // Nothing the page can read shows whether an earlier request is still open, or signed, in the wallet,
+        // and the nonce it asks for is only a request. A duplicate approval or skim is harmless; a duplicate
+        // swap spends twice. So a swap is never requested again (review R309-A1).
+        if (intent.kind === 'swap') throw new Error(REVIEW_NOT_FOR_SWAPS);
         const tx = transactionForSameNonceReview(intent, held.swap.deadline, deployment);
         // A wallet that returned a hash holds that transaction and may publish it later, whatever the sequencer
         // shows now. Many wallets ignore the nonce a site asks for and would sign this review at their next nonce:
@@ -853,8 +928,9 @@ export function usePendingSwap({
 
   const review = useMemo(() => {
     if (!visibleTracked?.intent || !deployment || !isOpen(visibleTracked)) return undefined;
-    // Not offered once the wallet returned a hash: see reviewInWallet.
-    if (submissionHashes(visibleTracked).length) return undefined;
+    // Not offered once the wallet returned a hash, and never for a swap: see reviewInWallet.
+    if (submissionHashes(visibleTracked).length || visibleTracked.intent.kind === 'swap')
+      return undefined;
     try {
       return {
         details: sameNonceReviewDetails(visibleTracked.intent, visibleTracked.deadline, deployment),
