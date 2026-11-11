@@ -99,7 +99,10 @@ case "$MODE" in
     # scenes fit a run) and has no bridge deployment record, so the mainnet gate wrapper can never pass here: the
     # monitor runs the generic gate, as on anvil. The wrapper itself is run against this same settled RPC, with the
     # real token from the bridge's own tools, by scripts/staging/rehearse-mainnet-package.sh private-l2.
-    GATE_FLAGS=(--rehearsal)
+    # On the pinned genesis the monitor takes --rehearsal only with a second flag, and every report then carries a
+    # WARN row `gate_mode` (review R309-2P-13). The monitor() wrapper below asserts that row and takes it out of the
+    # exit status, so the scenes keep their meaning.
+    GATE_FLAGS=(--rehearsal --rehearsal-on-pinned-genesis)
     ;;
   *) die "mode must be anvil or private-l2" ;;
 esac
@@ -174,7 +177,25 @@ settle() {
 }
 # --lp-min-shares 0: this rehearsal states "no seeder floor" explicitly (the monitor refuses --expect-seeded without
 # a floor; the floor itself is rehearsed by rehearse-opening.sh).
-monitor() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --lp-recipient "$SEEDER" --lp-min-shares 0 "${GATE_FLAGS[@]}" "$@"; }
+monitor_raw() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --lp-recipient "$SEEDER" --lp-min-shares 0 "${GATE_FLAGS[@]}" "$@"; }
+monitor() {
+  if [ "$MODE" = anvil ]; then monitor_raw "$@"; return; fi
+  # private L2 (pinned genesis): the report must carry the gate_mode WARN; a run whose only WARN is that row counts as 0.
+  local out rc=0
+  out=$(monitor_raw "$@") || rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" = 3 ] && return 3
+  node -e '
+const text = require("fs").readFileSync(0, "utf8");
+let rows;
+try { rows = JSON.parse(text).checks.map((c) => [c.status, c.name]); }
+catch { rows = text.split("\n").map((l) => /^(OK|WARN|CRIT|UNKNOWN)\s+([^:\s]+):/.exec(l)).filter(Boolean).map((m) => [m[1], m[2]]); }
+const mode = rows.find(([, name]) => name === "gate_mode");
+if (!mode || mode[0] !== "WARN") { console.error("the monitor did not report gate_mode WARN on the pinned genesis"); process.exit(9); }
+process.exit(rows.some(([status, name]) => status === "WARN" && name !== "gate_mode") ? 1 : 0);' <<< "$out" || { local w=$?; [ "$w" = 9 ] && die "gate_mode WARN row missing"; [ "$rc" -ge 2 ] || return 1; }
+  [ "$rc" -ge 2 ] && return "$rc"
+  return 0
+}
 # REHEARSAL_CLOCK is empty until section 10, whose scenes move the anvil clock days ahead of this host's clock (mint
 # delays, pause terms, the switch delay). Up to there the keeper runs with its own --max-clock-skew-s default.
 REHEARSAL_CLOCK=()
@@ -531,9 +552,9 @@ grep -q "must not exceed --max-fee-wei" "$EV/keeper-incoherent-ceilings.out" || 
 # bridge pair stops the tool with its reason; nothing is read, signed or left unchecked.
 expect 2 keeper-misspelt-limit keeper_run "${KFLAGS[@]}" --max-fee-wie 1000000000 --execute -- --private-key "$KEEPER_KEY"
 grep -q "unknown option --max-fee-wie" "$EV/keeper-misspelt-limit.out" || die "expected the unknown option refusal"
-expect 3 monitor-empty-floor node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --rehearsal --expect-seeded --lp-recipient "$SEEDER" --lp-min-shares ""
+expect 3 monitor-empty-floor node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" "${GATE_FLAGS[@]}" --expect-seeded --lp-recipient "$SEEDER" --lp-min-shares ""
 grep -q -- "--lp-min-shares has an empty value" "$EV/monitor-empty-floor.out" || die "expected the empty value refusal"
-expect 3 monitor-no-floor node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --rehearsal --expect-seeded --lp-recipient "$SEEDER"
+expect 3 monitor-no-floor node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" "${GATE_FLAGS[@]}" --expect-seeded --lp-recipient "$SEEDER"
 expect 3 monitor-half-bridge-pair monitor --expect-seeded --bridge-vault "$SAFE"
 grep -q -- "--eth-rpc and --bridge-vault go together" "$EV/monitor-half-bridge-pair.out" || die "expected the bridge pair refusal"
 expect 3 monitor-mainnet-without-exit-check node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --safe-plan "$EV/safe.plan.json" --bridge-plan "$EV/safe.plan.json" --bridge-record "$EV/safe.plan.json"
@@ -828,7 +849,7 @@ if [ "$MODE" = anvil ]; then
   expect 2 drift-pair-code monitor --expect-seeded
   expect 2 drift-pair-keeper keeper_run --state "$WORK/keeper/drift.json" --execute -- --private-key "$KEEPER_KEY"
   restore "$SNAP"
-  expect 3 monitor-dead-node node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc http://127.0.0.1:9 --rehearsal
+  expect 3 monitor-dead-node node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc http://127.0.0.1:9 "${GATE_FLAGS[@]}"
   expect 3 keeper-dead-node node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc http://127.0.0.1:9 --keeper "$KEEPER" --state "$WORK/keeper/dead.json"
 
   # -------------------------------------------------------------- bUSDC incidents

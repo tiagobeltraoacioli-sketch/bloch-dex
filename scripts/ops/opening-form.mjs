@@ -168,6 +168,8 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   for (const [name, contract] of [["fromEarlierSteps.busdcToken", token], ["bridgeStatus.vault", vaultAddress]]) {
     if (lp && lp === contract) problems.push(`lpRecipient equals ${name}: the seed's LP shares would be held by a contract that cannot move them`);
   }
+  // The deployer is a hot key used once; it must not end up holding the seed position (review R309-2P-15).
+  if (lp && deployer && lp === deployer) problems.push("lpRecipient equals fromEarlierSteps.dexDeployer: each key has one role, and the single-use deployer key would hold the whole seed position");
   if (lp && safe && lp === safe) notes.push("lpRecipient is the Safe: allowed, but the kit recommends a separate address (principal and protocol fee mix, every exit needs 3 of 5)");
   if (lp && authorityOwners.includes(lp)) notes.push("lpRecipient is a Safe owner key: allowed, but that key then holds the seed position alone");
 
@@ -403,7 +405,7 @@ function commandsFile(v) {
 const json = (v) => `${JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x), 2)}\n`;
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2), { options: ["form", "out", "bloch-inc", "genesis", "rpc", "eth-rpc"] });
+  const args = parseArgs(process.argv.slice(2), { commands: ["check", "apply"], options: ["form", "out", "bloch-inc", "genesis", "rpc", "eth-rpc"] });
   const [command] = args._;
   if (!["check", "apply"].includes(command) || !args.form || (command === "apply" && (!args.out || !args["bloch-inc"]))) {
     console.error("usage: opening-form.mjs check --form F [--bloch-inc blochinc.json] [--rpc L2] [--eth-rpc ETH]\n       opening-form.mjs apply --form F --bloch-inc blochinc.json --out DIR [--rpc L2] [--eth-rpc ETH] [--genesis 0x… (rehearsal)]");

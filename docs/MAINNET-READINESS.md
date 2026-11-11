@@ -209,8 +209,10 @@ Kept (the mainnet path):
 - `script/DeployMainnet.s.sol`: the only broadcasting code; re-checks chain,
   rehearsal flag, deployer nonce, Bloch Inc contract code, every address and
   code hash, fee recipient, caps and bindings by itself.
-- `scripts/staging/finality-gate.mjs` + `check-finality-gate.mjs`: schema 1
-  (devnet4 record) and schema 2 (mainnet).
+- `scripts/staging/finality-gate.mjs`: the gate engine, schema 1 (devnet4 record) and schema 2.
+  `check-finality-gate-mainnet.mjs` is the mainnet gate (pinned chain and genesis, Safe build, bridge record,
+  launch policy). The generic command `check-finality-gate.mjs` is for rehearsal chains only: it refuses the
+  pinned mainnet genesis, and any other chain-700770 gate file unless `--rehearsal-chain` is given.
 - `scripts/staging/rehearse-deploy-anvil.sh`: full local rehearsal on anvil
   (chain 700770 by default).
   - **Bloch Inc.** On the mainnet path it is the official Safe v1.4.1, 3 of 5,

@@ -24,8 +24,13 @@ The command line is checked as a whole before anything is read, and the monitor 
 reason when it is not complete (round 15 review). Nothing a unit can leave empty or misspell turns a check off:
 
 - an option the tool does not know, an option given twice, or an empty value (an unset variable in the unit's
-  environment file) is refused. The same holds for the keeper (exit 2), the seed planner, the redemption tool, the
-  footprint tool and the opening form;
+  environment file) is refused. So is any word that is not an option (`-execute`, `execute`, a pasted long dash: a
+  flag that was not read as one), and a value that begins with `--` (the next option, swallowed). The same holds for
+  the keeper (exit 2), the seed planner, the redemption tool, the footprint tool and the opening form; a
+  sub-command (`plan`, `remove`, `check`, …) is the first word;
+- `--rehearsal` selects the generic gate and is refused for a gate file of the pinned mainnet genesis. A private
+  rehearsal chain built on that genesis adds `--rehearsal-on-pinned-genesis`; every report then carries a WARN row
+  `gate_mode`, so such a run is never OK. Every report names its gate in the `gate_mode` row;
 - without `--rehearsal` the Safe plan, the bridge plan and record, `--eth-rpc`, `--bridge-vault` and
   `--bridge-vault-code-hash` are all required: held bUSDC exits are a CRIT only that check can show;
 - `--expect-seeded` needs `--lp-recipient` and `--lp-min-shares`. The floor is a whole number of shares; an explicit
@@ -86,7 +91,7 @@ A swap on that side absorbs dust as input. One wei above a full reserve blocks n
 cast send <pair> "skim(address)" <Bloch Inc Safe> --rpc-url <rpc> --keystore <keystore>
 ```
 
-Dry run (the default):
+Dry run (the default; its stamp makes the monitor's `keeper_budget` WARN, because a dry run publishes nothing):
 
 ```
 node scripts/ops/dex-skim-keeper.mjs --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --keeper TBD-owner --state /var/lib/bloch-dex-keeper/state.json
@@ -199,7 +204,13 @@ Further rules of the recovery, from the round 14 review:
 - Each pinned pair must report the pinned factory as its `factory()`.
 - The example units pass `--budget-wei` and `--max-tx` from `DEX_KEEPER_BUDGET_WEI` and `DEX_KEEPER_MAX_TX` (written by
   the opening form), and the monitor judges `keeper_budget` with the same `--keeper-max-tx` and `--keeper-budget-wei`.
-- Every keeper pass, whatever it did, writes `lastPass` (`at`, `action`, `level`) into the state file. The keeper's unit
+- The keeper refuses an empty signer argument after `--`, and with `--execute` it first runs
+  `cast wallet address <signer arguments>`: the signer must open without a prompt and be the `--keeper` address, or
+  the keeper stops at start with exit 2 (a missing keystore or password file is found there, not at the first skim).
+- Every keeper pass writes `lastPass` (`at`, `action`, `level`, `execute`) into the state file, except a pass the clock
+  guard stopped (`clock-or-head-stale`): its clock is the one just found unusable. The monitor reads a stamp without
+  `"execute": true` as a dry run (WARN at least: nothing is published), and a stamp more than 120 s in the future of
+  its own clock as invalid (CRIT). The keeper's unit
   counts exit 1 as a success, so this stamp is how a keeper that stopped, never ran, or keeps ending on a limit is
   seen: the monitor's `keeper_budget` reads it. The "next skim" the monitor measures against the budget is the
   largest reservation recorded in the 24 h window.

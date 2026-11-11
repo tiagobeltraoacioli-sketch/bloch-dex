@@ -128,13 +128,59 @@ test("R309-B1: a generic-gate report for the pinned genesis is refused by the re
   assert.equal(run.status, 2);
   assert.match(run.stderr, /pinned mainnet genesis.*check-finality-gate-mainnet\.mjs/s);
   assert.equal(run.stdout, "");
-  // Another genesis is still served by the generic command (here: refused only because no node answers).
+  // --rehearsal-chain never lifts that refusal.
+  const forced = spawnSync(process.execPath, [cli, "--rehearsal-chain", "--config", file, "--rpc", "http://127.0.0.1:9"], { encoding: "utf8" });
+  assert.equal(forced.status, 2);
+  assert.match(forced.stderr, /pinned mainnet genesis.*check-finality-gate-mainnet\.mjs/s);
+  // R309-2P-12: chain 700770 on ANOTHER genesis is refused too unless the operator names it a rehearsal chain: the
+  // gate file cannot say so itself, and a mainnet whose genesis is not the pin would switch every pin-keyed guard off.
   const other = structuredClone(gate);
   other.chain.genesisHash = hash("9");
   writeFileSync(file, JSON.stringify(other));
-  const rehearsal = spawnSync(process.execPath, [cli, "--config", file, "--rpc", "http://127.0.0.1:9"], { encoding: "utf8" });
+  const unnamed = spawnSync(process.execPath, [cli, "--config", file, "--rpc", "http://127.0.0.1:9"], { encoding: "utf8" });
+  assert.equal(unnamed.status, 2);
+  assert.match(unnamed.stderr, /chain 700770 on a genesis that is not the pinned mainnet genesis.*--rehearsal-chain/s);
+  assert.equal(unnamed.stdout, "");
+  // Named a rehearsal chain it is served (here: refused only because no node answers).
+  const rehearsal = spawnSync(process.execPath, [cli, "--config", file, "--rehearsal-chain", "--rpc", "http://127.0.0.1:9"], { encoding: "utf8" });
   assert.equal(rehearsal.status, 1);
   assert.doesNotMatch(rehearsal.stderr, /pinned mainnet genesis/);
+  // The flag takes no value and is given once.
+  const twice = spawnSync(process.execPath, [cli, "--rehearsal-chain", "--rehearsal-chain", "--config", file, "--rpc", "http://127.0.0.1:9"], { encoding: "utf8" });
+  assert.equal(twice.status, 2);
+  assert.match(twice.stderr, /Usage/);
+  // Another chain ID (a development chain) needs no flag.
+  other.chain.id = 700771;
+  writeFileSync(file, JSON.stringify(other));
+  assert.equal(spawnSync(process.execPath, [cli, "--config", file, "--rpc", "http://127.0.0.1:9"], { encoding: "utf8" }).status, 1);
+});
+
+// Review r15 second pass, R309-2P-12 (the reviewer's demonstration passD-b1-gate-record.test.mjs "D1", commit e4d9ebd).
+test("R309-2P-12: a chain-700770 plan on a genesis other than the pin gives no record, unless it is named a rehearsal chain", () => {
+  const a = (n) => `0x${n.toString(16).padStart(40, "0")}`;
+  const P = { safe: a(0x5afe), wrapped: a(0x77), busdc: a(0x66) };
+  const inputs = (genesis) => ({
+    config: { network: { chainId: 700770, genesisHash: genesis } },
+    plan: { domain: "postern.dex.mainnet-plan.v1", chain: { id: 700770, genesisHash: genesis, rehearsal: false }, pairs: [], feeTo: P.safe,
+      contracts: { wrappedNative: { address: P.wrapped } }, reserveCaps: [{ token: P.wrapped, cap: "1" }, { token: P.busdc, cap: "1" }] },
+    infra: { domain: "postern.dex.mainnet-infra-plan.v1", chain: { id: 700770, genesisHash: genesis }, contracts: {} },
+  });
+  const genericReport = (genesis) => ({ domain: "postern.dex.finality-gate.v1", schemaVersion: 2, decision: "liquidity-enabled", chainId: 700770, genesisHash: genesis, feeTo: P.safe });
+  const other = `0x${"9".repeat(64)}`;
+  assert.throws(() => assembleRecord({ ...inputs(other), gateReport: genericReport(other) }), /genesis that is not the pinned mainnet genesis.*--rehearsal-chain/s);
+  // Named a rehearsal chain, the record is made and says so; the page serves such a record only from a local build.
+  const record = assembleRecord({ ...inputs(other), gateReport: genericReport(other), rehearsalChain: true });
+  assert.equal(record.status, "liquidity-enabled");
+  assert.equal(record.rehearsalChain, true);
+  // On the pinned genesis: the generic report is refused, the flag is refused, and a record carries no rehearsal mark.
+  assert.throws(() => assembleRecord({ ...inputs(GENESIS), gateReport: genericReport(GENESIS) }), /not written by the mainnet gate/);
+  const wrapper = { ...genericReport(GENESIS), pinned: { chainId: 700770, genesisHash: GENESIS, safe: P.safe }, bridgeTokens: [{ address: P.busdc }] };
+  assert.throws(() => assembleRecord({ ...inputs(GENESIS), gateReport: wrapper, rehearsalChain: true }), /--rehearsal-chain was given for the pinned mainnet genesis/);
+  // Residual, stated in the code and in the known-issues list: the report is not signed. A report edited by hand to
+  // carry the wrapper's block is accepted here; the page re-verifies the deployment against the RPC, not the gate.
+  const made = assembleRecord({ ...inputs(GENESIS), gateReport: wrapper });
+  assert.equal(made.status, "liquidity-enabled");
+  assert.equal(made.rehearsalChain, undefined);
 });
 
 test("R309-B1: the runbooks and the record tool name the mainnet wrapper for the mainnet gate file", () => {

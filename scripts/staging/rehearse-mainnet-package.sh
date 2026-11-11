@@ -109,6 +109,9 @@ case "$MODE" in
   *) echo "mode must be anvil or private-l2" >&2; exit 2 ;;
 esac
 GENESIS=$(cast block 0 --field hash --rpc-url "$RPC")
+# frontend-record.mjs (the render and wallet hooks): an anvil chain with chain ID 700770 is a rehearsal chain and must
+# be named so; on the private L2 (pinned genesis) the flag is refused and the mainnet gate's report is required.
+RECORD_FLAGS=(); [ "$MODE" != anvil ] || RECORD_FLAGS=(--rehearsal-chain)
 log "chain $(cast chain-id --rpc-url "$RPC") genesis $GENESIS ($MODE)"
 
 # send KEY TO|create DATA VALUE GAS -> prints the receipt status (0x1/0x0)
@@ -294,11 +297,11 @@ else
   cat "$EV/gate.pin-refusal.txt"
   GATE_RPC=http://127.0.0.1:$((PORT + 1))
   log "2 generic gate before finality is refused"
-  if node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$GATE_RPC" 2> "$EV/gate.early.txt"; then echo "FAIL: gate passed before finality"; exit 1; fi
+  if node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$EV/gate.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$GATE_RPC" 2> "$EV/gate.early.txt"; then echo "FAIL: gate passed before finality"; exit 1; fi
   cat "$EV/gate.early.txt"
   cast rpc anvil_mine 0x80 --rpc-url "$RPC" > /dev/null
   log "2 generic gate after finality (anvil shim)"
-  node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$GATE_RPC" > "$EV/gate-report.json"
+  node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$EV/gate.json" ${BRIDGE_ARGS[@]+"${BRIDGE_ARGS[@]}"} --rpc "$GATE_RPC" > "$EV/gate-report.json"
   if [ -n "${BRIDGE_REPO:-}" ]; then
     bridge_v3_verify
     log "2 the mainnet gate's own checks (Safe pin, bridge plan and record, reviewed token build, 5 of 7 / 6 / 3 guardians / T = 0) pass with only the genesis pin replaced"

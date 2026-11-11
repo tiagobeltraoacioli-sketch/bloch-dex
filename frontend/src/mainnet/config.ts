@@ -239,6 +239,29 @@ export function requireMainnetGateReport(
 }
 
 /**
+ * The same rule as scripts/staging/frontend-record.mjs (review R309-2P-12): every guard of the
+ * mainnet record keys on the pinned genesis. A record for another genesis is served only when it
+ * says that it is a rehearsal chain (`rehearsalChain: true`, written by `--rehearsal-chain`), and
+ * a record for the pinned genesis must not say so.
+ */
+export function requireChainKind(
+  rehearsalChain: unknown,
+  genesisHash: string | null | undefined,
+  pinnedGenesis: string = mainnetPins.l2.genesisHash,
+): void {
+  if (genesisHash === pinnedGenesis)
+    refuse(
+      rehearsalChain === undefined,
+      'the record is marked as a rehearsal chain on the pinned mainnet genesis',
+    );
+  else
+    refuse(
+      rehearsalChain === true,
+      'the record is for a genesis that is not the pinned mainnet genesis and is not marked as a rehearsal chain',
+    );
+}
+
+/**
  * Decide the route state from the bundled record. A placeholder record, a
  * placeholder RPC or an unpinned genesis keep the route "not yet live"; a
  * record that claims a deployment but fails verification is an error.
@@ -267,6 +290,7 @@ export async function loadMainnetState(
     },
   );
   requireMainnetGateReport(r.gateReport as AnyRecord, deployment, network.genesisHash);
+  requireChainKind(r.rehearsalChain, network.genesisHash);
   const infra = r.infra as AnyRecord;
   refuse(infra && infra.domain === INFRA_PLAN_DOMAIN, 'the record has no infra plan');
   refuse(

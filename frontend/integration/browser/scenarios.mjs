@@ -371,6 +371,12 @@ scenario('cancel', '(c) cancel in the wallet: zero swaps, hold closed only on fi
   const page = await w.begin();
   await swapNative(w, page);
   await page.waitText(PENDING);
+  // A person takes seconds to cancel in the wallet; by then the page has read the queued transaction at the
+  // saved nonce and recorded it (a cancellation faster than that read waits for the swap deadline instead).
+  for (let i = 0; i < 40; i++) {
+    if (await page.evaluate(`Object.keys(localStorage).some((k) => (localStorage.getItem(k) ?? '').includes('"nonceSeen":["0x'))`)) break;
+    await delay(250);
+  }
   const cancelled = await w.wallet.cancel(w.wallet.signed[0]);
   await mine();
   await pasteHash(page, cancelled.hash);
@@ -399,6 +405,10 @@ scenario('dropped', '(d) the wallet returned a hash that never reaches a block; 
   const page = await w.begin();
   await swapNative(w, page);
   await page.waitText(PENDING);
+  for (let i = 0; i < 40; i++) {
+    if (await page.evaluate(`Object.keys(localStorage).some((k) => (localStorage.getItem(k) ?? '').includes('"nonceSeen":["0x'))`)) break;
+    await delay(250);
+  }
   await rpc('anvil_dropTransaction', [w.wallet.signed[0].hash]);
   w.check('dropped: the node no longer knows the transaction', (await rpc('eth_getTransactionByHash', [w.wallet.signed[0].hash])) === null);
   await mineAndFinalize();

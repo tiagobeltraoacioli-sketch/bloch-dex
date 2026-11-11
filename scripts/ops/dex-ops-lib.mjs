@@ -338,11 +338,14 @@ export const stringify = (value) => JSON.stringify(value, (_, v) => (typeof v ==
 
 /// `--name value` / repeated / boolean flag parser. Everything after a bare `--` is returned
 /// untouched (the signer arguments for `cast mktx`). Each tool names every option it takes:
-/// `flags` (no value), `repeat` (may be given several times) and `options` (one value). An option
+/// `flags` (no value), `repeat` (may be given several times), `options` (one value) and `commands`
+/// (the sub-commands, when the tool has any: exactly one, as the first argument). An option
 /// outside those lists, an option given twice, or an empty value is an error: a misspelt limit
 /// or an unset environment variable in a unit must stop the tool, not leave a default or a
-/// missing check in force without a word (review R309-K1, R309-C1, R309-C2).
-export function parseArgs(argv, { flags = [], repeat = [], options = [] } = {}) {
+/// missing check in force without a word (review R309-K1, R309-C1, R309-C2). So is any other
+/// word (`-execute`, `execute`, a pasted long dash: a flag that was not read as one), and a value
+/// that begins with `--` (the next option, swallowed): review R309-2P-8.
+export function parseArgs(argv, { flags = [], repeat = [], options = [], commands = [] } = {}) {
   const out = { _: [], rest: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -351,11 +354,15 @@ export function parseArgs(argv, { flags = [], repeat = [], options = [] } = {}) 
       break;
     }
     if (!arg.startsWith("--")) {
-      out._.push(arg);
-      continue;
+      if (i === 0 && commands.includes(arg)) {
+        out._.push(arg);
+        continue;
+      }
+      throw new Error(`unexpected argument ${arg}${commands.length && i === 0 ? ` (commands: ${commands.join(", ")})` : ": every option starts with two hyphens and is followed by its value"}`);
     }
     const name = arg.slice(2);
     if (flags.includes(name)) {
+      if (out[name]) throw new Error(`${arg} is given twice`);
       out[name] = true;
       continue;
     }
@@ -363,9 +370,11 @@ export function parseArgs(argv, { flags = [], repeat = [], options = [] } = {}) 
     if (i + 1 >= argv.length) throw new Error(`${arg} needs a value`);
     const value = argv[++i];
     if (value === "") throw new Error(`${arg} has an empty value`);
+    if (value.startsWith("--")) throw new Error(`${arg} needs a value, but the next word is ${JSON.stringify(value)}`);
     if (repeat.includes(name)) (out[name] ??= []).push(value);
     else if (Object.hasOwn(out, name)) throw new Error(`${arg} is given twice`);
     else out[name] = value;
   }
+  if (commands.length && out._.length !== 1) throw new Error(`the first argument must be one of: ${commands.join(", ")}`);
   return out;
 }

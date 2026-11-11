@@ -61,7 +61,8 @@ The former `InitialLiquidityPreflight` script (signed cap-approval amounts,
 2026-10-14; it is in git history. On the mainnet path the limits it checked
 are part of the deployed code: every pilot token has a reserve cap fixed in the
 factory constructor (a deposit above it reverts on chain), and the schema-2
-finality gate (`scripts/staging/check-finality-gate.mjs`) proves at the
+finality gate (on mainnet `scripts/staging/check-finality-gate-mainnet.mjs`; the generic
+`check-finality-gate.mjs` serves rehearsal chains only) proves at the
 finalized block that the factory, router, lens, fixed fee recipient, caps and
 every planned pair are exactly the reviewed ones. The deploy script also
 asserts every planned pair is empty. The initial-liquidity amounts and their

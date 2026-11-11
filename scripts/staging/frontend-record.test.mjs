@@ -23,7 +23,10 @@ const input = () => ({
 });
 
 test("wraps a mainnet plan, config and enabling gate report", () => {
-  const record = assembleRecord(input());
+  const record = assembleRecord({ ...input(), rehearsalChain: true });
+  assert.equal(record.rehearsalChain, true);
+  // Without the flag a chain-700770 plan on a genesis that is not the pin gives no record (R309-2P-12).
+  assert.throws(() => assembleRecord(input()), /genesis that is not the pinned mainnet genesis/);
   assert.equal(record.domain, RECORD_DOMAIN);
   assert.equal(record.status, "liquidity-enabled");
   assert.deepEqual(record.plan, input().plan);
@@ -34,7 +37,7 @@ test("refuses rehearsal plans, refused gates and mismatched chains", () => {
   const edit = (change) => {
     const i = input();
     change(i);
-    return () => assembleRecord(i);
+    return () => assembleRecord({ ...i, rehearsalChain: true });
   };
   assert.throws(edit((i) => (i.plan.chain.rehearsal = true)), /not a chain 700770/);
   assert.throws(edit((i) => (i.plan.chain.id = 700771)), /not a chain 700770/);

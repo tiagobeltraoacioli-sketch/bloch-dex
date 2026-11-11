@@ -1023,7 +1023,7 @@ test("monitor: keeper budget levels, from the keeper's own state file", async ()
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const path = join(mkdtempSync(join(tmpdir(), "keeper-")), "state.json");
-  const fresh = { at: 999_900, action: "nothing-to-do", level: OK };
+  const fresh = { at: 999_900, action: "nothing-to-do", level: OK, execute: true };
   const check = (state, limits) => {
     const checks = [];
     writeFileSync(path, JSON.stringify(state));
@@ -1061,7 +1061,7 @@ test("R309-C3: keeper_budget compares the wei charged with the keeper's budget",
   const BUDGET = 50_000_000_000_000_000n; // the decided 0.05 BLCH
   const levelOf = (txs, limits = { maxTx: 48, budgetWei: BUDGET }) => {
     const checks = [];
-    writeFileSync(path, JSON.stringify({ schema: "postern.dex.skim-keeper.v1", txs, lastPass: { at: 999_900, action: "nothing-to-do", level: OK } }));
+    writeFileSync(path, JSON.stringify({ schema: "postern.dex.skim-keeper.v1", txs, lastPass: { at: 999_900, action: "nothing-to-do", level: OK, execute: true } }));
     checkKeeperState(path, 1_000_000, (name, level, detail) => checks.push({ name, level, detail }), limits);
     return checks[0];
   };
@@ -1098,15 +1098,28 @@ test("R309-C3: a state file that is not the keeper's, a keeper that stopped, and
   const unstamped = check({ schema, txs: [] });
   assert.equal(unstamped.level, WARN);
   assert.match(unstamped.detail, /no pass stamp/);
-  assert.equal(check({ schema, txs: [], lastPass: { at: 999_800, action: "nothing-to-do", level: OK } }).level, OK);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_800, action: "nothing-to-do", level: OK, execute: true } }).level, OK);
   // Three missed 5-minute passes.
-  const dead = check({ schema, txs: [], lastPass: { at: 999_000, action: "nothing-to-do", level: OK } });
+  const dead = check({ schema, txs: [], lastPass: { at: 999_000, action: "nothing-to-do", level: OK, execute: true } });
   assert.equal(dead.level, CRIT);
   assert.match(dead.detail, /it is not running/);
   // The keeper's own last word: exit 1 and 2 are successes for its unit, so the monitor carries them.
-  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "budget-exhausted", level: WARN } }).level, WARN);
-  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "refused", level: CRIT } }).level, CRIT);
-  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "rpc-failed", level: 3 } }).level, WARN);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "budget-exhausted", level: WARN, execute: true } }).level, WARN);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "refused", level: CRIT, execute: true } }).level, CRIT);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "rpc-failed", level: 3, execute: true } }).level, WARN);
+  // R309-2P-11: a pass without --execute publishes nothing, so its stamp is never OK; a stamp without the field
+  // (written before round 15's second pass) reads the same.
+  const dry = check({ schema, txs: [], lastPass: { at: 999_900, action: "would-skim", level: OK, execute: false } });
+  assert.equal(dry.level, WARN);
+  assert.match(dry.detail, /DRY RUN: the keeper runs without --execute and publishes nothing/);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "nothing-to-do", level: OK } }).level, WARN);
+  // R309-2P-10: a stamp from the future proves nothing about when the keeper last ran. Two minutes of slack: the
+  // keeper may have started after this monitor did.
+  const future = check({ schema, txs: [], lastPass: { at: 1_000_000 + 86_400, action: "nothing-to-do", level: OK, execute: true } });
+  assert.equal(future.level, CRIT);
+  assert.match(future.detail, /stamped 86400 s in the future/);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 1_000_120, action: "nothing-to-do", level: OK, execute: true } }).level, OK);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 1_000_121, action: "nothing-to-do", level: OK, execute: true } }).level, CRIT);
 });
 
 test("R309-C3: every keeper pass stamps the state, whatever it did", async () => {
@@ -1115,15 +1128,16 @@ test("R309-C3: every keeper pass stamps the state, whatever it did", async () =>
   const deps = keeperDeps(node, 1_000_000);
   const idle = await runKeeper(gate, keeperOptions(), state, deps);
   assert.equal(idle.action, "nothing-to-do");
-  assert.deepEqual(state.lastPass, { at: 1_000_000, action: "nothing-to-do", level: OK });
+  assert.deepEqual(state.lastPass, { at: 1_000_000, action: "nothing-to-do", level: OK, execute: true });
   assert.deepEqual(JSON.parse(deps.saves.at(-1)).lastPass, state.lastPass);
   node.chain.balances = ABOVE_CAP;
   const blocked = await runKeeper(gate, keeperOptions({ budgetWei: 1n }), state, keeperDeps(node, 1_000_300));
   assert.equal(blocked.action, "budget-exhausted");
-  assert.deepEqual(state.lastPass, { at: 1_000_300, action: "budget-exhausted", level: blocked.level });
+  assert.deepEqual(state.lastPass, { at: 1_000_300, action: "budget-exhausted", level: blocked.level, execute: true });
   const dry = await runKeeper(gate, keeperOptions({ execute: false }), state, keeperDeps(node, 1_000_600));
   assert.equal(dry.action, "would-skim");
-  assert.equal(state.lastPass.at, 1_000_600);
+  // R309-2P-11: the stamp says the pass could not publish.
+  assert.deepEqual(state.lastPass, { at: 1_000_600, action: "would-skim", level: OK, execute: false });
 });
 
 test("note-tx: an unrecorded approve and seed pass only together, and bad hashes are refused", async () => {
@@ -2105,7 +2119,9 @@ test("review M5: a wall clock far from the chain head stops the pass before the 
   assert.equal(ahead.level, WARN);
   assert.equal(settled.txs.length, 1);
   assert.equal(untouched(state), before);
-  assert.deepEqual(state.lastPass, { at: T0_SENT - 70_000, action: "clock-or-head-stale", level: WARN });
+  // R309-2P-10: a pass the clock guard stopped leaves the stamp alone (its clock is the one just found unusable).
+  assert.equal(state.lastPass.action, "sent");
+  assert.equal(settled.lastPass, undefined);
 });
 
 test("review L8: a pinned pair that belongs to another factory is refused", async () => {

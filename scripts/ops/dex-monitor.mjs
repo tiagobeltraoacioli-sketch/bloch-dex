@@ -34,6 +34,8 @@ import {
 } from "./dex-ops-lib.mjs";
 import { isMain } from "../staging/is-main.mjs";
 
+const MAINNET_PINS = JSON.parse(readFileSync(new URL("../../deployments/mainnet/700770/pins.json", import.meta.url), "utf8"));
+
 export const THRESHOLDS = Object.freeze({
   // Same values and reasoning as the L2 monitor's mainnet profile.
   headAgeWarn: 25n * 60n,
@@ -75,6 +77,9 @@ export async function runMonitor(gate, options, request, deps = {}) {
     }
   };
 
+  // Which gate judges this run (review R309-2P-13): the mainnet gate, or the generic one of a rehearsal. The generic
+  // gate on the pinned mainnet genesis is a private rehearsal's business only, and every report says so with a WARN.
+  if (options.gateMode) add("gate_mode", options.gateMode.level, options.gateMode.detail);
   const identity = await guarded("rpc_identity", async () => {
     await checkIdentity(request, deployment);
     add("rpc_identity", OK, `chain ${deployment.chainId}, genesis ${deployment.genesisHash}`);
@@ -220,6 +225,8 @@ const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 export const KEEPER_STATE_SCHEMA = "postern.dex.skim-keeper.v1";
 /// The keeper timer fires every 5 minutes; three missed passes are a dead keeper.
 export const KEEPER_MAX_AGE_SECONDS = 900;
+/// The keeper and the monitor read one clock; a pass that started after this monitor did may be stamped a little ahead.
+export const KEEPER_STAMP_AHEAD_SECONDS = 120;
 
 /// How much of the keeper's rolling budget is gone, and whether someone is racing it. A
 /// griefer's own skim leaves the pair open, so the pair checks alone never show this.
@@ -268,9 +275,16 @@ export function checkKeeperState(path, now, add, limits = 48) {
       if (age > maxAgeSeconds) {
         pass = `; the keeper's last pass was ${age} s ago (limit ${maxAgeSeconds} s): it is not running`;
         level = CRIT;
+      } else if (age < -KEEPER_STAMP_AHEAD_SECONDS) {
+        // A stamp from the future says nothing about when the keeper last ran (a clock that stepped): not alive.
+        pass = `; the keeper's last pass is stamped ${-age} s in the future of this host's clock: the stamp is invalid, the keeper cannot be shown to run`;
+        level = CRIT;
       } else {
-        const lastLevel = [OK, WARN, CRIT].includes(last.level) ? last.level : WARN; // 3: its node did not answer
-        pass = `; last pass ${age} s ago: ${String(last.action).slice(0, 60)}${lastLevel === OK ? "" : " (needs attention, see the keeper's journal)"}`;
+        let lastLevel = [OK, WARN, CRIT].includes(last.level) ? last.level : WARN; // 3: its node did not answer
+        // A pass without --execute publishes nothing, whatever it reports (review R309-2P-11).
+        const dry = last.execute !== true;
+        if (dry && lastLevel < WARN) lastLevel = WARN;
+        pass = `; last pass ${Math.max(age, 0)} s ago: ${String(last.action).slice(0, 60)}${dry ? " (DRY RUN: the keeper runs without --execute and publishes nothing)" : lastLevel === OK ? "" : " (needs attention, see the keeper's journal)"}`;
         if (lastLevel > level) level = lastLevel;
       }
     }
@@ -431,6 +445,20 @@ async function gateFor(args) {
   return (gate, request) => evaluateMainnetGate(gate, safePlan, request, bridgeTokens);
 }
 
+/// The gate that judges a run, as a report row. `--rehearsal` (the generic gate: no pinned Safe build, bridge files
+/// and exit check optional) is refused for a gate file of the pinned mainnet genesis unless
+/// `--rehearsal-on-pinned-genesis` is given too; that pair is for a private L2 built on the pinned genesis
+/// (scripts/ops/rehearse-ops.sh private-l2) and puts a WARN row into every report, so a production unit edited to it
+/// can never read OK (review R309-2P-13).
+export function gateMode(args, gate, pinnedGenesis = MAINNET_PINS.l2.genesisHash) {
+  if (!args.rehearsal) return { level: OK, detail: "mainnet gate: pinned chain and genesis, Safe build, bridge deployment record and launch policy" };
+  if (gate?.chain?.genesisHash !== pinnedGenesis) return { level: OK, detail: "rehearsal: generic gate on a chain that is not the pinned mainnet genesis" };
+  if (!args["rehearsal-on-pinned-genesis"]) {
+    throw new Error("--rehearsal selects the generic gate, and this gate file is for the pinned mainnet genesis: run without --rehearsal (with --safe-plan, the bridge files and the exit check). A private rehearsal chain built on the pinned genesis must say so with --rehearsal-on-pinned-genesis");
+  }
+  return { level: WARN, detail: "REHEARSAL MODE on the pinned mainnet genesis: the generic gate ran; the pinned Safe build, the bridge deployment record, the launch policy and the bUSDC exit check were NOT required. Never run a production monitor like this" };
+}
+
 /// --keeper-max-tx: the keeper's own --max-tx, so keeper_budget judges the count the keeper is run with.
 function keeperMaxTx(value) {
   if (value === undefined) return undefined;
@@ -445,10 +473,11 @@ const USAGE = "usage: dex-monitor.mjs --config <gate.json> --rpc <url> --safe-pl
 /// The command line, checked as a whole before anything is read. Throws with the reason: the monitor then exits
 /// UNKNOWN. Nothing a unit can leave empty or misspell may turn a check off (review R309-C1, R309-C2, R309-C3).
 export function monitorArguments(argv) {
-  const args = parseArgs(argv, { flags: ["rehearsal", "json", "expect-seeded"], options: MONITOR_OPTIONS });
+  const args = parseArgs(argv, { flags: ["rehearsal", "rehearsal-on-pinned-genesis", "json", "expect-seeded"], options: MONITOR_OPTIONS });
   const need = (ok, why) => { if (!ok) throw new Error(`${why}\n${USAGE}`); };
   need(args._.length === 0, `unexpected argument ${args._[0]}`);
   need(args.config && args.rpc, "--config and --rpc are required");
+  need(!args["rehearsal-on-pinned-genesis"] || args.rehearsal, "--rehearsal-on-pinned-genesis goes with --rehearsal");
   need(Boolean(args["bridge-plan"]) === Boolean(args["bridge-record"]), "--bridge-plan and --bridge-record go together");
   need(Boolean(args["eth-rpc"]) === Boolean(args["bridge-vault"]), "--eth-rpc and --bridge-vault go together: without both the bUSDC exit check cannot run");
   need(!(args["bridge-vault-code-hash"] || args["bridge-token"]) || args["bridge-vault"], "--bridge-vault-code-hash and --bridge-token need --bridge-vault");
@@ -479,9 +508,11 @@ if (isMain(import.meta.url)) {
   try {
     const args = monitorArguments(process.argv.slice(2));
     const request = createRequest(args.rpc);
+    const gateFile = readGate(args.config);
+    const mode = gateMode(args, gateFile);
     const result = await runMonitor(
-      readGate(args.config),
-      { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"], keeperMaxTx: keeperMaxTx(args["keeper-max-tx"]),
+      gateFile,
+      { gateMode: mode, expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"], keeperMaxTx: keeperMaxTx(args["keeper-max-tx"]),
         keeperBudgetWei: args["keeper-budget-wei"] === undefined ? undefined : BigInt(args["keeper-budget-wei"]),
         keeperMaxAgeSeconds: args["keeper-max-age-s"] === undefined ? undefined : Number(args["keeper-max-age-s"]),
         ethRequest: args["eth-rpc"] ? createRequest(args["eth-rpc"]) : undefined, bridgeVault: args["bridge-vault"],

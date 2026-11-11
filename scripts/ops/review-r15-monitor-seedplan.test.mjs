@@ -230,7 +230,7 @@ test("R309-K1: every ops tool refuses an option outside its own list, an empty v
   assert.throws(() => parseArgs(["--config"], spec), /--config needs a value/);
   // With no list at all nothing is accepted: a tool cannot forget to name its options.
   assert.throws(() => parseArgs(["--config", "g.json"]), /unknown option --config/);
-  const ok = parseArgs(["plan", "--config", "g.json", "--execute", "--sig", "a", "--sig", "b", "--", "--keystore", ""], spec);
+  const ok = parseArgs(["plan", "--config", "g.json", "--execute", "--sig", "a", "--sig", "b", "--", "--keystore", ""], { ...spec, commands: ["plan", "assemble"] });
   assert.deepEqual({ ...ok }, { _: ["plan"], rest: ["--keystore", ""], config: "g.json", execute: true, sig: ["a", "b"] });
 });
 
@@ -297,7 +297,13 @@ test("R309-C5: `remove` never goes below 10% of the seed position without --allo
   const low = await plan(["--shares", "64999999999000", "--fraction-bps", "5000"]);
   assert.equal(low.out.status, 2);
   assert.equal(low.json.decision, "refuse-floor");
-  assert.equal(low.json.floorShares, "6999999999900");
+  // R309-2P-14: a holding above the stated seed is refused outright; the floor never follows the holding down.
+  assert.match(low.json.reason, /the fraction stated is below the real seed/);
+  assert.equal(low.json.minimumFloorShares, "6999999999900");
+  // With the absolute floor (the monitor's number) the planner works whatever fraction is typed.
+  const absolute = await plan(["--bps", "5000", "--fraction-bps", "5000", "--floor-shares", "6999999999900"]);
+  assert.equal(absolute.out.status, 0, absolute.out.stderr);
+  assert.equal(absolute.json.floorShares, "6999999999900");
 
   // 3. --fraction-bps 1 no longer shrinks the floor to dust.
   const dust = await plan(["--bps", "9999", "--fraction-bps", "1"]);
@@ -320,7 +326,10 @@ test("R309-C5: `remove` never goes below 10% of the seed position without --allo
 test("R309-C5: the removal floor is 10% of the larger of the seed position and the shares held", () => {
   const seed = 50_000n;
   assert.deepEqual(removalFloor({ seedShares: seed, held: 20_000n }), { seedShares: seed, minimumShares: 5_000n, floorShares: 5_000n });
-  assert.equal(removalFloor({ seedShares: seed, held: 80_000n }).floorShares, 8_000n);
+  assert.match(removalFloor({ seedShares: seed, held: 80_000n }).refused, /the fraction stated is below the real seed, or liquidity was added later/);
+  assert.equal(removalFloor({ seedShares: seed, held: 80_000n, floorShares: 8_000n }).floorShares, 8_000n);
+  assert.match(removalFloor({ seedShares: seed, held: 80_000n, floorShares: 7_999n }).refused, /below the seeder floor of 8000 shares/);
+  assert.equal(removalFloor({ seedShares: seed, held: 80_000n, allowBelowFloor: true }).floorShares, 8_000n);
   assert.equal(removalFloor({ seedShares: seed, held: 20_000n, floorBps: 2_500n }).floorShares, 12_500n);
   assert.equal(removalFloor({ seedShares: seed, held: 20_000n, floorShares: 5_000n }).floorShares, 5_000n);
   assert.match(removalFloor({ seedShares: seed, held: 20_000n, floorShares: 4_999n }).refused, /below the seeder floor of 5000 shares/);

@@ -116,6 +116,7 @@ beforeAll(async () => {
       schemaVersion: 1,
       domain: 'postern.dex.frontend-record.v1',
       status: 'liquidity-enabled',
+      rehearsalChain: true, // the fixture's genesis is not the pinned one (R309-2P-12)
       ...record,
     },
     network,
@@ -438,6 +439,7 @@ describe('mainnet deployment record', () => {
       schemaVersion: 1,
       domain: 'postern.dex.frontend-record.v1',
       status: 'liquidity-enabled',
+      rehearsalChain: true,
       ...r,
     });
     const live = await loadMainnetState(wrap(mainnetRecord()), network);

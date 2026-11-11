@@ -321,19 +321,19 @@ ROUTER=$(jsonget "$EV/dex.plan.json" contracts.router.address); WRAPPED=$(jsonge
 note "pair $PAIR router $ROUTER WBLCH $WRAPPED"
 
 log "4 finality gate (generic gate behind the anvil shim; anvil genesis is not the mainnet pin)"
-expect 1 gate-before-finality node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" "${BRIDGE_ARGS[@]}"
+expect 1 gate-before-finality node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$EV/gate.json" --rpc "$SHIM" "${BRIDGE_ARGS[@]}"
 cast rpc anvil_mine 0x80 --rpc-url "$RPC" > /dev/null
-expect 0 gate-after-finality node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" "${BRIDGE_ARGS[@]}"
+expect 0 gate-after-finality node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$EV/gate.json" --rpc "$SHIM" "${BRIDGE_ARGS[@]}"
 node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const b=r.bridgeTokens[0];console.log("     bridge token", b.address, "template", b.template, "threshold", b.threshold, "of", b.signers.length, "switch", b.switchThreshold, "guardians", b.guardians.length, "T", b.largeMintThreshold, "MAX_PENDING", b.maxPending)' "$EV/gate-after-finality.out" | tee -a "$EV/steps.log"
 # L-3: the record of a look-alike (same code hash, other committee) does not match the gate's token ...
-expect 1 gate-lookalike-record node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/fake.plan.json" --bridge-record "$WORK/fake.record.json"
+expect 1 gate-lookalike-record node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/fake.plan.json" --bridge-record "$WORK/fake.record.json"
 grep -q 'does not pin the recorded token' "$EV/gate-lookalike-record.out" || die "look-alike record not named"
 # ... and a record whose committee differs from the token on chain is refused at the finalized block.
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1]));p.expected.signers=fs.readFileSync(process.argv[2],"utf8").trim().split("\n").map((l)=>l.split(" ")[0].toLowerCase());fs.writeFileSync(process.argv[3],JSON.stringify(p))' "$EV/busdc.plan.json" "$WORK/fake-signers.txt" "$WORK/other-signers.plan.json"
-expect 1 gate-other-signers node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/other-signers.plan.json" --bridge-record "$EV/busdc.record.json"
+expect 1 gate-other-signers node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/other-signers.plan.json" --bridge-record "$EV/busdc.record.json"
 grep -q 'signers() differ from the bridge plan' "$EV/gate-other-signers.out" || die "other signers not named"
 node -e 'const fs=require("fs");const p=JSON.parse(fs.readFileSync(process.argv[1]));p.expected.largeMintThreshold=1000000000;fs.writeFileSync(process.argv[2],JSON.stringify(p))' "$EV/busdc.plan.json" "$WORK/t-plan.json"
-expect 1 gate-t-above-zero node scripts/staging/check-finality-gate.mjs --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/t-plan.json" --bridge-record "$EV/busdc.record.json"
+expect 1 gate-t-above-zero node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$EV/gate.json" --rpc "$SHIM" --bridge-plan "$WORK/t-plan.json" --bridge-record "$EV/busdc.record.json"
 grep -q 'must be 0' "$EV/gate-t-above-zero.out" || die "T > 0 not named"
 pass "L-3: the gate takes the token's identity from the bridge record: a look-alike's record, other signers and T > 0 are refused"
 expect 0 verify-deployment-finalized "${VD[@]}" --at finalized

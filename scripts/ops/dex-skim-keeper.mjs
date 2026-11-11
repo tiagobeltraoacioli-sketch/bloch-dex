@@ -362,8 +362,13 @@ export async function runKeeper(gate, givenOptions, state, deps) {
   const outcome = await keeperPass(gate, givenOptions, state, deps);
   // The stamp of every pass, whatever it did: the monitor reads it to tell a keeper that runs and needs nothing
   // from one that never ran, stopped, or keeps ending on a limit (its unit counts exit 1 as a success).
-  state.lastPass = { at: deps.now, action: String(outcome.action), level: outcome.level };
-  deps.save(state);
+  // Two things the stamp must not hide (review R309-2P-10, 2P-11): a pass the clock guard stopped is not stamped at
+  // all (its `now` is the clock that was just found unusable, and the monitor would count from it); and the stamp
+  // says whether the pass could publish, so a keeper left in dry-run mode does not read as a working one.
+  if (outcome.action !== "clock-or-head-stale") {
+    state.lastPass = { at: deps.now, action: String(outcome.action), level: outcome.level, execute: givenOptions.execute === true };
+    deps.save(state);
+  }
   return outcome;
 }
 
@@ -661,6 +666,25 @@ const KEEPER_OPTIONS = ["config", "rpc", "keeper", "state", "budget-wei", "max-t
   "hard-reserve-bps", "max-gas", "floor-bps", "ceiling-floor-wei", "cooldown-s", "pending-timeout-s", "rebroadcast-s", "replace-after-s",
   "max-replacements", "max-clock-skew-s", "eth-rpc", "bridge-vault", "bridge-vault-code-hash", "bridge-token"];
 
+/// Before the first pass that may sign: the signer arguments must resolve, without a prompt, to the configured keeper
+/// address (`cast wallet address <signer arguments>`, the same wallet options `cast mktx` takes). A signer that
+/// cannot be opened (missing keystore or password file, a prompt with no terminal) or that is another account stops
+/// the keeper at start with exit 2, instead of at the first skim that is needed (review R309-2P-9). The answer is
+/// public data; the kit still never sees a key.
+export async function requireSigner(signerArgs, keeper, run = promisify(execFile)) {
+  let stdout;
+  try {
+    ({ stdout } = await run("cast", ["wallet", "address", ...signerArgs], { timeout: 30_000 }));
+  } catch (error) {
+    // The default message carries the whole command line, signer arguments included.
+    throw new Error(`the signer arguments after -- do not open a signer (cast wallet address: ${String(error.stderr ?? "").trim().split("\n").at(-1) || (error.killed ? "no answer in 30 s; it may be waiting for a prompt" : `exit ${error.code}`)})`);
+  }
+  const address = String(stdout).trim().split(/\s+/).at(-1) ?? "";
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error("the signer arguments after -- do not resolve to an address (cast wallet address printed something else)");
+  if (address.toLowerCase() !== String(keeper).toLowerCase()) throw new Error(`the signer after -- is ${address}, not the configured --keeper ${keeper}`);
+  return address;
+}
+
 function bigOption(args, name, fallback) {
   return args[name] === undefined ? fallback : BigInt(args[name]);
 }
@@ -674,6 +698,9 @@ if (isMain(import.meta.url)) {
       process.exit(UNKNOWN);
     }
     if (args.execute && args.rest.length === 0) throw new Error("--execute needs signer arguments after --");
+    // An unset variable in the unit (`--keystore ${DEX_KEEPER_KEYSTORE}`) arrives as an empty word: stop here, not at
+    // the first skim that is needed (review R309-2P-9).
+    if (args.rest.some((word) => word === "")) throw new Error("a signer argument after -- is empty (an unset variable in the unit?)");
     const options = {
       keeper: args.keeper,
       execute: Boolean(args.execute),
@@ -703,6 +730,7 @@ if (isMain(import.meta.url)) {
     for (const [k, flag] of Object.entries(integerOptions)) {
       if (!Number.isSafeInteger(options[k]) || options[k] < 0) throw new Error(`--${flag} must be a non-negative integer`);
     }
+    if (args.execute) await requireSigner(args.rest, args.keeper);
     const now = Math.floor(Date.now() / 1000);
     release = acquireLock(args.state);
     // A stopped pass is the same as a crashed one: the state was written before anything was

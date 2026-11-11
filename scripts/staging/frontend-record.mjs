@@ -9,7 +9,10 @@
 // file is never proposed for review.
 //
 //   node scripts/staging/frontend-record.mjs --config <config.json> --plan <plan.json> \
-//     --infra-plan <infra-plan.json> --gate-report <gate-report.json> --write <record.json>
+//     --infra-plan <infra-plan.json> --gate-report <gate-report.json> --write <record.json> [--rehearsal-chain]
+//
+// --rehearsal-chain: required when the plan's genesis is not the pinned mainnet genesis (an anvil or another private
+// chain with chain ID 700770); refused on the pinned genesis.
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "./is-main.mjs";
 
@@ -48,7 +51,7 @@ export function requireMainnetWrapperReport(gateReport, plan, genesisHash = MAIN
   );
 }
 
-export function assembleRecord({ config, plan, infra, gateReport }) {
+export function assembleRecord({ config, plan, infra, gateReport, rehearsalChain = false }) {
   const refuse = (ok, message) => {
     if (!ok) throw new Error(`frontend record: ${message}`);
   };
@@ -68,7 +71,17 @@ export function assembleRecord({ config, plan, infra, gateReport }) {
     gateReport.chainId === plan.chain.id && gateReport.genesisHash === plan.chain.genesisHash,
     "the gate report is for another chain",
   );
-  if (plan.chain.genesisHash === MAINNET_GENESIS) requireMainnetWrapperReport(gateReport, plan);
+  // Every guard above and in the page keys on the pinned genesis. A chain-700770 plan on another genesis is either a
+  // rehearsal chain, which the operator must say (`--rehearsal-chain`; the record then carries `rehearsalChain: true`
+  // and the page serves it only from a local build with overrides), or a mainnet this repository does not pin: no
+  // record is made for that (review R309-2P-12).
+  if (plan.chain.genesisHash === MAINNET_GENESIS) {
+    refuse(rehearsalChain !== true, "--rehearsal-chain was given for the pinned mainnet genesis");
+    requireMainnetWrapperReport(gateReport, plan);
+  } else {
+    refuse(rehearsalChain === true,
+      `the plan is for chain ${MAINNET_CHAIN_ID} on a genesis that is not the pinned mainnet genesis ${MAINNET_GENESIS}; for a rehearsal chain add --rehearsal-chain, for mainnet correct and review the pins first`);
+  }
   refuse(infra?.domain === "postern.dex.mainnet-infra-plan.v1", "unsupported infra plan");
   refuse(
     infra.chain?.id === plan.chain.id && infra.chain?.genesisHash === plan.chain.genesisHash,
@@ -78,6 +91,7 @@ export function assembleRecord({ config, plan, infra, gateReport }) {
     schemaVersion: 1,
     domain: RECORD_DOMAIN,
     status: "liquidity-enabled",
+    ...(rehearsalChain === true ? { rehearsalChain: true } : {}),
     plan,
     config,
     gateReport,
@@ -86,12 +100,14 @@ export function assembleRecord({ config, plan, infra, gateReport }) {
 }
 
 if (isMain(import.meta.url)) {
-  const args = process.argv.slice(2);
+  const given = process.argv.slice(2);
+  const rehearsalChain = given.includes("--rehearsal-chain");
+  const args = given.filter((a) => a !== "--rehearsal-chain");
   const get = (flag) => {
     const i = args.indexOf(flag);
     if (i < 0 || !args[i + 1]) {
       console.error(
-        "Usage: node scripts/staging/frontend-record.mjs --config <c> --plan <p> --infra-plan <i> --gate-report <g> --write <out>",
+        "Usage: node scripts/staging/frontend-record.mjs --config <c> --plan <p> --infra-plan <i> --gate-report <g> --write <out> [--rehearsal-chain]",
       );
       process.exit(2);
     }
@@ -104,6 +120,7 @@ if (isMain(import.meta.url)) {
       plan: read("--plan"),
       infra: read("--infra-plan"),
       gateReport: read("--gate-report"),
+      rehearsalChain,
     });
     writeFileSync(get("--write"), `${JSON.stringify(record, null, 2)}\n`);
     console.log(`wrote ${get("--write")} (chain ${record.plan.chain.id}, ${record.plan.pairs.length} pairs)`);

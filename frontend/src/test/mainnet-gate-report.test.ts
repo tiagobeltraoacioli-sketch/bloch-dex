@@ -1,7 +1,7 @@
 // F-L2 (round 15): on the pinned mainnet genesis the page accepts only a report of the mainnet gate.
 import { describe, expect, it } from 'vitest';
 import pins from '../../../deployments/mainnet/700770/pins.json';
-import { requireMainnetGateReport } from '../mainnet/config';
+import { requireChainKind, requireMainnetGateReport } from '../mainnet/config';
 
 const PINNED = pins.l2.genesisHash;
 const SAFE = `0x${'5'.repeat(40)}`;
@@ -80,5 +80,21 @@ describe('mainnet gate report (F-L2)', () => {
     const r = report();
     change(r);
     expect(() => requireMainnetGateReport(r, deployment, PINNED)).toThrow(pattern);
+  });
+});
+
+describe('R309-2P-12: a record for another genesis must say that it is a rehearsal chain', () => {
+  const OTHER = `0x${'9'.repeat(64)}`;
+  it('accepts the pinned genesis without the mark and another genesis with it', () => {
+    expect(() => requireChainKind(undefined, PINNED)).not.toThrow();
+    expect(() => requireChainKind(true, OTHER)).not.toThrow();
+  });
+  it('refuses another genesis without the mark, and the mark on the pinned genesis', () => {
+    expect(() => requireChainKind(undefined, OTHER)).toThrow(/not marked as a rehearsal chain/);
+    expect(() => requireChainKind(false, OTHER)).toThrow(/not marked as a rehearsal chain/);
+    expect(() => requireChainKind(true, PINNED)).toThrow(
+      /marked as a rehearsal chain on the pinned/,
+    );
+    expect(() => requireChainKind(false, PINNED)).toThrow();
   });
 });

@@ -136,6 +136,13 @@ export function seedFloorShares({ wrappedCap, quoteCap, price, fractionBps, floo
 /// the minimum. `--floor-shares` and `--floor-bps` can only RAISE the floor; lowering it takes the same
 /// deliberate `--allow-below-floor` as removing below it (review R309-C5).
 export function removalFloor({ seedShares, held, floorShares, floorBps, allowBelowFloor = false }) {
+  // The stated seed is checked against nothing but the holding. A holding above it means the fraction was stated too
+  // low (or liquidity was added later); then the floor would follow what is held and fall with every removal. So it
+  // is refused unless the floor is given as an absolute number of shares (the monitor's --lp-min-shares), which does
+  // not move (review R309-2P-14).
+  if (held > seedShares && floorShares === undefined && !allowBelowFloor) {
+    return { seedShares, minimumShares: (held * SEEDER_FLOOR_BPS) / 10_000n, refused: `the recipient holds ${held} shares, more than the seed position ${seedShares} computed from --price and --fraction-bps: the fraction stated is below the real seed, or liquidity was added later. State the seed's real fraction, or give the floor as --floor-shares N (the number the monitor has as --lp-min-shares); --allow-below-floor overrides this, deliberately` };
+  }
   const position = held > seedShares ? held : seedShares;
   const minimumShares = (position * SEEDER_FLOOR_BPS) / 10_000n;
   const asked = floorShares !== undefined ? floorShares : (position * (floorBps ?? SEEDER_FLOOR_BPS)) / 10_000n;
@@ -325,7 +332,7 @@ async function remove(args) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2), { flags: ["allow-below-floor"], options: ["config", "rpc", "price", "to", "shares", "bps", "floor-shares", "floor-bps", "fraction-bps", "deadline-min", "tolerance-bps", "tx", "write-txs"] });
+  const args = parseArgs(process.argv.slice(2), { commands: ["plan", "verify", "remove", "note-tx"], flags: ["allow-below-floor"], options: ["config", "rpc", "price", "to", "shares", "bps", "floor-shares", "floor-bps", "fraction-bps", "deadline-min", "tolerance-bps", "tx", "write-txs"] });
   const [command] = args._;
   if (command === "remove") return remove(args);
   if (command === "note-tx") {

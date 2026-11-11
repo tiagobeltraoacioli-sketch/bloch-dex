@@ -150,13 +150,13 @@ for (const p of plan.pairs) if (at(p.address) !== p.codeHash) { console.error("F
 console.log("runtime hashes ok:", Object.keys(plan.contracts).join(", "), "+", plan.pairs.length, "pair(s); init code hash", plan.pairInitCodeHash);
 ' "$WORK/plan.json" "$RPC"
 echo "== gate before finality is refused"
-if node scripts/staging/check-finality-gate.mjs --config "$WORK/gate.json" --rpc "$SHIM" 2> "$WORK/refusal.txt"; then
+if node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$WORK/gate.json" --rpc "$SHIM" 2> "$WORK/refusal.txt"; then
   echo "FAIL: gate passed before finality"; exit 1
 fi
 cat "$WORK/refusal.txt"
 cast rpc anvil_mine 0x80 --rpc-url "$RPC" > /dev/null
 echo "== gate after finality"
-node scripts/staging/check-finality-gate.mjs --config "$WORK/gate.json" --rpc "$SHIM" | head -n 12
+node scripts/staging/check-finality-gate.mjs --rehearsal-chain --config "$WORK/gate.json" --rpc "$SHIM" | head -n 12
 ROUTER=$(node -e 'console.log(require(process.argv[1]).contracts.router.address)' "$WORK/plan.json")
 FACTORY=$(node -e 'console.log(require(process.argv[1]).contracts.factory.address)' "$WORK/plan.json")
 WRAPPED=$(node -e 'console.log(require(process.argv[1]).contracts.wrappedNative.address)' "$WORK/plan.json")
