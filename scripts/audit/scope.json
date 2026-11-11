@@ -62,7 +62,8 @@
         "scripts/ops/systemd/bloch-dex-skim-keeper.service",
         "scripts/ops/systemd/bloch-dex-skim-keeper.timer",
         "scripts/ops/systemd/bloch-dex-monitor.service",
-        "scripts/ops/systemd/bloch-dex-monitor.timer"
+        "scripts/ops/systemd/bloch-dex-monitor.timer",
+        "scripts/ops/systemd/dex-monitor.env.example"
       ]
     },
     "D": {
@@ -105,6 +106,17 @@
     { "path": "scripts/ops/rehearse-*", "why": "rehearsal drivers" },
     { "path": "scripts/publication-quorum*", "why": "legacy publication tooling" },
     { "path": "scripts/devnet4/", "why": "legacy devnet tooling" },
+    { "path": "scripts/staging/check-finality-gate.mjs", "why": "the generic gate command, for rehearsal chains only: it refuses a gate file for the pinned mainnet genesis (review R309-B1); its engine finality-gate.mjs is in tier B" },
+    { "path": "scripts/staging/private-l2.sh", "why": "rehearsal chain driver, loopback only" },
+    { "path": "scripts/staging/bridge-v3-real.sh", "why": "rehearsal library: the real bridge token from the bridge's own tools on a loopback chain" },
+    { "path": "scripts/staging/e2e-settled/", "why": "settled-stack rehearsal drivers, loopback only" },
+    { "path": "scripts/staging/render/", "why": "rehearsal render and screenshot hooks" },
+    { "path": "scripts/staging/newslot-rpc-check.mjs", "why": "rehearsal check of the page's new-slot fee against a loopback settled RPC" },
+    { "path": "scripts/ops/griefing/", "why": "griefing cost models and rehearsal drivers; they send nothing on mainnet" },
+    { "path": "scripts/ops/dex-ceiling-capture-model.mjs", "why": "arithmetic model of the ceiling-fee capture (docs); reads nothing, sends nothing" },
+    { "path": "scripts/ops/dex-storage-footprint.mjs", "why": "read-only measurement of the DEX storage footprint" },
+    { "path": "scripts/live-auth", "why": "legacy preview-route tooling, not on the mainnet path" },
+    { "path": "scripts/audit/", "why": "this generator and its scope file" },
     { "path": "deployments/devnet4/", "why": "devnet deployment records bundled for the preview route" },
     { "path": "frontend/ (everything not in tier D)", "why": "presentation, preview data and wallet connection; no transaction is built outside tier D" }
   ],

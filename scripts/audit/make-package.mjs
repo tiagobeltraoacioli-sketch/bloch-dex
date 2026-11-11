@@ -110,6 +110,14 @@ for (const [path, tier] of tierOf) {
   const text = data.toString("utf8");
   const sol = path.endsWith(".sol") ? solidityCounts(text) : null;
   rows.push({ tier, path, sha256: sha256(data), blob: git("rev-parse", `${commit}:${path}`), bytes: data.length, lines: text.split("\n").length - (text.endsWith("\n") ? 1 : 0), code: sol ? sol.sloc : codeLines(text), sloc: sol?.sloc ?? "", nsloc: sol?.nsloc ?? "" });
+  if (path.endsWith(".sol")) {
+    // Solidity: every relative import of a scoped contract must be scoped too (review R309-I2).
+    for (const match of text.matchAll(/^\s*import\s+(?:[^"';]*\sfrom\s+)?["'](\.{1,2}\/[^"']+)["']/gm)) {
+      const target = join(dirname(path), match[1]);
+      if (!tierOf.has(target) && !isExcluded(target)) openImports.push(`${path} imports ${target}`);
+    }
+    continue;
+  }
   if (!/\.(mjs|ts|tsx)$/.test(path)) continue;
   for (const match of text.matchAll(/(?:from\s+|import\s*\(\s*|import\s+|new URL\(\s*)["'](\.{1,2}\/[^"']+)["']/g)) {
     let target = join(dirname(path), match[1]);
@@ -119,6 +127,11 @@ for (const [path, tier] of tierOf) {
     if (!tierOf.has(target) && !isExcluded(target)) openImports.push(`${path} imports ${target}`);
   }
 }
+// Every contract, forge script and tool of the commit is either in a tier or named out of scope with a reason, so a
+// new entry point nobody imports (a shell script, a command-line tool) cannot fall out of the package unnoticed
+// (review R309-I2). Tests and their fixtures are not listed.
+const unlisted = git("ls-tree", "-r", "--name-only", commit, "contracts", "script", "scripts").split("\n")
+  .filter((path) => path && !tierOf.has(path) && !isExcluded(path) && !/\.(test|fixture)\.mjs$/.test(path));
 rows.sort((a, b) => a.tier.localeCompare(b.tier) || 0);
 
 // ---- toolchain and code hashes
@@ -196,6 +209,8 @@ else if (build.ok) {
   const safe = args["--safe-artifacts"] ? resolve(args["--safe-artifacts"]) : null;
   if (bridgeInfo && safe && existsSync(join(safe, "contracts"))) {
     const revision = JSON.parse(readFileSync(inTree("deployments/mainnet/dex-mainnet.config.json"), "utf8")).source.revision;
+    // It goes into a shell command line below: only a full commit hash is accepted (review R309-I2).
+    if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("deployments/mainnet/dex-mainnet.config.json source.revision is not a 40-hex commit hash");
     const dir = (n) => join(work, `rehearsal-${n}`);
     evidence.push(run("rehearse-opening", `scripts/ops/rehearse-opening.sh ${port} ${dir("opening")}`, { env: { SAFE_ARTIFACTS: safe, BRIDGE_OUT: join(bridge, "out") }, parse: rehearsal }));
     evidence.push(run("rehearse-ops-anvil", `scripts/ops/rehearse-ops.sh anvil ${port + 10} ${dir("ops")}`, { env: { SAFE_ARTIFACTS: safe, BUSDC_ARTIFACT: v3Artifact }, parse: rehearsal }));
@@ -267,7 +282,7 @@ const knownSource = existsSync(inTree("docs/audit/KNOWN-ISSUES.md")) ? inTree("d
 const files = { "SCOPE.md": scopeMd, "MANIFEST.tsv": tsv, "TEST-EVIDENCE.md": evidenceMd };
 if (knownSource) files["KNOWN-ISSUES.md"] = readFileSync(knownSource, "utf8");
 for (const [name, body] of Object.entries(files)) writeFileSync(join(out, name), body);
-const allOk = evidence.every((e) => e.ok) && openImports.length === 0;
+const allOk = evidence.every((e) => e.ok) && openImports.length === 0 && unlisted.length === 0;
 const packageJson = {
   schema: "postern.dex.audit-package.v1",
   commit,
@@ -280,6 +295,7 @@ const packageJson = {
   codeHashes: hashes,
   bridge: evidence.bridge ?? null,
   scopeOpenImports: openImports,
+  scopeUnlistedFiles: unlisted,
   absentFiles: absent,
   knownIssues: knownSource ? "KNOWN-ISSUES.md" : "absent at this commit",
   tests: evidence.map(({ name, command, exit, ok, summary, logSha256, suites, tests, pass, fail, skipped: s, checks }) => ({ name, command, exit, ok, summary, suites, tests, pass, fail, skipped: s, checks, logSha256 })),
@@ -291,5 +307,6 @@ writeFileSync(join(out, "PACKAGE.json"), `${JSON.stringify(packageJson, null, 2)
 if (existsSync(join(tree, "frontend/dist"))) cpSync(join(tree, "frontend/dist"), join(logs, "frontend-dist"), { recursive: true });
 rmSync(work, { recursive: true, force: true });
 for (const line of openImports) console.error(`scope is not closed: ${line}`);
+for (const path of unlisted) console.error(`in no tier and not named out of scope: ${path}`);
 console.log(JSON.stringify({ commit, out, logs, result: packageJson.result, initCodeHash, tests: packageJson.tests.map((t) => `${t.name}: ${t.ok ? "ok" : "FAILED"} ${t.summary ?? ""}`), notRun: skipped }, null, 2));
 process.exit(allOk ? 0 : 1);
