@@ -450,10 +450,15 @@ fallback. Against a settled RPC built from `24a116e` (settled-rpc `b0627a30…`,
 | First native swap BLCH for bUSDC | quote | 1 / 1 | 1,546,910,049 / 1,406,281,862 | 1.100 | refused | refused | admitted |
 | Sale after the approve, repeat native swap, skim of a donation | quote | 0 / 0 | wallet's fee | | admitted | | not needed |
 
-The page's fee is now the node's requirement plus the 10% margin, and the skim is no longer over-counted. For an
-account with no balance at all the quote answers an error (`sender balance 0 is below gas limit … pass a smaller gas`)
-and the page prices with the access list, as before. The public gateway does not route the method yet; until the
-candidate gateway does, the page on mainnet prices with the access list.
+That run priced with the quote alone. Since the second review pass (R309-2P-2) the node's answer no longer wins
+alone: the page always makes its access-list computation too and suggests the **larger** of the two inside the 15 gwei
+bound, and sends nothing when the node asks more than twice the page's figure or charges slots the page cannot find.
+For the calls above the suggestion is therefore the access-list figure of the second table again (1.15 to 1.47 times
+the node's requirement, and one slot for the skim); the quote only raises it, when the operator's slot price is above
+the network file's. For an account with no balance at all the quote answers an error (`sender balance 0 is below gas
+limit … pass a smaller gas`) and the page's own figure stands alone. The launch gateway does not know the method; the
+gateway of the L2 candidate line routes it (bloch-l2-evm `3d4cfd6`, agents/R15-CROSS-AREA.md 2026-11-11 02:05 UTC:
+"the candidate gateway routes it to the sequencer first and counts it as a simulation"; not exercised here).
 
 Not shown by this check: a browser and a wallet (the fees are signed by the script, as a wallet that honours the
 page's suggestion would), the public gateway, inclusion under load, and real finality.

@@ -129,10 +129,13 @@ contract V3DexHandler is V3Fixture {
         // A share worth less than one base unit of a token cannot be burned (INSUFFICIENT_LIQUIDITY_BURNED, as in
         // Uniswap v2): after a pool is drained to dust that is a rounding refusal, not a blocked exit, and the
         // holder's whole position still exits (test_dustShareIsRefusedByRoundingAndTheWholePositionExits). The
-        // margin of 2 covers the protocol-fee shares minted inside burn. Found by the deep run, round 15.
-        if (_dust(part)) return;
+        // burn is always tried; only that reason, and only for a share in the dust range (the margin of 2 covers
+        // the protocol-fee shares minted inside burn), is tolerated. Any other revert is a blocked exit.
+        bool dust = _dust(part);
         try router.removeLiquidityBLCH(address(busdc), part, 0, 0, address(this), block.timestamp) {}
-        catch {
+        catch Error(string memory reason) {
+            if (!dust || keccak256(bytes(reason)) != keccak256("BDEX: INSUFFICIENT_LIQUIDITY_BURNED")) exitFailed = true;
+        } catch {
             exitFailed = true;
         }
     }

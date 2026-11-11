@@ -47,8 +47,14 @@ GW=${E2E_GW:-http://127.0.0.1:$((E2E_PORT_BASE + 73))}
 case "$RPC$GW" in http://127.0.0.1:*http://127.0.0.1:*) ;; *) echo "E2E_RPC and E2E_GW must be loopback (http://127.0.0.1:<port>)" >&2; exit 2 ;; esac
 STACK_KIND=$([ -n "${E2E_FINALIZE:-}" ] && echo "private L2, no proofs, synthetic finality" || echo "private stack, real settlement")
 REVISION=${REVISION:-$(node -e 'console.log(require(process.argv[1]).source.revision)' "$ROOT/deployments/mainnet/dex-mainnet.config.json")}
-MAXFEE=5000000000; TIP=1000000000; USD_BUCKET=10000000000
-KEEPER_MAX_TIP=3000000000
+# Fee ceilings of the driver's own transactions and of the kit's keeper. The defaults fit a stack without the
+# new-slot admission rule (the launch release). On a stack that enforces it (the user-transaction candidate) a first
+# skim to a Safe that holds none of the token needs about 3.3 gwei of tip (one fresh slot at about 60,000 gas), so
+# raise both there, for example E2E_MAXFEE=12000000000 E2E_KEEPER_MAX_TIP=8000000000 (review R309-2P-17).
+MAXFEE=${E2E_MAXFEE:-5000000000}; TIP=1000000000; USD_BUCKET=10000000000
+KEEPER_MAX_TIP=${E2E_KEEPER_MAX_TIP:-3000000000}
+case "$MAXFEE$KEEPER_MAX_TIP" in *[!0-9]*) echo "E2E_MAXFEE and E2E_KEEPER_MAX_TIP must be whole numbers of wei" >&2; exit 2 ;; esac
+[ "$KEEPER_MAX_TIP" -le "$MAXFEE" ] || { echo "E2E_KEEPER_MAX_TIP must not exceed E2E_MAXFEE" >&2; exit 2; }
 ZERO=0x0000000000000000000000000000000000000000
 EXEC="execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)"
 log() { echo "== $(date -u +%FT%TZ) $*" | tee -a "$EV/steps.log"; }

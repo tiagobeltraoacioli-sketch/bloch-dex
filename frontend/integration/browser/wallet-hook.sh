@@ -49,8 +49,8 @@ cat > "$WORK/wallet-harness.json" <<EOF
   "router": "$ROUTER",
   "wrapped": "$WRAPPED",
   "pair": "$PAIR",
-  "revision": "$(git rev-parse HEAD)",
-  "dirty": $([ -z "$(git status --porcelain)" ] && echo false || echo true)
+  "revision": "$(git rev-parse HEAD 2> /dev/null || echo "${WALLET_REVISION:-export}")",
+  "dirty": $(if git rev-parse HEAD > /dev/null 2>&1; then [ -z "$(git status --porcelain)" ] && echo false || echo true; else echo '"export without .git"'; fi)
 }
 EOF
 chmod 600 "$WORK/wallet-harness.json"

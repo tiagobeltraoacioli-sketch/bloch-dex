@@ -247,9 +247,12 @@ same-nonce review exists for approvals and skims only (test 9b).
 5. Reject the open prompt in the wallet.
 6. Wait until a finalized L2 block is past the deadline (the page needs no action).
 
-Expected after step 6: "The swap deadline passed in canonical finalized block N with nonce M still unused: this swap
-did not execute and can no longer execute. If your wallet still shows the request, reject it there; signed now it
-would only revert. Nothing was sent." and "Swap" is offered again.
+Expected after step 6: "The swap deadline passed in canonical finalized block N, and no transaction of this account
+used nonce M before it: sent from an ordinary wallet account this swap did not execute, and it can no longer execute.
+If your wallet still shows the request, reject it there; signed now it would only revert. Nothing was sent." and
+"Swap" is offered again. Before step 6, "Check cancellation or replacement" with the hash of any other transaction
+of the account answers "This swap has no transaction hash from your wallet … The hold remains." (a swap without a
+hash is never released by another transaction at its nonce).
 
 Variant: at step 5 confirm in the wallet instead. The swap is mined; paste its hash from the wallet activity into
 "Transaction hash from wallet activity" and click "Check transaction hash": mined, one router call.

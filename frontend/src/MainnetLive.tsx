@@ -1581,8 +1581,8 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
         (nothing to do: the page then releases the hold by itself). Another transaction at the same
         nonce does not release it, because an open wallet request could still be signed at another
         nonce. For an approval or a skim your wallet never signed, send any other transaction from
-        this account, paste its hash and use the replacement check. Nothing else on this page
-        clears a hold.
+        this account, paste its hash and use the replacement check. Nothing else on this page clears
+        a hold.
       </p>
       <label>
         Transaction hash from wallet activity

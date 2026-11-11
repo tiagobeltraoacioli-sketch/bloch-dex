@@ -216,7 +216,20 @@ else if (build.ok) {
     evidence.push(run("rehearse-ops-anvil", `scripts/ops/rehearse-ops.sh anvil ${port + 10} ${dir("ops")}`, { env: { SAFE_ARTIFACTS: safe, BUSDC_ARTIFACT: v3Artifact }, parse: rehearsal }));
     evidence.push(run("rehearse-package-standin", `scripts/staging/rehearse-mainnet-package.sh anvil ${revision} ${port + 20} ${dir("package-standin")}`, { env: { SAFE_ARTIFACTS: safe }, parse: rehearsal }));
     evidence.push(run("rehearse-package-real-v3", `scripts/staging/rehearse-mainnet-package.sh anvil ${revision} ${port + 30} ${dir("package-real")}`, { env: { SAFE_ARTIFACTS: safe, BRIDGE_REPO: bridge, ETH_PORT: String(port + 35) }, parse: rehearsal }));
-    for (const e of evidence.slice(-4)) for (const k of Object.keys(e.env)) e.env[k] = e.env[k].replace(bridge, "<bridge-repo>").replace(safe, "<safe-artifacts>");
+    // The wallet harness in a real browser engine, on this export (no .git: it takes the commit as WALLET_REVISION).
+    // Run when a browser is installed; its absence is recorded, not hidden.
+    const chrome = process.env.CHROME_EXE ?? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"].find(existsSync);
+    let ran = 4;
+    if (chrome && existsSync(inTree("frontend/integration/browser/run.mjs"))) {
+      const browser = (text) => {
+        const line = text.match(/^browser wallet scenarios: [^\n]*/m)?.[0];
+        const ok = /^browser wallet scenarios: PASS/.test(line ?? "") && /browser wallet harness: PASS/.test(text);
+        return ok ? { summary: line.replace(/ \(.*$/, "") } : { failed: true, summary: line ?? "no scenario summary" };
+      };
+      evidence.push(run("browser-wallet-harness", "node frontend/integration/browser/run.mjs", { env: { SAFE_ARTIFACTS: safe, WALLET_PORT: String(port + 40), WALLET_OUT: join(work, "browser-wallet"), WALLET_REVISION: commit, CHROME_EXE: chrome }, parse: browser }));
+      ran = 5;
+    } else skipped.push("browser wallet harness (no Chrome or Chromium found; set CHROME_EXE)");
+    for (const e of evidence.slice(-ran)) for (const k of Object.keys(e.env)) e.env[k] = e.env[k].replace(bridge, "<bridge-repo>").replace(safe, "<safe-artifacts>").replace(work, "<export>");
   } else skipped.push("opening, ops and package rehearsals (need --bridge-repo and --safe-artifacts)");
   evidence.bridge = bridgeInfo;
 }

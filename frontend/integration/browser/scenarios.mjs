@@ -324,6 +324,28 @@ scenario('reply-lost-wallet-ignores-nonce-no-review', 'R309-A1: the wallet holds
   w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
 });
 
+scenario('reply-lost-replacement-refused', 'R309-2P-1: a swap without a wallet hash is not closed by another transaction at its nonce; no second swap is possible while the first request can still be signed', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('hold-reply-lost');
+  await swapNative(w, page);
+  await page.waitText(NO_HASH);
+  // The user sends another transaction at nonce 0 from the wallet (here: the wallet's own cancellation) and it is finalized.
+  const other = await w.wallet.cancel(w.wallet.signed[0]);
+  await mineAndFinalize();
+  await pasteHash(page, other.hash);
+  await page.click('Check cancellation or replacement');
+  await page.waitText('/another transaction at the saved nonce does not prove that the swap cannot execute\\. The hold ends by itself once the swap deadline has passed in a finalized block/');
+  await w.note(page, 'replacement-refused');
+  w.check('the hold stays: Swap is disabled', await disabled(page, 'Swap'));
+  w.check('no "Close local hold as replaced" is offered', (await page.button('Close local hold as replaced')) === null);
+  await page.reload();
+  await w.connect(page);
+  await page.waitText(NO_HASH);
+  w.check('after a reload the hold is still there and the wallet was asked once', (await disabled(page, 'Swap')) && w.wallet.sends().length === 1, w.wallet.sends().length);
+  const f = await w.facts();
+  w.check('no router call of this account was mined', f.routerCallsMined === 0, f.routerCallsMined);
+});
+
 scenario('speed-up', '(b) speed-up in the wallet; (e) reload before recovery', async (w) => {
   const page = await w.begin();
   await swapNative(w, page);
@@ -660,7 +682,7 @@ scenario('reply-lost-never-published-expires', 'R309-A1: a swap the wallet never
   // Chain time passes the deadline (the default deadline is 60 minutes) and that block becomes final.
   await rpc('evm_increaseTime', [hex(2 * 3600)]);
   await mineAndFinalize();
-  await page.waitText('/with nonce 0 still unused: this swap did not execute and can no longer execute/', 40_000);
+  await page.waitText('/no transaction of this account used nonce 0 before it: sent from an ordinary wallet account this swap did not execute, and it can no longer execute/', 40_000);
   await w.note(page, 'expired');
   // The release refreshes the finalized view; the button comes back when that read is done.
   let offered = false;
