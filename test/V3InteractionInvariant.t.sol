@@ -126,6 +126,11 @@ contract V3DexHandler is V3Fixture {
         uint256 lp = pair.balanceOf(address(this));
         uint256 part = lp * (100 + bps % 9_900) / 10_000;
         if (part < 1e6) return;
+        // A share worth less than one base unit of a token cannot be burned (INSUFFICIENT_LIQUIDITY_BURNED, as in
+        // Uniswap v2): after a pool is drained to dust that is a rounding refusal, not a blocked exit, and the
+        // holder's whole position still exits (test_dustShareIsRefusedByRoundingAndTheWholePositionExits). The
+        // margin of 2 covers the protocol-fee shares minted inside burn. Found by the deep run, round 15.
+        if (_dust(part)) return;
         try router.removeLiquidityBLCH(address(busdc), part, 0, 0, address(this), block.timestamp) {}
         catch {
             exitFailed = true;
@@ -134,6 +139,25 @@ contract V3DexHandler is V3Fixture {
 
     function skim() external {
         pair.skim(SAFE);
+    }
+
+    function _dust(uint256 part) private view returns (bool) {
+        uint256 supply = pair.totalSupply();
+        return part * busdc.balanceOf(address(pair)) / supply < 2 || part * wblch.balanceOf(address(pair)) / supply < 2;
+    }
+
+    /// Not a fuzz target. Burns `part` LP shares directly: (true, "") or (false, reason).
+    function burnShares(uint256 part) external returns (bool ok, string memory reason) {
+        try router.removeLiquidityBLCH(address(busdc), part, 0, 0, address(this), block.timestamp) {
+            return (true, "");
+        } catch Error(string memory why) {
+            return (false, why);
+        }
+    }
+
+    function position() external view returns (uint256 lp, uint256 supply, bool dustAtOnePercent) {
+        lp = pair.balanceOf(address(this));
+        return (lp, pair.totalSupply(), _dust(lp * 127 / 10_000));
     }
 
     function bridgeExit(uint64 seed) external {
@@ -212,6 +236,27 @@ contract V3DexInvariantTest is TestBase {
     function invariantExitsAndSwapsStayLive() public view {
         assertTrue(!handler.exitFailed());
         assertTrue(!handler.liveFailed());
+    }
+
+    /// The counterexample of the deep run (256 x 500, seeds 1 and 2), pinned: seven partial exits and one buy leave
+    /// 54 base units of bUSDC in the pair. A 1.27% share is then worth less than one unit and its burn is refused
+    /// by rounding; that is not recorded as a blocked exit, and the whole position exits.
+    function test_dustShareIsRefusedByRoundingAndTheWholePositionExits() public {
+        uint16[7] memory exits = [uint16(3805), 27764, 9666, 3022, 14772, 7453, 4917];
+        for (uint256 i; i < exits.length; ++i) handler.removeLiquidity(exits[i]);
+        handler.buyUsdc(636781901530053600);
+        (, uint256 rU) = handler.reserves();
+        require(rU == 54, "fixture: bUSDC reserve");
+        (uint256 lp,, bool dust) = handler.position();
+        require(dust, "fixture: dust share");
+        handler.removeLiquidity(27);
+        invariantExitsAndSwapsStayLive();
+        (bool ok, string memory reason) = handler.burnShares(lp * 127 / 10_000);
+        require(!ok && keccak256(bytes(reason)) == keccak256("BDEX: INSUFFICIENT_LIQUIDITY_BURNED"), "dust burn");
+        (ok,) = handler.burnShares(lp);
+        require(ok, "the whole position must exit");
+        (lp,,) = handler.position();
+        require(lp == 0, "position left");
     }
 
     /// Coverage control: a fixed pseudo-random walk of 600 handler calls reaches credits, cancels, remints and
