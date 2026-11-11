@@ -131,6 +131,21 @@ send() {
   done
   echo "no receipt for $hash" >&2; return 1
 }
+# wait_mined HASH: a transaction the keeper published is in a block the RPC serves at latest (on the private L2 that
+# takes a producer round; a fixed one-second sleep was not enough under load).
+wait_mined() {
+  local receipt block
+  for _ in $(seq 240); do
+    receipt=$(cast rpc eth_getTransactionReceipt "$1" --rpc-url "$RPC")
+    if [ "$receipt" != null ]; then
+      block=$(node -e 'console.log(BigInt(JSON.parse(process.argv[1]).blockNumber).toString())' "$receipt")
+      until [ "$(cast block-number --rpc-url "$RPC")" -ge "$block" ]; do sleep 1; done
+      return
+    fi
+    sleep 0.5
+  done
+  die "no receipt for the keeper's transaction $1"
+}
 must() { local out; out=$(send "$@"); [ "${out%% *}" = 0x1 ] || die "transaction reverted: to $2"; echo "$out"; }
 must_fail() { local out; out=$(send "$@"); [ "${out%% *}" = 0x0 ] || die "transaction succeeded: to $2"; }
 jsonget() { node -e 'const v=process.argv[2].split(".").reduce((o,k)=>o[k],JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")));console.log(typeof v==="object"?JSON.stringify(v):v)' "$1" "$2"; }
@@ -925,7 +940,7 @@ if [ "$IS_V3" = 1 ]; then
   SAFE_USD=$(view "$USD" "$BAL" "$SAFE")
   expect 0 v3-held-keeper keeper_run --state "$WORK/keeper/v3.json" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
   grep -q '"sent"' "$EV/v3-held-keeper.out" || die "the keeper did not skim the credited mint"
-  sleep 1
+  wait_mined "$(jsonget "$EV/v3-held-keeper.out" hash)"
   [ $(( $(view "$USD" "$BAL" "$SAFE") - SAFE_USD )) -ge 3000000 ] || die "the credited mint did not reach the Safe"
   SWAP_IN_OK; k_ok
   pass "v3 held mint: queued to the pair, no effect; credited after the delay, it was excess and the keeper skimmed it to the Safe; swaps and k unaffected"
@@ -1062,7 +1077,7 @@ console.log("burn states mintCount",BigInt("0x"+w[2]),"mintedTotal",BigInt("0x"+
   grep -q 'the committee is retired' "$EV/v3-switch-monitor.out" || die "the monitor did not report the switch"
   expect 0 v3-switch-keeper keeper_run --state "$WORK/keeper/v3s.json" --cooldown-s 1 --execute -- --private-key "$KEEPER_KEY"
   grep -q '"sent"' "$EV/v3-switch-keeper.out" || die "the keeper did not skim the proof mint"
-  sleep 1
+  wait_mined "$(jsonget "$EV/v3-switch-keeper.out" hash)"
   SWAP_IN_OK; SWAP_OUT_OK; LP_EXIT_OK 10; k_ok
   must "$SEEDER_KEY" "$USD" "$(cast calldata "burn(uint64,address)" 1000000 "$SEEDER")" 0 200000 > /dev/null
   time_passes 259201
