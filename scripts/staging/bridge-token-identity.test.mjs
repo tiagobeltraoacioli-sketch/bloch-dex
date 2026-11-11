@@ -51,7 +51,7 @@ test("the repository pin is the rebuilt V3 token of the bridge RC", () => {
   assert.equal(t.immutableOffsets.length, 51);
   assert.equal(t.maxPending, 2048);
   assert.deepEqual(t.compiler, { solc: "0.8.24+commit.e11b9ed9", optimizer: { enabled: true, runs: 1 }, evmVersion: "shanghai" });
-  assert.deepEqual(t.mainnetPolicy, { signers: 7, threshold: 5, switchThreshold: 6, guardians: 3 });
+  assert.deepEqual(t.mainnetPolicy, { signers: 7, threshold: 5, switchThreshold: 6, guardians: 3, cancelQuorum: 2, minLargeMintDelay: 43200, minSwitchDelay: 1209600, maxSupplyCap: "100000000000" });
 });
 
 test("the template hash ignores immutables and nothing else", () => {
@@ -152,14 +152,29 @@ test("the deployment block must be finalized and canonical", async () => {
   await assert.rejects(verifyBridgeToken(id, reorged, AT, 400n), /not on the canonical chain/);
 });
 
-test("mainnet policy: 5 of 7 signers, 6 for the switch and unpause, 3 guardians, no rehearsal plan", () => {
+test("mainnet policy: 5 of 7 signers, 6 for the switch and unpause, 3 guardians, the bridge minimums, no rehearsal plan", () => {
   const cases = [
     [(p) => (p.expected.threshold = 4), /5 of 7 signers/],
     [(p) => (p.expected.signers = p.expected.signers.slice(0, 3)), /5 of 7 signers/],
     [(p) => (p.expected.switchThreshold = 5), /quorum must be 6/],
     [(p) => (p.expected.guardians = p.expected.guardians.slice(0, 2)), /3 guardians/],
     [(p) => (p.chain.rehearsal = true), /rehearsal bridge plan/],
+    // F-L3 (round 15): the bridge line's mainnet minimums.
+    [(p) => (p.expected.largeMintDelay = 43199), /mint delay must be at least 43200 s/],
+    [(p) => (p.expected.largeMintDelay = 0), /mint delay must be at least 43200 s/],
+    [(p) => (p.expected.cancelQuorum = 1), /cancel quorum must be 2/],
+    [(p) => (p.expected.cancelQuorum = 0), /cancel quorum must be 2/],
+    [(p) => (p.expected.cancelQuorum = 3), /cancel quorum must be 2/],
+    [(p) => (p.expected.switchDelay = 1209599), /switch delay must be at least 1209600 s/],
+    [(p) => (p.expected.switchDelay = 604800), /switch delay must be at least 1209600 s/],
+    [(p) => (p.expected.supplyCap = 100_000_000_001), /supply cap must not exceed 100000000000/],
+    [(p) => (p.expected.supplyCap = 9_999_999_999), /below the mint bucket/],
   ];
+  // The launch values themselves, and stricter ones, pass.
+  for (const change of [() => {}, (p) => (p.expected.largeMintDelay = 86400), (p) => (p.expected.switchDelay = 2419200), (p) => (p.expected.supplyCap = 10_000_000_000)]) {
+    const { plan, record } = fixture({ planChange: change });
+    assert.equal(checkMainnetPolicy(checkBridgeRecord(gateFor(record), { plan, record }, testPin())), true);
+  }
   for (const [change, pattern] of cases) {
     const { plan, record } = fixture({ planChange: change });
     const id = checkBridgeRecord(gateFor(record), { plan, record }, testPin());
@@ -176,4 +191,19 @@ test("the mainnet gate needs a bridge record for every capped token other than t
     x.deployment.tokens.push({ token: `0x${"6".repeat(40)}`, symbol: "wGSMH", codeHash: `0x${"6".repeat(64)}`, bridgeBucketCapacity: "1000" }));
   assert.throws(() => checkBridgePinned(two, [{ plan, record }]), /wGSMH 0x6+ has no bridge deployment record/);
   assert.equal(checkBridgePinned(g, [{ plan, record }]).length, 1);
+});
+
+test("F-L3: a pin without the bridge minimums, or with a cancel quorum the guardians cannot form, is refused", () => {
+  for (const [change, pattern] of [
+    [(p) => delete p.minLargeMintDelay, /minLargeMintDelay is invalid/],
+    [(p) => delete p.minSwitchDelay, /minSwitchDelay is invalid/],
+    [(p) => delete p.cancelQuorum, /cancelQuorum is invalid/],
+    [(p) => (p.maxSupplyCap = 100000000000), /maxSupplyCap is invalid/],
+    [(p) => (p.cancelQuorum = 1), /guardians \/ 2 \+ 1/],
+    [(p) => (p.switchThreshold = 4), /signer quorums are inconsistent/],
+  ]) {
+    const pin = structuredClone(testPin());
+    change(pin.tokens.bUSDC.mainnetPolicy);
+    assert.throws(() => validateBridgePin(pin), pattern);
+  }
 });

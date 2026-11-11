@@ -324,33 +324,6 @@ scenario('reply-lost-wallet-ignores-nonce-no-review', 'R309-A1: the wallet holds
   w.check('the account nonce is 1', f.nonceLatest === 1, f.nonceLatest);
 });
 
-scenario('reply-lost-never-published-expires', 'R309-A1: a swap the wallet never publishes: the hold ends by itself, with no wallet request, once the deadline has passed in a finalized block', async (w) => {
-  const page = await w.begin();
-  w.wallet.state.next.push('hold-reply-lost');
-  await swapNative(w, page);
-  await page.waitText(NO_HASH);
-  w.check('reply lost: Swap is disabled', await disabled(page, 'Swap'));
-  // Finalized blocks before the deadline release nothing.
-  await mineAndFinalize();
-  await delay(2500);
-  w.check('before the deadline the hold stays', (await disabled(page, 'Swap')) && NO_HASH.test((await page.text()).replace(/\s+/g, ' ')));
-  // Chain time passes the deadline (the default deadline is 60 minutes) and that block becomes final.
-  await rpc('evm_increaseTime', [hex(2 * 3600)]);
-  await mineAndFinalize();
-  await page.waitText('/with nonce 0 still unused: this swap did not execute and can no longer execute/', 40_000);
-  await w.note(page, 'expired');
-  w.check('the hold is gone: Swap is offered again', !(await disabled(page, 'Swap')));
-  const f = await w.facts();
-  w.check('no router call of this account was mined', f.routerCallsMined === 0, f.routerCallsMined);
-  w.check('the account nonce is still 0', f.nonceLatest === 0, f.nonceLatest);
-  w.check('the wallet was asked exactly once', f.walletSendRequests === 1, f.walletSendRequests);
-  // Signed late, the held request can only revert: it never becomes a second swap.
-  await w.wallet.release(w.wallet.signed[0]).catch(() => {});
-  await mineAndFinalize();
-  const late = await w.facts();
-  w.check('the held request, published after the deadline, executes nothing', late.routerCallsMined === 0, late.minedTransactions);
-});
-
 scenario('speed-up', '(b) speed-up in the wallet; (e) reload before recovery', async (w) => {
   const page = await w.begin();
   await swapNative(w, page);
@@ -671,6 +644,34 @@ scenario('first-approve-wallet-ignores-fees', 'item 2: a wallet that ignores the
   const f = await w.facts();
   w.check('one approval mined at nonce 0, allowance exact', f.minedTransactions.length === 1 && f.nonceLatest === 1 && (await allowance(w.wallet.address)) === 10_000_000n, f.minedTransactions);
   w.record.admission = w.wallet.admissions;
+});
+
+// Kept last: it moves the chain clock two hours ahead of the wall clock, which later scenarios' deadlines would not survive.
+scenario('reply-lost-never-published-expires', 'R309-A1: a swap the wallet never publishes: the hold ends by itself, with no wallet request, once the deadline has passed in a finalized block', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.next.push('hold-reply-lost');
+  await swapNative(w, page);
+  await page.waitText(NO_HASH);
+  w.check('reply lost: Swap is disabled', await disabled(page, 'Swap'));
+  // Finalized blocks before the deadline release nothing.
+  await mineAndFinalize();
+  await delay(2500);
+  w.check('before the deadline the hold stays', (await disabled(page, 'Swap')) && NO_HASH.test((await page.text()).replace(/\s+/g, ' ')));
+  // Chain time passes the deadline (the default deadline is 60 minutes) and that block becomes final.
+  await rpc('evm_increaseTime', [hex(2 * 3600)]);
+  await mineAndFinalize();
+  await page.waitText('/with nonce 0 still unused: this swap did not execute and can no longer execute/', 40_000);
+  await w.note(page, 'expired');
+  w.check('the hold is gone: Swap is offered again', !(await disabled(page, 'Swap')));
+  const f = await w.facts();
+  w.check('no router call of this account was mined', f.routerCallsMined === 0, f.routerCallsMined);
+  w.check('the account nonce is still 0', f.nonceLatest === 0, f.nonceLatest);
+  w.check('the wallet was asked exactly once', f.walletSendRequests === 1, f.walletSendRequests);
+  // Signed late, the held request can only revert: it never becomes a second swap.
+  await w.wallet.release(w.wallet.signed[0]).catch(() => {});
+  await mineAndFinalize();
+  const late = await w.facts();
+  w.check('the held request, published after the deadline, executes nothing', late.routerCallsMined === 0, late.minedTransactions);
 });
 
 let failed = 0;

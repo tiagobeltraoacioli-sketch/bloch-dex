@@ -90,7 +90,15 @@ export function validateBridgePin(pin = BRIDGE_TOKEN_PIN) {
     );
     refuse(isObject(t.compiler), `pin ${symbol}.compiler is invalid`);
     refuse(Number.isSafeInteger(t.maxPending) && t.maxPending > 0, `pin ${symbol}.maxPending is invalid`);
-    refuse(isObject(t.mainnetPolicy), `pin ${symbol}.mainnetPolicy is invalid`);
+    const p = t.mainnetPolicy;
+    refuse(isObject(p), `pin ${symbol}.mainnetPolicy is invalid`);
+    for (const k of ["signers", "threshold", "switchThreshold", "guardians", "cancelQuorum", "minLargeMintDelay", "minSwitchDelay"]) {
+      refuse(Number.isSafeInteger(p[k]) && p[k] > 0, `pin ${symbol}.mainnetPolicy.${k} is invalid`);
+    }
+    refuse(typeof p.maxSupplyCap === "string" && /^[1-9][0-9]{0,30}$/.test(p.maxSupplyCap), `pin ${symbol}.mainnetPolicy.maxSupplyCap is invalid`);
+    // A pin that contradicts itself could never be met, or would accept a quorum the guardians cannot form.
+    refuse(p.threshold <= p.signers && p.switchThreshold <= p.signers && p.switchThreshold >= p.threshold, `pin ${symbol}.mainnetPolicy signer quorums are inconsistent`);
+    refuse(p.cancelQuorum === Math.floor(p.guardians / 2) + 1, `pin ${symbol}.mainnetPolicy.cancelQuorum must be guardians / 2 + 1`);
   }
   return pin;
 }
@@ -161,6 +169,13 @@ export function checkMainnetPolicy(identity) {
   refuse(e.signers.length === p.signers && e.threshold === p.threshold, `the token must have ${p.threshold} of ${p.signers} signers, the plan has ${e.threshold} of ${e.signers.length}`);
   refuse(e.switchThreshold === p.switchThreshold, `the switch and unpause quorum must be ${p.switchThreshold}, the plan has ${e.switchThreshold}`);
   refuse(e.guardians.length === p.guardians, `the token must have ${p.guardians} guardians, the plan has ${e.guardians.length}`);
+  // The bridge line's mainnet minimums (round 15, F-L3). verifyBridgeToken compares each of these views with the plan
+  // on chain, so a figure checked here is the figure of the deployed token.
+  refuse(e.cancelQuorum === p.cancelQuorum, `the guardians' cancel quorum must be ${p.cancelQuorum}, the plan has ${e.cancelQuorum}`);
+  refuse(e.largeMintDelay >= p.minLargeMintDelay, `the mint delay must be at least ${p.minLargeMintDelay} s, the plan has ${e.largeMintDelay}`);
+  refuse(e.switchDelay >= p.minSwitchDelay, `the verifier switch delay must be at least ${p.minSwitchDelay} s, the plan has ${e.switchDelay}`);
+  refuse(BigInt(e.supplyCap) <= BigInt(p.maxSupplyCap), `the supply cap must not exceed ${p.maxSupplyCap}, the plan has ${e.supplyCap}`);
+  refuse(BigInt(e.supplyCap) >= BigInt(e.bucketCapacity) && BigInt(e.bucketCapacity) > 0n, `the supply cap ${e.supplyCap} is below the mint bucket ${e.bucketCapacity}`);
   return true;
 }
 

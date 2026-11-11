@@ -5,7 +5,8 @@
     "The reviewed bridge token builds the DEX finality gate accepts (agent 180 L-3, agent 227). A token is accepted only if its runtime code, with every immutable slot zeroed, hashes to runtimeTemplateKeccak, and its identity (address, code hash, signers, guardians, thresholds, T, vault, route) matches the bridge's own deploy_pontes.py plan and record.",
     "Source: bridge repo, branch codex/bridge-rc-r10-20261102 (agent 200), freeze commit eb5c981; the token sources are identical to 8d988ce (agent 194). initCodeKeccak is the creation code without constructor arguments, runtimeTemplateKeccak the runtime code with immutables zeroed, both from forge (solc 0.8.24, shanghai, optimizer runs 1, bytecode_hash none).",
     "Re-asserted 2026-11-09 (round 14, agent 305) at the bridge round-13 tip bb9abe0e1228a57d51a7dc5572bc7cf666745b58: `git diff eb5c981 bb9abe0 -- contracts foundry.toml` changes only ProvenanceSourceVault.sol and RecoverableReleaseVerifier.sol; a clean build of bb9abe0 gives the same initCodeKeccak, and a token created by that revision's deploy_pontes.py under the mainnet policy passes this pin in scripts/staging/rehearse-mainnet-package.sh (anvil and private-l2). bridgeRevision stays the revision the token sources were last changed at or before; the gate checks the code, not the revision.",
-    "mainnetPolicy is the owner's launch decision of 2026-11-02: 5 of 7 signers, 6 of 7 for the unpause, the verifier switch and the locked remint, 3 guardians (cancel quorum 2), T = 0. The mainnet gate refuses any other token shape."
+    "mainnetPolicy is the owner's launch decision of 2026-11-02: 5 of 7 signers, 6 of 7 for the unpause, the verifier switch and the locked remint, 3 guardians (cancel quorum 2), T = 0. The mainnet gate refuses any other token shape.",
+    "Round 15 (2026-11-10, bridge line, agents/R15-CROSS-AREA.md 23:53 UTC, bridge 1aef47c deployments/mainnet/busdc-mainnet.config.json): the mainnet gate also refuses a token whose largeMintDelay is below 43200 s (12 h; the MAX_PENDING cancel-rate arithmetic assumes it), whose cancelQuorum is not 2 (guardians / 2 + 1 with 3 guardians), whose switchDelay is below 1209600 s (14 days; the contract floor of 7 days is not enough for mainnet), or whose supplyCap is above 100000000000 (100,000 USDC, the pilot maximum) or below its own bucketCapacity. The vault's own cap on Ethereum is not visible to this gate."
   ],
   "tokens": {
     "bUSDC": {
@@ -81,7 +82,11 @@
         "signers": 7,
         "threshold": 5,
         "switchThreshold": 6,
-        "guardians": 3
+        "guardians": 3,
+        "cancelQuorum": 2,
+        "minLargeMintDelay": 43200,
+        "minSwitchDelay": 1209600,
+        "maxSupplyCap": "100000000000"
       }
     }
   }

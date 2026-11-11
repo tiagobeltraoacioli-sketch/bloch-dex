@@ -38,7 +38,7 @@ export function testPin() {
         runtimeLength: LENGTH,
         immutableOffsets: OFFSETS,
         maxPending: 2048,
-        mainnetPolicy: { signers: 7, threshold: 5, switchThreshold: 6, guardians: 3 },
+        mainnetPolicy: { signers: 7, threshold: 5, switchThreshold: 6, guardians: 3, cancelQuorum: 2, minLargeMintDelay: 43200, minSwitchDelay: 1209600, maxSupplyCap: "100000000000" },
       },
     },
   };
