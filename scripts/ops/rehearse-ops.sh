@@ -9,6 +9,7 @@
 #               pinned genesis, SYNTHETIC finality: no L1, no proof). Runs the
 #               scenes that need no snapshots, to prove the kit against the RPC it
 #               will really talk to. ANCHOR_EXPIRY=1 adds the 256-block window test.
+#               The monitor runs with --rehearsal here too (see GATE_FLAGS below).
 #
 # The token is the real bridge token: BridgedStablecoinV3 (the launch token, bridge
 # codex/bridge-v3-r7-20261102) or BridgedStablecoinV2, told apart by its ABI. With V3 the
@@ -94,7 +95,11 @@ case "$MODE" in
     scripts/staging/private-l2.sh init "$WORK/l2" "$LIST" 10000000000 | tee -a "$EV/steps.log"
     scripts/staging/private-l2.sh start "$WORK/l2" "$PORT" | tee -a "$EV/steps.log"
     OPS_RPC=$RPC
-    GATE_FLAGS=(--safe-plan "$EV/safe.plan.json")
+    # The token of this rehearsal is not under the mainnet bridge policy (2-of-3 committee, a 30 s mint delay so the
+    # scenes fit a run) and has no bridge deployment record, so the mainnet gate wrapper can never pass here: the
+    # monitor runs the generic gate, as on anvil. The wrapper itself is run against this same settled RPC, with the
+    # real token from the bridge's own tools, by scripts/staging/rehearse-mainnet-package.sh private-l2.
+    GATE_FLAGS=(--rehearsal)
     ;;
   *) die "mode must be anvil or private-l2" ;;
 esac
