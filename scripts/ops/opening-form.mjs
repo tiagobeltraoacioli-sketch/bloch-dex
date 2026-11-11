@@ -21,7 +21,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createRequest, encodeFunctionData, isqrt, keccak256, parseAbi, parseArgs, parseUnits } from "./dex-ops-lib.mjs";
+import { createRequest, encodeFunctionData, isAddress, isqrt, keccak256, parseAbi, parseArgs, parseUnits } from "./dex-ops-lib.mjs";
 import { PENDING, configSha256, validateDeployConfig } from "../staging/dex-deploy-config.mjs";
 import { MAX_FRACTION_BPS, SEEDER_FLOOR_BPS } from "./dex-seed-plan.mjs";
 import { isMain } from "../staging/is-main.mjs";
@@ -36,6 +36,10 @@ const HASH = /^0x[0-9a-f]{64}$/;
 const ZERO = `0x${"0".repeat(40)}`;
 const LOOPBACK = /^http:\/\/(127\.0\.0\.1|localhost)(:\d{1,5})?(\/.*)?$/;
 const EXIT_POLICIES = ["keep-floor", "full-exit"];
+export const KEEPER_BUDGET_MIN_WEI = 5_000_000_000_000_000n;
+export const KEEPER_BUDGET_MAX_WEI = 500_000_000_000_000_000n;
+export const KEEPER_MAX_TX_MIN = 12;
+export const KEEPER_MAX_TX_MAX = 288;
 const BRIDGE_VIEWS = parseAbi([
   "function bucketCapacity() view returns (uint256)",
   "function sourceChainId() view returns (uint256)",
@@ -92,6 +96,10 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   const addr = (v, field) => {
     if (pending(v)) { problems.push(`${field} is not filled (${PENDING})`); return null; }
     if (!need(typeof v === "string" && ADDRESS.test(v), `${field} is not an address`)) return null;
+    // A mixed-case address carries an EIP-55 checksum: one mistyped character must be refused here, because the
+    // form lowercases it and every later tool would then agree on the wrong address (review R309-C6).
+    const hex = v.slice(2);
+    if (hex !== hex.toLowerCase() && hex !== hex.toUpperCase() && !need(isAddress(v, { strict: true }), `${field} has a wrong EIP-55 checksum (a mistyped character?): copy it again, or give it in lower case`)) return null;
     const a = v.toLowerCase();
     return need(a !== ZERO, `${field} is the zero address`) ? a : null;
   };
@@ -144,6 +152,22 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
     for (const [name] of clash) problems.push(`firstDepositor equals ${name}: the depositor must be a new key that sends only the approve and the seed`);
   }
   if (keeper && (keeper === lp || keeper === safe || authorityOwners.includes(keeper))) problems.push("keeper.address must be its own hot key (not the LP recipient, the Safe or a Safe owner)");
+  // One key, one role (review R309-C7): the deployer, the depositor, the keeper, the Safe, its owners and the two
+  // bridge contracts are pairwise distinct. (Depositor and keeper clashes are reported above with their reason.)
+  const vaultAddress = typeof form.bridgeStatus?.vault === "string" && ADDRESS.test(form.bridgeStatus.vault) ? form.bridgeStatus.vault.toLowerCase() : null;
+  const roles = [["fromEarlierSteps.dexDeployer", deployer], ["keeper.address", keeper], ["the Bloch Inc Safe", safe], ["fromEarlierSteps.busdcToken", token], ["bridgeStatus.vault", vaultAddress],
+    ...authorityOwners.map((o, i) => [`Safe owner ${i + 1}`, o])].filter(([, a]) => a);
+  for (let i = 0; i < roles.length; i++) {
+    for (let j = i + 1; j < roles.length; j++) {
+      const [[one, a], [two, b]] = [roles[i], roles[j]];
+      const reported = one === "keeper.address" && (two === "the Bloch Inc Safe" || two.startsWith("Safe owner"));
+      if (a === b && !(one.startsWith("Safe owner") && two.startsWith("Safe owner")) && !reported) problems.push(`${one} equals ${two}: each key and contract has one role`);
+    }
+  }
+  if (depositor && vaultAddress && depositor === vaultAddress) problems.push("firstDepositor equals bridgeStatus.vault: the depositor must be a new key that sends only the approve and the seed");
+  for (const [name, contract] of [["fromEarlierSteps.busdcToken", token], ["bridgeStatus.vault", vaultAddress]]) {
+    if (lp && lp === contract) problems.push(`lpRecipient equals ${name}: the seed's LP shares would be held by a contract that cannot move them`);
+  }
   if (lp && safe && lp === safe) notes.push("lpRecipient is the Safe: allowed, but the kit recommends a separate address (principal and protocol fee mix, every exit needs 3 of 5)");
   if (lp && authorityOwners.includes(lp)) notes.push("lpRecipient is a Safe owner key: allowed, but that key then holds the seed position alone");
 
@@ -164,9 +188,19 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   const keystore = form.keeper?.keystore; const passwordFile = form.keeper?.passwordFile;
   need(!pending(keystore) && singleLineText(keystore) && keystore.startsWith("/"), "keeper.keystore must be a single-line absolute path on the keeper host");
   need(!pending(passwordFile) && singleLineText(passwordFile) && passwordFile.startsWith("/"), "keeper.passwordFile must be a single-line absolute path on the keeper host");
-  const budgetWei = BigInt(form.keeper?.budgetWei ?? "50000000000000000");
-  const maxTx = Number(form.keeper?.maxTx ?? 48);
-  need(budgetWei > 0n && Number.isInteger(maxTx) && maxTx > 0, "keeper.budgetWei and keeper.maxTx must be positive");
+  // Review R309-C8. Decided: 0.05 BLCH and 48 per 24 h. The form accepts a tenth to ten times the budget (below
+  // 0.005 BLCH the keeper could not reserve two worst-case skims of 150,000 gas at 20 gwei) and 12 to 288
+  // transactions (288 is one per 5-minute timer pass), written as plain decimals.
+  const rawBudget = form.keeper?.budgetWei ?? "50000000000000000";
+  const rawMaxTx = form.keeper?.maxTx ?? 48;
+  const budgetText = typeof rawBudget === "string" || Number.isSafeInteger(rawBudget) ? String(rawBudget) : "";
+  let budgetWei = null;
+  if (need(/^[1-9][0-9]{0,29}$/.test(budgetText), "keeper.budgetWei must be a positive whole number of wei, in decimal")) {
+    budgetWei = BigInt(budgetText);
+    need(budgetWei >= KEEPER_BUDGET_MIN_WEI && budgetWei <= KEEPER_BUDGET_MAX_WEI, `keeper.budgetWei must be ${KEEPER_BUDGET_MIN_WEI} to ${KEEPER_BUDGET_MAX_WEI} wei (0.005 to 0.5 BLCH per 24 h; decided: 0.05 BLCH)`);
+  }
+  const maxTx = typeof rawMaxTx === "number" ? rawMaxTx : typeof rawMaxTx === "string" && /^[1-9][0-9]{0,5}$/.test(rawMaxTx) ? Number(rawMaxTx) : NaN;
+  need(Number.isSafeInteger(maxTx) && maxTx >= KEEPER_MAX_TX_MIN && maxTx <= KEEPER_MAX_TX_MAX, `keeper.maxTx must be a whole number from ${KEEPER_MAX_TX_MIN} to ${KEEPER_MAX_TX_MAX} (decided: 48)`);
 
   // 5. Page: bridges[0].status (agent 144) and the site.
   const st = form.bridgeStatus ?? {};
@@ -178,8 +212,10 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
     const vault = addr(st.vault, "bridgeStatus.vault");
     const vaultCodeHash = st.vaultCodeHash === undefined ? PENDING : st.vaultCodeHash;
     const hashPending = vaultCodeHash !== null && pending(vaultCodeHash);
-    if (hashPending) problems.push("bridgeStatus.vaultCodeHash: give the hash, or null to skip the code pin");
-    else if (vaultCodeHash !== null) need(HASH.test(vaultCodeHash), "bridgeStatus.vaultCodeHash must be null or a lowercase 32-byte hash");
+    // The units pin the vault's code with this hash (review R309-C8): only a rehearsal may leave it out.
+    if (hashPending) problems.push("bridgeStatus.vaultCodeHash is not filled: give the vault's runtime code hash from the bridge deployment record");
+    else if (vaultCodeHash === null) need(rehearsal, "bridgeStatus.vaultCodeHash must be the vault's runtime code hash (null is accepted in a rehearsal only): the monitor and keeper units pin the vault's code with it");
+    else need(HASH.test(vaultCodeHash), "bridgeStatus.vaultCodeHash must be a lowercase 32-byte hash");
     if (!u && vault && token && !hashPending) status = { ethRpcUrl: st.ethRpcUrl, vault, token, vaultCodeHash };
   }
   const site = form.site ?? {};
@@ -299,6 +335,7 @@ function envFile(v) {
     "DEX_RPC=http://127.0.0.1:18955",
     `DEX_ETH_RPC=${environmentValue(v.status.ethRpcUrl)}`,
     `DEX_BUSDC_VAULT=${v.status.vault}`,
+    ...(v.status.vaultCodeHash ? [`DEX_BUSDC_VAULT_CODE_HASH=${v.status.vaultCodeHash}`] : []),
     `DEX_LP_RECIPIENT=${v.lp}`,
     `DEX_LP_MIN_SHARES=${v.floorShares}`,
     `DEX_KEEPER=${v.keeper}`,
@@ -350,7 +387,7 @@ function commandsFile(v) {
     "4. Verify right after inclusion, and again once finalized, before any announcement:",
     "",
     block(`node scripts/ops/dex-seed-plan.mjs verify --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp}`),
-    "5. Monitor (the unit runs the same with `dex-ops.env`):",
+    "5. Monitor. The unit runs these checks with `dex-ops.env`, plus the keeper's state (`--keeper-state`, `--keeper-max-tx`, `--keeper-budget-wei`), and without `--ref-price`: a reference price is a figure of the day, so run this command by hand with the current price when you want that check:",
     "",
     block(`node scripts/ops/dex-monitor.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${shellArgument(v.status.ethRpcUrl)} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
     "6. Any later removal by the LP recipient goes through the planner, which refuses to go below the floor (the same shares as the monitor's `--lp-min-shares`). Example, half of the position:",
@@ -358,7 +395,7 @@ function commandsFile(v) {
     block(`node scripts/ops/dex-seed-plan.mjs remove --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp} --bps 5000 --fraction-bps ${v.fractionBps} --floor-shares ${v.floorShares}`),
     "7. Keeper, dry run first:",
     "",
-    block(`node scripts/ops/dex-skim-keeper.mjs --config ${G} --rpc ${R} --keeper ${v.keeper} --state /var/lib/bloch-dex-keeper/state.json --budget-wei ${v.budgetWei} --max-tx ${v.maxTx} --eth-rpc ${shellArgument(v.status.ethRpcUrl)} --bridge-vault ${v.status.vault}`),
+    block(`node scripts/ops/dex-skim-keeper.mjs --config ${G} --rpc ${R} --keeper ${v.keeper} --state /var/lib/bloch-dex-keeper/state.json --budget-wei ${v.budgetWei} --max-tx ${v.maxTx} --eth-rpc ${shellArgument(v.status.ethRpcUrl)} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""}`),
     "",
   ].join("\n");
 }

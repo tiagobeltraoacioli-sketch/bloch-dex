@@ -12,6 +12,7 @@ const committed = JSON.parse(readFileSync(new URL("../../deployments/mainnet/dex
 const template = JSON.parse(readFileSync(new URL("../../deployments/mainnet/opening-form.json", import.meta.url), "utf8"));
 const a = (n) => `0x${n.toString(16).padStart(40, "0")}`;
 const H = `0x${"ab".repeat(32)}`;
+const VAULT_CODE = `0x${"7c".repeat(32)}`;
 const blochInc = {
   // Code hashes are the Safe 1.4.1 runtimes (from a rehearsal's deploy-safe.mjs blochinc); addresses are arbitrary.
   address: a(0x5afe), codeHash: "0xd7d408ebcd99b2b70be43e20253d6d92a8ea8fab29bd3be7f55b10032331fb4c",
@@ -26,7 +27,7 @@ function filled(extra = {}) {
   Object.assign(f, { openingPrice: "100", firstDepositor: a(0xd1), lpRecipient: a(0x1b), ...extra });
   f.seederExit = { policy: "keep-floor", floorBps: 1000 };
   Object.assign(f.keeper, { address: a(0xee), keystore: "/etc/k.json", passwordFile: "/etc/k.pw" });
-  f.bridgeStatus = { ethRpcUrl: "https://eth.example.org", vault: a(0x7a), vaultCodeHash: null };
+  f.bridgeStatus = { ethRpcUrl: "https://eth.example.org", vault: a(0x7a), vaultCodeHash: VAULT_CODE };
   f.fromEarlierSteps = { dexDeployer: a(0xde), safeOwners: [1, 2, 3, 4, 5].map((i) => a(0x100 + i)), busdcToken: a(0x05d), busdcCodeHash: H, busdcBucketCapacity: "10000000000" };
   return f;
 }

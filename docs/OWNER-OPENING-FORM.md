@@ -11,9 +11,14 @@ One page. Fill `deployments/mainnet/opening-form.json` (public addresses and pat
 | 3 | `firstDepositor` | A **new** EOA (hardware wallet) used only for the approve and the seed | Not a Safe owner, not the LP recipient, not the keeper, not the deployer. The tool refuses those |
 | 4 | `lpRecipient` | Address that receives the LP shares | Not the Safe (principal and fee stay apart; an exit does not need 3 of 5) |
 | 5 | `seederExit.policy`, `seederExit.floorBps` | `"keep-floor"` and 1000 or more | **Decided (round 10): `keep-floor`, `floorBps` 1000** (keep 10% of the seed position, 0.5 WBLCH + 50 bUSDC at P = 100). The tool refuses `full-exit` and a floor under 1000 |
-| 6 | `keeper.address`, `keeper.keystore`, `keeper.passwordFile` | Hot gas-only key; absolute paths on the keeper host | Budget defaults: 0.05 BLCH and 48 tx per 24 h |
-| 7 | `bridgeStatus.ethRpcUrl`, `bridgeStatus.vault`, `bridgeStatus.vaultCodeHash` | Ethereum RPC (https, serves `finalized`, CORS open), ProvenanceSourceVault address, its runtime code hash (or `null`) | Fill all three: without them the page and the monitor cannot see held or paused bUSDC exits |
+| 6 | `keeper.address`, `keeper.keystore`, `keeper.passwordFile` | Hot gas-only key; absolute paths on the keeper host | Budget defaults: 0.05 BLCH and 48 tx per 24 h (decided). `keeper.budgetWei` (a decimal string of wei) is accepted from 0.005 to 0.5 BLCH and `keeper.maxTx` from 12 to 288. The keeper is its own key: not the deployer, the depositor, the LP recipient, the Safe, a Safe owner or a bridge contract |
+| 7 | `bridgeStatus.ethRpcUrl`, `bridgeStatus.vault`, `bridgeStatus.vaultCodeHash` | Ethereum RPC (https, serves `finalized`, CORS open), ProvenanceSourceVault address, its runtime code hash (from the bridge deployment record; `null` is accepted in a rehearsal only) | Fill all three: without them the page and the monitor cannot see held or paused bUSDC exits, and the monitor and keeper units pin the vault's code with the hash |
 | 8 | `site.*` | Public L2 RPC and its status, explorer, bridge links | `rpcStatus: "live"` only once the public RPC is up |
+
+Addresses: write them in lower case, or with their EIP-55 checksum (mixed case) as a wallet shows them. A mixed-case
+address whose checksum is wrong (one mistyped character) is refused. Each key and contract has one role: the tool
+refuses the same address in two of deployer, depositor, keeper, Safe, Safe owners, bUSDC token and vault, and an LP
+recipient that is the token or the vault.
 
 Optional: `seed.fractionBps` (default 5000, at most 7000, the planner's limit: at 8000 a balanced seed sits on the k ceiling, DEX-4), `seed.deadlineMin` (default 120; raise it if L2 blocks are slow).
 
