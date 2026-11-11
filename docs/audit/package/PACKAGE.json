@@ -1,9 +1,9 @@
 {
   "schema": "postern.dex.audit-package.v1",
-  "commit": "823b916d5fb30e8d4eb70a076c448dacb0733e8a",
+  "commit": "0ba4f9701adaa49183dc97c1558488d6556c2542",
   "contractsCommit": "d18ab04f1db68350427362128829f88dba8bac9b",
-  "tree": "b8830f66c8261df7b0f55098b79be990a392c234",
-  "generatedAt": "2026-11-11T21:31:31.944Z",
+  "tree": "c58cf35ddabf220aef7a56cf33e163486454bd32",
+  "generatedAt": "2026-11-11T22:37:20.524Z",
   "generator": {
     "path": "scripts/audit/make-package.mjs",
     "sha256": "2530cce91bc99f170652a2dfba02aaecf986500771e3696e30daef733d7d8269",
@@ -53,7 +53,7 @@
     }
   ],
   "bridge": {
-    "revision": "13d79cc60aabeac5608d6d59b8cbc70efd41d5a6",
+    "revision": "b5c576399e28f84912001fb31ae11c7b983cea14",
     "dirty": false,
     "v3CreationKeccak": "0xe560441f37e247e387cebd23bb3dd798a29d34174a9fb19a4bb3877c6c721de7"
   },
@@ -67,7 +67,7 @@
       "command": "forge build",
       "exit": 0,
       "ok": true,
-      "logSha256": "2922d51c8a10c0c2c0197d7e4ed2ddbe7c6b47844d863c70ceda5ed47b641c1f"
+      "logSha256": "0aff385025fce03bc22e7f3bfed8cd71bdc77b46d740c7ec478988f05c24a007"
     },
     {
       "name": "forge-test",
@@ -79,7 +79,7 @@
       "pass": 234,
       "fail": 0,
       "skipped": 0,
-      "logSha256": "e00a7d44aeaa96fce49a1b5a781aae1a438ca94d65798244ca6c29fcc54d2de7"
+      "logSha256": "f2c2dfbb8d86b586990919485c4b16b8f0f82881e8e2353ec93dbd27aa9e6204"
     },
     {
       "name": "forge-test-v3-real-token",
@@ -91,7 +91,7 @@
       "pass": 27,
       "fail": 0,
       "skipped": 0,
-      "logSha256": "f8796fd56dbbd324242873cb647145d546df9c6544f00d39410bd7ea71711650"
+      "logSha256": "dac390a9b308e1bbd0ce09979b771a420483fed20d074a498dcbc2ad058d8c52"
     },
     {
       "name": "node-staging",
@@ -103,19 +103,19 @@
       "pass": 204,
       "fail": 0,
       "skipped": 0,
-      "logSha256": "07a08369098227567c6fb405a2544b8ac87024d6eae60a0d42a0bf9df9848268"
+      "logSha256": "94844c97b344aca3ebb4b5e3c2c5b42203c16cfbbe0950af40f312f6d7221130"
     },
     {
       "name": "node-ops",
       "command": "node --test scripts/ops/*.test.mjs",
       "exit": 0,
       "ok": true,
-      "summary": "195 tests, 195 passed, 0 failed, 0 skipped",
-      "tests": 195,
-      "pass": 195,
+      "summary": "196 tests, 196 passed, 0 failed, 0 skipped",
+      "tests": 196,
+      "pass": 196,
       "fail": 0,
       "skipped": 0,
-      "logSha256": "0dcde3860aa90241f19d54afd482c7029728ae4e53426f4a3a885255f17c6b48"
+      "logSha256": "f80e57c07deb9dbc290576b785cf9151b7552a002cd928464c0b372c828dae33"
     },
     {
       "name": "frontend-vitest",
@@ -126,7 +126,7 @@
       "pass": 484,
       "fail": 0,
       "skipped": 1,
-      "logSha256": "c3f8ff6815c78533e5a69833db8b5c0f43ac1efccbf59a690e46ffed64df3783"
+      "logSha256": "a9ae578144b99f84881a674c3aa59e220af47ff7db84152a0a94383f62234237"
     },
     {
       "name": "frontend-tsc",
@@ -140,7 +140,7 @@
       "command": "npx vite build",
       "exit": 0,
       "ok": true,
-      "logSha256": "d78bb0db8ab439daa428327a4ada0b9b4d22768ec53a25faea206bcd5f416cb9"
+      "logSha256": "dc0e289b48dee210d9beff168841cf54b7d4f1607ee8da0ad43a22b2afacd6ee"
     },
     {
       "name": "frontend-bundle-check",
@@ -152,55 +152,55 @@
     },
     {
       "name": "rehearse-opening",
-      "command": "scripts/ops/rehearse-opening.sh 41310 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-WQzlXF/rehearsal-opening",
+      "command": "scripts/ops/rehearse-opening.sh 41310 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-VEVmzj/rehearsal-opening",
       "exit": 0,
       "ok": true,
       "summary": "REHEARSAL OK, 40 checks",
       "checks": 40,
-      "logSha256": "4f637317c111ea60c9de0c30fe5bb8eb0ea2ab587981f5e987cf220f8fc07712"
+      "logSha256": "a4f054d2c1b26c5e58e3a83ff3f8e24e3d46152da532ef848223853098037255"
     },
     {
       "name": "rehearse-ops-anvil",
-      "command": "scripts/ops/rehearse-ops.sh anvil 41320 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-WQzlXF/rehearsal-ops",
+      "command": "scripts/ops/rehearse-ops.sh anvil 41320 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-VEVmzj/rehearsal-ops",
       "exit": 0,
       "ok": true,
       "summary": "REHEARSAL OK (anvil, 149 checks, <export>/rehearsal-ops)",
       "checks": 149,
-      "logSha256": "a0d51b3f59f60c8b8f6f83a643c68823fc1ffe635e4c01f39e92b0a7b69f2f02"
+      "logSha256": "3695317d4324aa443d59f58ed4ff9c98704cc2fde0bc368ec9ae72b87149d7e3"
     },
     {
       "name": "rehearse-package-standin",
-      "command": "scripts/staging/rehearse-mainnet-package.sh anvil d18ab04f1db68350427362128829f88dba8bac9b 41330 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-WQzlXF/rehearsal-package-standin",
+      "command": "scripts/staging/rehearse-mainnet-package.sh anvil d18ab04f1db68350427362128829f88dba8bac9b 41330 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-VEVmzj/rehearsal-package-standin",
       "exit": 0,
       "ok": true,
       "summary": "REHEARSAL OK (anvil, <export>/rehearsal-package-standin)",
       "checks": null,
-      "logSha256": "77caca6c301b7de374fa5209cb2073bb90d73896f9620fee320f5c666f09cc24"
+      "logSha256": "3dd825241114ae3e0a6c6a8183da061ec3bcf88e01de6ab0617bf862a54a5807"
     },
     {
       "name": "rehearse-package-real-v3",
-      "command": "scripts/staging/rehearse-mainnet-package.sh anvil d18ab04f1db68350427362128829f88dba8bac9b 41340 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-WQzlXF/rehearsal-package-real",
+      "command": "scripts/staging/rehearse-mainnet-package.sh anvil d18ab04f1db68350427362128829f88dba8bac9b 41340 /var/folders/b0/2lhv9r8d5n97vrd1nz_3j4xm0000gp/T/dex-audit-VEVmzj/rehearsal-package-real",
       "exit": 0,
       "ok": true,
       "summary": "REHEARSAL OK (anvil, <export>/rehearsal-package-real)",
       "checks": null,
-      "logSha256": "20c965e3450598a915c17e863c6658733a5df2547c2dd7b8bcb38a0b22c2d42e"
+      "logSha256": "7858ff9c6bf2c2901f5b51855117e2e0129a68673f2f934dd31739505d56b9f7"
     },
     {
       "name": "browser-wallet-harness",
       "command": "node frontend/integration/browser/run.mjs",
       "exit": 0,
       "ok": true,
-      "summary": "browser wallet scenarios: PASS, 21 scenarios, 127 assertions, 0 failed",
-      "logSha256": "524a37f00478611245e9d70482aa90d67a2d31a69e599a95e7728caafb9df6ed"
+      "summary": "browser wallet scenarios: PASS, 23 scenarios, 135 assertions, 0 failed",
+      "logSha256": "cc4e2a983582fb6f48cb5d23eb30f5fe8d7edba98b37f18b72e098d436279ca2"
     }
   ],
   "notRun": [],
   "files": {
-    "SCOPE.md": "a3be1e67e0673365bc0abcec6778fa9e3403ea7a315e5245e7116c004e18fa90",
-    "MANIFEST.tsv": "bb9f6b45b75a5f1b0b04a24a85fe7c85b23d58eaffac73cd6b06a80f6c7a736f",
-    "TEST-EVIDENCE.md": "f81cfd9ad992c42addd8576ee3b5d2ce237f7f86b2ed09ad8908cbbd41f8c82f",
-    "KNOWN-ISSUES.md": "ec91ea7d3d84b06803f063b6c60bdd28fb0c404a527e649654b1ae561f8465a1"
+    "SCOPE.md": "f398e4cb4ba42faa186af0464f8157dd7d3e12f31f78da36bf2936e7bc4dc452",
+    "MANIFEST.tsv": "f61bc85626e90d0d7c7d2544423f448e7ac37a7568eddade22dde230ee651e7b",
+    "TEST-EVIDENCE.md": "8db921b4f4abfdea99d36788290dd083dbaa91013b2c10cea3de012a74827e73",
+    "KNOWN-ISSUES.md": "b2d0671948dca3aeaf9cdbef28f2b657166158e88f79f53527937a73a14f9645"
   },
   "result": "passed"
 }
