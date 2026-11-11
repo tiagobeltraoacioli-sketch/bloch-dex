@@ -10,6 +10,7 @@
 #
 #   PRODUCE_DEV=… SETTLED_RPC=… scripts/staging/private-l2.sh init     WORK ADDR[,ADDR…] [SATS_EACH]
 #   PRODUCE_DEV=… SETTLED_RPC=… scripts/staging/private-l2.sh start    WORK PORT
+#     (with REQUIRED_TIP_FILE=<sequencer-policy.json> the RPC also gets --required-tip-file: new-slot admission)
 #   PRODUCE_DEV=… SETTLED_RPC=… scripts/staging/private-l2.sh finalize WORK PORT
 #                               scripts/staging/private-l2.sh warp     WORK SECONDS
 #                               scripts/staging/private-l2.sh stop     WORK
@@ -50,9 +51,13 @@ console.log(JSON.stringify(addrs.split(",").map((a, i) => ({ height: 1, tx_index
   start)
     PORT=${3:?PORT required}
     [ ! -e "$WORK/rpc.pid" ] || { echo "already started" >&2; exit 1; }
+    # REQUIRED_TIP_FILE (optional): a sequencer policy file for a settled RPC that enforces the new-slot admission
+    # rule (the user-transaction candidate; the launch release has no such rule and no such flag in use).
+    TIP_ARGS=()
+    [ -z "${REQUIRED_TIP_FILE:-}" ] || TIP_ARGS=(--required-tip-file "$REQUIRED_TIP_FILE")
     rm -rf "$WORK/rpc-view"
     nohup nice -n 10 "$SETTLED_RPC" --data-dir "$WORK/canonical" --view-dir "$WORK/rpc-view" --finality-status "$WORK/status.json" \
-      --network "$NETPIN" --port "$PORT" --poll-ms 1000 "${NET[@]}" --txpool "$WORK/txpool" < /dev/null > "$WORK/rpc.log" 2>&1 &
+      --network "$NETPIN" --port "$PORT" --poll-ms 1000 "${NET[@]}" --txpool "$WORK/txpool" ${TIP_ARGS[@]+"${TIP_ARGS[@]}"} < /dev/null > "$WORK/rpc.log" 2>&1 &
     echo $! > "$WORK/rpc.pid"
     (
       N=2
