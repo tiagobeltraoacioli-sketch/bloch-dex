@@ -61,7 +61,7 @@ import {
   submissionContext,
   type ReplacementProof,
 } from './mainnet/submission-outcome';
-import { usePendingSwap } from './mainnet/pendingswap';
+import { usePendingSwap, walletOnChain } from './mainnet/pendingswap';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
 import { explainSwapRevert, retryOffer, revertText, type SwapRetryInfo } from './mainnet/retry';
@@ -551,6 +551,15 @@ function PendingExcess({
             tx,
           );
           intentId = reservation.id;
+          // The wallet's chain again, last of the awaited reads (review R309-A4): the user may have switched
+          // network meanwhile, and not every wallet enforces a request's chain ID. The checks below are synchronous.
+          if (!(await walletOnChain(provider, network.chainId))) {
+            await pendingSwap.rejected(intentId);
+            intentId = undefined;
+            throw new Error(
+              'Your wallet is no longer on the Bloch L2 network. Nothing was sent. Select the network in your wallet and try again.',
+            );
+          }
           if (
             !mounted.current ||
             currentWallet.current.provider !== provider ||
@@ -995,6 +1004,15 @@ function SwapPanel({
             tx,
           );
           intentId = reservation.id;
+          // The wallet's chain again, last of the awaited reads (review R309-A4): the user may have switched
+          // network meanwhile, and not every wallet enforces a request's chain ID. The checks below are synchronous.
+          if (!(await walletOnChain(provider, network.chainId))) {
+            await pendingSwap.rejected(intentId);
+            intentId = undefined;
+            throw new Error(
+              'Your wallet is no longer on the Bloch L2 network. Nothing was sent. Select the network in your wallet and try again.',
+            );
+          }
           if (
             generation !== formGeneration.current ||
             currentWallet.current.provider !== provider ||

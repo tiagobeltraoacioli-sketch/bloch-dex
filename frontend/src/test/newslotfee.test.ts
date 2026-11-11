@@ -117,15 +117,15 @@ describe('new-slot priority fee', () => {
     const { rpc } = node({
       keys: [key(1), key(2), key(3)],
       zero: [key(1), key(3)],
-      tip: '0x4a817c800',
+      tip: '0x2cb417800',
       gasUsed: '0x15f90',
     });
     const fee = (await priceNewSlots(rpc, CALL, ON))!;
     expect(fee.possibleNewSlots).toBe(2n);
     // 90,000 simulated - 2,400 - 3 x 1,900 = 81,900; 2 slots need ceil(2 x 200e12 x 1.1 / 81900)
-    // = 5,372,405,373 < the published 20 gwei.
+    // = 5,372,405,373 < the published 12 gwei.
     expect(fee.gasUsed).toBe(81_900n);
-    expect(fee.maxPriorityFeePerGas).toBe(20_000_000_000n);
+    expect(fee.maxPriorityFeePerGas).toBe(12_000_000_000n);
     expect(newSlotFeeNote(fee)).toBe('');
   });
 

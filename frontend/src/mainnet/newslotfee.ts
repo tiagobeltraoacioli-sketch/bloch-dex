@@ -32,8 +32,10 @@
 //     and after, the RPC does not charge them, and `transientSlots` excludes them;
 //   * a new slot costs at least 20,000 gas (SSTORE from zero) and refunds never exceed a
 //     fifth of the gas used, so the count is capped at (gasUsed - 21,000) / 16,000. This also
-//     bounds the suggested tip at price x (1 + margin) / 16,000 per gas (13.75 gwei with the
-//     committed policy), whatever a broken RPC answers.
+//     bounds the slot part of the tip at price x (1 + margin) / 16,000 per gas (13.75 gwei
+//     with the committed policy), whatever a broken RPC answers. The published tip is refused
+//     above 15 gwei, so the suggested tip never exceeds 15 gwei (0.0075 BLCH on a
+//     500,000-gas swap).
 // In headless Chrome against a node applying the RPC's rule from a state trace
 // (frontend/integration/browser), a first approve, a first swap and repeat swaps are priced
 // for exactly the slots the node measures. The
@@ -58,8 +60,10 @@ export const DEFAULT_MARGIN_BPS = 1_000;
 export const MAX_MARGIN_BPS = 5_000;
 /** Above this many touched keys every key counts as new instead of being read one by one. */
 export const MAX_STORAGE_READS = 48;
-/** The published tip is refused above this: a broken RPC must not set an absurd fee. */
-export const MAX_PUBLISHED_TIP_WEI = 100n * 10n ** 9n;
+/** The published tip is refused above this: a broken RPC must not set an absurd fee. The sequencer's
+ * congestion tip tops out at 3 gwei (owner decision of 2026-11-02); this is five times that, and
+ * it is the bound of the whole suggestion together with the slot bound below (review R309-A3). */
+export const MAX_PUBLISHED_TIP_WEI = 15n * 10n ** 9n;
 const INTRINSIC_GAS = 21_000n;
 /** EIP-2930 intrinsic gas of an access list entry. */
 const ACCESS_LIST_ADDRESS_GAS = 2_400n;

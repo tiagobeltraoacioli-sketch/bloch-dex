@@ -287,6 +287,22 @@ export async function otherNonceWarning(rpc: Rpc, swap: PendingSwap): Promise<st
     : '';
 }
 
+/** The wallet's own chain, read right before a wallet request (review R309-A4): the user may have switched
+ * network during the page's reads, and not every wallet enforces the chain ID of a request. Never throws; a wallet
+ * that cannot say which chain it is on is treated as being on another one. */
+export async function walletOnChain(provider: Provider, chainId: number): Promise<boolean> {
+  try {
+    const answer = await provider.request({ method: 'eth_chainId' });
+    return (
+      typeof answer === 'string' &&
+      /^0x[0-9a-f]+$/i.test(answer) &&
+      BigInt(answer) === BigInt(chainId)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const REVIEW_NOT_FOR_SWAPS =
   'A swap is never requested from the wallet a second time: an earlier request may still be open or signed there, and two copies inside the deadline would both execute. This hold ends by itself once the swap deadline has passed in a finalized block. No wallet request was made.';
 
@@ -428,7 +444,18 @@ export function usePendingSwap({
     setTrackedContextKey(contextKey);
     try {
       const held = enabled && key ? recall(key) : null;
-      setTracked(
+      // An expired swap has no hash, so the page's history cannot keep it: its notice stays until the next
+      // request of the same account and deployment, across the refresh that follows the release.
+      const keepExpired = (t: TrackedSwap | null) => {
+        if (!t || t.state !== 'expired' || !t.intent || !context) return null;
+        try {
+          assertSubmissionContext(t.intent, context, account);
+          return t;
+        } catch {
+          return null;
+        }
+      };
+      setTracked((t) =>
         held
           ? describeOpen(
               held.swap,
@@ -436,7 +463,7 @@ export function usePendingSwap({
               latest.current.now(),
               held.saved,
             )
-          : null,
+          : keepExpired(t),
       );
       if (held) checkContext(held.swap);
       setStorageProblem(null);
@@ -445,7 +472,7 @@ export function usePendingSwap({
         error instanceof Error ? error.message : 'Saved submissions are unavailable.',
       );
     }
-  }, [enabled, key, recall, checkContext, contextKey]);
+  }, [enabled, key, recall, checkContext, contextKey, context, account]);
 
   useEffect(() => {
     const changed = (event: StorageEvent) => {
@@ -1004,10 +1031,20 @@ export function usePendingSwap({
       // the original nonce then proves nothing about the request: it can still execute, or already has.
       for (const candidate of submissionHashes(held.swap)) {
         if (candidate === hash) continue;
-        const signedNonce = savedCallNonce(
-          await rpc('eth_getTransactionByHash', [candidate]),
-          held.swap.intent,
-        );
+        const body = await rpc('eth_getTransactionByHash', [candidate]);
+        const signedNonce = savedCallNonce(body, held.swap.intent);
+        // A candidate the RPC cannot show proves nothing: the wallet may hold it, signed at its own next
+        // nonce, and publish it later. For a swap that would be a second execution, so the hold closes as
+        // replaced only once the deadline has passed in a finalized block (review R309-A2). A second
+        // approval or skim is harmless and keeps the earlier rule.
+        if (
+          body === null &&
+          held.swap.intent.kind === 'swap' &&
+          !(await expiredSwap(rpc, held.swap.intent, context, held.swap.deadline, []))
+        )
+          throw new Error(
+            `The RPC cannot show the transaction ${candidate} your wallet returned for this swap, so the nonce it was signed with is unknown: it may still be published and execute. This hold cannot be closed as replaced before the swap deadline has passed in a finalized block; it then ends by itself.`,
+          );
         if (signedNonce !== null && signedNonce !== BigInt(held.swap.intent.nonce))
           throw new Error(
             `Your wallet signed this request at nonce ${signedNonce}, not nonce ${held.swap.intent.nonce} (${candidate}). It can still execute or already has, so this hold cannot be closed as replaced; it settles when that transaction is finalized.`,

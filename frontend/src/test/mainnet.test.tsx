@@ -666,10 +666,12 @@ describe('mainnet route', () => {
 
     await user.click(await screen.findByRole('button', { name: /Approve 1 bUSDC/ }));
     await waitFor(() => expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull());
-    expect(requests.slice(0, 5).map((r) => r.method)).toEqual([
+    // The second-to-last call is the wallet's chain read again, right before the request (R309-A4).
+    expect(requests.slice(0, 6).map((r) => r.method)).toEqual([
       'eth_chainId',
       'wallet_switchEthereumChain',
       'wallet_addEthereumChain',
+      'eth_chainId',
       'eth_chainId',
       'eth_sendTransaction',
     ]);
@@ -678,11 +680,11 @@ describe('mainnet route', () => {
       rpcUrls: ['https://l2rpc.blochl1.com'],
       blockExplorerUrls: ['https://explorer.example.invalid'],
     });
-    const approve = requests[4].params![0] as { to: Address; data: Hex; chainId?: string };
+    const approve = requests[5].params![0] as { to: Address; data: Hex; chainId?: string };
     expect(approve.to).toBe(BUSDC);
     // frontends-sec r10: each send names chain 700770, so a wallet that left it refuses.
     expect(approve.chainId).toBe('0xab162');
-    expect(requests[4].params![0]).toHaveProperty('nonce', '0x0');
+    expect(requests[5].params![0]).toHaveProperty('nonce', '0x0');
     expect(norm(decodeFunctionData({ abi: ERC20_ABI, data: approve.data }).args)).toEqual([
       ROUTER,
       1_000_000n,
@@ -718,9 +720,9 @@ describe('mainnet route', () => {
       ACCOUNT,
       BigInt(NOW_MS / 1000 + 60 * 60),
     ]);
-    const link = await screen.findAllByRole('link', { name: /^0x0+5$/ });
+    const link = await screen.findAllByRole('link', { name: /^0x0+6$/ });
     expect(link[0].getAttribute('href')).toBe(
-      `https://explorer.example.invalid/tx/0x${'5'.padStart(64, '0')}`,
+      `https://explorer.example.invalid/tx/0x${'6'.padStart(64, '0')}`,
     );
   });
 
@@ -2027,6 +2029,39 @@ describe('swap panel safety fixes', () => {
       release();
       await waitFor(() => expect(steps()).toContain('context changed before the wallet request'));
       expect(sends()).toHaveLength(0);
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+    });
+
+    it('R309-A4: sends nothing when the wallet left the network during the boundary reads', async () => {
+      const { rpc, state } = fakeChain({
+        excess: {
+          [USD_PAIR]: { excess0: 1n, excess1: 0n, blocksInflow0: false, blocksInflow1: false },
+        },
+      });
+      let waiting = false;
+      let release: () => void = () => {};
+      const slow: Rpc = async (m, p) => {
+        if (m === 'eth_getTransactionCount' && p[1] === 'pending') {
+          waiting = true;
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        return rpc(m, p);
+      };
+      const chain = withReceipts(slow, () => null);
+      const first = await mount(chain, state);
+      await first.user.click(await screen.findByRole('button', { name: 'Skim to my wallet' }));
+      await waitFor(() => expect(waiting).toBe(true));
+      // The user switches the wallet to another network while the page is still reading the L2.
+      const inner = first.wallet.provider!;
+      const request = inner.request.bind(inner);
+      inner.request = async (call) => (call.method === 'eth_chainId' ? '0x1' : request(call));
+      release();
+      await screen.findByText(
+        /Your wallet is no longer on the Bloch L2 network\. Nothing was sent\./,
+      );
+      expect(first.sends()).toHaveLength(0);
       expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
     });
 

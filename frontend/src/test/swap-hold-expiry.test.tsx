@@ -117,6 +117,7 @@ function chain() {
     latest: { number: 16n, hash: hash('a'), timestamp: 256n },
     nonce: 4n,
     bodies: new Map<Hex, Record<string, unknown>>(),
+    receipts: new Map<Hex, Record<string, unknown>>(),
     flipFinalizedHashAfter: -1,
     reads: 0,
   };
@@ -140,11 +141,12 @@ function chain() {
       if (tag === 'latest') return view(state.latest);
       if (tag === q(state.finalized.number)) return view(state.finalized);
       if (tag === q(state.latest.number)) return view(state.latest);
+      if (tag === '0x11') return { number: '0x11', hash: hash('c'), timestamp: '0x101' };
       return null;
     }
     if (method === 'eth_getTransactionCount') return q(state.nonce);
     if (method === 'eth_getTransactionByHash') return state.bodies.get(params[0] as Hex) ?? null;
-    if (method === 'eth_getTransactionReceipt') return null;
+    if (method === 'eth_getTransactionReceipt') return state.receipts.get(params[0] as Hex) ?? null;
     throw new Error(`Unexpected RPC ${method}`);
   });
   return { rpc, state };
@@ -234,6 +236,34 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     expect(wallet.request).not.toHaveBeenCalled();
   });
 
+  it('keeps the expiry notice across the refresh that follows, and drops it for another account', async () => {
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE + 1n };
+    store(hold('unknown'));
+    const props = {
+      rpc: c.rpc,
+      provider: walletThatMustNotBeAsked().provider,
+      account: FROM as Address | undefined,
+      chainId: 700770,
+      deployment,
+      enabled: true,
+      now: AFTER,
+      onMined: vi.fn(),
+      intervalMs: 5,
+    };
+    const hook = renderHook((p) => usePendingSwap(p), { initialProps: props });
+    await waitFor(() => expect(hook.result.current.tracked?.state).toBe('expired'));
+    // The page reloads its finalized view: the hook is disabled and enabled again.
+    hook.rerender({ ...props, enabled: false });
+    hook.rerender({ ...props, enabled: true });
+    await settle();
+    expect(hook.result.current.tracked?.state).toBe('expired');
+    expect(hook.result.current.open).toBe(false);
+    hook.rerender({ ...props, account: address('4') });
+    await settle();
+    expect(hook.result.current.tracked).toBeNull();
+  });
+
   it('says the swap may have executed when the account nonce was used before the deadline block', async () => {
     const c = chain();
     c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE + 1n };
@@ -321,5 +351,50 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     await expect(
       expiredSwap(c.rpc, swapIntent, { ...context, genesisHash: hash('f') }, DEADLINE),
     ).rejects.toThrow();
+  });
+
+  // Review R309-A2, the reviewer's demonstration (commit 665fb6b) turned into a regression test.
+  it('R309-A2: a swap hold with a candidate the RPC cannot show is not closed as replaced before the deadline', async () => {
+    const TWO = hash('2');
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 17n, hash: hash('c'), timestamp: 300n };
+    store(hold('unknown', [TWO])); // the wallet returned TWO; it signed it at its own nonce 5 and holds it
+    // A different transaction (a plain transfer) used nonce 4 and is finalized.
+    c.state.bodies.set(ONE, {
+      hash: ONE,
+      from: FROM,
+      to: FROM,
+      input: '0x',
+      value: '0x0',
+      chainId: '0xab162',
+      nonce: '0x4',
+      blockNumber: '0x11',
+      blockHash: hash('c'),
+    });
+    c.state.receipts.set(ONE, {
+      transactionHash: ONE,
+      from: FROM,
+      to: FROM,
+      blockNumber: '0x11',
+      blockHash: hash('c'),
+      status: '0x1',
+      gasUsed: '0x5208',
+    });
+    c.state.nonce = 5n;
+    const { hook } = mount(c, walletThatMustNotBeAsked().provider, () => 300_000);
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    await act(async () => {
+      await expect(hook.result.current.checkReplacement(ONE)).rejects.toThrow(
+        /cannot show the transaction 0x2{64} .* may still be published and execute/,
+      );
+    });
+    expect(stored()?.intent?.id).toBe(swapIntent.id);
+    expect(hook.result.current.open).toBe(true);
+    // Once the RPC shows the candidate at the saved nonce, the replacement is accepted as before.
+    c.state.bodies.set(TWO, body(TWO, false));
+    await act(async () => {
+      const proof = await hook.result.current.checkReplacement(ONE);
+      expect(proof.transactionHash).toBe(ONE);
+    });
   });
 });
