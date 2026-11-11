@@ -17,6 +17,36 @@ const MAINNET_CHAIN_ID = JSON.parse(
   readFileSync(new URL("../../deployments/networks.json", import.meta.url), "utf8"),
 ).mainnet.chainId;
 
+const MAINNET_GENESIS = JSON.parse(
+  readFileSync(new URL("../../deployments/mainnet/700770/pins.json", import.meta.url), "utf8"),
+).l2.genesisHash;
+const lower = (v) => (typeof v === "string" ? v.toLowerCase() : v);
+
+/// On the pinned mainnet genesis only the mainnet wrapper's report is accepted (F-L2): the generic gate checks
+/// neither the Bloch Inc Safe nor the bridge token's deployment record, and its report carries no `pinned` block.
+/// The report is not signed; this refuses a wrong file early, it does not authenticate one.
+export function requireMainnetWrapperReport(gateReport, plan, genesisHash = MAINNET_GENESIS) {
+  const refuse = (ok, message) => {
+    if (!ok) throw new Error(`frontend record: ${message}`);
+  };
+  const pinned = gateReport.pinned;
+  refuse(
+    pinned && typeof pinned === "object" && pinned.chainId === MAINNET_CHAIN_ID && pinned.genesisHash === genesisHash,
+    "the gate report was not written by the mainnet gate (check-finality-gate-mainnet.mjs): it has no pinned chain",
+  );
+  refuse(
+    /^0x[0-9a-fA-F]{40}$/.test(pinned.safe ?? "") && lower(pinned.safe) === lower(gateReport.feeTo) && lower(pinned.safe) === lower(plan.feeTo),
+    "the gate report's pinned Safe is not the plan's fee recipient",
+  );
+  const wrapped = lower(plan.contracts?.wrappedNative?.address);
+  const bridged = (plan.reserveCaps ?? []).map((cap) => lower(cap.token)).filter((token) => token !== wrapped);
+  const checked = Array.isArray(gateReport.bridgeTokens) ? gateReport.bridgeTokens.map((t) => lower(t?.address)) : [];
+  refuse(
+    bridged.length > 0 && checked.length === bridged.length && bridged.every((token) => checked.includes(token)),
+    "the gate report does not show every bridge token checked against its bridge deployment record",
+  );
+}
+
 export function assembleRecord({ config, plan, infra, gateReport }) {
   const refuse = (ok, message) => {
     if (!ok) throw new Error(`frontend record: ${message}`);
@@ -37,6 +67,7 @@ export function assembleRecord({ config, plan, infra, gateReport }) {
     gateReport.chainId === plan.chain.id && gateReport.genesisHash === plan.chain.genesisHash,
     "the gate report is for another chain",
   );
+  if (plan.chain.genesisHash === MAINNET_GENESIS) requireMainnetWrapperReport(gateReport, plan);
   refuse(infra?.domain === "postern.dex.mainnet-infra-plan.v1", "unsupported infra plan");
   refuse(
     infra.chain?.id === plan.chain.id && infra.chain?.genesisHash === plan.chain.genesisHash,

@@ -17,6 +17,7 @@ import type { Address, Hex } from 'viem';
 import networkJson from '@postern/mainnet-network';
 import recordJson from '@postern/mainnet-record';
 import plannedConfig from '../../../deployments/mainnet/dex-mainnet.config.json';
+import mainnetPins from '../../../deployments/mainnet/700770/pins.json';
 import { DEX_MAINNET_CHAIN_ID } from '../network-identity';
 import { verifyDeploymentRecord, type DevnetDeployment } from '../devnet4/record';
 import type { AddChainParameters } from '../devnet4/swap';
@@ -184,6 +185,42 @@ export function addChainParameters(network: MainnetNetwork): AddChainParameters 
 }
 
 /**
+ * On the pinned mainnet genesis only a report of the mainnet gate is accepted (F-L2): the generic
+ * gate checks neither the Bloch Inc Safe nor the bridge token against its deployment record, and
+ * its report carries no `pinned` block. The report is not signed: this refuses a wrong record,
+ * and the page still re-verifies the deployment against the RPC at the finalized block.
+ */
+export function requireMainnetGateReport(
+  report: AnyRecord,
+  deployment: { feeTo: string; tokens: { address: string; wrapped: boolean }[] },
+  genesisHash: string | null | undefined,
+  pinnedGenesis: string = mainnetPins.l2.genesisHash,
+): void {
+  if (genesisHash !== pinnedGenesis) return;
+  const lower = (v: unknown) => (typeof v === 'string' ? v.toLowerCase() : v);
+  const pinned = report?.pinned as AnyRecord | undefined;
+  refuse(
+    !!pinned &&
+      pinned.chainId === mainnetPins.l2.chainId &&
+      pinned.genesisHash === pinnedGenesis &&
+      typeof pinned.safe === 'string' &&
+      ADDRESS.test(pinned.safe.toLowerCase()) &&
+      lower(pinned.safe) === lower(deployment.feeTo),
+    'the gate report was not written by the mainnet gate for the pinned chain and Safe',
+  );
+  const bridged = deployment.tokens.filter((t) => !t.wrapped).map((t) => lower(t.address));
+  const checked = Array.isArray(report.bridgeTokens)
+    ? (report.bridgeTokens as AnyRecord[]).map((t) => lower(t?.address))
+    : [];
+  refuse(
+    bridged.length > 0 &&
+      checked.length === bridged.length &&
+      bridged.every((token) => checked.includes(token)),
+    'the gate report does not show every bridge token checked against its bridge deployment record',
+  );
+}
+
+/**
  * Decide the route state from the bundled record. A placeholder record, a
  * placeholder RPC or an unpinned genesis keep the route "not yet live"; a
  * record that claims a deployment but fails verification is an error.
@@ -211,6 +248,7 @@ export async function loadMainnetState(
       genesisHash: network.genesisHash,
     },
   );
+  requireMainnetGateReport(r.gateReport as AnyRecord, deployment, network.genesisHash);
   const infra = r.infra as AnyRecord;
   refuse(infra && infra.domain === INFRA_PLAN_DOMAIN, 'the record has no infra plan');
   refuse(

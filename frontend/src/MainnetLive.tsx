@@ -1501,9 +1501,8 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
         If your wallet shows no transaction for this request (it was refused, closed or never
         signed), the hold stays until this account&apos;s next transaction at the same nonce is
         finalized: send any other transaction from this account in your wallet, then paste its hash
-        here and use the replacement check. A swap hold also ends by itself, with nothing sent,
-        once the swap deadline has passed in a finalized block. Nothing else on this page clears
-        a hold.
+        here and use the replacement check. A swap hold also ends by itself, with nothing sent, once
+        the swap deadline has passed in a finalized block. Nothing else on this page clears a hold.
       </p>
       <label>
         Transaction hash from wallet activity
@@ -1577,14 +1576,14 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
           <summary>Review the original request in your wallet</summary>
           <p>
             If no hash is available, you can explicitly ask your wallet to review this same nonce
-            and unchanged call. This is offered for approvals and skims only, where a second copy
-            is harmless; a swap is never requested twice. An earlier attempt may still execute. This
+            and unchanged call. This is offered for approvals and skims only, where a second copy is
+            harmless; a swap is never requested twice. An earlier attempt may still execute. This
             never chooses a new nonce. Review the decoded amounts, addresses and gas limit below.
-            The page suggests a priority fee only when the call creates new storage slots on the
-            L2, from its own simulation and never from an error's figures; you can adjust fees in
-            the wallet. Cancelling this review keeps the hold. Some wallets ignore the nonce a site
-            asks for: if your wallet shows a nonce other than the one below, reject the request
-            there, because it would be a second transaction.
+            The page suggests a priority fee only when the call creates new storage slots on the L2,
+            from its own simulation and never from an error's figures; you can adjust fees in the
+            wallet. Cancelling this review keeps the hold. Some wallets ignore the nonce a site asks
+            for: if your wallet shows a nonce other than the one below, reject the request there,
+            because it would be a second transaction.
           </p>
           <dl aria-label="Validated original transaction">
             {pendingSwap.review.details.map(([name, value]) => (

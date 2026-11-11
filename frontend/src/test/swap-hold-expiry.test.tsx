@@ -227,7 +227,9 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     await waitFor(() => expect(hook.result.current.tracked?.state).toBe('expired'));
     expect(hook.result.current.open).toBe(false);
     expect(stored()).toBeNull();
-    expect(hook.result.current.tracked?.detail).toMatch(/did not execute and can no longer execute/);
+    expect(hook.result.current.tracked?.detail).toMatch(
+      /did not execute and can no longer execute/,
+    );
     expect(onMined).toHaveBeenCalledTimes(1);
     expect(wallet.request).not.toHaveBeenCalled();
   });
@@ -274,10 +276,18 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
 
   it('never ends an approval hold by time', async () => {
     const c = chain();
-    c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE * 10n };
+    c.state.finalized = c.state.latest = {
+      number: 20n,
+      hash: hash('9'),
+      timestamp: DEADLINE * 10n,
+    };
     const intent = intentOf(APPROVE, 'approval');
     store(hold('unknown', [], intent));
-    const { hook } = mount(c, walletThatMustNotBeAsked().provider, () => Number(DEADLINE) * 1000 * 20);
+    const { hook } = mount(
+      c,
+      walletThatMustNotBeAsked().provider,
+      () => Number(DEADLINE) * 1000 * 20,
+    );
     await waitFor(() => expect(hook.result.current.open).toBe(true));
     await settle();
     expect(stored()?.intent?.id).toBe(intent.id);
