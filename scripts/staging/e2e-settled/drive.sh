@@ -40,6 +40,7 @@ case "$RPC$GW" in http://127.0.0.1:*http://127.0.0.1:*) ;; *) echo "E2E_RPC and 
 STACK_KIND=$([ -n "${E2E_FINALIZE:-}" ] && echo "private L2, no proofs, synthetic finality" || echo "private stack, real settlement")
 REVISION=${REVISION:-$(node -e 'console.log(require(process.argv[1]).source.revision)' "$ROOT/deployments/mainnet/dex-mainnet.config.json")}
 MAXFEE=5000000000; TIP=1000000000; USD_BUCKET=10000000000
+KEEPER_MAX_TIP=3000000000
 ZERO=0x0000000000000000000000000000000000000000
 EXEC="execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)"
 log() { echo "== $(date -u +%FT%TZ) $*" | tee -a "$EV/steps.log"; }
@@ -648,8 +649,13 @@ keeper)
   # The kit's keeper. "dry" sends nothing; "run" sends; prints its JSON and exit status.
   STATE=$WORK/keeper-state.json
   case "${1:?dry|run}" in
-    dry) set +e; node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$RPC" --keeper "$KEEPER" --state "$STATE" --max-fee-wei $MAXFEE 2>&1 | tee -a "$EV/keeper.log"; note "keeper dry exit ${PIPESTATUS[0]}" ;;
-    run) set +e; node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$RPC" --keeper "$KEEPER" --state "$STATE" --max-fee-wei $MAXFEE --execute -- --private-key "$KEEPER_KEY" 2>&1 | tee -a "$EV/keeper.log"; note "keeper run exit ${PIPESTATUS[0]}" ;;
+    # The keeper refuses ceilings that contradict each other at start (exit 2): its default tip ceiling of 8 gwei is
+    # above this driver's 5 gwei fee ceiling, so the tip ceiling is stated too (driver defect since 85c643a: the
+    # keeper never ran, the closure stayed and the `reopened` swap reverted).
+    dry) set +e; node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$RPC" --keeper "$KEEPER" --state "$STATE" --max-fee-wei $MAXFEE --max-tip-wei $KEEPER_MAX_TIP 2>&1 | tee -a "$EV/keeper.log"; note "keeper dry exit ${PIPESTATUS[0]}" ;;
+    run) set +e; node scripts/ops/dex-skim-keeper.mjs --config "$EV/gate.json" --rpc "$RPC" --keeper "$KEEPER" --state "$STATE" --max-fee-wei $MAXFEE --max-tip-wei $KEEPER_MAX_TIP --execute -- --private-key "$KEEPER_KEY" 2>&1 | tee -a "$EV/keeper.log"; c=${PIPESTATUS[0]}; note "keeper run exit $c"
+      # 0 nothing needed, sent or waiting; 1 needs attention. 2 (refused) and 3 (no answer) mean the kit's keeper did not run.
+      [ "$c" -lt 2 ] || { echo "FAIL: the keeper refused to run (exit $c)" >&2; exit 1; } ;;
   esac
   ;;
 reopened)

@@ -396,5 +396,38 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
       const proof = await hook.result.current.checkReplacement(ONE);
       expect(proof.transactionHash).toBe(ONE);
     });
+    // The page remembers that it read the candidate at the saved nonce: when the node drops it afterwards
+    // (a cancellation replaced it), the replacement is still accepted, also after a reload.
+    await waitFor(() => expect(stored()?.nonceSeen).toEqual([TWO]));
+    c.state.bodies.delete(TWO);
+    await act(async () => {
+      expect((await hook.result.current.checkReplacement(ONE)).transactionHash).toBe(ONE);
+    });
+    hook.unmount();
+    const again = mount(c, walletThatMustNotBeAsked().provider, () => 300_000);
+    await waitFor(() => expect(again.hook.result.current.open).toBe(true));
+    await act(async () => {
+      expect((await again.hook.result.current.checkReplacement(ONE)).transactionHash).toBe(ONE);
+    });
+  });
+
+  it('R309-A2: a candidate the RPC shows at another nonce is never recorded as seen', async () => {
+    const TWO = hash('2');
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 17n, hash: hash('c'), timestamp: 300n };
+    store(hold('unknown', [TWO]));
+    c.state.bodies.set(TWO, { ...body(TWO, false), nonce: '0x5' });
+    const { hook } = mount(c, walletThatMustNotBeAsked().provider, () => 300_000);
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    await settle();
+    expect(stored()?.nonceSeen).toBeUndefined();
+  });
+
+  it('a stored record whose nonceSeen names a hash that is not a candidate is unreadable', () => {
+    const TWO = hash('2');
+    store({ ...hold('unknown', [TWO]), nonceSeen: [ONE] });
+    expect(stored()).toBeNull();
+    store({ ...hold('unknown', [TWO]), nonceSeen: [TWO] });
+    expect(stored()?.nonceSeen).toEqual([TWO]);
   });
 });

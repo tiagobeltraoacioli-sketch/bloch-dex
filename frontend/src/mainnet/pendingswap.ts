@@ -42,6 +42,10 @@ import type { RevertCause, SwapRetryInfo } from './retry';
 export type PendingSwap = {
   hash?: Hex;
   candidateHashes?: Hex[];
+  /** Candidate hashes whose transaction body this page has itself read from the RPC carrying the saved call at
+   * the saved nonce. A candidate seen so cannot execute once another transaction used that nonce, even when the
+   * RPC no longer shows it (cancelled or dropped): review R309-A2. */
+  nonceSeen?: Hex[];
   walletAttempt?: {
     id: string;
     mode: 'initial' | 'review';
@@ -154,8 +158,18 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
     const v = JSON.parse(raw) as Record<string, unknown>;
     const intent = parseIntent(v.intent);
     const candidateHashes = v.candidateHashes;
+    const nonceSeen = v.nonceSeen;
     const attempt = v.walletAttempt as PendingSwap['walletAttempt'];
+    const known = new Set([
+      ...(typeof v.hash === 'string' ? [v.hash] : []),
+      ...(Array.isArray(candidateHashes) ? candidateHashes : []),
+    ]);
     if (
+      (nonceSeen !== undefined &&
+        (!Array.isArray(nonceSeen) ||
+          !intent ||
+          new Set(nonceSeen).size !== nonceSeen.length ||
+          !nonceSeen.every((h) => isSubmissionHash(h) && known.has(h)))) ||
       (v.hash === undefined ? !intent : !isSubmissionHash(v.hash)) ||
       (v.intent !== undefined && !intent) ||
       (candidateHashes !== undefined &&
@@ -185,6 +199,7 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
     return {
       ...(v.hash ? { hash: v.hash as Hex } : {}),
       ...(candidateHashes ? { candidateHashes: candidateHashes as Hex[] } : {}),
+      ...(nonceSeen ? { nonceSeen: nonceSeen as Hex[] } : {}),
       ...(attempt ? { walletAttempt: attempt } : {}),
       label: v.label,
       deadline: BigInt(v.deadline),
@@ -415,8 +430,17 @@ export function usePendingSwap({
       const candidateHashes = [
         ...new Set([...submissionHashes(stored), ...submissionHashes(held.swap)]),
       ];
+      const nonceSeen = [
+        ...new Set([...(stored.nonceSeen ?? []), ...(held.swap.nonceSeen ?? [])]),
+      ].filter((hash) => candidateHashes.includes(hash));
       return {
-        swap: { ...held.swap, ...stored, candidateHashes, hash: stored.hash ?? held.swap.hash },
+        swap: {
+          ...held.swap,
+          ...stored,
+          candidateHashes,
+          ...(nonceSeen.length ? { nonceSeen } : {}),
+          hash: stored.hash ?? held.swap.hash,
+        },
         saved:
           held.saved && candidateHashes.every((hash) => submissionHashes(stored).includes(hash)),
       };
@@ -512,6 +536,7 @@ export function usePendingSwap({
       return;
     }
     const { swap, saved } = held;
+    const seen = new Set<Hex>(swap.nonceSeen ?? []);
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const forget = async () =>
@@ -571,6 +596,33 @@ export function usePendingSwap({
       }
       const warning = await otherNonceWarning(rpc, swap);
       if (!live) return;
+      // Remember each candidate the RPC shows at the saved nonce (see PendingSwap.nonceSeen).
+      if (swap.intent)
+        for (const hash of submissionHashes(swap)) {
+          if (seen.has(hash)) continue;
+          const nonce = savedCallNonce(
+            await rpc('eth_getTransactionByHash', [hash]).catch(() => null),
+            swap.intent,
+          );
+          if (!live) return;
+          if (nonce === null || nonce !== BigInt(swap.intent.nonce)) continue;
+          const recorded = await withSubmissionLock(key, () => {
+            const current = recall(key);
+            if (!current || !sameIntent(current.swap, swap)) return false;
+            if (!submissionHashes(current.swap).includes(hash)) return false;
+            const next: PendingSwap = {
+              ...current.swap,
+              nonceSeen: [...new Set([...(current.swap.nonceSeen ?? []), hash])],
+            };
+            const durable = readStored(key);
+            const savedNow =
+              !!durable && sameIntent(durable, next) && writeStored(key, next) && current.saved;
+            memory.current.set(key, { swap: next, saved: savedNow });
+            return true;
+          }).catch(() => false);
+          if (recorded) seen.add(hash);
+          if (!live) return;
+        }
       const open = describeOpen(swap, poll.kind, latest.current.now(), saved);
       setTracked({ ...open, detail: `${open.detail}${warning}` });
       timer = setTimeout(() => void tick(), intervalMs);
@@ -1033,13 +1085,15 @@ export function usePendingSwap({
         if (candidate === hash) continue;
         const body = await rpc('eth_getTransactionByHash', [candidate]);
         const signedNonce = savedCallNonce(body, held.swap.intent);
-        // A candidate the RPC cannot show proves nothing: the wallet may hold it, signed at its own next
-        // nonce, and publish it later. For a swap that would be a second execution, so the hold closes as
-        // replaced only once the deadline has passed in a finalized block (review R309-A2). A second
-        // approval or skim is harmless and keeps the earlier rule.
+        // A candidate the RPC cannot show, and never showed this page at the saved nonce, proves nothing:
+        // the wallet may hold it, signed at its own next nonce, and publish it later. For a swap that would
+        // be a second execution, so the hold closes as replaced only once the deadline has passed in a
+        // finalized block (review R309-A2). A candidate the page did read at the saved nonce (cancelled or
+        // dropped since) is dead with that nonce. A second approval or skim is harmless: earlier rule.
         if (
           body === null &&
           held.swap.intent.kind === 'swap' &&
+          !(held.swap.nonceSeen ?? []).includes(candidate) &&
           !(await expiredSwap(rpc, held.swap.intent, context, held.swap.deadline, []))
         )
           throw new Error(
