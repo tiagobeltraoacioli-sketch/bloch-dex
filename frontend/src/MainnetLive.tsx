@@ -1467,7 +1467,9 @@ function DiscardUnreadable({ pendingSwap }: { pendingSwap: ReturnType<typeof use
         that your wallet still holds, or that is still queued, it can still execute; if you then
         swap again, both swaps execute. Before you discard: open your wallet&apos;s activity, reject
         every open request from this site, and make sure no transaction of this account is pending.
-        This makes no wallet request and sends nothing.
+        The safe alternative is to wait: the longest swap deadline this page allows is 180 minutes,
+        and once a finalized L2 block is later than that after your last request, no swap from it
+        can execute. This makes no wallet request and sends nothing.
       </p>
       <label>
         <input
