@@ -266,8 +266,21 @@ export function checkKeeperState(path, now, add, limits = 48) {
     }
     // Liveness and the keeper's own last word.
     const last = state.lastPass;
+    // A pass the keeper's clock guard stopped because the head is old (a quiet L2, or a wrong clock) is stamped
+    // apart (review R309-3P-2). It proves that the keeper runs, unless it lies in the future of this host's clock.
+    const stale = state.lastStalePass;
+    const staleAge = stale !== null && typeof stale === "object" && Number.isSafeInteger(stale.at) ? Number(now) - stale.at : null;
+    const staleValid = staleAge !== null && staleAge >= -KEEPER_STAMP_AHEAD_SECONDS;
+    const lastValid = last !== null && typeof last === "object" && Number.isSafeInteger(last.at);
     let pass;
-    if (last === null || typeof last !== "object" || !Number.isSafeInteger(last.at)) {
+    if (staleValid && staleAge <= maxAgeSeconds && (!lastValid || stale.at >= last.at)) {
+      const dry = stale.execute !== true;
+      pass = `; the keeper runs (last pass ${Math.max(staleAge, 0)} s ago) but its clock guard stops it: the latest L2 block was ${stale.headAgeSeconds} s old. Either the L2 is idle (it makes a block only when it has work; the heartbeat is up to 24 h) or this host's clock is wrong; compare l2_head_age. The keeper acts again at the next block${dry ? " (DRY RUN: it runs without --execute and publishes nothing)" : ""}`;
+      if (level < WARN) level = WARN;
+    } else if (staleAge !== null && !staleValid && !lastValid) {
+      pass = `; the keeper's only stamp is ${-staleAge} s in the future of this host's clock: the stamp is invalid, the keeper cannot be shown to run`;
+      level = CRIT;
+    } else if (!lastValid) {
       pass = "; the state carries no pass stamp (written by an older keeper, or the keeper has not run since the upgrade)";
       if (level < WARN) level = WARN;
     } else {

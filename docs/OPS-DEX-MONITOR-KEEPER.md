@@ -207,6 +207,13 @@ Further rules of the recovery, from the round 14 review:
 - The keeper refuses an empty signer argument after `--`, and with `--execute` it first runs
   `cast wallet address <signer arguments>`: the signer must open without a prompt and be the `--keeper` address, or
   the keeper stops at start with exit 2 (a missing keystore or password file is found there, not at the first skim).
+- A quiet L2 is not a dead keeper (review R309-3P-2). The L2 makes a block only when it has work (heartbeat up to
+  24 h); after 18 h without a block the clock guard stops every pass. Such a pass (head older than the guard) writes
+  `lastStalePass` (`at`, `headTimestamp`, `headAgeSeconds`, `execute`) beside `lastPass`, and `keeper_budget` then
+  reads WARN "the keeper runs … but its clock guard stops it: the latest L2 block was N s old. Either the L2 is idle
+  … or this host's clock is wrong; compare l2_head_age", until the next block. It is CRIT when that stamp stops too
+  (older than 900 s) or lies in the future of the monitor's clock, so a clock that stepped ahead cannot hide a keeper
+  that stopped.
 - Every keeper pass writes `lastPass` (`at`, `action`, `level`, `execute`) into the state file, except a pass the clock
   guard stopped (`clock-or-head-stale`): its clock is the one just found unusable. The monitor reads a stamp without
   `"execute": true` as a dry run (WARN at least: nothing is published), and a stamp more than 120 s in the future of

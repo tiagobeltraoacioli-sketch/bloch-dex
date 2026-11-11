@@ -2105,7 +2105,7 @@ test("review M5: a wall clock far from the chain head stops the pass before the 
   const options = keeperOptions({ maxClockSkewSeconds: 64_800 });
   assert.equal((await runKeeper(gate, options, state, keeperDeps(node, T0_SENT + 100))).action, "sent");
   // Only the stamp of the pass itself may change.
-  const untouched = (s) => JSON.stringify({ ...s, lastPass: undefined });
+  const untouched = (s) => JSON.stringify({ ...s, lastPass: undefined, lastStalePass: undefined });
   const before = untouched(state);
   for (const now of [T0_SENT + 90_000, T0_SENT - 70_000]) {
     const outcome = await runKeeper(gate, options, state, { ...keeperDeps(node, now), sign: async () => { throw new Error("must not sign"); } });
@@ -2122,6 +2122,11 @@ test("review M5: a wall clock far from the chain head stops the pass before the 
   // R309-2P-10: a pass the clock guard stopped leaves the stamp alone (its clock is the one just found unusable).
   assert.equal(state.lastPass.action, "sent");
   assert.equal(settled.lastPass, undefined);
+  // R309-3P-2: a head older than the guard is stamped apart (a quiet L2 looks the same); a clock BEHIND the head is not.
+  assert.equal(settled.lastStalePass.at, T0_SENT + 90_000);
+  assert.equal(settled.lastStalePass.headAgeSeconds, T0_SENT + 90_000 - settled.lastStalePass.headTimestamp);
+  assert.ok(settled.lastStalePass.headAgeSeconds > 64_800 && settled.lastStalePass.execute === true);
+  assert.equal(state.lastStalePass.at, T0_SENT + 90_000, "the pass with the clock behind the head (the second) left no stamp of its own");
 });
 
 test("review L8: a pinned pair that belongs to another factory is refused", async () => {

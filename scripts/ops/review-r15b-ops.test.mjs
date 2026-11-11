@@ -141,6 +141,8 @@ test("R309-2P-10: a pass stopped by the clock guard does not stamp, and a stamp 
   const skewed = await pass(node, good.state, t0 + 86_400);
   assert.equal(skewed.outcome.action, "clock-or-head-stale");
   assert.equal(skewed.state.lastPass.at, t0, "the stamp of the last usable pass stands");
+  // R309-3P-2: the stopped pass is stamped apart; here that stamp is a day in the future of the true time.
+  assert.equal(skewed.state.lastStalePass.at, t0 + 86_400);
   // Six hours later, true time: the keeper is dead and the monitor says so.
   const row = monitor(skewed.state, t0 + 6 * 3600);
   assert.equal(row.level, CRIT);
@@ -148,7 +150,8 @@ test("R309-2P-10: a pass stopped by the clock guard does not stamp, and a stamp 
   // A keeper that never had a usable pass has no stamp at all: attention, not OK.
   const never = await pass(node, emptyState(), t0 + 86_400);
   assert.equal(never.state.lastPass, undefined);
-  assert.equal(monitor(never.state, t0 + 60).level, WARN);
+  assert.equal(monitor(never.state, t0 + 60).level, CRIT);
+  assert.match(monitor(never.state, t0 + 60).detail, /only stamp is \d+ s in the future/);
   // A stamp written by the first-pass keeper (stamped with the bad clock) is refused by the monitor as invalid.
   const old = monitor({ ...emptyState(), lastPass: { at: t0 + 86_400, action: "clock-or-head-stale", level: 1, execute: true } }, t0 + 6 * 3600);
   assert.equal(old.level, CRIT);
@@ -284,3 +287,36 @@ test("R309-2P-15: the documents present the generic gate as the tool of rehearsa
   }
 });
 void OK;
+
+// ---- R309-3P-2 (third pass, the reviewer's demonstration 2cc1536 with the assertions turned): a quiet L2
+test("R309-3P-2: after 18 h without an L2 block a healthy keeper keeps stamping and the monitor says idle chain, not dead keeper", async () => {
+  const node = simNode(mulberry32(1), { redonate: 0 });
+  node.chain.excess = false; // nothing to skim: a quiet chain
+  let state = emptyState();
+  let time = node.chain.time + 300;
+  node.mineBlock(time);
+  const first = await pass(node, state, time);
+  assert.equal(first.outcome.action, "nothing-to-do");
+  state = first.state;
+  const stamped = state.lastPass.at;
+  // No block for 18 h and 40 minutes; the keeper's timer keeps firing every 5 minutes.
+  let last;
+  for (let i = 0; i < 12 * 18 + 9; i++) { time += 300; last = await pass(node, state, time); state = last.state; }
+  assert.equal(last.outcome.action, "clock-or-head-stale");
+  assert.ok(state.lastPass.at > stamped && time - state.lastPass.at > 900, "the ordinary stamp stopped at 18 h");
+  assert.equal(state.lastStalePass.at, time, "the stale-head stamp moves with every pass");
+  assert.ok(state.lastStalePass.headAgeSeconds > 64_800);
+  const row = monitor(state, time + 200);
+  assert.equal(row.level, WARN);
+  assert.match(row.detail, /the keeper runs .* but its clock guard stops it: the latest L2 block was \d+ s old\. Either the L2 is idle/);
+  // The keeper really stops: 20 minutes later the same state is CRIT.
+  const dead = monitor(state, time + 1_200);
+  assert.equal(dead.level, CRIT);
+  assert.match(dead.detail, /it is not running/);
+  // The next block: the keeper acts again and the ordinary stamp takes over.
+  time += 300; node.mineBlock(time);
+  const back = await pass(node, state, time);
+  assert.notEqual(back.outcome.action, "clock-or-head-stale");
+  assert.equal(monitor(back.state, time + 60).level, OK);
+});
+

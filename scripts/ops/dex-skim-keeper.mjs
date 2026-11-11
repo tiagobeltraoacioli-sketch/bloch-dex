@@ -368,6 +368,13 @@ export async function runKeeper(gate, givenOptions, state, deps) {
   if (outcome.action !== "clock-or-head-stale") {
     state.lastPass = { at: deps.now, action: String(outcome.action), level: outcome.level, execute: givenOptions.execute === true };
     deps.save(state);
+  } else if (Number.isSafeInteger(Number(outcome.headTimestamp)) && BigInt(deps.now) > BigInt(outcome.headTimestamp)) {
+    // The head is older than the guard allows. That is also the normal state of a quiet L2 (it makes a block only
+    // when it has work; its heartbeat is 24 h, the guard 18 h), and a keeper that runs through it must not look dead
+    // (review R309-3P-2). It gets a stamp of its own, beside `lastPass`: the monitor takes it as proof of life only
+    // while it is not in the future of its own clock, so a clock that stepped ahead still cannot hide a dead keeper.
+    state.lastStalePass = { at: deps.now, headTimestamp: Number(outcome.headTimestamp), headAgeSeconds: Number(BigInt(deps.now) - BigInt(outcome.headTimestamp)), execute: givenOptions.execute === true };
+    deps.save(state);
   }
   return outcome;
 }
