@@ -439,6 +439,22 @@ node does not charge (a slot that reads zero and stays zero): the page suggests 
 fee would do, 0.00033 BLCH on that transaction. This is the documented upper bound; an exact figure needs the
 node's own quote (the admission quote method requested from the L2 line).
 
+**With the node's own quote** (third run, 2026-11-11): the L2 line published `bloch_admissionQuote`
+(bloch-l2-evm `24a116e`, candidate line only). The page asks it first and keeps the access-list computation as the
+fallback. Against a settled RPC built from `24a116e` (settled-rpc `b0627a30…`, produce-dev `12cc2841…`), same rig:
+
+| Call | Priced by | Slots: page / node | Tip: page / node requires (wei per gas) | Page over node | Wallet's own fee | Node's figure less 1 wei | Page's fee |
+|---|---|---|---|---|---|---|---|
+| First `approve` of bUSDC | quote | 1 / 1 | 4,768,407,136 / 4,334,915,578 | 1.100 | refused | refused | admitted at the first request |
+| First `approve` by an account holding 0.002 BLCH | quote | 1 / 1 | 4,768,407,136 / 4,334,915,578 | 1.100 | refused | refused | admitted |
+| First native swap BLCH for bUSDC | quote | 1 / 1 | 1,546,910,049 / 1,406,281,862 | 1.100 | refused | refused | admitted |
+| Sale after the approve, repeat native swap, skim of a donation | quote | 0 / 0 | wallet's fee | | admitted | | not needed |
+
+The page's fee is now the node's requirement plus the 10% margin, and the skim is no longer over-counted. For an
+account with no balance at all the quote answers an error (`sender balance 0 is below gas limit … pass a smaller gas`)
+and the page prices with the access list, as before. The public gateway does not route the method yet; until the
+candidate gateway does, the page on mainnet prices with the access list.
+
 Not shown by this check: a browser and a wallet (the fees are signed by the script, as a wallet that honours the
 page's suggestion would), the public gateway, inclusion under load, and real finality.
 
