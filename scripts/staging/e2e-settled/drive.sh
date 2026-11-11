@@ -154,9 +154,19 @@ ADD="addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)"
 QUOTE="quoteExactInput(uint256,address[],uint256)((bool,uint256,uint256,uint256,uint256,uint256[],uint256[]))"
 EXCESS="pendingExcess(address)((uint256,uint256,bool,bool))"
 FAR=99999999999
+# Since round 15 the monitor refuses to run the mainnet gate without the bUSDC exit check (review R309-C2) and
+# --expect-seeded without a seeder floor (R309-C1): the vault of this stack's rehearsal Ethereum, and a tenth of the
+# LP recipient's shares (recorded by `seed`; a work directory seeded by an older driver derives it on the spot).
+mon_bridge() { [ -z "${VAULT:-}" ] || printf '%s\n' --eth-rpc "$BRIDGE_ETH_RPC" --bridge-vault "$VAULT" --bridge-vault-code-hash "$VAULT_CODE"; }
+lp_floor() {
+  if [ -s "$WORK/lp-floor" ]; then cat "$WORK/lp-floor"
+  else echo $(( $(cast call "$PAIR" "balanceOf(address)(uint256)" "$LP_RECIPIENT" --rpc-url "$RPC" | awk '{print $1}') / 10 )); fi
+}
 mon_note() { # label [flags] -> stores the JSON and logs level and non-OK checks
-  local label=$1; shift
-  set +e; node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" "${BRIDGE_ARGS[@]}" --rpc "${MON_RPC:-$RPC}" --lp-recipient "$LP_RECIPIENT" "$@" --json > "$EV/monitor.$label.json"; local c=$?; set -e
+  local label=$1 extra=() line; shift
+  while IFS= read -r line; do [ -z "$line" ] || extra+=("$line"); done < <(mon_bridge)
+  case " $* " in *" --expect-seeded "*) extra+=(--lp-min-shares "$(lp_floor)") ;; esac
+  set +e; node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" "${BRIDGE_ARGS[@]}" ${extra[@]+"${extra[@]}"} --rpc "${MON_RPC:-$RPC}" --lp-recipient "$LP_RECIPIENT" "$@" --json > "$EV/monitor.$label.json"; local c=$?; set -e
   note "monitor[$label] exit $c: $(node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log((r.checks||[]).filter(c=>c.level!==0&&c.status!=="OK"&&c.level!=="OK").map(c=>c.name+":"+(c.message||c.detail||"")).join("; ")||"all OK")' "$EV/monitor.$label.json" 2>/dev/null || echo unparsable)"
 }
 
@@ -412,6 +422,8 @@ seed)
   [ -z "${DEPOSITOR:-}" ] || { [ "$(cast nonce "$DEPOSITOR" --rpc-url "$RPC")" = 2 ] || { echo "FAIL: the first depositor must send exactly two transactions"; exit 1; }; note "first depositor sent exactly 2 transactions"; }
   node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$LP_RECIPIENT" > "$EV/seed-verify.json" || note "seed verify exit $?"
   note "seed verify: $(cat "$EV/seed-verify.json" | head -c 300)"
+  # The seeder floor the monitor is given from here on: 10% of the LP recipient's shares after the seed.
+  echo $(( $(cast call "$PAIR" "balanceOf(address)(uint256)" "$LP_RECIPIENT" --rpc-url "$RPC" | awk '{print $1}') / 10 )) > "$WORK/lp-floor"
   ;;
 swaps)
   state_load
@@ -666,7 +678,8 @@ failed-approve)
   head -c 1200 "$EV/failed-approve.plan.txt" | tee -a "$EV/steps.log"; echo
   $GATE --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" --rpc "$RPC" > "$EV/failed-approve.gate.txt" 2>&1; note "gate exit $?"
   head -c 800 "$EV/failed-approve.gate.txt" | tee -a "$EV/steps.log"; echo
-  node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" "${BRIDGE_ARGS[@]}" --rpc "$RPC" --json > "$EV/failed-approve.monitor.json" 2>&1; note "monitor exit $?"
+  # shellcheck disable=SC2046
+  node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --safe-plan "$EV/safe.plan.json" "${BRIDGE_ARGS[@]}" $(mon_bridge) --rpc "$RPC" --json > "$EV/failed-approve.monitor.json" 2>&1; note "monitor exit $?"
   node scripts/ops/dex-seed-plan.mjs note-tx --config "$EV/gate.json" --rpc "$RPC" --tx "$(cat "$WORK/failed-approve-hash")" > "$EV/failed-approve.note-tx.txt" 2>&1; note "note-tx exit $?: $(head -c 500 "$EV/failed-approve.note-tx.txt")"
   node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$RPC" --price 100 --to "$ISSUER" > "$EV/failed-approve.plan2.txt" 2>&1; note "plan after note-tx exit $?: $(head -c 400 "$EV/failed-approve.plan2.txt")"
   set -e

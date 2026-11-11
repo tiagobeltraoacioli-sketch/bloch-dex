@@ -112,6 +112,7 @@
     { "path": "scripts/staging/e2e-settled/", "why": "settled-stack rehearsal drivers, loopback only" },
     { "path": "scripts/staging/render/", "why": "rehearsal render and screenshot hooks" },
     { "path": "scripts/staging/newslot-rpc-check.mjs", "why": "rehearsal check of the page's new-slot fee against a loopback settled RPC" },
+    { "path": "scripts/ops/keeper-sim.mjs", "why": "test helper: the review's lossy-node model of the keeper, used by keeper-sim.test.mjs" },
     { "path": "scripts/ops/griefing/", "why": "griefing cost models and rehearsal drivers; they send nothing on mainnet" },
     { "path": "scripts/ops/dex-ceiling-capture-model.mjs", "why": "arithmetic model of the ceiling-fee capture (docs); reads nothing, sends nothing" },
     { "path": "scripts/ops/dex-storage-footprint.mjs", "why": "read-only measurement of the DEX storage footprint" },
