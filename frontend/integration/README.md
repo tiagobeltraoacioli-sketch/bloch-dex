@@ -78,12 +78,15 @@ the site asks for; and the L2's `sequencer-fee-underpriced` refusal with its
 `error.data` passed on or lost. Inclusion is controlled with anvil (`automine`
 off, `anvil_mine`).
 
-Scenarios (17): `normal-send`, `queued-at-sequencer`, `queued-reply-lost`,
-`held-in-wallet-review-refused`, `reply-lost-review-honoured-nonce`,
-`reply-lost-review-wallet-ignores-nonce`, `speed-up`, `cancel`, `dropped`,
-`rejected`, `fee-refusal-with-data`, `fee-refusal-data-lost`,
-`reload-while-wallet-open`, `two-tabs`, `approve-then-swap`,
-`wallet-ignores-site-fields`, `wallet-own-queue-ignores-nonce`. Each uses a new
+Scenarios (20): `normal-send`, `queued-at-sequencer`, `queued-reply-lost`,
+`held-in-wallet-review-refused`, `reply-lost-wallet-ignores-nonce-no-review`,
+`speed-up`, `cancel`, `dropped`, `rejected`, `fee-refusal-with-data`,
+`fee-refusal-data-lost`, `reload-while-wallet-open`, `two-tabs`,
+`approve-then-swap`, `wallet-ignores-site-fields`,
+`wallet-own-queue-ignores-nonce`, the new-slot fee scenarios
+(`first-approve-priced`, `first-swap-priced`,
+`first-approve-wallet-ignores-fees`) and, last because it moves the chain clock,
+`reply-lost-never-published-expires`. Each uses a new
 throwaway account and asserts chain facts (router calls of the account that
 were mined, nonces, balances, allowance) next to what the page shows, and that
 the page itself never publishes a transaction through its RPC.
@@ -99,10 +102,10 @@ What it is not:
   (it replaces at a 10% bump like the spool, but has no admission preflight, no
   eviction after three hours and no per-sender limits). The fee refusal is
   produced by the simulated wallet from the documented shape, not by a node.
-- One documented residual is asserted as such:
-  `reply-lost-review-wallet-ignores-nonce` ends with two router calls mined.
-  When the wallet's reply was lost and the wallet ignores the requested nonce,
-  the page cannot prevent a second copy; it warns after the wallet answers.
+- Since round 15 a swap is never requested from the wallet a second time
+  (`reply-lost-wallet-ignores-nonce-no-review`), so the double swap that round
+  14 recorded as a residual can no longer be produced by the page; a swap hold
+  ends at its deadline in a finalized block (`reply-lost-never-published-expires`).
 - No WalletConnect: the QR entry of this frontend is identity-only and refuses
   every transaction, so there is nothing to drive.
 - Headless Chrome on macOS only was run. No Firefox, Safari or mobile browser.
