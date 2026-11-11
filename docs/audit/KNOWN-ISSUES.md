@@ -163,3 +163,27 @@ Found by the suites that round 14 had not run:
 | `rehearse-ops.sh private-l2` had not run since the mainnet gate takes the bridge record | Rehearsal defects, fixed: the monitor ran without `--rehearsal` and stopped at its usage text; the keeper clock-guard scene (anvil only) ran on the private L2; scene 10a asserted `NotReady` after the 30 s delay had passed |
 | Keeper K-L1, K-L6 | Fixed, section 8 |
 
+## 10. Round 15, second review pass (agent 309, on `3c075dd`): 1 Medium, 11 Low, 6 Info
+
+All first-pass findings were confirmed closed. Each demonstration of the second pass is a regression test.
+
+| Finding | Status |
+|---|---|
+| R309-2P-1 (Medium, remainder of A1): a swap hold with no wallet hash could be closed through the replacement check before its deadline | Fixed: such a hold ends only at its deadline in a finalized block, or through the saved call's own hash. Browser scenario `reply-lost-replacement-refused` |
+| R309-2P-2, 2P-6 (admission quote and tip bound) | Fixed: the node's quote never wins alone. The page always makes its access-list computation and suggests the larger of the two; the final tip is refused above 15 gwei on both paths; a quote above twice the page's figure, or charging slots the page cannot find, sends nothing. Consequence, accepted: the access-list upper bound (and the skim over-count of 0.00033 BLCH) stays |
+| R309-2P-3 (a candidate hash that is not the saved call kept the hold for ever) | Fixed: such a hash is skipped by the deadline rule |
+| R309-2P-4 (the stored deadline was not bound to the saved call) | Fixed: a record whose deadline is not the one inside its saved call is unreadable as a whole: nothing is sent, the page says so, and the only manual way out is a deliberate discard that explains the risk (a request the wallet still holds can execute) |
+| R309-2P-5 (deadline from the device clock) | Fixed: no swap is built when the device clock is more than 2 minutes behind or 150 minutes ahead of the latest L2 block. Limit: the L2 makes a block only when it has transactions, so a tighter bound would refuse honest users; a hold can therefore last up to 150 minutes plus the chosen deadline |
+| R309-2P-7 (wording) | Fixed: "no transaction of this account used nonce N … sent from an ordinary wallet account this swap did not execute" |
+| R309-2P-8, 2P-9 (command lines, signer) | Fixed: positional leftovers and values beginning with `--` are refused; empty signer arguments are refused; with `--execute` the signer must resolve to `--keeper` at start (`cast wallet address`) |
+| R309-2P-10, 2P-11 (keeper liveness stamp) | Fixed: no stamp on a clock-guard stop; a stamp in the future is invalid; the stamp records `execute`, and a dry-run stamp is not OK |
+| R309-2P-12 (guards keyed on the genesis string) | Fixed: a chain-700770 gate file or plan on another genesis needs `--rehearsal-chain`; the record carries `rehearsalChain`, the page requires it for another genesis and refuses it on the pinned one. Not changed: `pinned` in a report is a compared field, not re-verified by the record tool (a hand-edited report is a deliberate act; the page re-verifies the deployment against the RPC) |
+| R309-2P-13 (`--rehearsal` on the pinned genesis) | Fixed: refused unless `--rehearsal-on-pinned-genesis` is given too; every such report carries a WARN row `gate_mode` |
+| R309-2P-14, 2P-15 | Fixed: the removal floor follows the larger of the stated seed and the holding; the LP recipient may not be the DEX deployer; the two doc lines name the generic gate as rehearsal-only |
+| R309-2P-16 (invariant handler) | Fixed: the burn is always tried and only `INSUFFICIENT_LIQUIDITY_BURNED` in the dust range is tolerated; deep run repeated (4 seeds) |
+| R309-2P-17 (driver tip ceiling under the new-slot rule) | Driver ceilings are adjustable (`E2E_MAXFEE`, `E2E_KEEPER_MAX_TIP`) and the header says when to raise them. Not run on a stack that enforces the rule |
+| R309-2P-18 (browser harness needed git) | Fixed: it runs on an export, and the package generator runs it there when a browser is installed |
+
+Known and left as it is: a cancellation in the wallet faster than the page's first read of the queued transaction
+(under a second) is not recognised as a replacement before the swap deadline; the hold then ends at the deadline.
+
