@@ -892,11 +892,13 @@ if [ "$IS_V3" = 1 ]; then
   R_USD=$(view "$USD" "$BAL" "$PAIR")
   queue_usd "$PAIR" 3000000; HELD=$LAST_ID
   [ "$(view "$USD" "$BAL" "$PAIR")" = "$R_USD" ] || die "a queued mint moved the pair's balance"
+  # Checked right after the mint is queued: on the private L2 the delay is 30 s of real time, and the monitor pass and
+  # the swaps below take longer than that.
+  expect_revert NotReady "$USD" "$(cast calldata "executeMint(bytes32)" "$HELD")"
   settle
   expect 0 v3-held-monitor monitor --expect-seeded
   grep -q '1 deposit slot(s) opened and not credited, 3000000 pending' "$EV/v3-held-monitor.out" || die "the monitor did not report the queued mint"
   SWAP_IN_OK; SWAP_OUT_OK; k_ok
-  expect_revert NotReady "$USD" "$(cast calldata "executeMint(bytes32)" "$HELD")"
   release_usd
   EXCESS=$(( $(view "$USD" "$BAL" "$PAIR") - $(reserve_usd) ))
   [ "$EXCESS" = 3000000 ] || die "the credited mint should be excess of 3000000, got $EXCESS"
