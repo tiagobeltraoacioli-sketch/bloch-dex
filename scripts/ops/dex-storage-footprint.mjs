@@ -136,7 +136,7 @@ export async function runFootprint(gate, options, state, deps) {
 
 if (isMain(import.meta.url)) {
   try {
-    const args = parseArgs(process.argv.slice(2), { flags: ["json"] });
+    const args = parseArgs(process.argv.slice(2), { flags: ["json"], options: ["config", "rpc", "state", "crit-bps", "warn-bps", "log-range"] });
     if (!args.config || !args.rpc || !args.state) {
       console.error("usage: dex-storage-footprint.mjs --config <gate.json> --rpc <url> --state <file> [--warn-bps B] [--crit-bps B] [--log-range N] [--json]");
       process.exit(UNKNOWN);

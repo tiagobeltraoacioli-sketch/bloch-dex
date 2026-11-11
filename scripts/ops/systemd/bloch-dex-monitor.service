@@ -6,7 +6,10 @@ After=network-online.target
 Type=oneshot
 User=bloch-dex-ops
 EnvironmentFile=/etc/bloch-dex-ops/env
-ExecStart=/usr/bin/env node ${DEX_OPS_ROOT}/scripts/ops/dex-monitor.mjs --config ${DEX_GATE} --safe-plan ${DEX_SAFE_PLAN} --bridge-plan ${DEX_BUSDC_BRIDGE_PLAN} --bridge-record ${DEX_BUSDC_BRIDGE_RECORD} --rpc ${DEX_RPC} --expect-seeded --lp-recipient ${DEX_LP_RECIPIENT} --lp-min-shares ${DEX_LP_MIN_SHARES} --keeper-state /var/lib/bloch-dex-keeper/state.json --keeper-max-tx ${DEX_KEEPER_MAX_TX} --eth-rpc ${DEX_ETH_RPC} --bridge-vault ${DEX_BUSDC_VAULT} --json
+ExecStart=/usr/bin/env node ${DEX_OPS_ROOT}/scripts/ops/dex-monitor.mjs --config ${DEX_GATE} --safe-plan ${DEX_SAFE_PLAN} --bridge-plan ${DEX_BUSDC_BRIDGE_PLAN} --bridge-record ${DEX_BUSDC_BRIDGE_RECORD} --rpc ${DEX_RPC} --expect-seeded --lp-recipient ${DEX_LP_RECIPIENT} --lp-min-shares ${DEX_LP_MIN_SHARES} --keeper-state /var/lib/bloch-dex-keeper/state.json --keeper-max-tx ${DEX_KEEPER_MAX_TX} --keeper-budget-wei ${DEX_KEEPER_BUDGET_WEI} --eth-rpc ${DEX_ETH_RPC} --bridge-vault ${DEX_BUSDC_VAULT} --bridge-vault-code-hash ${DEX_BUSDC_VAULT_CODE_HASH} --json
+# Every variable expanded above must be set in the environment file: an unset or empty one becomes an empty argument and
+# the monitor then stops with UNKNOWN and the reason (exit 3, a failed unit, an empty report), never with a check
+# silently left out.
 # This unit sends nothing. The report goes to a file that bloch-l2-evm l2_monitor.py reads with
 # --report dex=/var/lib/bloch-dex-monitor/report.json:900 and alerts on, with its deduplication; a stale or empty
 # file there is how a dead or failing DEX monitor is noticed. CRIT is a success here because it is in the report.

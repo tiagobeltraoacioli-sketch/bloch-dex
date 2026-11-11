@@ -8,7 +8,7 @@ import { createRpcTransport, JsonRpcResponseError } from "../staging/rpc-transpo
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const viem = requireFromFrontend("viem");
-export const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, hashTypedData, parseTransaction, recoverAddress, recoverTransactionAddress } = viem;
+export const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, hashTypedData, parseTransaction, recoverAddress, recoverTransactionAddress, isAddress } = viem;
 
 // Nagios convention, same as deployment/mainnet/l2_monitor.py in bloch-l2-evm.
 export const OK = 0;
@@ -336,9 +336,13 @@ export function isqrt(value) {
 
 export const stringify = (value) => JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2);
 
-/// Minimal `--name value` / repeated / boolean flag parser. Everything after a
-/// bare `--` is returned untouched (the signer arguments for `cast mktx`).
-export function parseArgs(argv, { flags = [], repeat = [] } = {}) {
+/// `--name value` / repeated / boolean flag parser. Everything after a bare `--` is returned
+/// untouched (the signer arguments for `cast mktx`). Each tool names every option it takes:
+/// `flags` (no value), `repeat` (may be given several times) and `options` (one value). An option
+/// outside those lists, an option given twice, or an empty value is an error: a misspelt limit
+/// or an unset environment variable in a unit must stop the tool, not leave a default or a
+/// missing check in force without a word (review R309-K1, R309-C1, R309-C2).
+export function parseArgs(argv, { flags = [], repeat = [], options = [] } = {}) {
   const out = { _: [], rest: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -355,9 +359,13 @@ export function parseArgs(argv, { flags = [], repeat = [] } = {}) {
       out[name] = true;
       continue;
     }
+    if (!repeat.includes(name) && !options.includes(name)) throw new Error(`unknown option ${arg}`);
     if (i + 1 >= argv.length) throw new Error(`${arg} needs a value`);
-    if (repeat.includes(name)) (out[name] ??= []).push(argv[++i]);
-    else out[name] = argv[++i];
+    const value = argv[++i];
+    if (value === "") throw new Error(`${arg} has an empty value`);
+    if (repeat.includes(name)) (out[name] ??= []).push(value);
+    else if (Object.hasOwn(out, name)) throw new Error(`${arg} is given twice`);
+    else out[name] = value;
   }
   return out;
 }

@@ -131,6 +131,20 @@ export function seedFloorShares({ wrappedCap, quoteCap, price, fractionBps, floo
   return { seedShares, floorShares: (seedShares * floorBps) / 10_000n };
 }
 
+/// The floor `remove` enforces. The position it protects is the seed (at the stated fraction), or what the
+/// recipient holds now when that is more (a fraction stated too low, or liquidity added later): 10% of it is
+/// the minimum. `--floor-shares` and `--floor-bps` can only RAISE the floor; lowering it takes the same
+/// deliberate `--allow-below-floor` as removing below it (review R309-C5).
+export function removalFloor({ seedShares, held, floorShares, floorBps, allowBelowFloor = false }) {
+  const position = held > seedShares ? held : seedShares;
+  const minimumShares = (position * SEEDER_FLOOR_BPS) / 10_000n;
+  const asked = floorShares !== undefined ? floorShares : (position * (floorBps ?? SEEDER_FLOOR_BPS)) / 10_000n;
+  if (asked < minimumShares && !allowBelowFloor) {
+    return { seedShares, minimumShares, refused: `the floor given (${asked} shares) is below the seeder floor of ${minimumShares} shares (${SEEDER_FLOOR_BPS} bps of the larger of the seed position ${seedShares} and the ${held} shares held). A floor can only be raised here; --allow-below-floor lowers it, deliberately` };
+  }
+  return { seedShares, minimumShares, floorShares: asked };
+}
+
 /// The pure part of `remove`: how many shares the LP recipient may take out.
 export function planRemoval({ held, shares, floorShares, allowBelowFloor = false }) {
   if (shares <= 0n) return { decision: "refuse", reason: "nothing to remove" };
@@ -261,18 +275,40 @@ async function load(args, request) {
 /// Plan the LP recipient's removal, refusing one that would take it below the seeder floor.
 async function remove(args) {
   if (!args.config || !args.rpc || !args.price || !args.to || (!args.shares === !args.bps)) {
-    console.error("usage: dex-seed-plan.mjs remove --config <gate.json> --rpc <url> --price <opening price> --to <LP recipient> --shares <n> | --bps <of its shares> [--floor-shares <n> | --floor-bps 1000] [--fraction-bps 5000] [--allow-below-floor] [--deadline-min 60]");
+    console.error("usage: dex-seed-plan.mjs remove --config <gate.json> --rpc <url> --price <opening price> --to <LP recipient> --shares <n> | --bps <of its shares> --fraction-bps <the seed's fraction> [--floor-shares <n> | --floor-bps 1000] [--allow-below-floor] [--deadline-min 60]");
+    return UNKNOWN;
+  }
+  // The seed's own fraction must be stated: the floor is 10% of THAT position, and a default would
+  // understate it for a larger seed (review R309-C5).
+  if (args["fraction-bps"] === undefined) {
+    console.error("dex-seed-plan.mjs remove: --fraction-bps is required: give the fraction the seed was planned with (opening form, seed.fractionBps)");
     return UNKNOWN;
   }
   const fractionBps = parseFractionBps(args["fraction-bps"]);
+  const whole = (name) => {
+    const text = args[name];
+    if (text === undefined) return undefined;
+    if (!/^(?:0|[1-9][0-9]{0,77})$/.test(text)) throw new Error(`--${name} must be a non-negative whole number, got ${JSON.stringify(text)}`);
+    return BigInt(text);
+  };
+  const [givenShares, givenBps, floorSharesGiven, floorBpsGiven] = ["shares", "bps", "floor-shares", "floor-bps"].map(whole);
+  if (givenBps !== undefined && givenBps > 10_000n) throw new Error("--bps must be 0 to 10000");
+  if (floorBpsGiven !== undefined && floorBpsGiven > 10_000n) throw new Error("--floor-bps must be 0 to 10000");
+  if (floorSharesGiven !== undefined && floorBpsGiven !== undefined) throw new Error("give --floor-shares or --floor-bps, not both");
+  const allowBelowFloor = Boolean(args["allow-below-floor"]);
   const request = createRequest(args.rpc);
   const { deployment, pair, state, wrapped, quote, latest, price } = await load(args, request);
   const held = await call(request, pair.address, "balanceOf", [args.to], blockRef(latest));
-  const shares = args.shares !== undefined ? BigInt(args.shares) : (held * BigInt(args.bps)) / 10_000n;
-  const floor = args["floor-shares"] !== undefined
-    ? { seedShares: null, floorShares: BigInt(args["floor-shares"]) }
-    : seedFloorShares({ wrappedCap: wrapped.cap, quoteCap: quote.cap, price, fractionBps, floorBps: BigInt(args["floor-bps"] ?? SEEDER_FLOOR_BPS) });
-  const plan = planRemoval({ held, shares, floorShares: floor.floorShares, allowBelowFloor: Boolean(args["allow-below-floor"]) });
+  const shares = givenShares !== undefined ? givenShares : (held * givenBps) / 10_000n;
+  const floor = removalFloor({
+    seedShares: seedFloorShares({ wrappedCap: wrapped.cap, quoteCap: quote.cap, price, fractionBps }).seedShares,
+    held, floorShares: floorSharesGiven, floorBps: floorBpsGiven, allowBelowFloor,
+  });
+  if (floor.refused) {
+    console.log(stringify({ decision: "refuse-floor", reason: floor.refused, recipient: args.to, heldShares: held, seedShares: floor.seedShares, minimumFloorShares: floor.minimumShares, pair: pair.address, block: latest.number }));
+    return CRIT;
+  }
+  const plan = planRemoval({ held, shares, floorShares: floor.floorShares, allowBelowFloor });
   if (plan.decision !== "remove") {
     console.log(stringify({ ...plan, recipient: args.to, heldShares: held, seedShares: floor.seedShares, pair: pair.address, block: latest.number }));
     return CRIT;
@@ -289,7 +325,7 @@ async function remove(args) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2), { flags: ["allow-below-floor"] });
+  const args = parseArgs(process.argv.slice(2), { flags: ["allow-below-floor"], options: ["config", "rpc", "price", "to", "shares", "bps", "floor-shares", "floor-bps", "fraction-bps", "deadline-min", "tolerance-bps", "tx", "write-txs"] });
   const [command] = args._;
   if (command === "remove") return remove(args);
   if (command === "note-tx") {

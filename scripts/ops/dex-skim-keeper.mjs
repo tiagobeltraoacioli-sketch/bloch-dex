@@ -359,6 +359,15 @@ async function reconcile(state, keeper, deployment, request, now, options) {
 /// One keeper pass. `deps`: {request, sign(tx) -> rawHex, now}. Writes state
 /// through `deps.save` before anything is published.
 export async function runKeeper(gate, givenOptions, state, deps) {
+  const outcome = await keeperPass(gate, givenOptions, state, deps);
+  // The stamp of every pass, whatever it did: the monitor reads it to tell a keeper that runs and needs nothing
+  // from one that never ran, stopped, or keeps ending on a limit (its unit counts exit 1 as a success).
+  state.lastPass = { at: deps.now, action: String(outcome.action), level: outcome.level };
+  deps.save(state);
+  return outcome;
+}
+
+async function keeperPass(gate, givenOptions, state, deps) {
   const { request, sign, save, now } = deps;
   const options = { rebroadcastSeconds: DEFAULTS.rebroadcastSeconds, replaceAfterSeconds: DEFAULTS.replaceAfterSeconds, maxReplacements: DEFAULTS.maxReplacements, ...givenOptions };
   const deployment = deploymentFromGate(gate);
@@ -647,6 +656,11 @@ function castSigner(signerArgs) {
   };
 }
 
+/// Every option of the keeper's command line. Anything else is refused at start (exit 2).
+const KEEPER_OPTIONS = ["config", "rpc", "keeper", "state", "budget-wei", "max-tx", "max-fee-wei", "tip-wei", "max-tip-wei", "soft-share-bps",
+  "hard-reserve-bps", "max-gas", "floor-bps", "ceiling-floor-wei", "cooldown-s", "pending-timeout-s", "rebroadcast-s", "replace-after-s",
+  "max-replacements", "max-clock-skew-s", "eth-rpc", "bridge-vault", "bridge-vault-code-hash", "bridge-token"];
+
 function bigOption(args, name, fallback) {
   return args[name] === undefined ? fallback : BigInt(args[name]);
 }
@@ -654,7 +668,7 @@ function bigOption(args, name, fallback) {
 if (isMain(import.meta.url)) {
   let release = () => {};
   try {
-    const args = parseArgs(process.argv.slice(2), { flags: ["execute"] });
+    const args = parseArgs(process.argv.slice(2), { flags: ["execute"], options: KEEPER_OPTIONS });
     if (!args.config || !args.rpc || !args.keeper || !args.state) {
       console.error("usage: dex-skim-keeper.mjs --config <gate.json> --rpc <url> --keeper <address> --state <file> [--execute] [limits] -- <cast signer args>");
       process.exit(UNKNOWN);

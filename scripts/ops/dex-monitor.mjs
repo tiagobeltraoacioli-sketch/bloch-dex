@@ -84,6 +84,8 @@ export async function runMonitor(gate, options, request, deps = {}) {
 
   const latest = await guarded("l2_head", () => readBlock(request, "latest"));
   const finalized = await guarded("l2_finalized", () => readBlock(request, "finalized"));
+  // No head is "the node could not answer", never a healthy report with one check (R309-C4).
+  if (latest === null) add("l2_head", UNKNOWN, "the RPC returned no latest block");
   if (!latest) return finish(checks, facts);
   facts.latest = latest.number;
   const headAge = now - latest.timestamp;
@@ -188,7 +190,7 @@ export async function runMonitor(gate, options, request, deps = {}) {
 
   if (options.ethRequest && options.bridgeVault) await checkBridgeExit({ deployment, finalized, add, facts, options }, request, guarded);
 
-  if (options.keeperState) checkKeeperState(options.keeperState, now, add, options.keeperMaxTx ?? 48);
+  if (options.keeperState) checkKeeperState(options.keeperState, now, add, { maxTx: options.keeperMaxTx ?? 48, budgetWei: options.keeperBudgetWei ?? null, maxAgeSeconds: options.keeperMaxAgeSeconds });
 
   return finish(checks, facts);
 }
@@ -214,26 +216,65 @@ export async function checkBridgeExit({ deployment, finalized, add, facts, optio
   });
 }
 
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+export const KEEPER_STATE_SCHEMA = "postern.dex.skim-keeper.v1";
+/// The keeper timer fires every 5 minutes; three missed passes are a dead keeper.
+export const KEEPER_MAX_AGE_SECONDS = 900;
+
 /// How much of the keeper's rolling budget is gone, and whether someone is racing it. A
 /// griefer's own skim leaves the pair open, so the pair checks alone never show this.
-export function checkKeeperState(path, now, add, maxTx = 48) {
+/// `limits`: { maxTx, budgetWei, maxAgeSeconds }. budgetWei is the keeper's own --budget-wei: WARN from half
+/// of it, CRIT when the largest reservation seen in the window no longer fits (the keeper then answers
+/// `budget-exhausted` and sends nothing, which its unit counts as a success). The state file must be the
+/// keeper's (schema and a `txs` list) and carry the stamp every keeper pass writes (`lastPass`): a keeper
+/// that never ran, stopped running, or last ended needing attention is not OK here (review R309-C3).
+export function checkKeeperState(path, now, add, limits = 48) {
+  const { maxTx = 48, budgetWei = null, maxAgeSeconds = KEEPER_MAX_AGE_SECONDS } = typeof limits === "object" && limits !== null ? limits : { maxTx: limits };
   let state;
   try {
     state = JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return add("keeper_budget", OK, "no keeper transaction recorded yet");
+    if (error.code === "ENOENT") return add("keeper_budget", WARN, `no keeper state at ${path}: the keeper has not completed a pass on this host yet`);
     return add("keeper_budget", CRIT, `keeper state ${path} is unreadable: ${error.message}`);
   }
+  if (state === null || typeof state !== "object" || state.schema !== KEEPER_STATE_SCHEMA || !Array.isArray(state.txs)) {
+    return add("keeper_budget", CRIT, `keeper state ${path} is not a ${KEEPER_STATE_SCHEMA} file with a transaction list`);
+  }
   try {
-    const txs = keeperWindow({ txs: state.txs ?? [] }, now);
+    const txs = keeperWindow({ txs: state.txs }, now);
     const unresolved = txs.filter(keeperNeedsReconciliation);
     // A first publication the node refused waits, with a free nonce, for the next needed skim: not overdue.
     const overdue = unresolved.some((tx) => tx.refusedFirst !== true && Number(now) - tx.at > KEEPER_PENDING_TIMEOUT_SECONDS);
     const wasted = txs.filter((t) => t.status === "wasted" || t.status === "reverted").length;
     const used = txs.length;
     const charged = txs.reduce((sum, t) => sum + keeperCharge(t), 0n);
-    const level = used >= maxTx ? CRIT : overdue || wasted >= 3 || used * 2 >= maxTx ? WARN : OK;
-    add("keeper_budget", level, `${used} of ${maxTx} transactions counted (24 h inclusion window plus ${unresolved.length} unresolved), ${wasted} moved nothing, ${charged} wei spent or reserved${overdue ? "; an unresolved publication is older than the warning threshold: the keeper keeps re-publishing or replacing it on the same nonce, and opens no new nonce until it settles" : ""}${wasted >= 3 ? "; someone is winning skims against the keeper, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}`);
+    let level = used >= maxTx ? CRIT : overdue || wasted >= 3 || used * 2 >= maxTx ? WARN : OK;
+    let budget = "";
+    if (budgetWei !== null) {
+      // The next skim reserves its worst case first; the dearest reservation of the window stands in for it.
+      const next = txs.reduce((most, t) => { const r = BigInt(t.reservedWei ?? 0); return r > most ? r : most; }, 0n);
+      const spent = charged + next > budgetWei ? CRIT : charged * 2n >= budgetWei ? WARN : OK;
+      if (spent > level) level = spent;
+      budget = ` of the ${budgetWei} wei budget${spent === CRIT ? ": the next skim does not fit, the keeper sends nothing until the window moves on (fees at the k ceiling and donations stay in the pairs)" : spent === WARN ? ": half of the 24 h budget is gone" : ""}`;
+    }
+    // Liveness and the keeper's own last word.
+    const last = state.lastPass;
+    let pass;
+    if (last === null || typeof last !== "object" || !Number.isSafeInteger(last.at)) {
+      pass = "; the state carries no pass stamp (written by an older keeper, or the keeper has not run since the upgrade)";
+      if (level < WARN) level = WARN;
+    } else {
+      const age = Number(now) - last.at;
+      if (age > maxAgeSeconds) {
+        pass = `; the keeper's last pass was ${age} s ago (limit ${maxAgeSeconds} s): it is not running`;
+        level = CRIT;
+      } else {
+        const lastLevel = [OK, WARN, CRIT].includes(last.level) ? last.level : WARN; // 3: its node did not answer
+        pass = `; last pass ${age} s ago: ${String(last.action).slice(0, 60)}${lastLevel === OK ? "" : " (needs attention, see the keeper's journal)"}`;
+        if (lastLevel > level) level = lastLevel;
+      }
+    }
+    add("keeper_budget", level, `${used} of ${maxTx} transactions counted (24 h inclusion window plus ${unresolved.length} unresolved), ${wasted} moved nothing, ${charged} wei spent or reserved${budget}${overdue ? "; an unresolved publication is older than the warning threshold: the keeper keeps re-publishing or replacing it on the same nonce, and opens no new nonce until it settles" : ""}${wasted >= 3 ? "; someone is winning skims against the keeper, see docs/OPS-DEX-MONITOR-KEEPER.md" : ""}${pass}`);
   } catch (error) {
     add("keeper_budget", CRIT, `keeper accounting is unreadable: ${error.message}`);
   }
@@ -270,8 +311,13 @@ async function checkPair({ pair, deployment, latest, finalized, add, facts, opti
     // The owner's floor (opening form, seederExit keep-floor): an absolute share count the LP
     // recipient keeps. Below it the pool nears a full exit, after which the first-deposit rule
     // is gone for good and anyone can reprice the dust reserves (A98-5). 0 or absent: no floor.
-    const floor = BigInt(options.lpMinShares ?? 0);
-    if (floor > 0n) {
+    // An explicit 0 is the only "no floor": an empty, negative or non-numeric value (an unset variable in the
+    // unit) is a configuration error and must show, not remove the check (R309-C1).
+    const given = options.lpMinShares;
+    const floor = given === undefined ? 0n : typeof given === "bigint" ? given : DECIMAL.test(String(given)) ? BigInt(given) : null;
+    if (floor === null || floor < 0n) {
+      add(`lp_floor[${tag}]`, UNKNOWN, `--lp-min-shares ${JSON.stringify(String(given))} is not a non-negative whole number of shares: the seeder floor is NOT being checked`);
+    } else if (floor > 0n) {
       add(`lp_floor[${tag}]`, held >= floor ? OK : CRIT, held >= floor
         ? `${options.lpRecipient} holds ${held} shares, at or above the floor ${floor}`
         : `${options.lpRecipient} holds ${held} shares, below the floor ${floor}: a full exit reopens the pair to anyone at any price (A98-5)`);
@@ -392,19 +438,52 @@ function keeperMaxTx(value) {
   return Number(value);
 }
 
+const MONITOR_OPTIONS = ["config", "rpc", "safe-plan", "bridge-plan", "bridge-record", "lp-recipient", "lp-min-bps", "lp-min-shares", "ref-price",
+  "keeper-state", "keeper-max-tx", "keeper-budget-wei", "keeper-max-age-s", "eth-rpc", "bridge-vault", "bridge-vault-code-hash", "bridge-token"];
+const USAGE = "usage: dex-monitor.mjs --config <gate.json> --rpc <url> --safe-plan <safe.plan.json> --bridge-plan <busdc.plan.json> --bridge-record <busdc.record.json> --eth-rpc <Ethereum RPC> --bridge-vault 0x<vault> --bridge-vault-code-hash 0x<hash> [--expect-seeded --lp-recipient 0x<address> --lp-min-shares <N, 0 = no floor> [--lp-min-bps 5000]] [--keeper-state <state.json> --keeper-max-tx <N> --keeper-budget-wei <wei> [--keeper-max-age-s 900]] [--ref-price P] [--json]; --rehearsal: generic gate, the Safe plan, bridge files, Ethereum RPC and vault become optional";
+
+/// The command line, checked as a whole before anything is read. Throws with the reason: the monitor then exits
+/// UNKNOWN. Nothing a unit can leave empty or misspell may turn a check off (review R309-C1, R309-C2, R309-C3).
+export function monitorArguments(argv) {
+  const args = parseArgs(argv, { flags: ["rehearsal", "json", "expect-seeded"], options: MONITOR_OPTIONS });
+  const need = (ok, why) => { if (!ok) throw new Error(`${why}\n${USAGE}`); };
+  need(args._.length === 0, `unexpected argument ${args._[0]}`);
+  need(args.config && args.rpc, "--config and --rpc are required");
+  need(Boolean(args["bridge-plan"]) === Boolean(args["bridge-record"]), "--bridge-plan and --bridge-record go together");
+  need(Boolean(args["eth-rpc"]) === Boolean(args["bridge-vault"]), "--eth-rpc and --bridge-vault go together: without both the bUSDC exit check cannot run");
+  need(!(args["bridge-vault-code-hash"] || args["bridge-token"]) || args["bridge-vault"], "--bridge-vault-code-hash and --bridge-token need --bridge-vault");
+  if (!args.rehearsal) {
+    need(args["safe-plan"] && args["bridge-plan"], "--safe-plan, --bridge-plan and --bridge-record are required (the mainnet gate)");
+    need(args["eth-rpc"], "--eth-rpc and --bridge-vault are required: held bUSDC exits are a CRIT only this check can show");
+    need(args["bridge-vault-code-hash"], "--bridge-vault-code-hash is required: the exit check must read the reviewed vault, not whatever code is at that address");
+  }
+  if (args["bridge-vault"]) need(/^0x[0-9a-fA-F]{40}$/.test(args["bridge-vault"]), "--bridge-vault is not an address");
+  if (args["bridge-vault-code-hash"]) need(/^0x[0-9a-f]{64}$/.test(args["bridge-vault-code-hash"]), "--bridge-vault-code-hash must be a 32-byte hash (lower case)");
+  if (args["expect-seeded"]) {
+    need(args["lp-recipient"], "--expect-seeded needs --lp-recipient");
+    need(args["lp-min-shares"] !== undefined, "--expect-seeded needs --lp-min-shares (the seeder floor in shares; an explicit 0 means no floor)");
+  }
+  if (args["lp-recipient"]) need(/^0x[0-9a-fA-F]{40}$/.test(args["lp-recipient"]), "--lp-recipient is not an address");
+  if (args["lp-min-shares"] !== undefined) need(DECIMAL.test(args["lp-min-shares"]), "--lp-min-shares must be a non-negative whole number of shares");
+  if (args["lp-min-bps"] !== undefined) need(DECIMAL.test(args["lp-min-bps"]) && BigInt(args["lp-min-bps"]) <= 10_000n, "--lp-min-bps must be 0 to 10000");
+  for (const k of ["keeper-max-tx", "keeper-budget-wei", "keeper-max-age-s"]) need(args[k] === undefined || args["keeper-state"], `--${k} needs --keeper-state`);
+  if (args["keeper-state"]) {
+    need(args["keeper-max-tx"] !== undefined && args["keeper-budget-wei"] !== undefined, "--keeper-state needs --keeper-max-tx and --keeper-budget-wei (the keeper's own limits)");
+    need(/^[1-9][0-9]{0,29}$/.test(args["keeper-budget-wei"]), "--keeper-budget-wei must be a positive whole number of wei");
+    need(args["keeper-max-age-s"] === undefined || /^[1-9][0-9]{0,6}$/.test(args["keeper-max-age-s"]), "--keeper-max-age-s must be a positive number of seconds");
+  }
+  return args;
+}
+
 if (isMain(import.meta.url)) {
   try {
-    const args = parseArgs(process.argv.slice(2), { flags: ["rehearsal", "json", "expect-seeded"] });
-    // Written by the skim keeper. Optional: the monitor can run on a host with no keeper.
-    const bridgeArgs = Boolean(args["bridge-plan"]) + Boolean(args["bridge-record"]);
-    if (!args.config || !args.rpc || (!args.rehearsal && (!args["safe-plan"] || bridgeArgs !== 2)) || bridgeArgs === 1 || (args["expect-seeded"] && !args["lp-recipient"])) {
-      console.error("usage: dex-monitor.mjs --config <gate.json> --safe-plan <safe.plan.json> --bridge-plan <busdc.plan.json> --bridge-record <busdc.record.json> --rpc <url> [--expect-seeded --lp-recipient 0x<address> [--lp-min-bps 5000] [--lp-min-shares N]] [--ref-price P] [--rehearsal] [--json]");
-      process.exit(UNKNOWN);
-    }
+    const args = monitorArguments(process.argv.slice(2));
     const request = createRequest(args.rpc);
     const result = await runMonitor(
       readGate(args.config),
       { expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"], keeperMaxTx: keeperMaxTx(args["keeper-max-tx"]),
+        keeperBudgetWei: args["keeper-budget-wei"] === undefined ? undefined : BigInt(args["keeper-budget-wei"]),
+        keeperMaxAgeSeconds: args["keeper-max-age-s"] === undefined ? undefined : Number(args["keeper-max-age-s"]),
         ethRequest: args["eth-rpc"] ? createRequest(args["eth-rpc"]) : undefined, bridgeVault: args["bridge-vault"],
         bridgeVaultCodeHash: args["bridge-vault-code-hash"], bridgeToken: args["bridge-token"] },
       request,
@@ -421,4 +500,3 @@ if (isMain(import.meta.url)) {
     process.exit(UNKNOWN);
   }
 }
-

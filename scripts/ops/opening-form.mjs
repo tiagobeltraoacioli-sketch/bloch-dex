@@ -366,7 +366,7 @@ function commandsFile(v) {
 const json = (v) => `${JSON.stringify(v, (_, x) => (typeof x === "bigint" ? x.toString() : x), 2)}\n`;
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseArgs(process.argv.slice(2), { options: ["form", "out", "bloch-inc", "genesis", "rpc", "eth-rpc"] });
   const [command] = args._;
   if (!["check", "apply"].includes(command) || !args.form || (command === "apply" && (!args.out || !args["bloch-inc"]))) {
     console.error("usage: opening-form.mjs check --form F [--bloch-inc blochinc.json] [--rpc L2] [--eth-rpc ETH]\n       opening-form.mjs apply --form F --bloch-inc blochinc.json --out DIR [--rpc L2] [--eth-rpc ETH] [--genesis 0x… (rehearsal)]");

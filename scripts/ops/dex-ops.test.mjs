@@ -1023,12 +1023,14 @@ test("monitor: keeper budget levels, from the keeper's own state file", async ()
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const path = join(mkdtempSync(join(tmpdir(), "keeper-")), "state.json");
-  const levelOf = (txs) => {
+  const fresh = { at: 999_900, action: "nothing-to-do", level: OK };
+  const check = (state, limits) => {
     const checks = [];
-    writeFileSync(path, JSON.stringify({ txs }));
-    checkKeeperState(path, 1_000_000, (name, level, detail) => checks.push({ name, level, detail }));
+    writeFileSync(path, JSON.stringify(state));
+    checkKeeperState(path, 1_000_000, (name, level, detail) => checks.push({ name, level, detail }), limits);
     return checks[0];
   };
+  const levelOf = (txs, limits) => check({ schema: "postern.dex.skim-keeper.v1", txs, lastPass: fresh }, limits);
   const tx = (status) => ({ at: 999_000, ...settledFields(999_000), status, spentWei: "100" });
   assert.equal(levelOf([tx("effective")]).level, OK);
   const raced = levelOf([tx("wasted"), tx("wasted"), tx("wasted")]);
@@ -1039,15 +1041,89 @@ test("monitor: keeper budget levels, from the keeper's own state file", async ()
   const unresolved = levelOf([{ at: 1, status: "expired", reservedWei: "1234" }]);
   assert.equal(unresolved.level, WARN);
   assert.match(unresolved.detail, /1234 wei spent or reserved/);
-  assert.match(unresolved.detail, /1 unresolved/);
   const includedLate = levelOf([{ at: 1, ...settledFields(999_000), status: "effective", spentWei: "5678" }]);
+  assert.equal(includedLate.level, OK);
   assert.match(includedLate.detail, /5678 wei spent or reserved/);
   const checks = [];
+  // No state file: the keeper has not completed a pass here. Attention, not OK (R309-C3).
   checkKeeperState(`${path}.missing`, 1_000_000, (name, level) => checks.push(level));
-  assert.equal(checks[0], OK);
+  assert.equal(checks[0], WARN);
   writeFileSync(path, "{broken");
   checkKeeperState(path, 1_000_000, (name, level) => checks.push(level));
   assert.equal(checks[1], CRIT);
+});
+
+test("R309-C3: keeper_budget compares the wei charged with the keeper's budget", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const path = join(mkdtempSync(join(tmpdir(), "keeper-")), "state.json");
+  const BUDGET = 50_000_000_000_000_000n; // the decided 0.05 BLCH
+  const levelOf = (txs, limits = { maxTx: 48, budgetWei: BUDGET }) => {
+    const checks = [];
+    writeFileSync(path, JSON.stringify({ schema: "postern.dex.skim-keeper.v1", txs, lastPass: { at: 999_900, action: "nothing-to-do", level: OK } }));
+    checkKeeperState(path, 1_000_000, (name, level, detail) => checks.push({ name, level, detail }), limits);
+    return checks[0];
+  };
+  const skims = (n, spentWei, reservedWei = "3000000000000000") => Array.from({ length: n }, () => ({ at: 999_000, ...settledFields(999_000), status: "effective", spentWei, reservedWei }));
+  // The reviewer's case: ten skims at 0.005 BLCH are the whole budget, with 10 of 48 transactions counted.
+  const spent = levelOf(skims(10, "5000000000000000"));
+  assert.equal(spent.level, CRIT);
+  assert.match(spent.detail, /10 of 48 transactions/);
+  assert.match(spent.detail, /the next skim does not fit/);
+  assert.equal(levelOf(skims(10, "5000000000000000000")).level, CRIT);
+  // Half of the budget is a warning; less is OK; the last reservation that still fits is not CRIT.
+  assert.equal(levelOf(skims(5, "5000000000000000")).level, WARN);
+  assert.equal(levelOf(skims(4, "5000000000000000")).level, OK);
+  assert.equal(levelOf(skims(9, "5000000000000000")).level, WARN); // 0.045 + 0.003 reserved next <= 0.05
+  assert.equal(levelOf(skims(9, "5000000000000000", "5000000000000001")).level, CRIT); // 0.045 + next > 0.05
+  // Without the budget the count alone decides, as before.
+  assert.equal(levelOf(skims(10, "5000000000000000"), { maxTx: 48 }).level, OK);
+});
+
+test("R309-C3: a state file that is not the keeper's, a keeper that stopped, and a keeper that ends on a limit are not OK", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const path = join(mkdtempSync(join(tmpdir(), "keeper-")), "state.json");
+  const check = (state, now = 1_000_000) => {
+    const checks = [];
+    writeFileSync(path, JSON.stringify(state));
+    checkKeeperState(path, now, (name, level, detail) => checks.push({ name, level, detail }), { maxTx: 48, budgetWei: 10n ** 16n });
+    return checks[0];
+  };
+  const schema = "postern.dex.skim-keeper.v1";
+  for (const broken of [{}, { txs: [] }, { schema, txs: null }, { schema: "other", txs: [] }, [], null]) assert.equal(check(broken).level, CRIT, JSON.stringify(broken));
+  // No pass stamp: written by an older keeper, or never run since.
+  const unstamped = check({ schema, txs: [] });
+  assert.equal(unstamped.level, WARN);
+  assert.match(unstamped.detail, /no pass stamp/);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_800, action: "nothing-to-do", level: OK } }).level, OK);
+  // Three missed 5-minute passes.
+  const dead = check({ schema, txs: [], lastPass: { at: 999_000, action: "nothing-to-do", level: OK } });
+  assert.equal(dead.level, CRIT);
+  assert.match(dead.detail, /it is not running/);
+  // The keeper's own last word: exit 1 and 2 are successes for its unit, so the monitor carries them.
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "budget-exhausted", level: WARN } }).level, WARN);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "refused", level: CRIT } }).level, CRIT);
+  assert.equal(check({ schema, txs: [], lastPass: { at: 999_900, action: "rpc-failed", level: 3 } }).level, WARN);
+});
+
+test("R309-C3: every keeper pass stamps the state, whatever it did", async () => {
+  const node = fakeNode();
+  const state = emptyKeeperState();
+  const deps = keeperDeps(node, 1_000_000);
+  const idle = await runKeeper(gate, keeperOptions(), state, deps);
+  assert.equal(idle.action, "nothing-to-do");
+  assert.deepEqual(state.lastPass, { at: 1_000_000, action: "nothing-to-do", level: OK });
+  assert.deepEqual(JSON.parse(deps.saves.at(-1)).lastPass, state.lastPass);
+  node.chain.balances = ABOVE_CAP;
+  const blocked = await runKeeper(gate, keeperOptions({ budgetWei: 1n }), state, keeperDeps(node, 1_000_300));
+  assert.equal(blocked.action, "budget-exhausted");
+  assert.deepEqual(state.lastPass, { at: 1_000_300, action: "budget-exhausted", level: blocked.level });
+  const dry = await runKeeper(gate, keeperOptions({ execute: false }), state, keeperDeps(node, 1_000_600));
+  assert.equal(dry.action, "would-skim");
+  assert.equal(state.lastPass.at, 1_000_600);
 });
 
 test("note-tx: an unrecorded approve and seed pass only together, and bad hashes are refused", async () => {
@@ -1540,6 +1616,39 @@ test("recovery: a transaction still out of the chain after two hours is replaced
   assertOnlySkimsToSafe(node);
 });
 
+// Review R309-K3: two recovery guards that no test covered (mutations M3 and M6 of the reviewer's list survived).
+test("R309-K3: a replacement whose worst case is below the first attempt's keeps the dearer reservation", async () => {
+  const { node, state } = await sentOnce();
+  const firstReserved = BigInt(state.txs[0].reservedWei);
+  // The replacement needs half the gas: its own worst case is smaller, but the first attempt can still be the one mined.
+  node.chain.estimate = 40_000n;
+  const outcome = await runKeeper(gate, keeperOptions(), state, keeperDeps(node, T0_SENT + 7_200));
+  assert.equal(outcome.action, "replaced");
+  const replacement = skimOf(node.chain.sent.at(-1));
+  assert.ok(replacement.tx.gas * replacement.tx.maxFeePerGas < firstReserved);
+  assert.equal(BigInt(state.txs[0].reservedWei), firstReserved);
+  assert.equal(keeperWindowSpend(state, T0_SENT + 7_200), firstReserved);
+});
+
+test("R309-K3: when the account nonce moves between reconciliation and signing, no replacement is signed", async () => {
+  const { node, state } = await sentOnce();
+  const original = state.txs[0].hash;
+  // The first read (reconciliation) still sees nonce 0; by the read before signing a transaction has used it.
+  let reads = 0;
+  const request = async (method, params) => {
+    if (method === "eth_getTransactionCount" && params[1] === "latest") return ++reads === 1 ? "0x0" : "0x1";
+    return node.request(method, params);
+  };
+  const outcome = await runKeeper(gate, keeperOptions(), state, { ...keeperDeps(node, T0_SENT + 7_200), request, sign: async () => { throw new Error("must not sign"); } });
+  assert.equal(outcome.action, "wait-in-flight");
+  assert.equal(reads, 2);
+  // Nothing new was signed: the entry still holds the first bytes (published again unchanged), with no attempt added.
+  assert.equal(state.txs.length, 1);
+  assert.equal(state.txs[0].hash, original);
+  assert.equal(state.txs[0].attempts, undefined);
+  assert.deepEqual(node.chain.sent, [state.txs[0].raw, state.txs[0].raw]);
+});
+
 for (const winner of ["original", "replacement"]) test(`recovery: when the ${winner} of a replaced nonce is mined, the entry settles on it and only then a new nonce opens`, async () => {
   const { node, state } = await sentOnce();
   const originalHash = state.txs[0].hash;
@@ -1840,9 +1949,13 @@ test("recovery: a nonce used by a transaction the keeper did not record is settl
   const checks = [];
   const dir = (await import("node:fs")).mkdtempSync(`${(await import("node:os")).tmpdir()}/keeper-superseded-`);
   (await import("node:fs")).writeFileSync(`${dir}/state.json`, JSON.stringify(state));
-  checkKeeperState(`${dir}/state.json`, T0_SENT + 9_000, (name, level, text) => checks.push({ name, level, text }));
+  // (The pass stamp is 9,000 s old in this test's clock; liveness is not what is asserted here.)
+  checkKeeperState(`${dir}/state.json`, T0_SENT + 9_000, (name, level, text) => checks.push({ name, level, text }), { maxAgeSeconds: 10_000 });
   (await import("node:fs")).rmSync(dir, { recursive: true });
-  assert.equal(checks[0].level, OK);
+  // WARN once: it repeats the keeper's own last word (a nonce settled by a transaction it did not record).
+  assert.equal(checks[0].level, WARN);
+  assert.match(checks[0].text, /plus 0 unresolved/);
+  assert.match(checks[0].text, /nonce-settled-by-other-transaction \(needs attention/);
   // Next pass: a new nonce, the account's next one.
   const next = await runKeeper(gate, keeperOptions({ cooldownSeconds: 0 }), state, keeperDeps(node, T0_SENT + 200));
   assert.equal(next.action, "sent");
@@ -1977,7 +2090,9 @@ test("review M5: a wall clock far from the chain head stops the pass before the 
   const state = emptyKeeperState();
   const options = keeperOptions({ maxClockSkewSeconds: 64_800 });
   assert.equal((await runKeeper(gate, options, state, keeperDeps(node, T0_SENT + 100))).action, "sent");
-  const before = JSON.stringify(state);
+  // Only the stamp of the pass itself may change.
+  const untouched = (s) => JSON.stringify({ ...s, lastPass: undefined });
+  const before = untouched(state);
   for (const now of [T0_SENT + 90_000, T0_SENT - 70_000]) {
     const outcome = await runKeeper(gate, options, state, { ...keeperDeps(node, now), sign: async () => { throw new Error("must not sign"); } });
     assert.equal(outcome.action, "clock-or-head-stale");
@@ -1989,7 +2104,8 @@ test("review M5: a wall clock far from the chain head stops the pass before the 
   assert.equal(ahead.action, "clock-or-head-stale");
   assert.equal(ahead.level, WARN);
   assert.equal(settled.txs.length, 1);
-  assert.equal(JSON.stringify(state), before);
+  assert.equal(untouched(state), before);
+  assert.deepEqual(state.lastPass, { at: T0_SENT - 70_000, action: "clock-or-head-stale", level: WARN });
 });
 
 test("review L8: a pinned pair that belongs to another factory is refused", async () => {

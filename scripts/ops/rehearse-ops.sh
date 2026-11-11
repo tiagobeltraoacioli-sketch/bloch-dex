@@ -157,7 +157,9 @@ settle() {
   if [ "$MODE" = anvil ]; then cast rpc anvil_mine 0x60 --rpc-url "$RPC" > /dev/null
   else scripts/staging/private-l2.sh finalize "$WORK/l2" "$PORT" >> "$EV/steps.log"; fi
 }
-monitor() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --lp-recipient "$SEEDER" "${GATE_FLAGS[@]}" "$@"; }
+# --lp-min-shares 0: this rehearsal states "no seeder floor" explicitly (the monitor refuses --expect-seeded without
+# a floor; the floor itself is rehearsed by rehearse-opening.sh).
+monitor() { node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --lp-recipient "$SEEDER" --lp-min-shares 0 "${GATE_FLAGS[@]}" "$@"; }
 # REHEARSAL_CLOCK is empty until section 10, whose scenes move the anvil clock days ahead of this host's clock (mint
 # delays, pause terms, the switch delay). Up to there the keeper runs with its own --max-clock-skew-s default.
 REHEARSAL_CLOCK=()
@@ -461,10 +463,14 @@ must "$SEEDER_KEY" "$USD" "$(cast calldata "approve(address,uint256)" "$ROUTER" 
 expect 0 seed-verify node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
 expect 2 seed-verify-wrong-price node scripts/ops/dex-seed-plan.mjs verify --config "$EV/gate.json" --rpc "$OPS_RPC" --price 30 --to "$SEEDER"
 expect 2 seed-plan-refused node scripts/ops/dex-seed-plan.mjs plan --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER"
-expect 2 remove-full-exit-refused node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 10000
+expect 2 remove-full-exit-refused node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 10000 --fraction-bps 5000
 grep -q refuse-floor "$EV/remove-full-exit-refused.out" || die "a full exit was not refused by the seeder floor"
-expect 0 remove-half node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 5000
-expect 1 remove-full-exit-override node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 10000 --allow-below-floor
+expect 0 remove-half node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 5000 --fraction-bps 5000
+# Review R309-C5: the floor cannot be lowered from the command line, and the seed's fraction must be stated.
+expect 2 remove-floor-lowered node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 10000 --fraction-bps 5000 --floor-shares 0
+grep -q 'A floor can only be raised here' "$EV/remove-floor-lowered.out" || die "a lowered floor was not refused"
+expect 3 remove-fraction-unstated node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 5000
+expect 1 remove-full-exit-override node scripts/ops/dex-seed-plan.mjs remove --config "$EV/gate.json" --rpc "$OPS_RPC" --price $PRICE --to "$SEEDER" --bps 10000 --fraction-bps 5000 --allow-below-floor
 grep -q OVERRIDE "$EV/remove-full-exit-override.out" || die "the override carries no warning"
 pass "seeder floor: a full exit is refused, half is planned, the override warns"
 for _ in 1 2 3; do
@@ -506,6 +512,17 @@ done
 # Ceilings that contradict each other (a tip ceiling above the fee ceiling) are refused at start, before any read.
 expect 2 keeper-incoherent-ceilings keeper_run "${KFLAGS[@]}" --max-fee-wei 1 --execute -- --private-key "$KEEPER_KEY"
 grep -q "must not exceed --max-fee-wei" "$EV/keeper-incoherent-ceilings.out" || die "expected the ceiling refusal"
+# Review R309-K1, R309-C1, R309-C2: a misspelt limit, an empty value (an unset variable in a unit) or half of the
+# bridge pair stops the tool with its reason; nothing is read, signed or left unchecked.
+expect 2 keeper-misspelt-limit keeper_run "${KFLAGS[@]}" --max-fee-wie 1000000000 --execute -- --private-key "$KEEPER_KEY"
+grep -q "unknown option --max-fee-wie" "$EV/keeper-misspelt-limit.out" || die "expected the unknown option refusal"
+expect 3 monitor-empty-floor node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --rehearsal --expect-seeded --lp-recipient "$SEEDER" --lp-min-shares ""
+grep -q -- "--lp-min-shares has an empty value" "$EV/monitor-empty-floor.out" || die "expected the empty value refusal"
+expect 3 monitor-no-floor node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --rehearsal --expect-seeded --lp-recipient "$SEEDER"
+expect 3 monitor-half-bridge-pair monitor --expect-seeded --bridge-vault "$SAFE"
+grep -q -- "--eth-rpc and --bridge-vault go together" "$EV/monitor-half-bridge-pair.out" || die "expected the bridge pair refusal"
+expect 3 monitor-mainnet-without-exit-check node scripts/ops/dex-monitor.mjs --config "$EV/gate.json" --rpc "$OPS_RPC" --safe-plan "$EV/safe.plan.json" --bridge-plan "$EV/safe.plan.json" --bridge-record "$EV/safe.plan.json"
+grep -q -- "--eth-rpc and --bridge-vault are required" "$EV/monitor-mainnet-without-exit-check.out" || die "expected the exit check to be mandatory without --rehearsal"
 expect 0 keeper-dry-run keeper_run "${KFLAGS[@]}"
 grep -q would-skim "$EV/keeper-dry-run.out" || die "expected would-skim"
 [ "$(cast nonce "$KEEPER" --rpc-url "$RPC")" = 0 ] || die "limits or the dry run sent a transaction"

@@ -176,7 +176,7 @@ export async function assembleSignatures({ tx, signatures, owners, threshold }) 
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2), { repeat: ["sig"] });
+  const args = parseArgs(process.argv.slice(2), { repeat: ["sig"], options: ["config", "rpc", "pair", "liquidity", "slippage-bps", "deadline-h", "out", "tx"] });
   const [command] = args._;
   if (!args.config || !["plan", "assemble"].includes(command)) {
     console.error("usage: dex-fee-redeem.mjs plan --config <gate.json> --rpc <url> --out <dir> | assemble --config <gate.json> --tx <safe-tx-N.json> --sig 0x… [--sig …]");
