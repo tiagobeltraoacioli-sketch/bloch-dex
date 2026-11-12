@@ -7,7 +7,7 @@
 #   F=<work dir holding env.sh, repo/ (this repository with frontend/node_modules), bridge/ (clean bridge checkout),
 #      safe -> a directory with package/build/artifacts (safe-contracts 1.4.1), fhome/>
 #   L2_PORT=<free loopback port> ETH_PORT=<free loopback port> proofless.sh STAGE
-#   stages, in order: boot deploy credit launch rest [boot-gas f3] [boot-gas f2] stop   (topup: one more deposit after a warped day)
+#   stages, in order: boot deploy credit launch [probe] rest [boot-gas f3] [boot-gas f2] stop   (topup: one more deposit after a warped day)
 #   env.sh must put forge, cast, anvil and node on PATH and export PRODUCE_DEV, SETTLED_RPC and SVM_HOME.
 # Run of record 2026-11-09 (docs/MAINNET-700770-PACKAGE.md, "Settled driver budget"); this copy differs from the
 # script that produced it only in taking F and the two ports from the environment.
@@ -44,6 +44,11 @@ case "$1" in
     for s in "fill 300 3" "close 200 2" "keeper dry" "keeper run"; do D $s; D budget; done
     $E2E_FINALIZE; D keeper run; D reopened; D budget; D fill 100 2; D budget
     ;;
+  probe)
+    # The sandwich probe of the settled run (drive.sh pending-probe): it waits for a block, then for the receipts.
+    # The bank's ticks stand for the settled stack's block cadence. Run after `launch` (it needs fund-user).
+    (for _ in 1 2 3 4 5 6 7 8 9 10; do sleep 4; bash "$0" tick || true; done) > /dev/null 2>&1 &
+    D pending-probe; wait ;;
   boot-gas)
     # Proofless only: the bank lends the issuer the gas a second `drive.sh fund` would bring on the settled stack.
     cast send "$(node -e 'console.log(require(process.argv[1])[2].address)' "$F/flow/keys.json")" --value 80ether --private-key "$(node -e 'console.log(require(process.argv[1])[0].private_key)' "$F/bank.json")" --rpc-url "$E2E_RPC" --gas-price 5000000000 --priority-gas-price 1000000000 > /dev/null ;;

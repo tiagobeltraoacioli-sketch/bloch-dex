@@ -553,7 +553,12 @@ pending-probe)
   echo "victim minimum $V_MIN, output with no attack $V_NOATTACK" >> "$OUT"
   VN=$(cast nonce "$USER_ADDR" --block latest --rpc-url "$RPC")
   echo "victim pending nonce before: $(jr eth_getTransactionCount "[\"$USER_ADDR\",\"pending\"]")" >> "$OUT"
-  RAWV=$(cast mktx --chain 700770 --nonce "$VN" --gas-limit 400000 --gas-price $MAXFEE --priority-gas-price $TIP --value "$V_IN" --private-key "$USER_KEY" "$ROUTER" "$(cast calldata "$SWAP_OUT" "$V_MIN" "[$WRAPPED,$ASSET]" "$USER_ADDR" $FAR)")
+  # The probe's three tips: back-run at the RPC's own minimum (never 0: the launch settled RPC refuses a tip below
+  # its minimum, defect D1 of the settled run), the victim above it, the front-run above the victim.
+  read -r BACK_TIP VICTIM_TIP FRONT_TIP <<< "$(node scripts/staging/e2e-settled/probe-tips.mjs "$(cast rpc eth_maxPriorityFeePerGas --rpc-url "$RPC" 2> /dev/null | tr -d '"' || true)" "$TIP" "$MAXFEE")"
+  [ -n "${FRONT_TIP:-}" ] || { echo "FAIL: the probe's tips could not be computed" >&2; exit 1; }
+  echo "probe tips (wei): back-run $BACK_TIP, victim $VICTIM_TIP, front-run $FRONT_TIP" >> "$OUT"
+  RAWV=$(cast mktx --chain 700770 --nonce "$VN" --gas-limit 400000 --gas-price $MAXFEE --priority-gas-price $VICTIM_TIP --value "$V_IN" --private-key "$USER_KEY" "$ROUTER" "$(cast calldata "$SWAP_OUT" "$V_MIN" "[$WRAPPED,$ASSET]" "$USER_ADDR" $FAR)")
   VH=$(cast keccak "$RAWV"); jr eth_sendRawTransaction "[\"$RAWV\"]" >> "$OUT"; echo >> "$OUT"
   sleep 3
   {
@@ -564,20 +569,32 @@ pending-probe)
     echo "eth_getBlockByNumber pending, tx list => $(jr eth_getBlockByNumber '["pending",true]' | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(JSON.stringify({number:r.result?.number,txs:r.result?.transactions?.length,error:r.error}))')"
     echo "swap quote at pending vs latest (does pending state include the spool?): $(cast call "$LENS" "$QUOTE" 1000000000000000 "[$WRAPPED,$ASSET]" 50 --block pending --rpc-url "$GW" | cut -c1-120) / $(cast call "$LENS" "$QUOTE" 1000000000000000 "[$WRAPPED,$ASSET]" 50 --rpc-url "$GW" | cut -c1-120)"
   } >> "$OUT" 2>&1
-  # The attacker: it saw only the nonce. Front at 3 gwei, approve at 3 gwei, back at tip 0.
+  # The attacker: it saw only the nonce. Front and approve above the victim's tip, back at the RPC's minimum tip.
   AN=$(cast nonce "$DEPLOYER" --block latest --rpc-url "$RPC")
   B0=$(cast balance "$DEPLOYER" --rpc-url "$RPC")
   F_IN=250000000000000000
   F_OUT=$(cast call "$LENS" "$QUOTE" "$F_IN" "[$WRAPPED,$ASSET]" 50 --rpc-url "$RPC" | node -e 'const m=require("fs").readFileSync(0,"utf8").match(/^\(\w+, \d+[^,]*, \d+[^,]*, (\d+)/);console.log(m[1])')
   m() { cast mktx --chain 700770 --nonce "$1" --gas-limit "$2" --gas-price $MAXFEE --priority-gas-price "$3" --value "$4" --private-key "$DEPLOYER_KEY" "$5" "$6"; }
-  R1=$(m "$AN" 400000 3000000000 "$F_IN" "$ROUTER" "$(cast calldata "$SWAP_OUT" 0 "[$WRAPPED,$ASSET]" "$DEPLOYER" $FAR)")
-  R2=$(m $((AN+1)) 100000 3000000000 0 "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" "$F_OUT")")
-  R3=$(m $((AN+2)) 400000 0 0 "$ROUTER" "$(cast calldata "$SWAP_IN" "$F_OUT" 0 "[$ASSET,$WRAPPED]" "$DEPLOYER" $FAR)")
+  R1=$(m "$AN" 400000 "$FRONT_TIP" "$F_IN" "$ROUTER" "$(cast calldata "$SWAP_OUT" 0 "[$WRAPPED,$ASSET]" "$DEPLOYER" $FAR)")
+  R2=$(m $((AN+1)) 100000 "$FRONT_TIP" 0 "$ASSET" "$(cast calldata "approve(address,uint256)" "$ROUTER" "$F_OUT")")
+  R3=$(m $((AN+2)) 400000 "$BACK_TIP" 0 "$ROUTER" "$(cast calldata "$SWAP_IN" "$F_OUT" 0 "[$ASSET,$WRAPPED]" "$DEPLOYER" $FAR)")
   H3=$(cast keccak "$R3")
-  for r in "$R1" "$R2" "$R3"; do cast publish --async --rpc-url "$RPC" "$r" > /dev/null; done
-  echo "attacker sent front (tip 3 gwei), approve, back (tip 0) AFTER the victim, knowing only its pending nonce" >> "$OUT"
-  until [ "$(cast rpc eth_getTransactionReceipt "$VH" --rpc-url "$RPC")" != null ] && [ "$(cast rpc eth_getTransactionReceipt "$H3" --rpc-url "$RPC")" != null ]; do sleep 5; done
-  for h in "$(cast keccak "$R1")" "$(cast keccak "$R2")" "$VH" "$H3"; do
+  # A probe transaction the RPC refuses is recorded, not fatal: the victim's swap is already spooled, and the flow
+  # must go on to its receipt whatever happens to the attacker's transactions.
+  SENT=("$VH")
+  for r in "$R1" "$R2" "$R3"; do
+    if ERR=$(cast publish --async --rpc-url "$RPC" "$r" 2>&1 > /dev/null); then SENT+=("$(cast keccak "$r")")
+    else echo "probe transaction refused by the RPC, not sent again: $(cast keccak "$r"): $(echo "$ERR" | tail -1 | cut -c1-200)" | tee -a "$OUT"; break; fi
+  done
+  echo "attacker sent front (tip $FRONT_TIP), approve, back (tip $BACK_TIP) AFTER the victim (tip $VICTIM_TIP), knowing only its pending nonce; ${#SENT[@]} of 4 transactions are in the spool" >> "$OUT"
+  T0=$(date +%s)
+  for h in "${SENT[@]}"; do
+    until [ "$(cast rpc eth_getTransactionReceipt "$h" --rpc-url "$RPC")" != null ]; do
+      [ $(( $(date +%s) - T0 )) -lt 14400 ] || { echo "FAIL: no receipt for the probe's $h" >&2; exit 1; }
+      sleep 5
+    done
+  done
+  for h in "${SENT[@]}"; do
     cast rpc eth_getTransactionReceipt "$h" --rpc-url "$RPC" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(process.argv[1], "block", BigInt(r.blockNumber), "index", BigInt(r.transactionIndex), "status", r.status, "gas", BigInt(r.gasUsed))' "$h" >> "$OUT"
   done
   echo "victim bUSDC units got: see Swap log; attacker BLCH before $B0 after $(cast balance "$DEPLOYER" --rpc-url "$RPC")" >> "$OUT"
