@@ -188,6 +188,36 @@ function quantity(value: unknown, field: string): bigint {
 }
 const hex = (value: bigint) => `0x${value.toString(16)}`;
 
+export type CreditRefusalKind = 'needs-credit' | 'gas-limit-above-cap';
+const count = (value: unknown): bigint | null =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    ? BigInt(value)
+    : typeof value === 'string' && /^(0|[1-9][0-9]{0,40})$/.test(value)
+      ? BigInt(value)
+      : null;
+
+/**
+ * What the L2's per-sender credit rule refuses (bloch-l2-evm 1b55ce1, docs/SEQUENCER-POLICY-V2.md
+ * section 6), said for a user. A wallet that has paid for no L2 transaction yet ("without credit")
+ * gets plain transfers and calls up to `uncovered_max_gas`; nobody gets more than `max_tx_gas`.
+ * For both refusals a higher fee does NOT help, and the text never suggests one. Null: the data is
+ * not one of the two refusals.
+ */
+export function creditRefusalText(kind: unknown, data: Record<string, unknown>): string | null {
+  const gas = count(data.gas_limit);
+  if (kind === 'gas-limit-above-cap' || kind === 'sequencer-gas-limit-above-cap') {
+    const cap = count(data.max_tx_gas);
+    return `The L2 does not take this transaction: its gas limit${gas === null ? '' : ` of ${gas}`} is above the L2's maximum${cap === null ? '' : ` of ${cap}`} for one transaction. A higher fee does not help. Use a smaller route (fewer hops).`;
+  }
+  if (kind === 'needs-credit' || kind === 'sequencer-needs-credit') {
+    const limit = count(data.uncovered_max_gas);
+    const needed = count(data.credit_needed_wei);
+    const transferTip = needed === null || needed === 0n ? null : (needed + 20_999n) / 21_000n;
+    return `The L2 does not take this transaction from a wallet that has not paid for an L2 transaction yet: its gas limit${gas === null ? '' : ` of ${gas}`} is above the${limit === null ? ' limit' : ` ${limit}`} the L2 allows such a wallet for one call. A higher fee does not help. What helps: a smaller route (fewer hops), or one earlier transaction from this wallet, because every included transaction earns credit${transferTip === null ? '' : ` (one plain transfer with a priority fee of ${transferTip} wei per gas earns enough in one step)`}.`;
+  }
+  return null;
+}
+
 export const ADMISSION_QUOTE_METHOD = 'bloch_admissionQuote';
 /** The node's quote may exceed the page's own figure by at most this factor; beyond it nothing is sent. */
 export const QUOTE_DISAGREEMENT_FACTOR = 2n;
@@ -205,7 +235,8 @@ export async function quoteNewSlots(
   policy: NewSlotFeePolicy,
 ): Promise<NewSlotFee | null | undefined> {
   let reply: Record<string, unknown>;
-  let figures: Record<string, bigint>;
+  let figures: Record<string, bigint> | undefined;
+  let notExecutable: Record<string, unknown> | undefined;
   try {
     const answer = await rpc(ADMISSION_QUOTE_METHOD, [
       { from: tx.from, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) },
@@ -214,6 +245,9 @@ export async function quoteNewSlots(
     reply = answer as Record<string, unknown>;
     if (reply.kind !== 'sequencer-admission-quote' || reply.scope !== 'latest-state-next-block')
       return undefined;
+    // The credit rule (candidate 1b55ce1): the node says whether it would execute this call at all. Read before
+    // the fee figures, and never turned into a fallback: the access list knows nothing about credit.
+    if (reply.executable === false) notExecutable = reply;
     figures = Object.fromEntries(
       [
         'baseFeePerGas',
@@ -227,9 +261,15 @@ export async function quoteNewSlots(
       ].map((name) => [name, quantity(reply[name], name)]),
     );
   } catch {
-    return undefined;
+    if (!notExecutable) return undefined;
   }
-  const q = figures;
+  if (notExecutable) {
+    const said = creditRefusalText(notExecutable.not_executable_reason, notExecutable);
+    throw new NewSlotFeeError(
+      `${said ?? `The L2 reports that it would not execute this transaction (${String(notExecutable.not_executable_reason).slice(0, 60)}). A higher fee is not known to help.`} Nothing was sent.`,
+    );
+  }
+  const q = figures!;
   // An answer that contradicts itself is not a quote: use the access list.
   if (
     q.gasUsed < INTRINSIC_GAS ||

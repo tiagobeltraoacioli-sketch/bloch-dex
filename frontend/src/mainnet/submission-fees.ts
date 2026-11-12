@@ -2,6 +2,7 @@
 // Structured admission data is therefore diagnostic only, never a reason to
 // release the intent, attach the reported hash, resend or increase fees.
 import { isSubmissionHash } from './submission-outcome';
+import { creditRefusalText } from './newslotfee';
 
 const QUANTITY = /^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/;
 const FIELDS = [
@@ -29,6 +30,10 @@ export function submissionFeeNote(error: unknown): string | undefined {
     }
     if (response?.code !== -32000) return;
     const data = record(response.data);
+    // The credit rule's refusals: the wallet's node did not take the transaction, and raising the fee is no remedy.
+    const credit = data ? creditRefusalText(data.kind, data) : null;
+    if (credit)
+      return `RPC diagnostic (not bound to your wallet's signed transaction): ${credit} Submission outcome remains unknown; no retry or fee increase was performed.`;
     if (
       !data ||
       data.kind !== 'sequencer-fee-underpriced' ||
