@@ -78,8 +78,8 @@ the site asks for; and the L2's `sequencer-fee-underpriced` refusal with its
 `error.data` passed on or lost. Inclusion is controlled with anvil (`automine`
 off, `anvil_mine`).
 
-Scenarios (25), in the order they run (the ones that move the chain clock last):
-`normal-send`, `queued-at-sequencer`, `queued-reply-lost`, `held-in-wallet-review-refused`, `reply-lost-wallet-ignores-nonce-no-review`, `reply-lost-replacement-refused`, `speed-up`, `cancel`, `dropped`, `rejected`, `reload-while-wallet-open`, `two-tabs`, `approve-then-swap`, `wallet-ignores-site-fields`, `wallet-own-queue-ignores-nonce`, `first-approve-priced`, `first-swap-priced`, `first-approve-wallet-ignores-fees`, `credit-fresh-wallet-approve-then-swap`, `credit-fresh-wallet-first-swap`, `credit-needs-credit-refused-then-transfer`, `credit-refusal-through-wallet`, `clock-beyond-heartbeat-refused`, `reply-lost-never-published-expires`, `idle-chain-swap-lands-in-the-second-block`.
+Scenarios (27), in the order they run (the ones that move the chain clock last):
+`normal-send`, `queued-at-sequencer`, `queued-reply-lost`, `held-in-wallet-review-refused`, `reply-lost-wallet-ignores-nonce-no-review`, `reply-lost-replacement-refused`, `speed-up`, `cancel`, `dropped`, `rejected`, `fee-refusal-with-data`, `fee-refusal-data-lost`, `reload-while-wallet-open`, `two-tabs`, `approve-then-swap`, `wallet-ignores-site-fields`, `wallet-own-queue-ignores-nonce`, `first-approve-priced`, `first-swap-priced`, `first-approve-wallet-ignores-fees`, `credit-fresh-wallet-approve-then-swap`, `credit-fresh-wallet-first-swap`, `credit-needs-credit-refused-then-transfer`, `credit-refusal-through-wallet`, `clock-beyond-heartbeat-refused`, `reply-lost-never-published-expires`, `idle-chain-swap-lands-in-the-second-block`.
 The four `credit-…` scenarios run against a MODEL of the L2 candidate's per-sender
 credit rule (in the simulated wallet's node and as `bloch_admissionQuote` of the page's
 RPC); the real candidate RPC is exercised by `scripts/staging/newslot-rpc-check.mjs`.
