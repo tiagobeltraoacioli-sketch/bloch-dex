@@ -139,11 +139,13 @@ export function transientSlots(deployment: { wrapped: Address; router: Address }
 export class NewSlotFeeError extends Error {}
 /** The node would not execute the call (credit rule); carries what the text is made of. */
 class NotExecutableError extends NewSlotFeeError {
-  constructor(
-    readonly reply: Record<string, unknown>,
-    readonly requiredTip: bigint | null,
-  ) {
+  // Plain fields, no parameter properties: this file is also loaded by Node with its types stripped.
+  readonly reply: Record<string, unknown>;
+  readonly requiredTip: bigint | null;
+  constructor(reply: Record<string, unknown>, requiredTip: bigint | null) {
     super(notExecutableText(reply));
+    this.reply = reply;
+    this.requiredTip = requiredTip;
   }
 }
 function notExecutableText(reply: Record<string, unknown>, transferTip?: bigint): string {
