@@ -67,6 +67,9 @@ async function fund(address, { blch = 5n * 10n ** 18n, busdc = 0n } = {}) {
 
 // ---- the page's RPC: a CORS gateway in front of anvil, as the public gateway is in front of the settled RPC ----
 const pageCalls = [];
+/** Set by a scenario: the candidate RPC's `bloch_admissionQuote`, answered by the wallet's node model. Null: the
+ * launch RPC, which has no such method (anvil answers "method not found"). */
+let admissionQuote = null;
 const cors = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type' };
 const gateway = createServer(async (req, res) => {
   if (req.method === 'OPTIONS') return res.writeHead(204, cors).end();
@@ -75,6 +78,18 @@ const gateway = createServer(async (req, res) => {
   try {
     const message = JSON.parse(raw);
     for (const call of Array.isArray(message) ? message : [message]) pageCalls.push(call.method);
+  } catch {
+    /* forwarded as is */
+  }
+  try {
+    const message = JSON.parse(raw);
+    if (admissionQuote && !Array.isArray(message) && message.method === 'bloch_admissionQuote') {
+      const body = await admissionQuote(message.params[0]).then(
+        (result) => ({ jsonrpc: '2.0', id: message.id, result }),
+        (error) => ({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: String(error?.message ?? error) } }),
+      );
+      return res.writeHead(200, { 'content-type': 'application/json', ...cors }).end(JSON.stringify(body));
+    }
   } catch {
     /* forwarded as is */
   }
@@ -196,7 +211,11 @@ async function runScenario({ name, covers, run }) {
         record.page[label] = { transactions: await page.labelled('Transactions'), recovery: (await page.labelled('Recover transaction tracking'))?.slice(-600) ?? null };
       },
     };
-    await run(world);
+    try {
+      await run(world);
+    } finally {
+      admissionQuote = null;
+    }
     const sent = pageCalls.slice(callsFrom).filter((m) => m === 'eth_sendRawTransaction' || m === 'eth_sendTransaction');
     check('the page itself never publishes or sends through its RPC', sent.length === 0, sent);
   } catch (error) {
@@ -678,6 +697,112 @@ scenario('first-approve-wallet-ignores-fees', 'item 2: a wallet that ignores the
   const f = await w.facts();
   w.check('one approval mined at nonce 0, allowance exact', f.minedTransactions.length === 1 && f.nonceLatest === 1 && (await allowance(w.wallet.address)) === 10_000_000n, f.minedTransactions);
   w.record.admission = w.wallet.admissions;
+});
+
+// ---- the L2 candidate's per-sender credit rule (bloch-l2-evm 1b55ce1/28b74c4): a MODEL of it in the wallet's node
+// and in the page's RPC (bloch_admissionQuote); the real candidate RPC is exercised by newslot-rpc-check.mjs ----
+const CREDIT = { uncoveredMaxGas: 1_500_000n, maxTxGas: 5_000_000n };
+const NOT_PAID = /This wallet has not paid for an L2 transaction yet\. If L2 blocks are full, its first call can wait whatever fee it offers; one plain transfer first \(to your own address is enough\) with a priority fee of at least [0-9.]+ gwei avoids that\./;
+const FEE_ADVICE = /raise the (fee|tip)|increase the (fee|tip)|higher (fee|tip) (will|would|helps)|try a higher|retry (at|with) a higher/i;
+const flat = async (page) => (await page.text()).replace(/\s+/g, ' ');
+const creditOn = (w, rule = CREDIT) => {
+  w.wallet.state.admission = { priceWei: SLOT_PRICE, credit: rule };
+  admissionQuote = (call) => w.wallet.quote(call);
+};
+
+scenario('credit-fresh-wallet-approve-then-swap', 'credit rule: a fresh wallet\'s first approve and the swap after it are executable under the 1,500,000 limit and admitted on the first request', async (w) => {
+  const page = await w.begin({ busdc: 50_000_000n });
+  creditOn(w);
+  await w.quote(page, 'bUSDC', 'BLCH', '10');
+  await page.click('Approve 10 bUSDC');
+  await page.waitText(PENDING);
+  const [request] = w.wallet.sends().map((r) => r.params[0]);
+  const [verdict] = w.wallet.admissions;
+  w.check('the page asked the node for its quote and the node called the approve executable for a wallet without credit', w.wallet.quotes[0]?.executable === true && w.wallet.quotes[0].covered === false && w.wallet.quotes[0].credit_wei === '0', w.wallet.quotes[0]);
+  w.check('the gas limit the page asks is 100,000, below the 1,500,000 limit', BigInt(request.gas) === 100_000n && BigInt(request.gas) <= CREDIT.uncoveredMaxGas, request.gas);
+  w.check('one wallet request, admitted by fee and by credit rule', w.wallet.sends().length === 1 && verdict?.admitted === true && verdict.credit.executable === true, verdict);
+  await mineAndFinalize();
+  await page.waitText('/Approve 10 bUSDC: mined/', 40_000);
+  const earned = await w.wallet.creditWei();
+  w.check('the included approve earned credit (gas used x tip)', earned > 0n, earned);
+  await page.waitText('/Pools at finalized block \\d+/');
+  await w.quote(page, 'bUSDC', 'BLCH', '10');
+  await page.click('Swap');
+  await page.waitText(PENDING);
+  const swap = w.wallet.sends()[1]?.params[0];
+  const swapVerdict = w.wallet.admissions[1];
+  w.check('the swap asks 250,000 gas (one hop) and is admitted on its first request', BigInt(swap.gas) === 250_000n && swapVerdict?.admitted === true, { gas: swap.gas, swapVerdict });
+  await mineAndFinalize();
+  await page.waitText('/Swap 10 bUSDC for BLCH: mined/', 40_000);
+  const f = await w.facts();
+  w.check('two transactions mined at nonces 0 and 1, one router call, nothing refused', f.minedTransactions.length === 2 && f.routerCallsMined === 1 && w.wallet.signed.every((s) => !s.refused), f.minedTransactions);
+  w.record.admission = { admissions: w.wallet.admissions, quotes: w.wallet.quotes };
+});
+
+scenario('credit-fresh-wallet-first-swap', 'credit rule: a fresh wallet\'s first swap is executable, and the page tells the wallet without credit about the plain transfer without advising a higher fee', async (w) => {
+  const page = await w.begin();
+  creditOn(w);
+  // While the wallet is open the page tells the wallet without credit about the plain transfer.
+  w.wallet.state.next.push('never-answer');
+  await swapNative(w, page);
+  for (let i = 0; i < 100 && w.wallet.open.length === 0; i++) await delay(100);
+  w.check('while the wallet is open the page says what a wallet without credit can do first', NOT_PAID.test(await flat(page)), (await flat(page)).match(/Confirm in your wallet\..{0,500}/)?.[0]);
+  w.wallet.open[0].reject({ code: 4001, message: 'User rejected the request.' });
+  await page.waitText('/The wallet request was rejected by you\\. Nothing was sent\\./');
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  const request = w.wallet.sends()[1].params[0];
+  const [verdict] = w.wallet.admissions;
+  w.check('the swap asks 250,000 gas, below the limit, and the node admits it from a wallet with no credit', BigInt(request.gas) === 250_000n && verdict?.admitted === true && verdict.credit.covered === false, verdict);
+  w.check('the quote named a first-transfer fee for the wallet without credit', /^[1-9][0-9]*$/.test(w.wallet.quotes[0]?.first_transfer_priority_fee_wei ?? ''), w.wallet.quotes[0]);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('exactly one router call was mined', f.routerCallsMined === 1 && f.nonceLatest === 1, f);
+  w.check('the page never advised a higher fee', !FEE_ADVICE.test(await flat(page)));
+  w.record.admission = { admissions: w.wallet.admissions, quotes: w.wallet.quotes };
+});
+
+scenario('credit-needs-credit-refused-then-transfer', 'credit rule: a call above the limit of a wallet without credit (stands for a route above 1,500,000 gas; the launch page builds one-hop routes only) sends nothing and says what helps; one plain transfer then makes it go', async (w) => {
+  const page = await w.begin();
+  // The limit of this node is below the swap's 250,000 gas, so the page meets the refusal a longer route would meet.
+  creditOn(w, { uncoveredMaxGas: 200_000n, maxTxGas: 5_000_000n });
+  await swapNative(w, page);
+  await page.waitText('/The L2 does not take this transaction from a wallet that has not paid for an L2 transaction yet/');
+  const text = await flat(page);
+  w.check('the page names the gas limit and the limit of the node', /its gas limit of 250000 is above the 200000 the L2 allows such a wallet for one call/.test(text));
+  w.check('it says a higher fee does not help and what does', /A higher fee does not help\. What helps: a smaller route \(fewer hops\), or one earlier transaction from this wallet/.test(text) && /Nothing was sent\./.test(text));
+  w.check('no other fee advice anywhere on the page', !FEE_ADVICE.test(text.replaceAll('A higher fee does not help', '')));
+  w.check('the wallet was not asked and no hold was created', w.wallet.sends().length === 0 && !(await disabled(page, 'Swap')), w.wallet.sends().length);
+  // The user follows the text: one plain transfer to their own address at the fee the page named.
+  const named = /one plain transfer with a priority fee of (\d+) wei per gas earns enough in one step/.exec(text);
+  w.check('the page named the fee of the transfer', !!named, text.slice(text.indexOf('The L2 does not take'), text.indexOf('The L2 does not take') + 500));
+  const base = BigInt((await rpc('eth_getBlockByNumber', ['latest', false])).baseFeePerGas);
+  const transfer = await w.wallet.plainTransfer(BigInt(named[1]), base);
+  w.check('the plain transfer of the wallet without credit is not refused by the credit rule', transfer.broadcast === true && w.wallet.admissions.at(-1)?.credit.executable === true, w.wallet.admissions.at(-1));
+  await mineAndFinalize();
+  await swapNative(w, page);
+  await page.waitText(PENDING);
+  const verdict = w.wallet.admissions.at(-1);
+  w.check('the same swap is now covered by the credit the transfer earned, and admitted on its first request', w.wallet.sends().length === 1 && verdict?.admitted === true && verdict.credit.covered === true, verdict);
+  await mineAndFinalize();
+  await page.waitText(`/${SWAP}: mined/`, 40_000);
+  const f = await w.facts();
+  w.check('one transfer and one router call mined, nonces 0 and 1', f.minedTransactions.length === 2 && f.routerCallsMined === 1 && f.nonceLatest === 2, f.minedTransactions);
+  w.record.admission = { admissions: w.wallet.admissions, quotes: w.wallet.quotes };
+});
+
+scenario('credit-refusal-through-wallet', 'credit rule: when the page\'s RPC has no quote (a gateway without the route) and the wallet\'s node refuses needs-credit, the refusal is explained without fee advice and nothing was published', async (w) => {
+  const page = await w.begin();
+  w.wallet.state.admission = { priceWei: SLOT_PRICE, credit: { uncoveredMaxGas: 200_000n, maxTxGas: 5_000_000n } };
+  await swapNative(w, page);
+  await page.waitText(NO_HASH);
+  const text = await flat(page);
+  w.check('the page priced with the access list (no quote route) and asked the wallet once', w.wallet.quotes.length === 0 && w.wallet.sends().length === 1, w.wallet.quotes.length);
+  w.check('the node refused needs-credit and nothing was published', w.wallet.admissions[0]?.credit.not_executable_reason === 'needs-credit' && (await nonceOf(w.wallet.address, 'pending')) === 0, w.wallet.admissions[0]);
+  w.check('the refusal is explained as the credit rule', /RPC diagnostic \(not bound to your wallet's signed transaction\): The L2 does not take this transaction from a wallet that has not paid for an L2 transaction yet/.test(text), text.slice(Math.max(0, text.indexOf('RPC diagnostic')), text.indexOf('RPC diagnostic') + 400));
+  w.check('without the fee diagnostic and without fee advice', !/RPC fee diagnostic/.test(text) && !FEE_ADVICE.test(text.replaceAll('A higher fee does not help', '').replaceAll('no retry or fee increase was performed', '')));
+  w.record.admission = { admissions: w.wallet.admissions };
 });
 
 scenario('clock-beyond-heartbeat-refused', 'R309-2P-5 kept: a device clock more than the heartbeat plus its margin ahead of the latest block builds no swap', async (w) => {

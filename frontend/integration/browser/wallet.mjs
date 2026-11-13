@@ -64,16 +64,64 @@ export function createWallet({ rpc, chainId }) {
      * The wallet's node applies the L2 settled RPC's admission rule (bloch-l2-evm
      * docs/MAINNET-RPC-READINESS.md): gasUsed x effective tip >= new storage slots x priceWei, or the
      * signed transaction is refused before it is queued. null: no admission rule (plain anvil).
+     * With `credit: { uncoveredMaxGas, maxTxGas }` the node also applies the candidate's per-sender credit rule
+     * (bloch-l2-evm 1b55ce1/28b74c4, docs/MAINNET-RPC-READINESS.md "What the producer will not execute"): credit is
+     * what the sender's included transactions paid in tips; a call whose gas limit is above uncoveredMaxGas from a
+     * sender whose credit is below gas limit x tip is refused `sequencer-needs-credit`, anything above maxTxGas
+     * `sequencer-gas-limit-above-cap`; a plain transfer never. This is a MODEL of that rule, not the L2 node.
      */
     admission: null,
   };
+  const quotes = []; // every bloch_admissionQuote answer of the model
   const admissions = []; // every admission verdict: { hash, freshSlots, gasUsed, effectiveTip, required, admitted }
   /**
    * What the L2 measures, measured independently of the page: the call is traced on the node (prestate diff),
    * and a new slot is a storage key that was zero before and is non-zero after.
    */
-  async function admit(entry) {
-    const { tx } = entry;
+  /** Tips this wallet's included transactions paid: gas used x (effective gas price - base fee). */
+  async function creditWei() {
+    let credit = 0n;
+    for (const s of signed) {
+      if (!s.broadcast) continue;
+      const receipt = await rpc('eth_getTransactionReceipt', [s.hash]);
+      if (!receipt) continue;
+      const block = await rpc('eth_getBlockByNumber', [receipt.blockNumber, false]);
+      credit += BigInt(receipt.gasUsed) * (BigInt(receipt.effectiveGasPrice) - BigInt(block.baseFeePerGas));
+    }
+    return credit;
+  }
+  /** The credit rule's verdict for a call of this wallet at `tip`, in the candidate's field names. */
+  async function creditVerdict(tx, tip) {
+    const rule = state.admission?.credit;
+    if (!rule) return { executable: true, not_executable_reason: null, covered: null, gas_limit: null, credit_wei: null, credit_needed_wei: null, first_transfer_priority_fee_wei: null, uncovered_max_gas: null, max_tx_gas: null };
+    const credit = await creditWei();
+    const want = tx.gas * tip;
+    const covered = credit >= want;
+    const needed = covered ? 0n : want - credit;
+    const plain = tx.data === '0x' && tx.gas === 21_000n;
+    const reason = plain ? null : tx.gas > rule.maxTxGas ? 'gas-limit-above-cap' : !covered && tx.gas > rule.uncoveredMaxGas ? 'needs-credit' : null;
+    return {
+      executable: reason === null, not_executable_reason: reason, covered, gas_limit: Number(tx.gas), credit_wei: credit.toString(), credit_needed_wei: needed.toString(),
+      first_transfer_priority_fee_wei: covered ? null : ((needed + 20_999n) / 21_000n).toString(), uncovered_max_gas: Number(rule.uncoveredMaxGas), max_tx_gas: Number(rule.maxTxGas),
+    };
+  }
+  /** What `bloch_admissionQuote` of the candidate answers for a call of this wallet (the same model as `admit`). */
+  async function quote(request) {
+    const tx = { to: request.to, data: request.data ?? '0x', value: BigInt(request.value ?? '0x0'), gas: BigInt(request.gas ?? hex(state.admission.credit?.maxTxGas ?? 5_000_000n)) };
+    const m = await measure(tx);
+    const minimum = state.admission.minimumTipWei ?? 100_000_000n;
+    const slotTip = (m.freshSlots * state.admission.priceWei + m.gasUsed - 1n) / m.gasUsed;
+    const required = slotTip > minimum ? slotTip : minimum;
+    const reply = {
+      kind: 'sequencer-admission-quote', scope: 'latest-state-next-block', headHash: m.head.hash, headNumber: m.head.number,
+      baseFeePerGas: hex(m.base), requiredPriorityFeePerGas: hex(required), requiredMaxFeePerGas: hex(required + m.base), minimumPriorityFeePerGas: hex(minimum),
+      gasUsed: hex(m.gasUsed), freshSlots: hex(m.freshSlots), chargedFreshSlots: hex(m.freshSlots), freshSlotPriceWei: hex(state.admission.priceWei),
+      ...(await creditVerdict(tx, required)),
+    };
+    quotes.push(reply);
+    return reply;
+  }
+  async function measure(tx) {
     const call = { from: address, to: tx.to, data: tx.data, value: hex(tx.value), gas: hex(tx.gas) };
     const diff = await rpc('debug_traceCall', [call, 'latest', { tracer: 'prestateTracer', tracerConfig: { diffMode: true } }]);
     let freshSlots = 0n;
@@ -83,14 +131,31 @@ export function createWallet({ rpc, chainId }) {
     const gasUsed = BigInt((await rpc('debug_traceCall', [call, 'latest', { disableStorage: true, disableStack: true, enableMemory: false }])).gas);
     const head = await rpc('eth_getBlockByNumber', ['latest', false]);
     const base = BigInt(head.baseFeePerGas);
+    return { freshSlots, gasUsed, head, base };
+  }
+  async function admit(entry) {
+    const { tx } = entry;
+    const { freshSlots, gasUsed, head, base } = await measure(tx);
     const room = tx.maxFeePerGas > base ? tx.maxFeePerGas - base : 0n;
     const effectiveTip = tx.maxPriorityFeePerGas < room ? tx.maxPriorityFeePerGas : room;
     const cost = freshSlots * state.admission.priceWei;
     const required = (cost + gasUsed - 1n) / gasUsed;
-    const verdict = { hash: entry.hash, freshSlots, gasUsed, effectiveTip, required, admitted: effectiveTip >= required };
+    const credit = await creditVerdict(tx, effectiveTip);
+    const verdict = { hash: entry.hash, gasLimit: tx.gas, freshSlots, gasUsed, effectiveTip, required, admitted: credit.executable && effectiveTip >= required, credit };
     admissions.push(verdict);
     if (verdict.admitted) return;
     entry.refused = true;
+    const figures = {
+      transactionHash: entry.hash, headHash: head.hash, headNumber: head.number,
+      baseFeePerGas: hex(base), requiredPriorityFeePerGas: hex(required), requiredMaxFeePerGas: hex(required + base),
+      effectivePriorityFeePerGas: hex(effectiveTip), gasUsed: hex(gasUsed), freshSlots: hex(freshSlots),
+      chargedFreshSlots: hex(freshSlots), freshSlotPriceWei: hex(state.admission.priceWei), scope: 'latest-state-next-block',
+    };
+    // The credit rule is judged before any simulation, so it wins over an underpriced fee.
+    if (!credit.executable) {
+      const { executable, not_executable_reason, covered, ...fields } = credit;
+      throw { code: -32000, message: `transaction not executable under the sequencer policy (${not_executable_reason})`, data: { kind: `sequencer-${not_executable_reason}`, ...figures, ...fields } };
+    }
     throw {
       code: -32000,
       message: 'transaction underpriced for sequencer policy; use the transaction-specific fee in error.data (inclusion is not guaranteed)',
@@ -180,6 +245,16 @@ export function createWallet({ rpc, chainId }) {
     signed,
     open,
     admissions,
+    quotes,
+    quote,
+    creditWei,
+    /** The user sends one plain transfer to their own address from the wallet (not through the site). */
+    async plainTransfer(tip, baseFee) {
+      const entry = await sign({ nonce: Number(await ownNonce()), to: address, data: '0x', value: 0n, gas: 21_000n, maxFeePerGas: 2n * baseFee + tip, maxPriorityFeePerGas: tip }, 'user-transfer');
+      if (state.admission) await admit(entry);
+      await broadcast(entry);
+      return entry;
+    },
     sends: () => requests.filter((r) => r.method === 'eth_sendTransaction'),
     async handle(method, params) {
       requests.push({ method, params });

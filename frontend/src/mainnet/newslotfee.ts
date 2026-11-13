@@ -108,6 +108,12 @@ export type NewSlotFee = FeeFields & {
   baseFee: bigint;
   /** possibleNewSlots x price: what the sequencer must receive for the new slots, in wei. */
   slotCostWei: bigint;
+  /**
+   * Set when the node says this wallet has no credit for the call (candidate 28b74c4,
+   * `first_transfer_priority_fee_wei`): the priority fee per gas of ONE plain transfer that makes
+   * the call covered. Advice only; the call itself is executable.
+   */
+  firstTransferTip?: bigint;
 };
 
 /** Storage keys, by lowercase contract address, that a transaction sets and clears again. */
@@ -131,6 +137,19 @@ export function transientSlots(deployment: { wrapped: Address; router: Address }
 }
 
 export class NewSlotFeeError extends Error {}
+/** The node would not execute the call (credit rule); carries what the text is made of. */
+class NotExecutableError extends NewSlotFeeError {
+  constructor(
+    readonly reply: Record<string, unknown>,
+    readonly requiredTip: bigint | null,
+  ) {
+    super(notExecutableText(reply));
+  }
+}
+function notExecutableText(reply: Record<string, unknown>, transferTip?: bigint): string {
+  const said = creditRefusalText(reply.not_executable_reason, reply, transferTip);
+  return `${said ?? `The L2 reports that it would not execute this transaction (${String(reply.not_executable_reason).slice(0, 60)}). A higher fee is not known to help.`} Nothing was sent.`;
+}
 function refuse(condition: unknown, message: string): asserts condition {
   if (!condition) throw new NewSlotFeeError(message);
 }
@@ -203,7 +222,13 @@ const count = (value: unknown): bigint | null =>
  * For both refusals a higher fee does NOT help, and the text never suggests one. Null: the data is
  * not one of the two refusals.
  */
-export function creditRefusalText(kind: unknown, data: Record<string, unknown>): string | null {
+export function creditRefusalText(
+  kind: unknown,
+  data: Record<string, unknown>,
+  /** The transfer fee to name instead of the node's: the node's figures are for one exact tip, the page's own
+   * tip can be higher (its margin, its own upper bound of the slots). */
+  transferTipOverride?: bigint,
+): string | null {
   const gas = count(data.gas_limit);
   if (kind === 'gas-limit-above-cap' || kind === 'sequencer-gas-limit-above-cap') {
     const cap = count(data.max_tx_gas);
@@ -212,7 +237,17 @@ export function creditRefusalText(kind: unknown, data: Record<string, unknown>):
   if (kind === 'needs-credit' || kind === 'sequencer-needs-credit') {
     const limit = count(data.uncovered_max_gas);
     const needed = count(data.credit_needed_wei);
-    const transferTip = needed === null || needed === 0n ? null : (needed + 20_999n) / 21_000n;
+    const stated = count(data.first_transfer_priority_fee_wei);
+    const exact =
+      stated !== null && stated > 0n
+        ? stated
+        : needed === null || needed === 0n
+          ? null
+          : (needed + 20_999n) / 21_000n;
+    const transferTip =
+      transferTipOverride !== undefined && (exact === null || transferTipOverride > exact)
+        ? transferTipOverride
+        : exact;
     return `The L2 does not take this transaction from a wallet that has not paid for an L2 transaction yet: its gas limit${gas === null ? '' : ` of ${gas}`} is above the${limit === null ? ' limit' : ` ${limit}`} the L2 allows such a wallet for one call. A higher fee does not help. What helps: a smaller route (fewer hops), or one earlier transaction from this wallet, because every included transaction earns credit${transferTip === null ? '' : ` (one plain transfer with a priority fee of ${transferTip} wei per gas earns enough in one step)`}.`;
   }
   return null;
@@ -234,7 +269,7 @@ export async function quoteNewSlots(
   tx: PricedCall,
   policy: NewSlotFeePolicy,
 ): Promise<NewSlotFee | null | undefined> {
-  let reply: Record<string, unknown>;
+  let reply: Record<string, unknown> = {};
   let figures: Record<string, bigint> | undefined;
   let notExecutable: Record<string, unknown> | undefined;
   try {
@@ -263,12 +298,8 @@ export async function quoteNewSlots(
   } catch {
     if (!notExecutable) return undefined;
   }
-  if (notExecutable) {
-    const said = creditRefusalText(notExecutable.not_executable_reason, notExecutable);
-    throw new NewSlotFeeError(
-      `${said ?? `The L2 reports that it would not execute this transaction (${String(notExecutable.not_executable_reason).slice(0, 60)}). A higher fee is not known to help.`} Nothing was sent.`,
-    );
-  }
+  if (notExecutable)
+    throw new NotExecutableError(notExecutable, figures?.requiredPriorityFeePerGas ?? null);
   const q = figures!;
   // An answer that contradicts itself is not a quote: use the access list.
   if (
@@ -299,7 +330,10 @@ export async function quoteNewSlots(
   );
   const maxPriorityFeePerGas =
     withMargin > q.minimumPriorityFeePerGas ? withMargin : q.minimumPriorityFeePerGas;
+  const firstTransferTip =
+    reply.covered === false ? count(reply.first_transfer_priority_fee_wei) : null;
   return {
+    ...(firstTransferTip !== null && firstTransferTip > 0n ? { firstTransferTip } : {}),
     source: 'quote',
     maxPriorityFeePerGas,
     maxFeePerGas: 2n * q.baseFeePerGas + maxPriorityFeePerGas,
@@ -325,7 +359,24 @@ export async function priceNewSlots(
 ): Promise<NewSlotFee | null> {
   if (!policy.enabled) return null;
   // The node's quote, when it serves one, is combined with the page's own figure; it never replaces it.
-  const quoted = await quoteNewSlots(rpc, tx, policy);
+  let quoted: NewSlotFee | null | undefined;
+  try {
+    quoted = await quoteNewSlots(rpc, tx, policy);
+  } catch (error) {
+    if (!(error instanceof NotExecutableError)) throw error;
+    // Nothing is sent. The access list is read only to name the plain transfer that would cover this call at
+    // the tip the page would send it with (the larger of its own figure and the node's plus the margin).
+    const own = await priceByAccessList(rpc, tx, policy, transient).catch(() => null);
+    const withMargin =
+      error.requiredTip === null
+        ? 0n
+        : (error.requiredTip * (10_000n + BigInt(policy.marginBps)) + 9_999n) / 10_000n;
+    const tip =
+      own && own.maxPriorityFeePerGas > withMargin ? own.maxPriorityFeePerGas : withMargin;
+    throw new NewSlotFeeError(
+      notExecutableText(error.reply, tip > 0n ? (tx.gas * tip + 20_999n) / 21_000n : undefined),
+    );
+  }
   const own = await priceByAccessList(rpc, tx, policy, transient);
   if (quoted === undefined || quoted === null) return own;
   refuse(
@@ -336,11 +387,24 @@ export async function priceNewSlots(
     quoted.maxPriorityFeePerGas <= QUOTE_DISAGREEMENT_FACTOR * own.maxPriorityFeePerGas,
     `the L2 asks a priority fee of ${formatGwei(quoted.maxPriorityFeePerGas)} gwei, more than ${QUOTE_DISAGREEMENT_FACTOR} times the ${formatGwei(own.maxPriorityFeePerGas)} gwei the page computes for this transaction; nothing was sent`,
   );
-  if (quoted.maxPriorityFeePerGas <= own.maxPriorityFeePerGas) return own;
+  // The node's transfer figure is for its exact tip; the call is sent at the page's tip, so the transfer that
+  // covers it is priced for that tip (the wallet's present credit is ignored: slightly more than needed).
+  const firstTransfer = (tip: bigint) => {
+    if (quoted.firstTransferTip === undefined) return {};
+    const own = (tx.gas * tip + 20_999n) / 21_000n;
+    return { firstTransferTip: own > quoted.firstTransferTip ? own : quoted.firstTransferTip };
+  };
+  if (quoted.maxPriorityFeePerGas <= own.maxPriorityFeePerGas)
+    return { ...own, ...firstTransfer(own.maxPriorityFeePerGas) };
   // The node asks more than the page's bound (an operator price above the network file's): its
   // tip, on the larger of the two base fees.
   const baseFee = quoted.baseFee > own.baseFee ? quoted.baseFee : own.baseFee;
-  return { ...quoted, baseFee, maxFeePerGas: 2n * baseFee + quoted.maxPriorityFeePerGas };
+  return {
+    ...quoted,
+    baseFee,
+    maxFeePerGas: 2n * baseFee + quoted.maxPriorityFeePerGas,
+    ...firstTransfer(quoted.maxPriorityFeePerGas),
+  };
 }
 
 /** The page's own figure: an upper bound of the slots, a lower bound of the gas. */
@@ -450,7 +514,14 @@ async function priceByAccessList(
 
 /** What the page says while the wallet is open; empty when the wallet picks the fee. */
 export function newSlotFeeNote(fee: NewSlotFee | null): string {
-  if (!fee || fee.maxPriorityFeePerGas === fee.publishedTip) return '';
+  if (!fee) return '';
+  // A wallet without credit (docs/SEQUENCER-POLICY-V2.md of the L2, "For wallets"): in a full block its first
+  // call comes after every plain transfer of such wallets, at any fee. Never "raise the fee".
+  const first =
+    fee.firstTransferTip === undefined
+      ? ''
+      : `This wallet has not paid for an L2 transaction yet. If L2 blocks are full, its first call can wait whatever fee it offers; one plain transfer first (to your own address is enough) with a priority fee of at least ${formatGwei(fee.firstTransferTip)} gwei avoids that.`;
+  if (fee.maxPriorityFeePerGas === fee.publishedTip) return first;
   const slots =
     fee.possibleNewSlots === 1n
       ? '1 new storage slot'
@@ -458,6 +529,7 @@ export function newSlotFeeNote(fee: NewSlotFee | null): string {
   return (
     `This transaction creates ${slots} on the L2, which the network charges through the priority fee. ` +
     `The page suggests ${formatGwei(fee.maxPriorityFeePerGas)} gwei to your wallet; keep the suggested fee, ` +
-    'a lower one is refused by the network.'
+    'a lower one is refused by the network.' +
+    (first ? ` ${first}` : '')
   );
 }

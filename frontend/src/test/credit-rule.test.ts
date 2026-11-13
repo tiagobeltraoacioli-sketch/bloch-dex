@@ -11,6 +11,7 @@ import {
   NEW_SLOT_FEE_OFF,
   NewSlotFeeError,
   creditRefusalText,
+  newSlotFeeNote,
   priceNewSlots,
   type NewSlotFeePolicy,
 } from '../mainnet/newslotfee';
@@ -113,6 +114,44 @@ describe('credit rule: what the page asks never needs credit', () => {
   });
 });
 
+describe('credit rule: a wallet without credit is told about the plain transfer', () => {
+  it('adds the first-transfer advice when the node gives the figure, with no fee-raising advice', async () => {
+    const { rpc } = node(quote({ covered: false, first_transfer_priority_fee_wei: '20642455134' }));
+    const fee = await priceNewSlots(rpc, call(100_000n), ON);
+    // The call goes out at the page's tip (the node's plus the margin): ceil(100,000 x 4,995,798,988 / 21,000).
+    expect(fee!.firstTransferTip).toBe(23_789_518_991n);
+    expect(fee!.maxPriorityFeePerGas).toBe(4_995_798_988n);
+    const note = newSlotFeeNote(fee);
+    expect(note).toMatch(
+      /This wallet has not paid for an L2 transaction yet\. If L2 blocks are full, its first call can wait whatever fee it offers; one plain transfer first \(to your own address is enough\) with a priority fee of at least 23\.789518991 gwei avoids that\.$/,
+    );
+    expect(note).not.toMatch(NO_FEE_ADVICE);
+  });
+
+  it('says nothing about it for a covered wallet, a node without the field, or the launch RPC', async () => {
+    for (const over of [
+      { covered: true, first_transfer_priority_fee_wei: null },
+      { covered: false },
+      { covered: null, first_transfer_priority_fee_wei: null },
+    ]) {
+      const fee = await priceNewSlots(node(quote(over)).rpc, call(100_000n), ON);
+      expect(fee!.firstTransferTip).toBeUndefined();
+      expect(newSlotFeeNote(fee)).not.toMatch(/has not paid/);
+    }
+  });
+
+  it('the refusal text uses the node figure for the transfer when it is given', () => {
+    expect(
+      creditRefusalText('needs-credit', {
+        gas_limit: 1_750_000,
+        uncovered_max_gas: 1_500_000,
+        credit_needed_wei: '21000000000000',
+        first_transfer_priority_fee_wei: '1000000007',
+      }),
+    ).toMatch(/priority fee of 1000000007 wei per gas earns enough in one step/);
+  });
+});
+
 describe('credit rule: needs-credit and gas-limit-above-cap', () => {
   it('sends nothing on needs-credit, says what helps, and never suggests a higher fee; no fallback to the access list', async () => {
     const { rpc, calls } = node(
@@ -133,13 +172,15 @@ describe('credit rule: needs-credit and gas-limit-above-cap', () => {
     expect(text).toMatch(
       /A higher fee does not help\. What helps: a smaller route \(fewer hops\), or one earlier transaction from this wallet/,
     );
-    // ceil(7,586,102,261,500,000 / 21,000) wei per gas for the one plain transfer.
+    // The transfer is priced for the tip the page would send the call with (its own access-list figure,
+    // 4,995,798,988 wei, above the node's plus the margin): ceil(1,750,000 x 4,995,798,988 / 21,000).
     expect(text).toMatch(
-      /one plain transfer with a priority fee of 361242964834 wei per gas earns enough in one step/,
+      /one plain transfer with a priority fee of 416316582334 wei per gas earns enough in one step/,
     );
     expect(text).toMatch(/Nothing was sent\.$/);
     expect(text.replace('A higher fee does not help', '')).not.toMatch(NO_FEE_ADVICE);
-    expect(calls).toEqual([ADMISSION_QUOTE_METHOD]);
+    // The access list may be read to name the transfer; no fee comes back and nothing is sent.
+    expect(calls[0]).toBe(ADMISSION_QUOTE_METHOD);
   });
 
   it('sends nothing on gas-limit-above-cap, with the cap named', async () => {
@@ -154,7 +195,8 @@ describe('credit rule: needs-credit and gas-limit-above-cap', () => {
     await expect(priceNewSlots(rpc, call(6_000_000n), ON)).rejects.toThrow(
       /its gas limit of 6000000 is above the L2's maximum of 5000000 for one transaction\. A higher fee does not help\. Use a smaller route \(fewer hops\)\. Nothing was sent\./,
     );
-    expect(calls).toEqual([ADMISSION_QUOTE_METHOD]);
+    // The access list may be read to name the transfer; no fee comes back and nothing is sent.
+    expect(calls[0]).toBe(ADMISSION_QUOTE_METHOD);
   });
 
   it('sends nothing on a reason it does not know, and on a refusal whose fee figures are missing', async () => {
