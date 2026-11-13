@@ -233,6 +233,17 @@ applies the RPC's rule from a state trace), `first-approve-wallet-ignores-fees` 
 through with the page's fee), `fee-refusal-with-data`, `fee-refusal-data-lost`. Real wallet only: whether the wallet
 honours `maxPriorityFeePerGas` and `maxFeePerGas` from the site, what it shows, and what it passes on from a refusal.
 
+**Only when the L2 serves the per-sender credit rule** (the user-transaction candidate; the launch RPC has no such
+rule). A wallet that has not paid for an L2 transaction yet gets calls up to a gas limit of 1,500,000; the page asks
+100,000 for an approval and 250,000 per hop, so its calls are taken. With such a wallet, while the wallet prompt of
+step 1 is open, the page may add: "This wallet has not paid for an L2 transaction yet. If L2 blocks are full, its first
+call can wait whatever fee it offers; one plain transfer first (to your own address is enough) with a priority fee of
+at least N gwei avoids that." Record whether it appears. If a transaction is ever refused with "The L2 does not take
+this transaction from a wallet that has not paid for an L2 transaction yet …", nothing was sent; the page must say
+"A higher fee does not help" and must not suggest raising the fee. Harness (a model of the rule):
+`credit-fresh-wallet-approve-then-swap`, `credit-fresh-wallet-first-swap`,
+`credit-needs-credit-refused-then-transfer`, `credit-refusal-through-wallet`.
+
 ## Test 9: a swap whose wallet reply was lost: no second request, the hold ends at the deadline
 
 Since round 15 (review R309-A1) the page never asks the wallet for a swap a second time: nothing it can read shows

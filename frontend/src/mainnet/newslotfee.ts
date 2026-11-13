@@ -58,6 +58,17 @@
 // a gateway without the route, no admission policy, a sender whose balance the quote
 // refuses, an answer that contradicts itself), the access-list figure stands alone.
 //
+// The candidate's per-sender credit rule (bloch-l2-evm 1b55ce1 to e8f40c2, docs/SEQUENCER-POLICY-V2.md
+// "For wallets"): a wallet that has paid for no L2 transaction yet gets calls up to a gas limit of
+// 1,500,000 executed, nobody more than 5,000,000. The page's own limits are below that (approve
+// 100,000, skim 200,000, 250,000 per hop and at most four hops: test/RouteGas.t.sol), so its
+// calls never need credit. The quote carries the node's verdict; when it says the call would not
+// be executed nothing is sent and the text says what helps (a smaller route, or one plain
+// transfer first, priced for the tip the page would send the call with). A higher fee never
+// helps there and is never suggested. For a wallet without credit whose call is executable, the
+// note adds that in full blocks one plain transfer first avoids waiting. The launch RPC has
+// neither the method nor the fields: nothing changes there.
+//
 // With no possible new slot, or with the policy off, the wallet request is unchanged and the
 // wallet picks the fee. The fee fields are a suggestion to the wallet: a wallet that ignores
 // them behaves as before.
