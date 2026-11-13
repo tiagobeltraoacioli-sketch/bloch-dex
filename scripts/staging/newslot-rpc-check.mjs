@@ -258,6 +258,17 @@ if (creditRule) {
       let quote = null;
       const call = await swapOf(above, overLimit);
       for (let i = 0; i < 60 && quote?.executable !== true; i++) { await sleep(1000); quote = await quoteOf(call); }
+      // The transfer's own high tip can lift the tip this RPC publishes (it follows recent blocks) above the 15 gwei
+      // the page accepts; ordinary transfers of the funder bring it back. Recorded, because a user meets the same wait.
+      const publishedAfterTransfer = BigInt(await rpc("eth_maxPriorityFeePerGas", []));
+      let ordinaryTransfers = 0;
+      while (BigInt(await rpc("eth_maxPriorityFeePerGas", [])) > 15n * 10n ** 9n && ordinaryTransfers < 60) {
+        const base = await baseFee();
+        const out = await publish(await sign(funder, { to: funder.address, data: "0x", value: 0n, gas: 21_000n }, { maxPriorityFeePerGas: 10n ** 9n, maxFeePerGas: 2n * base + 10n ** 9n }));
+        if (out.admitted) await mined(out.admitted);
+        ordinaryTransfers++;
+      }
+      result.creditRule.publishedTipAfterTransfer = { wei: publishedAfterTransfer, ordinaryTransfersUntilBelow15Gwei: ordinaryTransfers };
       const page = await pageFor(call);
       const sent = page.fee === undefined ? { refused: { message: page.refused } } : await publish(await sign(above, call, await feesFor(page.fee)));
       const after = sent.admitted ? await mined(sent.admitted) : null;
