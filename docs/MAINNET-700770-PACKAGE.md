@@ -394,6 +394,14 @@ What the measurement changed in the driver:
 - `E2E_RPC`, `E2E_GW` and `E2E_FINALIZE` point the steps at another loopback L2. Without them the
   settled stack's addresses and waits are unchanged.
 
+**Measured on real settlements (agent 315, 2026-11-11, 69 real Groth16 proofs,
+`agents/315-settled-fullstack-r15.md`):** main, `f3` and `f2` PASS with the mainnet gate passing at finalized
+blocks 9 and 61; the issuer needed 3,200.245774 bUSDC for main and 7,399.338159 for all three flows (proofless
+figures: 3,200.164862 and 7,399.18); 14 bursts in main, about 6 to 8 minutes per block. `pending-probe` stopped the
+run on defect D1 (a back-run with priority fee 0, refused by the settled RPC) and passed after the tip was raised by
+hand; the driver now takes the probe's tips from the RPC and a refused probe transaction no longer ends the step
+(docs/audit/KNOWN-ISSUES.md section 13; `proofless.sh probe`). The browser scenes (`ui`, `poll`) were not run there.
+
 Not exercised without proofs, and still owed by the settled run: real settled finality at the gate
 (`wait_final`), L1 deposits (`fund`), the nginx gateway and its replica (`gw`, `poll`,
 `pending-probe`), the browser scenes (`ui-prep`, `ui`), and tip ordering inside one slow block (the
@@ -470,10 +478,36 @@ asks more than twice its own figure) and the `l2Idle` block, which mirrors the s
 |---|---|---|
 | `l2Idle.skipIdleBlocks` (true) | `skip_idle_blocks` (`--skip-idle-blocks`) | true: a block only when there is work, plus the heartbeat; false: a block every cycle, no heartbeat |
 | `l2Idle.heartbeatSeconds` (86400) | `max_idle_seconds` (`--max-idle-seconds`; 86,400 is the installer's default, the value is the operator's) | a swap is refused only when the device clock is ahead of the latest block by more than this plus 2 h (with idle blocks not skipped: one block interval plus 2 h) |
-| `l2Idle.blockIntervalSeconds` (1800) | the larger of `min_block_interval_seconds` and the measured build-and-prove time of a block | on an idle chain the first swap lands in the block after the next: the deadline is raised to two intervals plus half an interval (75 minutes) and the page names the wait |
+| `l2Idle.blockIntervalSeconds` (1800) | the larger of `min_block_interval_seconds` and the measured build-and-prove time of a block (agent 315's settled run, 2026-11-11: 69 real proofs of 278.6 to 522.2 s, median 347.5 s, one block per burst every 6 to 8 minutes on a shared host; 1,800 covers the slowest more than three times) | on an idle chain the first swap lands in the block after the next: the deadline is raised to two intervals plus half an interval (75 minutes) and the page names the wait |
+
+Measured by agent 315 on the settled stack: after the start the first block was empty ("idle-end") and the 14
+deposits were in the second, accepted 6 min 13 s later, which is the behaviour the two-interval deadline is built
+for. Not measured: the same for a swap sent after a pause of more than 30 minutes (block number relative to the
+first block after the pause, and its time after sending); that run's settler made an idle block every 1,920 s
+(`max_idle_seconds` 1920 as the rig's heartbeat, not the mainnet's 86,400).
 
 A file heartbeat below the settler's closes the page on a quiet chain; a file interval below the real one lets a
 swap sent on an idle chain revert `EXPIRED`. Compare the three before opening (go-live checklist).
+
+**The candidate's credit rule** (fourth run, 2026-11-13 UTC, 45.77.142.123). The L2 candidate `1b55ce1` adds a
+per-sender credit rule (docs/audit/KNOWN-ISSUES.md section 13). Binaries copied from agent 312's build of `1b55ce1`
+(settled-rpc `f2f6255b…`, produce-dev `628cb7d8…`), admission policy file version 2 (`max_tx_gas` 5,000,000,
+`uncovered_max_gas` 1,500,000, empty ledger), same rig, bridge freeze `b5c5763`. The six calls of the tables above
+behaved as before (first approve: page 4,997,160,705 wei per gas, node 4,336,043,361, admitted at the first request).
+The credit cases, 15 of 15:
+
+| Case | Result |
+|---|---|
+| First swap of four fresh wallets at the gas limits of 1, 2, 3 and 4 hops (250,000 to 1,000,000; one-hop route, 142,265 to 142,277 gas used) | quote `executable: true, covered: false`; admitted with the page's fees at the first request; mined |
+| The same call at 1,750,000 gas from a wallet without credit | quote `needs-credit`; the page sends nothing and says "its gas limit of 1750000 is above the 1500000 the L2 allows such a wallet for one call. A higher fee does not help. What helps: a smaller route (fewer hops), or one earlier transaction from this wallet … (one plain transfer with a priority fee of 128856620167 wei per gas earns enough in one step)"; `eth_sendRawTransaction` refuses `sequencer-needs-credit`; nothing queued |
+| At 6,000,000 gas | quote `gas-limit-above-cap`; the page sends nothing ("above the L2's maximum of 5000000 for one transaction. A higher fee does not help. Use a smaller route"); the RPC refuses `sequencer-gas-limit-above-cap` |
+| The plain transfer at the fee the page named | admitted and mined; it paid 2,705,989,023,507,000 wei in tips, the quote had asked 2,459,990,020,250,000 |
+| The 1,750,000-gas call after it | with the tips paid written into the policy file's ledger **by the check** (this rig has no settler), the quote said `covered: true`; the published tip had moved meanwhile, the page found the credit short of its own tip and named one more transfer (43,648,562,833 wei per gas); after it the call was admitted with the page's fees and mined |
+
+Measured: the RPC's verdicts, refusals and the page's texts against the real `1b55ce1` binary. Modelled: the settler's
+credit ledger (written by hand), a route of more than one hop (the launch plan has one pool; the router's gas for 2
+to 4 hops is measured in `test/RouteGas.t.sol`), full blocks, and the `first_transfer_priority_fee_wei` field of
+`28b74c4`/`e8f40c2` (browser harness model only). Evidence: `agents/313-evidence/credit-1b55ce1/`.
 
 Not shown by this check: a browser and a wallet (the fees are signed by the script, as a wallet that honours the
 page's suggestion would), the public gateway, inclusion under load, and real finality.
