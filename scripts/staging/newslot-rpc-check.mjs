@@ -262,14 +262,42 @@ if (creditRule) {
       // the page accepts; ordinary transfers of the funder bring it back. Recorded, because a user meets the same wait.
       const publishedAfterTransfer = BigInt(await rpc("eth_maxPriorityFeePerGas", []));
       let ordinaryTransfers = 0;
-      while (BigInt(await rpc("eth_maxPriorityFeePerGas", [])) > 15n * 10n ** 9n && ordinaryTransfers < 60) {
-        const base = await baseFee();
-        const out = await publish(await sign(funder, { to: funder.address, data: "0x", value: 0n, gas: 21_000n }, { maxPriorityFeePerGas: 10n ** 9n, maxFeePerGas: 2n * base + 10n ** 9n }));
-        if (out.admitted) await mined(out.admitted);
-        ordinaryTransfers++;
+      const calm = async () => {
+        for (let i = 0; i < 40 && BigInt(await rpc("eth_maxPriorityFeePerGas", [])) > 2n * 10n ** 9n; i++) {
+          const base = await baseFee();
+          const out = await publish(await sign(funder, { to: funder.address, data: "0x", value: 0n, gas: 21_000n }, { maxPriorityFeePerGas: 10n ** 9n, maxFeePerGas: 2n * base + 10n ** 9n }));
+          if (out.admitted) await mined(out.admitted);
+          ordinaryTransfers++;
+        }
+      };
+      await calm();
+      result.creditRule.publishedTipAfterTransfer = { wei: publishedAfterTransfer, afterOrdinaryTransfers: BigInt(await rpc("eth_maxPriorityFeePerGas", [])) };
+      // The tip this RPC publishes moved with the traffic of this check, and the credit needed is gas limit x the
+      // tip of the call: when the page says the credit is short of its own tip, the user follows the text again
+      // (at most three more transfers), and the ledger gets what each transfer paid.
+      let page = await pageFor(call);
+      const moreTransfers = [];
+      for (let round = 0; round < 3 && page.fee === undefined; round++) {
+        const again = /one plain transfer with a priority fee of (\d+) wei per gas/.exec(page.refused ?? "");
+        if (!again) break;
+        const t = BigInt(again[1]);
+        const b = await baseFee();
+        const out = await publish(await sign(above, { to: above.address, data: "0x", value: 0n, gas: 21_000n }, { maxPriorityFeePerGas: t, maxFeePerGas: 2n * b + t }));
+        if (!out.admitted) break;
+        const r = await mined(out.admitted);
+        const more = BigInt(r.gasUsed) * (BigInt(r.effectiveGasPrice) - BigInt((await rpc("eth_getBlockByNumber", [r.blockNumber, false])).baseFeePerGas));
+        moreTransfers.push({ tip: t, tipsPaidWei: more, pageSaid: page.refused });
+        const ledger = JSON.parse(readFileSync(args["policy-file"], "utf8"));
+        const key = above.address.toLowerCase();
+        ledger.admission.credit[key] = (BigInt(ledger.admission.credit[key]) + more).toString();
+        writeFileSync(`${args["policy-file"]}.tmp`, JSON.stringify(ledger));
+        renameSync(`${args["policy-file"]}.tmp`, args["policy-file"]);
+        for (let i = 0; i < 60 && (await quoteOf(call))?.credit_wei !== ledger.admission.credit[key]; i++) await sleep(1000);
+        await calm();
+        page = await pageFor(call);
       }
-      result.creditRule.publishedTipAfterTransfer = { wei: publishedAfterTransfer, ordinaryTransfersUntilBelow15Gwei: ordinaryTransfers };
-      const page = await pageFor(call);
+      result.creditRule.transfersAfterTheTipMoved = moreTransfers;
+      result.creditRule.ordinaryTransfersOfTheFunder = ordinaryTransfers;
       const sent = page.fee === undefined ? { refused: { message: page.refused } } : await publish(await sign(above, call, await feesFor(page.fee)));
       const after = sent.admitted ? await mined(sent.admitted) : null;
       expect("with that credit in the sequencer's ledger (written by the check: MODELLED settler) the same call is executable, admitted with the page's fees and mined",

@@ -152,6 +152,41 @@ describe('credit rule: a wallet without credit is told about the plain transfer'
   });
 });
 
+describe('credit rule: credit that covers the node tip but not the page tip', () => {
+  it('sends nothing when the call is above the limit and the credit is below gas limit x the tip the page would send', async () => {
+    // The node judges at 4,334,915,578 wei: 1,750,000 x that = 7,586,102,261,500,000 wei of credit covers it.
+    // The page would send at 4,995,798,988 wei and needs 8,742,648,229,000,000.
+    const { rpc } = node(
+      quote({
+        covered: true,
+        gas_limit: 1_750_000,
+        credit_wei: '7586102261500000',
+        credit_needed_wei: '0',
+        first_transfer_priority_fee_wei: null,
+      }),
+    );
+    const error = await priceNewSlots(rpc, call(1_750_000n), ON).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(NewSlotFeeError);
+    // ceil((8,742,648,229,000,000 - 7,586,102,261,500,000) / 21,000)
+    expect((error as Error).message).toMatch(
+      /its gas limit of 1750000 is above the 1500000 .* A higher fee does not help\. .*one plain transfer with a priority fee of 55073617500 wei per gas earns enough in one step\)\. Nothing was sent\.$/,
+    );
+  });
+
+  it('prices as before when the credit covers the page tip, and below the limit whatever the credit', async () => {
+    const rich = node(
+      quote({ covered: true, gas_limit: 1_750_000, credit_wei: '8742648229000000' }),
+    );
+    expect((await priceNewSlots(rich.rpc, call(1_750_000n), ON))!.maxPriorityFeePerGas).toBe(
+      4_995_798_988n,
+    );
+    const small = node(quote({ covered: false, credit_wei: '0' }));
+    expect((await priceNewSlots(small.rpc, call(100_000n), ON))!.maxPriorityFeePerGas).toBe(
+      4_995_798_988n,
+    );
+  });
+});
+
 describe('credit rule: needs-credit and gas-limit-above-cap', () => {
   it('sends nothing on needs-credit, says what helps, and never suggests a higher fee; no fallback to the access list', async () => {
     const { rpc, calls } = node(

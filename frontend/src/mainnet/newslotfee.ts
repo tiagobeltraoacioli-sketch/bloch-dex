@@ -125,6 +125,8 @@ export type NewSlotFee = FeeFields & {
    * the call covered. Advice only; the call itself is executable.
    */
   firstTransferTip?: bigint;
+  /** With a quote from a node that applies the credit rule: the sender's credit and the node's limits. */
+  credit?: { wei: bigint; uncoveredMaxGas: bigint; reply: Record<string, unknown> };
 };
 
 /** Storage keys, by lowercase contract address, that a transaction sets and clears again. */
@@ -345,8 +347,13 @@ export async function quoteNewSlots(
     withMargin > q.minimumPriorityFeePerGas ? withMargin : q.minimumPriorityFeePerGas;
   const firstTransferTip =
     reply.covered === false ? count(reply.first_transfer_priority_fee_wei) : null;
+  const creditWei = count(reply.credit_wei);
+  const uncoveredMaxGas = count(reply.uncovered_max_gas);
   return {
     ...(firstTransferTip !== null && firstTransferTip > 0n ? { firstTransferTip } : {}),
+    ...(creditWei !== null && uncoveredMaxGas !== null
+      ? { credit: { wei: creditWei, uncoveredMaxGas, reply } }
+      : {}),
     source: 'quote',
     maxPriorityFeePerGas,
     maxFeePerGas: 2n * q.baseFeePerGas + maxPriorityFeePerGas,
@@ -407,8 +414,31 @@ export async function priceNewSlots(
     const own = (tx.gas * tip + 20_999n) / 21_000n;
     return { firstTransferTip: own > quoted.firstTransferTip ? own : quoted.firstTransferTip };
   };
-  if (quoted.maxPriorityFeePerGas <= own.maxPriorityFeePerGas)
+  // The node's verdict is for its exact tip. The call goes out at the page's tip, which can be higher (the
+  // margin, the page's own bound, a published tip that rose): above the limit of a wallet without credit, the
+  // credit must cover gas limit x that tip, or the node refuses the signed transaction. Nothing is sent then.
+  const covers = (tip: bigint) => {
+    const c = quoted.credit;
+    if (!c || tx.gas <= c.uncoveredMaxGas || c.wei >= tx.gas * tip) return;
+    const needed = tx.gas * tip - c.wei;
+    throw new NewSlotFeeError(
+      notExecutableText(
+        {
+          ...c.reply,
+          not_executable_reason: 'needs-credit',
+          gas_limit: tx.gas.toString(),
+          credit_needed_wei: needed.toString(),
+          first_transfer_priority_fee_wei: null,
+        },
+        (needed + 20_999n) / 21_000n,
+      ),
+    );
+  };
+  if (quoted.maxPriorityFeePerGas <= own.maxPriorityFeePerGas) {
+    covers(own.maxPriorityFeePerGas);
     return { ...own, ...firstTransfer(own.maxPriorityFeePerGas) };
+  }
+  covers(quoted.maxPriorityFeePerGas);
   // The node asks more than the page's bound (an operator price above the network file's): its
   // tip, on the larger of the two base fees.
   const baseFee = quoted.baseFee > own.baseFee ? quoted.baseFee : own.baseFee;
