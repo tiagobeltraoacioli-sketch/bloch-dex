@@ -10,13 +10,19 @@
 //        --funder-key-file <file holding one 0x private key of a throwaway account with BLCH and bUSDC>
 //        --out <result.json> [--price-wei 200000000000000] [--margin-bps 1000] [--quote-method <name>]
 //        [--finalize "<command that marks the head finalized>"]
+//        [--policy-file <the RPC's sequencer policy file>]
+// When the RPC applies the per-sender credit rule (candidate 1b55ce1: the quote carries uncovered_max_gas), the
+// credit cases run too: the page's calls from wallets without credit at the gas limits of 1 to 4 hops, a call
+// above the limit (needs-credit) and above the cap, as quote, as page text and as eth_sendRawTransaction refusal,
+// and a plain transfer. With --policy-file the check then writes that sender's credit into the file, standing for
+// the settler's ledger (this rig has no settler), and the refused call must pass.
 // When the RPC serves bloch_admissionQuote the page's module uses it (source "quote" in the result); --quote-method
 // only adds the raw answer of that method to each case.
 import { execSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { priceNewSlots, transientSlots } from "../../frontend/src/mainnet/newslotfee.ts";
+import { creditRefusalText, newSlotFeeNote, priceNewSlots, transientSlots } from "../../frontend/src/mainnet/newslotfee.ts";
 
 const require = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { encodeFunctionData, parseAbi, keccak256 } = require("viem");
@@ -177,11 +183,96 @@ await runCase("the same native swap again", native, await nativeSwap());
 await fund({ to: A.token, data: encodeFunctionData({ abi: ABI, functionName: "transfer", args: [A.pair, 1_000_000n] }), value: 0n, gas: 150_000n });
 await runCase("skim of a donation to the caller", native, { from: native.address, to: A.pair, data: encodeFunctionData({ abi: ABI, functionName: "skim", args: [native.address] }), value: 0n, gas: 200_000n });
 
+// ---- the per-sender credit rule (only when this RPC applies it) ----
+const quoteOf = async (call) => (await raw("bloch_admissionQuote", [{ from: call.from, to: call.to, data: call.data, value: hex(call.value), gas: hex(call.gas) }])).result ?? null;
+const creditProbe = quoteServed ? await quoteOf(approve(user.address, 1n)) : null;
+const creditRule = typeof creditProbe?.uncovered_max_gas === "number";
+result.creditRule = { applied: creditRule, uncoveredMaxGas: creditProbe?.uncovered_max_gas ?? null, maxTxGas: creditProbe?.max_tx_gas ?? null, checks: [] };
+const FEE_ADVICE = /raise|increase the (fee|tip)|higher (fee|tip) (will|would|helps)|try a higher|retry (at|with) a higher/i;
+const creditBad = [];
+if (creditRule) {
+  const expect = (name, ok, detail) => {
+    result.creditRule.checks.push({ name, ok: Boolean(ok), detail });
+    if (!ok) creditBad.push(name);
+    console.log(`credit: ${ok ? "ok  " : "FAIL"} ${name}`);
+    save();
+  };
+  const pageFor = (call) => priceNewSlots(rpc, call, policy, transientSlots({ wrapped: A.wrapped, router: A.router })).then((fee) => ({ fee }), (error) => ({ refused: error.message }));
+  const swapOf = async (account, gas) => ({ from: account.address, to: A.router, data: encodeFunctionData({ abi: ABI, functionName: "swapExactBLCHForTokens", args: [0n, [A.wrapped, A.token], account.address, await deadline()] }), value: 10n ** 15n, gas });
+  const feesFor = async (fee) => {
+    const base = await baseFee();
+    const tip = fee?.maxPriorityFeePerGas ?? BigInt(await rpc("eth_maxPriorityFeePerGas", []));
+    return { maxPriorityFeePerGas: tip, maxFeePerGas: (fee?.maxFeePerGas ?? 2n * base + tip) };
+  };
+  // 1. The page's router calls from wallets that never paid: the gas limits of 1, 2, 3 and 4 hops (the rig has
+  //    one pool, so the route is one hop; the rule looks at the gas limit only).
+  for (const hops of [1n, 2n, 3n, 4n]) {
+    const wallet = fresh();
+    await fund({ to: wallet.address, data: "0x", value: 10n ** 18n, gas: 100_000n });
+    const call = await swapOf(wallet, 250_000n * hops);
+    const quote = await quoteOf(call);
+    const page = await pageFor(call);
+    const sent = page.fee === undefined ? { refused: { message: "not sent: the page refused" } } : await publish(await sign(wallet, call, await feesFor(page.fee)));
+    const receipt = sent.admitted ? await mined(sent.admitted) : null;
+    expect(`a fresh wallet's first swap at the ${hops}-hop gas limit (${250_000n * hops}) is executable, admitted with the page's fees and mined`,
+      quote?.executable === true && quote.covered === false && sent.admitted && receipt?.status === "0x1",
+      { quote, page: page.fee ? { tip: page.fee.maxPriorityFeePerGas, source: page.fee.source, firstTransferTip: page.fee.firstTransferTip ?? null, note: newSlotFeeNote(page.fee) } : page, sent: sent.admitted ?? sent.refused, gasUsed: receipt ? BigInt(receipt.gasUsed) : null });
+  }
+  // 2. Above the limit of a wallet without credit, and above the cap for anybody.
+  const above = fresh();
+  await fund({ to: above.address, data: "0x", value: 10n ** 18n, gas: 100_000n });
+  const overLimit = BigInt(creditProbe.uncovered_max_gas) + 250_000n;
+  const overCap = BigInt(creditProbe.max_tx_gas) + 1_000_000n;
+  for (const [gas, reason] of [[overLimit, "needs-credit"], [overCap, "gas-limit-above-cap"]]) {
+    const call = await swapOf(above, gas);
+    const quote = await quoteOf(call);
+    const page = await pageFor(call);
+    expect(`gas limit ${gas}: the quote says ${reason}`, quote?.executable === false && quote.not_executable_reason === reason, quote);
+    expect(`gas limit ${gas}: the page sends nothing, says a higher fee does not help, and gives no fee advice`,
+      typeof page.refused === "string" && /A higher fee does not help/.test(page.refused) && /Nothing was sent\.$/.test(page.refused) && !FEE_ADVICE.test(page.refused.replaceAll("A higher fee does not help", "")), page);
+    const sent = await publish(await sign(above, call, await feesFor(null)));
+    const said = sent.refused ? creditRefusalText(sent.refused.data?.kind, sent.refused.data ?? {}) : null;
+    expect(`gas limit ${gas}: eth_sendRawTransaction refuses with sequencer-${reason}, and the page has a text for it`,
+      sent.refused?.data?.kind === `sequencer-${reason}` && typeof said === "string" && !FEE_ADVICE.test(said.replaceAll("A higher fee does not help", "")), { refusal: sent.refused ?? sent.admitted, pageText: said });
+  }
+  expect("nothing of the refused calls was queued", (await nonceOf(above.address, "pending")) === 0n, (await nonceOf(above.address, "pending")).toString());
+  // 3. The remedy the page names: one plain transfer, never refused by the credit rule.
+  const needs = await quoteOf(await swapOf(above, overLimit));
+  const pageSaid = (await pageFor(await swapOf(above, overLimit))).refused ?? "";
+  const named = /one plain transfer with a priority fee of (\d+) wei per gas/.exec(pageSaid);
+  expect("the page names the priority fee of the plain transfer", Boolean(named), pageSaid);
+  if (named) {
+    const tip = BigInt(named[1]);
+    const base = await baseFee();
+    const transfer = await publish(await sign(above, { to: above.address, data: "0x", value: 0n, gas: 21_000n }, { maxPriorityFeePerGas: tip, maxFeePerGas: 2n * base + tip }));
+    const receipt = transfer.admitted ? await mined(transfer.admitted) : null;
+    const paid = receipt ? BigInt(receipt.gasUsed) * (BigInt(receipt.effectiveGasPrice) - BigInt((await rpc("eth_getBlockByNumber", [receipt.blockNumber, false])).baseFeePerGas)) : 0n;
+    expect("the plain transfer of the wallet without credit is admitted and mined at that fee", receipt?.status === "0x1", { transfer: transfer.admitted ?? transfer.refused, tip, tipsPaidWei: paid });
+    expect("the tips it paid are at least the credit the quote said the call needs", paid >= BigInt(needs?.credit_needed_wei ?? "0") && paid > 0n, { paid, needed: needs?.credit_needed_wei });
+    if (args["policy-file"] && receipt?.status === "0x1") {
+      // The settler's ledger, written by hand: this rig has no settler. Credit = the tips the transfer paid.
+      const file = JSON.parse(readFileSync(args["policy-file"], "utf8"));
+      file.admission.credit = { ...file.admission.credit, [above.address.toLowerCase()]: paid.toString() };
+      writeFileSync(`${args["policy-file"]}.tmp`, JSON.stringify(file));
+      renameSync(`${args["policy-file"]}.tmp`, args["policy-file"]);
+      let quote = null;
+      const call = await swapOf(above, overLimit);
+      for (let i = 0; i < 60 && quote?.executable !== true; i++) { await sleep(1000); quote = await quoteOf(call); }
+      const page = await pageFor(call);
+      const sent = page.fee === undefined ? { refused: { message: page.refused } } : await publish(await sign(above, call, await feesFor(page.fee)));
+      const after = sent.admitted ? await mined(sent.admitted) : null;
+      expect("with that credit in the sequencer's ledger (written by the check: MODELLED settler) the same call is executable, admitted with the page's fees and mined",
+        quote?.executable === true && sent.admitted && after?.status === "0x1", { quote, page: page.fee ? { tip: page.fee.maxPriorityFeePerGas, source: page.fee.source } : page, sent: sent.admitted ?? sent.refused });
+    }
+  }
+} else console.log("credit rule: not applied by this RPC (no uncovered_max_gas in the quote); the credit cases were not run");
+result.creditRule.failed = creditBad;
+
 const enforced = result.cases.some((c) => c.walletDefault.kind === "sequencer-fee-underpriced");
 result.admissionRuleEnforced = enforced;
 const bad = result.cases.filter((c) => (c.pageFees && !c.pageFees.admitted) || c.oneWeiBelow?.admitted || c.pageGasLowerBoundHolds === false || (c.walletDefault.admitted === false && !c.pageFees));
-result.summary = { cases: result.cases.length, admissionRuleEnforced: enforced, quoteServed: Boolean(quoteServed), sources: result.cases.map((c) => c.page.source ?? "none"), pageFeesRefused: bad.length, result: bad.length === 0 ? "PASS" : "FAIL" };
+result.summary = { cases: result.cases.length, admissionRuleEnforced: enforced, quoteServed: Boolean(quoteServed), sources: result.cases.map((c) => c.page.source ?? "none"), pageFeesRefused: bad.length, creditRuleApplied: creditRule, creditChecks: result.creditRule.checks.length, creditChecksFailed: creditBad.length, result: bad.length + creditBad.length === 0 ? "PASS" : "FAIL" };
 save();
 console.log(`new-slot RPC check: ${result.summary.result}; admission rule ${enforced ? "enforced" : "NOT enforced by this RPC"}; ${args.out}`);
 void keccak256;
-process.exit(bad.length === 0 ? 0 : 1);
+process.exit(bad.length + creditBad.length === 0 ? 0 : 1);
