@@ -23,6 +23,7 @@ import { verifyDeploymentRecord, type DevnetDeployment } from '../devnet4/record
 import type { AddChainParameters } from '../devnet4/swap';
 import type { BridgeStatusConfig } from './bridgehold';
 import { parseNewSlotFeePolicy, type NewSlotFeePolicy } from './newslotfee';
+import { wording } from './wording';
 
 export const NETWORK_DOMAIN = 'postern.dex.frontend-network.v1';
 export const RECORD_DOMAIN = 'postern.dex.frontend-record.v1';
@@ -162,24 +163,26 @@ export function swapClock(
   if (now + BigInt(CLOCK_BEHIND_TOLERANCE_SECONDS) < head)
     return {
       ok: false,
-      problem: `This device's clock is ${head - now} seconds behind the latest L2 block, so the swap deadline would be wrong. Correct the clock and get a new quote. Nothing was sent.`,
+      problem: `This device's clock is ${head - now} seconds behind the latest ${wording.block}, so the swap deadline would be wrong. Correct the clock and get a new quote. Nothing was sent.`,
     };
   const quiet = longestQuiet(policy);
   if (now > head + BigInt(quiet + IDLE_MARGIN_SECONDS))
     return {
       ok: false,
-      problem: `This device's clock is ${(now - head) / 3_600n} hours ahead of the latest L2 block. The L2 makes a block at least every ${quiet >= 7_200 ? `${Math.round(quiet / 3_600)} hours` : `${Math.round(quiet / 60)} minutes`}${policy.skipIdleBlocks ? ' even when it is idle' : ''}, so either this clock is wrong or this RPC is not showing the current chain. Nothing was sent.`,
+      problem: `This device's clock is ${(now - head) / 3_600n} hours ahead of the latest ${wording.block}. ${wording.chain} makes a block at least every ${quiet >= 7_200 ? `${Math.round(quiet / 3_600)} hours` : `${Math.round(quiet / 60)} minutes`}${policy.skipIdleBlocks ? ' even when it is idle' : ''}, so either this clock is wrong or this RPC is not showing the current chain. Nothing was sent.`,
     };
   const base = now > head ? now : head;
   const idleSeconds = now > head ? now - head : 0n;
   const idle = idleSeconds > BigInt(policy.blockIntervalSeconds);
   const idleMinutes = Math.ceil(idleDeadlineSeconds(policy) / 60);
-  const deadlineMinutes = idle && minutes < idleMinutes ? idleMinutes : minutes;
+  // Only the Bloch L2 waits for work; elsewhere an old latest block is a lagging RPC and changes no deadline.
+  const waitsForWork = wording.quiet === 'idle-l2';
+  const deadlineMinutes = waitsForWork && idle && minutes < idleMinutes ? idleMinutes : minutes;
   const deadline = base + BigInt(deadlineMinutes * 60);
   if (deadline <= head)
     return {
       ok: false,
-      problem: `The swap deadline would not be after the latest L2 block's time, so the swap could only revert. Check this device's clock and the deadline, and get a new quote. Nothing was sent.`,
+      problem: `The swap deadline would not be after the latest ${wording.block}'s time, so the swap could only revert. Check this device's clock and the deadline, and get a new quote. Nothing was sent.`,
     };
   const quietFor = idleSeconds / 60n;
   const wait = Math.round((2 * policy.blockIntervalSeconds) / 60);
@@ -189,9 +192,11 @@ export function swapClock(
     deadline,
     deadlineMinutes,
     idleSeconds,
-    notice: idle
-      ? `The L2 has made no block for ${quietFor >= 120n ? `${quietFor / 60n} hours` : `${quietFor} minutes`}: it is idle, and it makes a block only when it has work. Your swap starts it again: the first block after a pause takes no transactions, so the swap is included in the block after it, in about ${wait} minutes, and is final after that block is proven and settled.${deadlineMinutes !== minutes ? ` The deadline was raised from ${minutes} to ${deadlineMinutes} minutes to cover that wait.` : ''} The deadline counts from this device's clock, so check that the clock is right.`
-      : null,
+    notice: !idle
+      ? null
+      : !waitsForWork
+        ? `The latest ${wording.block} this RPC shows is ${quietFor} minutes old, so the RPC may be behind the chain. The quote is checked against that block; the deadline counts from this device's clock, so check that the clock is right.`
+        : `The L2 has made no block for ${quietFor >= 120n ? `${quietFor / 60n} hours` : `${quietFor} minutes`}: it is idle, and it makes a block only when it has work. Your swap starts it again: the first block after a pause takes no transactions, so the swap is included in the block after it, in about ${wait} minutes, and is final after that block is proven and settled.${deadlineMinutes !== minutes ? ` The deadline was raised from ${minutes} to ${deadlineMinutes} minutes to cover that wait.` : ''} The deadline counts from this device's clock, so check that the clock is right.`,
   };
 }
 export const MAX_DEADLINE_MINUTES = 180;
@@ -212,6 +217,10 @@ export type MainnetNetwork = {
   nativeCurrency: { name: string; symbol: string; decimals: number };
   genesisHash: Hex | null;
   rpcUrl: string;
+  /** Every reviewed endpoint, for the wallet's network entry (the multichain site); absent: `rpcUrl` alone. */
+  rpcUrls?: string[];
+  /** A chain that makes blocks without waiting for work: no heartbeat text for a waiting swap. */
+  noIdleHeartbeat?: boolean;
   rpcLive: boolean;
   explorerUrl: string | null;
   bridges: BridgeLink[];
@@ -333,7 +342,7 @@ export function addChainParameters(network: MainnetNetwork): AddChainParameters 
     chainId: network.chainId,
     chainName: network.chainName,
     nativeCurrency: network.nativeCurrency,
-    rpcUrls: [network.rpcUrl],
+    rpcUrls: network.rpcUrls ?? [network.rpcUrl],
     blockExplorerUrls: network.explorerUrl ? [network.explorerUrl] : undefined,
   };
 }

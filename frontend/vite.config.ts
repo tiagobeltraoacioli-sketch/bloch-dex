@@ -60,6 +60,8 @@ export default defineConfig(({ command, mode }) => ({
     alias: {
       '@postern/mainnet-network': mainnetNetwork,
       '@postern/mainnet-record': mainnetRecord,
+      // Only src/multichain imports it (the multichain site and its tests; not part of this site's bundle).
+      '@postern/multichain-bundle': committed('./src/multichain/bundle.ts'),
     },
   },
   server: {

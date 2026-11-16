@@ -16,7 +16,8 @@
     "types": ["vite/client"],
     "paths": {
       "@postern/mainnet-network": ["../deployments/mainnet/frontend.network.json"],
-      "@postern/mainnet-record": ["../deployments/mainnet/dex-mainnet.record.json"]
+      "@postern/mainnet-record": ["../deployments/mainnet/dex-mainnet.record.json"],
+      "@postern/multichain-bundle": ["./src/multichain/bundle.ts"]
     }
   },
   "include": ["src", "vite.config.ts"]

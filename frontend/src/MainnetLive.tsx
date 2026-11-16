@@ -201,7 +201,7 @@ export default function MainnetLive({
     enabled: live && !!snapshot,
     now,
     newSlotFee: network.newSlotFee,
-    idleHeartbeatSeconds: longestQuiet(network.idle),
+    idleHeartbeatSeconds: network.noIdleHeartbeat ? 0 : longestQuiet(network.idle),
     onMined: () => setGeneration((g) => g + 1),
     explain: (swap, receipt) =>
       state?.status === 'live' && swap.retry
@@ -365,7 +365,7 @@ function NotLive({
     <div className="card mainnet-not-live" aria-label="Not yet live">
       <h2>Not yet live</h2>
       <p className="notice" role="status">
-        The DEX is not deployed on the {wording.title} yet. This page sends no RPC request and no
+        The DEX is not deployed on {wording.where} yet. This page sends no RPC request and no
         transaction until a verified deployment record is published with this site.
       </p>
       <ul>
