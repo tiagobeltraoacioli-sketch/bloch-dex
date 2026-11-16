@@ -8,7 +8,8 @@ import {
   CHAIN_DEPENDENT_OPCODES, POST_PARIS_OPCODES, ROOT, ZERO_ADDRESS, checksummed, choicesFor, forgeEnvironment, loadArtifacts, loadChain, loadShared, lower,
   opcodesOf, pendingChoices, planChain, validateChain, validateShared,
 } from "./lib.mjs";
-import { gateConfig } from "./gate.mjs";
+import { evaluateGate, gateConfig } from "./gate.mjs";
+import { frontendNetwork, frontendRecord } from "./frontend-files.mjs";
 
 const shared = loadShared();
 const artifacts = loadArtifacts();
@@ -160,4 +161,65 @@ test("the commands refuse what must never happen", () => {
   assert.match(gateReference.stderr, /only in a rehearsal/);
   const unknown = run("node", "scripts/multichain/plan.mjs", "bloch-l2");
   assert.equal(unknown.status, 2);
+});
+
+test("the committed frontend files of each chain are the generated ones, and no chain is recorded as deployed", () => {
+  for (const chain of chains) {
+    const dir = join(ROOT, "deployments", chain.chain.key);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "frontend.network.json"), "utf8")), JSON.parse(JSON.stringify(frontendNetwork(shared, chain))));
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "frontend.record.json"), "utf8")), frontendRecord(shared, chain));
+    assert.equal(frontendRecord(shared, chain).status, "not-deployed");
+  }
+});
+
+test("the gate passes a correct chain, reports an EIP-7702 fee address, and fails on a wrong genesis, wrong code or a contract as fee address", async () => {
+  const require = (await import("node:module")).createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const { keccak256, encodeFunctionResult, parseAbi, toFunctionSelector, toHex } = require("viem");
+  const chain = JSON.parse(JSON.stringify(chains.find((c) => c.chain.key === "base")));
+  const local = JSON.parse(JSON.stringify(shared));
+  // Stand-in runtime codes; their hashes become the pins of this test's copy of the configuration.
+  const code = (label) => toHex(`code:${label}`);
+  local.create2.deployerCodeHash = keccak256(code("deployer"));
+  chain.wrappedNative.codeHash = keccak256(code("wrapped"));
+  chain.tokens[0].codeHash = keccak256(code("token"));
+  chain.multicall3.codeHash = keccak256(code("multicall"));
+  const plan = planChain(local, chain, artifacts, { reference: true });
+  const abi = parseAbi(["function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)", "function getChainId() view returns (uint256)"]);
+  const names = Object.fromEntries(abi.map((f) => [toFunctionSelector(f), f.name]));
+  const world = (over = {}) => {
+    const o = { genesis: chain.chain.genesisHash, feeCode: "0x", tokenCode: code("token"), ...over };
+    const codes = new Map([[lower(local.create2.deployer), code("deployer")], [lower(chain.wrappedNative.address), code("wrapped")], [lower(chain.tokens[0].address), o.tokenCode], [lower(chain.multicall3.address), code("multicall")], [lower(local.feeTo.address), o.feeCode]]);
+    return async (method, params) => {
+      if (method === "eth_chainId") return "0x2105";
+      if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: o.genesis } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
+      if (method === "eth_getCode") return codes.get(lower(params[0])) ?? "0x";
+      if (method === "eth_call") {
+        const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
+        const fn = names[params[0].data.slice(0, 10)];
+        if (fn === "getChainId") return encodeFunctionResult({ abi, functionName: fn, result: 8453n });
+        return encodeFunctionResult({ abi, functionName: fn, result: fn === "decimals" ? token.decimals : token[fn] });
+      }
+      throw new Error(`unexpected ${method}`);
+    };
+  };
+  const gate = (request) => evaluateGate({ shared: local, chain, plan, phase: "pre", request });
+  const pass = await gate(world());
+  assert.equal(pass.decision, "pass", JSON.stringify(pass.failed));
+  assert.equal(pass.feeTo.code, "none");
+  assert.equal(pass.finalized.number, 100);
+  const delegated = await gate(world({ feeCode: `0xef0100${"63".repeat(20)}` }));
+  assert.equal(delegated.decision, "pass");
+  assert.deepEqual([delegated.feeTo.code, delegated.feeTo.delegate], ["EIP-7702 delegation", `0x${"63".repeat(20)}`]);
+  const contractFee = await gate(world({ feeCode: "0x6080604052" }));
+  assert.equal(contractFee.decision, "fail");
+  assert.match(contractFee.failed.join(), /externally owned account/);
+  const otherChain = await gate(world({ genesis: `0x${"11".repeat(32)}` }));
+  assert.match(otherChain.failed.join(), /pinned genesis/);
+  const otherToken = await gate(world({ tokenCode: code("another token") }));
+  assert.match(otherToken.failed.join(), /USDC at .* holds the pinned code/);
+  // The post gate fails while nothing is deployed.
+  const post = await evaluateGate({ shared: local, chain, plan, phase: "post", request: world() });
+  assert.equal(post.decision, "fail");
+  assert.match(post.failed.join(), /factory .* holds the planned code at the finalized block/);
+  assert.throws(() => frontendRecord(local, chain, post), /not a passed post gate/);
 });

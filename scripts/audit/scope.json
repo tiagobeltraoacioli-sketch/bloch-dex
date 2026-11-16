@@ -74,6 +74,7 @@
         "frontend/src/devnet4/chain.ts",
         "frontend/src/devnet4/record.ts",
         "frontend/src/mainnet/config.ts",
+        "frontend/src/mainnet/wording.ts",
         "frontend/src/mainnet/caps.ts",
         "frontend/src/mainnet/quotecheck.ts",
         "frontend/src/mainnet/reads.ts",
@@ -119,7 +120,11 @@
     { "path": "scripts/live-auth", "why": "legacy preview-route tooling, not on the mainnet path" },
     { "path": "scripts/audit/", "why": "this generator and its scope file" },
     { "path": "deployments/devnet4/", "why": "devnet deployment records bundled for the preview route" },
-    { "path": "frontend/ (everything not in tier D)", "why": "presentation, preview data and wallet connection; no transaction is built outside tier D" }
+    { "path": "frontend/ (everything not in tier D)", "why": "presentation, preview data and wallet connection; no transaction is built outside tier D" },
+    { "path": "scripts/multichain/", "why": "the multichain line (the same contracts on six public EVM chains, docs/MULTICHAIN-DEPLOY.md): an additional product, not on the Bloch L2 path and not in this audit" },
+    { "path": "script/DeployMultichain.s.sol", "why": "multichain line; refuses the Bloch L2 chain ids" },
+    { "path": "frontend/src/multichain/", "why": "multichain site (its own entry and bundle); not part of the Bloch L2 site" },
+    { "path": "frontend/src/MultichainApp.tsx", "why": "multichain site (its own entry and bundle); not part of the Bloch L2 site" }
   ],
   "contracts": ["UniswapV2Pair", "UniswapV2Factory", "BDexRouter", "BDexLens", "WBLCH"]
 }
