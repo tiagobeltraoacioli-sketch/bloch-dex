@@ -9,8 +9,19 @@
 // tightens the signed minimum after a better one (mainnet/quotecheck.ts); a
 // worse price needs an explicit reconfirmation. A sent swap holds the Swap button
 // until its outcome is known (mainnet/pendingswap.ts).
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  CircleCheck,
+  LoaderCircle,
+  RefreshCw,
+  ShieldCheck,
+  Wallet,
+} from 'lucide-react';
+import { GateGlyph } from './shell/BrandMark';
+import { CopyButton } from './ui/CopyButton';
+import { nextStep } from './ui/next-step';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
 import { approveTransaction, ensureChain, sendTransaction, swapTransaction } from './devnet4/swap';
@@ -95,16 +106,28 @@ function ExplorerLink({
   kind: 'tx' | 'address';
   value: string;
 }) {
-  if (!network.explorerUrl) return <code>{value}</code>;
+  const what = kind === 'tx' ? 'transaction hash' : 'address';
+  if (!network.explorerUrl)
+    return (
+      <span className="hashline">
+        <code>{value}</code>
+        <CopyButton value={value} what={what} />
+      </span>
+    );
   return (
-    <a
-      href={`${network.explorerUrl.replace(/\/$/, '')}/${kind}/${value}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      referrerPolicy="no-referrer"
-    >
-      <code>{value}</code>
-    </a>
+    <span className="hashline">
+      <a
+        href={`${network.explorerUrl.replace(/\/$/, '')}/${kind}/${value}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        referrerPolicy="no-referrer"
+        title="Open in the explorer"
+      >
+        <code>{value}</code>
+        <ArrowUpRight size={14} aria-hidden="true" />
+      </a>
+      <CopyButton value={value} what={what} />
+    </span>
   );
 }
 
@@ -214,6 +237,9 @@ export default function MainnetLive({
         : Promise.resolve('unknown'),
     intervalMs: receiptPollMs,
   });
+  // The same conditions as the status block below, named for the layout.
+  const ready = !failure && state?.status === 'live' && !!snapshot;
+  const loading = !failure && (!state || (state.status === 'live' && !snapshot));
   return (
     <section className="page devnet4-page mainnet-page" aria-labelledby="mainnet-title">
       <div className="section-heading">
@@ -236,7 +262,6 @@ export default function MainnetLive({
           </button>
         )}
       </div>
-      <NetworkPanel network={network} wallet={wallet} />
       {failure ? (
         <p className="form-error" role="alert">
           Mainnet reads are unavailable: {failure}. No transaction can be sent from this page.
@@ -256,33 +281,64 @@ export default function MainnetLive({
         <>
           <FinalityAge finalizedAt={snapshot.finalized} now={now} />
           <BridgeHoldBanner hold={hold} network={network} />
-          <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
-          <PoolsTable
-            snapshot={snapshot}
-            network={network}
-            rpc={rpc}
-            wallet={wallet}
-            pendingSwap={pendingSwap}
-            now={now}
-            heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
-          />
-          <SwapPanel
-            key={`${snapshot.finalized.hash}:${pendingSwap.contextKey}`}
-            network={network}
-            deployment={state.deployment}
-            multicall3={state.multicall3}
-            snapshot={snapshot}
-            rpc={rpc}
-            wallet={wallet}
-            now={now}
-            pendingSwap={pendingSwap}
-            hold={hold}
-            holdToken={holdSource?.token}
-          />
         </>
       )}
-      <BridgePanel network={network} />
+      <div className="live-grid" data-ready={ready || undefined}>
+        {/* The swap card first: it is the page's main task; the reference blocks follow. */}
+        {ready && state.status === 'live' && snapshot ? (
+          <div className="live-primary">
+            <SwapPanel
+              key={`${snapshot.finalized.hash}:${pendingSwap.contextKey}`}
+              network={network}
+              deployment={state.deployment}
+              multicall3={state.multicall3}
+              snapshot={snapshot}
+              rpc={rpc}
+              wallet={wallet}
+              now={now}
+              pendingSwap={pendingSwap}
+              hold={hold}
+              holdToken={holdSource?.token}
+            />
+          </div>
+        ) : (
+          loading && <LoadingBlocks />
+        )}
+        <div className="live-secondary">
+          {ready && state.status === 'live' && snapshot && (
+            <PoolsTable
+              snapshot={snapshot}
+              network={network}
+              rpc={rpc}
+              wallet={wallet}
+              pendingSwap={pendingSwap}
+              now={now}
+              heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
+            />
+          )}
+          <NetworkPanel network={network} wallet={wallet} />
+          {ready && state.status === 'live' && snapshot && (
+            <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
+          )}
+          <BridgePanel network={network} />
+        </div>
+      </div>
     </section>
+  );
+}
+
+/** Placeholders with the height of the swap card while the record and the finalized block are checked. */
+function LoadingBlocks() {
+  return (
+    <div className="live-primary" aria-hidden="true">
+      <div className="card skeleton-card">
+        <span className="skeleton skeleton-title" />
+        <span className="skeleton skeleton-leg" />
+        <span className="skeleton skeleton-leg" />
+        <span className="skeleton skeleton-line" />
+        <span className="skeleton skeleton-button" />
+      </div>
+    </div>
   );
 }
 
@@ -424,12 +480,13 @@ function FinalityAge({
       : `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
   if (seconds < FINALIZED_AGE_WARN_SECONDS)
     return (
-      <p className="microcopy" aria-label="Finality age">
-        Finalized block {finalizedAt.number.toString()} is {age} old.
+      <p className="microcopy finality-line" aria-label="Finality age">
+        <CircleCheck size={16} aria-hidden="true" /> Finalized block {finalizedAt.number.toString()}{' '}
+        is {age} old.
       </p>
     );
   return (
-    <p className="form-error" role="alert" aria-label="Finality age">
+    <p className="form-error finality-line" role="alert" aria-label="Finality age">
       <AlertTriangle size={16} /> L2 finality looks stalled: finalized block{' '}
       {finalizedAt.number.toString()} is {age} old. Pools, balances, caps and quotes on this page
       are from that block. A swap executes on the latest state, and anything mined now stays out of
@@ -649,6 +706,16 @@ function PoolsTable({
     return (
       <>
         {formatAmount(cap, t.decimals)} {t.symbol} ({percent(reserve, cap)}% used)
+        {cap > 0n && (
+          <span
+            className="cap-meter"
+            aria-hidden="true"
+            data-full={room === 0n || closed || undefined}
+            style={
+              { '--used': `${Math.min(100, Number(percent(reserve, cap)))}%` } as CSSProperties
+            }
+          />
+        )}
         <br />
         <span className={room === 0n || closed ? 'form-error' : 'muted'}>
           {room === null
@@ -663,9 +730,9 @@ function PoolsTable({
     );
   };
   return (
-    <div className="card">
+    <div className="card pools-card">
       <h2>Pools at finalized block {snapshot.finalized.number.toString()}</h2>
-      <table className="devnet4-pools">
+      <table className="devnet4-pools pool-cards">
         <thead>
           <tr>
             <th scope="col">Pool</th>
@@ -681,7 +748,7 @@ function PoolsTable({
                 <br />
                 <code>{short(p.address)}</code>
               </th>
-              <td>
+              <td data-label="Reserves">
                 {formatAmount(p.reserve0, p.token0.decimals)} {p.token0.symbol}
                 <br />
                 {formatAmount(p.reserve1, p.token1.decimals)} {p.token1.symbol}
@@ -711,7 +778,7 @@ function PoolsTable({
                   </div>
                 )}
               </td>
-              <td>
+              <td data-label="Reserve caps">
                 {side(p.reserve0, p.excess?.excess0 ?? 0n, p.cap0, p.token0, closedByExcess(p))}
                 <br />
                 {side(p.reserve1, p.excess?.excess1 ?? 0n, p.cap1, p.token1, closedByExcess(p))}
@@ -1145,70 +1212,112 @@ function SwapPanel({
   const holdBlocksSend = buysHeld && exitsBlocked(hold) && !holdAccepted;
   const uses = signed ? headroomUse(snapshot.pools, signed.path, signed.amounts) : [];
   const symbolOf = (a: Address) => options.find((o) => o.token.address === a)?.label ?? short(a);
+  // Presentation only: the line that says what the buttons below will do next.
+  const next = nextStep({
+    connected: !!wallet.account,
+    walletPending: wallet.pending,
+    onChain,
+    chainId: d.chainId,
+    storageBlocked: !!pendingSwap.storageProblem || !!pendingSwap.unreadable,
+    busy,
+    holdOpen: pendingSwap.open,
+    hasQuote: !!quote,
+    staleForm,
+    shortBalance,
+    quoteBlocked: blocksSwap(check),
+    approval:
+      needsApproval && quote && input
+        ? `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`
+        : null,
+    acknowledgementMissing: holdBlocksSend,
+  });
+  const earlier = history.filter(
+    (h) => !steps.some((x) => x.hash === h.hash) && tracked?.hash !== h.hash,
+  );
 
   return (
-    <div className="card devnet4-swap">
+    <div className="card devnet4-swap swap-card">
       <h2>Swap</h2>
-      <div className="devnet4-form">
-        <label className="field-label">
-          You pay
-          <select
-            value={inKey}
-            onChange={(e) => (setInKey(e.target.value), setAttempt(1), clear())}
-          >
-            {options.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field-label">
-          Amount
-          <input
-            className="text-input"
-            inputMode="decimal"
-            value={amount}
-            onChange={(e) => (setAmount(e.target.value), setAttempt(1), clear())}
-          />
-        </label>
-        <label className="field-label">
-          You receive
-          <select
-            value={outKey}
-            onChange={(e) => (setOutKey(e.target.value), setAttempt(1), clear())}
-          >
-            {options.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field-label">
-          Slippage tolerance (%)
-          <input
-            className="text-input"
-            inputMode="decimal"
-            value={slippage}
-            onChange={(e) => (setSlippage(e.target.value), clear())}
-          />
-        </label>
-        <p className="microcopy" aria-label="Slippage note">
-          Plan to lose up to this share of your output. Block order follows the tip paid, so someone
-          can trade just before and after you and keep the difference, up to your minimum. Keep it
-          low, and split large swaps.
-        </p>
-        <label className="field-label">
-          Deadline (minutes)
-          <input
-            className="text-input"
-            inputMode="numeric"
-            value={deadline}
-            onChange={(e) => (setDeadline(e.target.value), clear())}
-          />
-        </label>
-        <button className="button secondary" onClick={() => void getQuote()}>
+      <div className="devnet4-form swap-form">
+        <div className="swap-leg" data-leg="pay">
+          <label className="field-label token-field">
+            You pay
+            <select
+              value={inKey}
+              onChange={(e) => (setInKey(e.target.value), setAttempt(1), clear())}
+            >
+              {options.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-label amount-field">
+            Amount
+            <input
+              className="text-input amount-input"
+              inputMode="decimal"
+              placeholder="0"
+              autoComplete="off"
+              spellCheck={false}
+              value={amount}
+              onChange={(e) => (setAmount(e.target.value), setAttempt(1), clear())}
+            />
+          </label>
+        </div>
+        <div className="swap-gate" aria-hidden="true">
+          <GateGlyph />
+        </div>
+        <div className="swap-leg" data-leg="receive">
+          <label className="field-label token-field">
+            You receive
+            <select
+              value={outKey}
+              onChange={(e) => (setOutKey(e.target.value), setAttempt(1), clear())}
+            >
+              {options.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {/* Mirror of "Expected output" in the quote below, which is the accessible figure. */}
+          <div className="amount-field amount-mirror" aria-hidden="true">
+            <span className="amount-output" data-empty={!(quote && signed && output) || undefined}>
+              {quote && signed && output
+                ? formatAmount(signed.amountOut, output.token.decimals)
+                : '\u2014'}
+            </span>
+          </div>
+        </div>
+        <div className="swap-terms">
+          <label className="field-label">
+            Slippage tolerance (%)
+            <input
+              className="text-input"
+              inputMode="decimal"
+              value={slippage}
+              onChange={(e) => (setSlippage(e.target.value), clear())}
+            />
+          </label>
+          <label className="field-label">
+            Deadline (minutes)
+            <input
+              className="text-input"
+              inputMode="numeric"
+              value={deadline}
+              onChange={(e) => (setDeadline(e.target.value), clear())}
+            />
+          </label>
+          <p className="microcopy" aria-label="Slippage note">
+            Plan to lose up to this share of your output. Block order follows the tip paid, so
+            someone can trade just before and after you and keep the difference, up to your minimum.
+            Keep it low, and split large swaps.
+          </p>
+        </div>
+        <button className="button secondary get-quote" onClick={() => void getQuote()}>
           Get quote
         </button>
       </div>
@@ -1323,7 +1432,7 @@ function SwapPanel({
         </>
       )}
       {!wallet.account ? (
-        <div className="wallet-options">
+        <div className="wallet-options" data-wallet-connect tabIndex={-1}>
           {wallet.wallets.length === 0 && <p className="muted">No browser wallet found.</p>}
           {wallet.wallets.map((w) => (
             <button
@@ -1338,8 +1447,8 @@ function SwapPanel({
           {wallet.error && <p className="form-error">{wallet.error}</p>}
         </div>
       ) : (
-        <div className="devnet4-actions">
-          <p className="muted">
+        <div className="devnet4-actions swap-actions">
+          <p className="muted wallet-line">
             Wallet <code>{wallet.account.address}</code> on chain{' '}
             {BigInt(wallet.account.chainId).toString()}
             {!onChain && ` (it will be asked to switch to chain ${d.chainId})`}
@@ -1378,6 +1487,9 @@ function SwapPanel({
           </button>
         </div>
       )}
+      <p className="next-step" data-tone={next.tone} data-testid="next-step">
+        {next.text}
+      </p>
       {pendingSwap.storageProblem && (
         <p role="alert" className="form-error">
           {pendingSwap.storageProblem} No new transaction can be sent.
@@ -1386,6 +1498,13 @@ function SwapPanel({
       {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
       {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
         <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
+      )}
+      <h3 className="activity-title">Activity</h3>
+      {wallet.account && earlier.length === 0 && steps.length === 0 && !tracked && (
+        <p className="activity-empty">No transactions from this page yet.</p>
+      )}
+      {!wallet.account && (
+        <p className="activity-empty">Transactions you send from this page are listed here.</p>
       )}
       {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
         <ol className="devnet4-steps" aria-label="Earlier transactions">

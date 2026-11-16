@@ -1,10 +1,16 @@
 import type { ReactNode, Ref } from 'react';
+import { BrandMark } from './BrandMark';
+import { ThemeToggle } from './ThemeToggle';
+import { Toaster } from '../ui/toast';
+import type { NetworkKey } from './networks';
 
 /**
- * The frame every route shares: brand, navigation, header actions, main
- * region and footer. Presentation only; routes pass their own content.
+ * The frame every route shares: brand, navigation, header actions (network,
+ * wallet, theme), main region and footer. Presentation only; routes pass
+ * their own content. `network` selects the lamp colour (styles/tokens.css).
  */
 export function Shell({
+  network,
   brandLabel,
   navLabel,
   nav,
@@ -12,10 +18,9 @@ export function Shell({
   footer,
   children,
   after,
-  skipLink,
   mainRef,
-  mainFocusable = false,
 }: {
+  network: NetworkKey;
   brandLabel: string;
   navLabel: string;
   nav: ReactNode;
@@ -24,37 +29,45 @@ export function Shell({
   children: ReactNode;
   /** Dialogs and other siblings of the page regions. */
   after?: ReactNode;
-  skipLink?: ReactNode;
   mainRef?: Ref<HTMLElement>;
-  mainFocusable?: boolean;
 }) {
   return (
-    <div className="app-shell">
-      {skipLink}
+    <div className="app-shell" data-network={network}>
+      <a
+        href="#main-content"
+        className="skip-link"
+        onClick={(e) => {
+          // Routes live in the hash: move focus without changing it.
+          e.preventDefault();
+          document.getElementById('main-content')?.focus();
+        }}
+      >
+        Skip to content
+      </a>
       <header className="topbar">
         <div className="topbar-inner">
           <a className="brand" href="#/trade" aria-label={brandLabel}>
-            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
-            <span>POSTERN</span>
+            <BrandMark />
+            <span className="wordmark">Postern</span>
           </a>
           <nav className="main-nav" aria-label={navLabel}>
             {nav}
           </nav>
-          {actions}
+          <div className="header-actions">
+            {actions}
+            <ThemeToggle />
+          </div>
         </div>
+        <div className="lintel" aria-hidden="true" />
       </header>
-      <main
-        id="main-content"
-        ref={mainRef}
-        tabIndex={mainFocusable ? -1 : undefined}
-        className="main-content"
-      >
+      <main id="main-content" ref={mainRef} tabIndex={-1} className="main-content">
         {children}
       </main>
       <footer className="footer">
         <div className="footer-inner">{footer}</div>
       </footer>
       {after}
+      <Toaster />
     </div>
   );
 }

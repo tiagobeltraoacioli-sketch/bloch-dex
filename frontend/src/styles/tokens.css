@@ -110,6 +110,12 @@
   --shadow-overlay: 0 24px 64px -16px rgb(0 0 0 / 0.7), 0 2px 8px rgb(0 0 0 / 0.4);
   --net: #c8fa72;
 }
+:root {
+  /* The lamp as it looks on dark stone, in both themes (brand mark, network tiles). */
+  --net-bright: #c8fa72;
+  --tile: #14191a;
+  --tile-fg: #eceae3;
+}
 
 /* ---------- Light ---------- */
 :root[data-theme='light'] {
@@ -142,31 +148,40 @@
  * the surfaces; it never carries meaning alone and is never body text).
  */
 [data-network='bloch-l2'] {
-  --net: #c8fa72;
+  --net-bright: #c8fa72;
+  --net: var(--net-bright);
 }
 [data-network='ethereum'] {
-  --net: #8fa3ff;
+  --net-bright: #8fa3ff;
+  --net: var(--net-bright);
 }
 [data-network='linea'] {
-  --net: #61dfff;
+  --net-bright: #61dfff;
+  --net: var(--net-bright);
 }
 [data-network='arbitrum-one'] {
-  --net: #4db5ff;
+  --net-bright: #4db5ff;
+  --net: var(--net-bright);
 }
 [data-network='bnb-smart-chain'] {
-  --net: #f3ba2f;
+  --net-bright: #f3ba2f;
+  --net: var(--net-bright);
 }
 [data-network='base'] {
-  --net: #6e9bff;
+  --net-bright: #6e9bff;
+  --net: var(--net-bright);
 }
 [data-network='op-mainnet'] {
-  --net: #ff6470;
+  --net-bright: #ff6470;
+  --net: var(--net-bright);
 }
 [data-network='devnet4'] {
-  --net: #b9a6ff;
+  --net-bright: #b9a6ff;
+  --net: var(--net-bright);
 }
 [data-network='preview'] {
-  --net: #a8b0ae;
+  --net-bright: #a8b0ae;
+  --net: var(--net-bright);
 }
 :root[data-theme='light'] [data-network='bloch-l2'] {
   --net: #486f00;

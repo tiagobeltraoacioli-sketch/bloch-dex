@@ -22,7 +22,7 @@ const ratio = (a, b) => {
 
 const NETWORKS = ['bloch-l2', 'ethereum', 'linea', 'arbitrum-one', 'bnb-smart-chain', 'base', 'op-mainnet', 'devnet4', 'preview'];
 const themes = {
-  dark: { tokens: block(":root[data-theme='dark']"), net: (n) => block(`\n[data-network='${n}']`)['--net'] },
+  dark: { tokens: block(":root[data-theme='dark']"), net: (n) => block(`\n[data-network='${n}']`)['--net-bright'] },
   light: { tokens: block(":root[data-theme='light']"), net: (n) => block(`:root[data-theme='light'] [data-network='${n}']`)['--net'] },
 };
 
@@ -50,5 +50,8 @@ for (const [name, { tokens: t, net }] of Object.entries(themes)) {
   check(name, 'primary button label (hover)', t['--primary-fg'], t['--primary-bg-hover'], 4.5);
   check(name, 'primary button against the page', t['--primary-bg'], t['--surface'], 3);
 }
+// Brand mark and network tiles: the bright lamp and the tile letter on the dark tile, in both themes.
+for (const n of NETWORKS) check('tile', `lamp ${n} on the tile`, themes.dark.net(n), '#14191a', 3);
+check('tile', 'tile letter', '#eceae3', '#14191a', 4.5);
 console.log(`${checked} pairs checked, ${failed} below WCAG AA`);
 process.exit(failed ? 1 : 0);

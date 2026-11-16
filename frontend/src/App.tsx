@@ -1,11 +1,15 @@
 import { QrWalletButton } from './QrWalletButton';
 import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowRight, ChevronDown, Info, LoaderCircle, Wallet } from 'lucide-react';
+import { ArrowRight, Info, LoaderCircle, Wallet } from 'lucide-react';
 import { parseAmount } from './amm';
 import { compactUsd, TOKENS, usd } from './data';
 import { Detail, ExternalLink, Modal, PairIcons } from './components';
 import LiquidityDialog from './LiquidityDialog';
 import { Shell } from './shell/Shell';
+import { GateGlyph } from './shell/BrandMark';
+import { NetworkSwitcher } from './shell/NetworkSwitcher';
+import { WalletStatus } from './shell/WalletStatus';
+import { networkEntries } from './shell/networks';
 import LivePoolsRuntime from './LivePoolsRuntime';
 import Pools from './Pools';
 import Portfolio from './Portfolio';
@@ -53,6 +57,12 @@ const MAINNET_HOLD_URL =
   renderOverride(import.meta.env.VITE_BRIDGE_ETH_RPC_URL) ??
   MAINNET_NETWORK.bridges.find((b) => b.status)?.status?.ethRpcUrl;
 const MAINNET_ETH_RPC = MAINNET_HOLD_URL ? httpRpc(MAINNET_HOLD_URL) : undefined;
+// Header network switcher (presentation only; see shell/networks.ts).
+const NETWORKS = networkEntries({
+  blochChainId: MAINNET_NETWORK.chainId,
+  blochRpcLive: MAINNET_NETWORK.rpcLive,
+  devnet4: DEVNET4_ROUTE,
+});
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
@@ -134,6 +144,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
   render() {
     return this.state.failed ? (
       <main className="error-page">
+        <GateGlyph size={40} />
         <h1>Something interrupted the preview.</h1>
         <p>Your wallet and funds have not been changed.</p>
         <button className="button primary" onClick={() => location.reload()}>
@@ -197,20 +208,8 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
     <Shell
       brandLabel="Postern home"
       navLabel="Main navigation"
+      network="preview"
       mainRef={main}
-      mainFocusable
-      skipLink={
-        <a
-          href="#main-content"
-          className="skip-link"
-          onClick={(e) => {
-            e.preventDefault();
-            main.current?.focus();
-          }}
-        >
-          Skip to content
-        </a>
-      }
       nav={
         <>
           {(['trade', 'pools', 'portfolio'] as Page[]).map((p) => (
@@ -224,23 +223,44 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
         </>
       }
       actions={
-        <div className="header-actions">
-          <button className="network-button" onClick={() => setModal('network')}>
-            <span className="status-dot" />
-            <span>
-              Bloch L2 <span className="muted">· Preview</span>
-            </span>
-            <ChevronDown size={15} />
-          </button>
-          <button className="button connect-button" onClick={() => setModal('wallet')}>
-            <Wallet size={16} />
+        <>
+          <NetworkSwitcher
+            current="preview"
+            entries={NETWORKS}
+            label={
+              <>
+                Bloch L2 <span className="muted">· Preview</span>
+              </>
+            }
+            footer={(close) => (
+              <button
+                className="popover-action"
+                onClick={() => {
+                  close();
+                  setModal('network');
+                }}
+              >
+                <Info size={16} aria-hidden="true" /> About the preview network
+              </button>
+            )}
+          />
+          <button
+            className="button connect-button wallet-button"
+            data-state={wallet.account ? 'connected' : wallet.pending ? 'pending' : 'disconnected'}
+            onClick={() => setModal('wallet')}
+          >
+            {wallet.account ? (
+              <span className="wallet-dot" aria-hidden="true" />
+            ) : (
+              <Wallet size={16} aria-hidden="true" />
+            )}
             <span>
               {wallet.account
                 ? `${wallet.account.address.slice(0, 6)}…${wallet.account.address.slice(-4)}`
                 : 'Connect wallet'}
             </span>
           </button>
-        </div>
+        </>
       }
       footer={
         <>
@@ -530,6 +550,7 @@ function LiveReadApplication({ gate }: { gate: LiveReadGate }) {
   }, []);
   return (
     <Shell
+      network="preview"
       brandLabel="Postern preview home"
       navLabel="Read-only navigation"
       nav={
@@ -565,6 +586,7 @@ function Devnet4Application() {
   }, []);
   return (
     <Shell
+      network="devnet4"
       brandLabel="Postern preview home"
       navLabel="Devnet4 navigation"
       nav={
@@ -575,7 +597,12 @@ function Devnet4Application() {
           <a href="#/trade">Preview</a>
         </>
       }
-      actions={<span className="badge">Devnet4 · Zero value</span>}
+      actions={
+        <>
+          <NetworkSwitcher current="devnet4" entries={NETWORKS} label="Devnet4 · Zero value" />
+          <WalletStatus wallet={wallet} chainId={700771} chainName="Bloch L2 devnet4" />
+        </>
+      }
       footer={
         <>
           <span className="footer-status">Bloch L2 devnet4 · chain 700771 · not mainnet</span>
@@ -603,6 +630,7 @@ function MainnetApplication() {
   }, []);
   return (
     <Shell
+      network="bloch-l2"
       brandLabel="Postern preview home"
       navLabel="Mainnet navigation"
       nav={
@@ -613,7 +641,21 @@ function MainnetApplication() {
           <a href="#/trade">Preview</a>
         </>
       }
-      actions={<span className="badge">Bloch L2 · Chain {MAINNET_NETWORK.chainId}</span>}
+      actions={
+        <>
+          <NetworkSwitcher
+            current="bloch-l2"
+            entries={NETWORKS}
+            label={<>Bloch L2 · Chain {MAINNET_NETWORK.chainId}</>}
+          />
+          <WalletStatus
+            wallet={wallet}
+            chainId={MAINNET_NETWORK.chainId}
+            chainName={MAINNET_NETWORK.chainName}
+            explorerUrl={MAINNET_NETWORK.explorerUrl || undefined}
+          />
+        </>
+      }
       footer={
         <>
           <span className="footer-status">Bloch L2 mainnet · chain {MAINNET_NETWORK.chainId}</span>
@@ -672,7 +714,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       {__POSTERN_LOCAL_RENDER__ && import.meta.env.PROD && (
-        <p className="form-error" role="alert">
+        <p className="form-error local-render-banner" role="alert">
           {LOCAL_RENDER_BANNER}
         </p>
       )}
