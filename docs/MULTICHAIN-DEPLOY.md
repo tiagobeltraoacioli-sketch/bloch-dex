@@ -100,7 +100,13 @@ With the reference plan (`node scripts/multichain/plan.mjs all --reference`):
 
 | Contract | Address | Same on |
 |---|---|---|
-ADDRESS_TABLE
+| Factory | `0x5512DcB6CceA160EB93d20280d4bFB2434079eF1` | all six |
+| Lens | `0x3a1136f943Db1E32376913D9e2F51F933cD16834` | all six |
+| Router | `0x129c29E7AE565E591280D9FDa4B433AAD824C83b` | OP Mainnet and Base (both use the WETH predeploy `0x4200…0006`) |
+| Router | `0x7836E8DF77D17D177a892C9CBCEdF2Fe188B03BA` | Arbitrum One |
+| Router | `0x07569E47A473D808103b398F835efc5328f0080c` | Linea |
+| Router | `0x365C6b34bC3c3C0A43Fb50Fa50A2a11f7F4f749D` | BNB Smart Chain |
+| Router | `0x3d95021Bd28591bb8a55A1597aA4AF98F2d0AC60` | Ethereum |
 
 Why the router differs: the wrapped native token is a constructor argument, and it has another address on each
 chain except the two OP Stack chains. Pair addresses differ everywhere, because token addresses differ. (These
@@ -164,7 +170,7 @@ Other facts:
 | Does the opening of a pool hold against someone else (review R309-MC-1)? | The same simulation and every fork rehearsal: a stranger creates the pair and tries the first mint and a first deposit through the router; then the first depositor opens the pool with minimums equal to the amounts | Both hostile calls revert `BDEX: FIRST_DEPOSITOR` on all six chains' own nodes and on all six forks; the pool opens at exactly the intended amounts |
 | Does the owner's command work against the chain's real state? | `scripts/multichain/rehearse-fork.mjs`: an anvil fork per chain, `deploy.sh broadcast` with a throwaway key, the post gate, then the flow with signed transactions | PASS on all six (section 11) |
 | Do chain-dependent opcodes behave as the contracts expect? | The code uses TIMESTAMP (deadlines, price accumulators), CHAINID (LP permit domain), ORIGIN (first-deposit rule), NUMBER and BLOCKHASH (anchored swaps, lens) | Deadlines, permits' chain id and the flow work on all six nodes. **Anchored swaps (`swap…Anchored`) revert `BDEX: ANCHOR` on Arbitrum One** when given the block number and hash its RPC reports, because there `block.number` and `blockhash` do not refer to Arbitrum's own blocks. They work on the other five. The page does not use anchored swaps; a direct caller on Arbitrum One cannot |
-| Does the unchanged test suite hold under later EVM rules? | `forge test` compiled for `shanghai`, `cancun` and `prague` | 238 of 240 pass on each; the 2 that fail are the tests that pin the Paris bytecode's pair init code hash, which is their purpose. The deployed bytecode stays the Paris build |
+| Does the unchanged test suite hold under later EVM rules? | `forge test` compiled for `shanghai`, `cancun` and `prague` | 243 of 245 pass on each; the 2 that fail are the tests that pin the Paris bytecode's pair init code hash, which is their purpose. The deployed bytecode stays the Paris build |
 | Rollup fees | Read from each rollup's own oracle (section 7) | Included in the cost table |
 
 Not proven, and why:
@@ -195,21 +201,21 @@ the race to searchers on a public chain. The Bloch L2's monitor is not used eith
 run again at any time as a read-only check that the deployment is still the planned code.
 
 Measured in each fork rehearsal, with the rehearsal's own figures (a pool of 10 native and 30,000 token units,
-five swaps: 1 native, 3,000 token units, 1 wrapped, 2,000 token units and 0.1 native; then one more deposit). The fee address's shares after that deposit
+six swaps: 600 token units (the second half of the reviewer's attack, section 11), 1 native, 3,000 token units, 1 wrapped, 2,000 token units and 0.1 native; then one more deposit). The fee address's shares after that deposit
 were worth:
 
 | Chain | Fee shares worth | Redeemed by the fee address |
 |---|---|---|
-| OP Mainnet | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 264,535 gas |
-| Base | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 266,683 gas |
-| Arbitrum One | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 268,538 gas |
-| Linea | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 268,673 gas |
-| BNB Smart Chain | 0.000922 BNB + 2.623572 USDC | 0.000922 BNB + 2.623572 USDC, in two transactions of 269,358 gas |
-| Ethereum | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 265,212 gas |
+| OP Mainnet | 0.000961 ETH + 2.809224 USDC | 0.000961 ETH + 2.809224 USDC, in two transactions of 264,535 gas |
+| Base | 0.000961 ETH + 2.809224 USDC | 0.000961 ETH + 2.809224 USDC, in two transactions of 266,683 gas |
+| Arbitrum One | 0.000961 ETH + 2.809224 USDC | 0.000961 ETH + 2.809224 USDC, in two transactions of 268,538 gas |
+| Linea | 0.000961 ETH + 2.809224 USDC | 0.000961 ETH + 2.809224 USDC, in two transactions of 268,673 gas |
+| BNB Smart Chain | 0.000961 BNB + 2.809224 USDC | 0.000961 BNB + 2.809224 USDC, in two transactions of 269,358 gas |
+| Ethereum | 0.000961 ETH + 2.809224 USDC | 0.000961 ETH + 2.809224 USDC, in two transactions of 256,441 gas |
 
 The fee address received exactly what its shares were worth; on Base it did so with its EIP-7702 delegation in place.
 
-The same sequence on each chain's own node (simulation, read-only), fee shares worth: OP Mainnet 0.000897 ETH + 2.554720 USDC; Base 0.000897 ETH + 2.554720 USDC; Arbitrum One 0.000889 ETH + 2.577511 USDC; Linea 0.000897 ETH + 2.554720 USDC; BNB Smart Chain 0.000897 BNB + 2.554720 USDC; Ethereum 0.000897 ETH + 2.554720 USDC. Arbitrum One differs because its anchored swap reverted there (section 5), so that pool saw one swap less.
+On each chain's own node (simulation, read-only; five swaps, without the 600 token units), fee shares worth: OP Mainnet 0.000897 ETH + 2.554720 USDC; Base 0.000897 ETH + 2.554720 USDC; Arbitrum One 0.000889 ETH + 2.577511 USDC; Linea 0.000897 ETH + 2.554720 USDC; BNB Smart Chain 0.000897 BNB + 2.554720 USDC; Ethereum 0.000897 ETH + 2.554720 USDC. Arbitrum One differs because its anchored swap reverted there (section 5), so that pool saw one swap less.
 
 To see what has accrued (read-only), per pool:
 
@@ -240,21 +246,31 @@ the address they name. This was shown in every rehearsal and is the canonical be
 Execution gas is the fork rehearsals' receipts: the same bytes the owner sends. Three transactions: factory, router
 and lens through the CREATE2 deployer. No pair is created at deployment (section 8); the first deposit creates it.
 
-COST_STEPS
+| Step | Gas |
+|---|---|
+| Factory | 2,617,692 |
+| Router | 4,082,527 to 4,082,743 |
+| Lens | 2,261,269 |
+| **Total** | **8,961,488 to 8,961,704** |
 
 In native coin, at the gas price each chain's node reported at the time of the run, with the rollup's data fee read
-from its own oracle (`scripts/multichain/cost.mjs`, COST_TIME):
+from its own oracle (`scripts/multichain/cost.mjs`, 2026-11-16, 22:28 to 22:41 UTC):
 
 | Chain | Gas price used | Data fee | Total |
 |---|---|---|---|
-COST_TABLE
+| OP Mainnet | 0.001030 gwei | 0.000000477 ETH | **0.000010 ETH** |
+| Base | 0.006000 gwei | 0.000000324 ETH | **0.000054 ETH** |
+| Arbitrum One | 0.020052 gwei | 60,386 gas added | **0.000181 ETH** |
+| Linea | 0.039592 gwei | in the gas price | **0.000355 ETH** |
+| BNB Smart Chain | 0.050000 gwei | none | **0.000448 BNB** |
+| Ethereum | 0.139693 gwei | none | **0.001252 ETH** |
 
 Gas prices were low at that hour. A real deployment pays the price of its own hour; plan with the figures that
-follow, not with the table. For Ethereum, execution gas only: COST_ETHEREUM. The deploying account needs that much
+follow, not with the table. For Ethereum, execution gas only: 0.0090 ETH at 1 gwei, 0.0448 ETH at 5 gwei, 0.1792 ETH at 20 gwei, 0.4481 ETH at 50 gwei. The deploying account needs that much
 native coin on each chain, plus a margin. It can be any account; it does not have to be the fee address or the
 first depositor.
 
-After deployment: the first deposit, which also creates the pair, costs FIRST_DEPOSIT_GAS gas (measured on the
+After deployment: the first deposit, which also creates the pair, costs 2,524,000 to 2,540,000 gas (measured on the
 forks; the pair's creation is most of it), its approval 46,000 to 60,000, a swap 115,000 to 192,000.
 
 ## 8. Deployment, chain by chain (owner)
@@ -488,32 +504,56 @@ made as in section 8, withdrawals as in section 6); see also section 13.
 
 ## 11. Rehearsals and how to repeat them
 
-Everything below is loopback or read-only, with throwaway keys. Run of record: code commit `f4c0df6`, 2026-11-16 (commits after it change documents and Solidity formatting only; the suites were run again on the final commit).
+Everything below is loopback or read-only, with throwaway keys. Run of record: code commit `515e3cb`, 2026-11-16
+(commits after it change documents only; the Bloch L2 clean-export suites were run on the final commit).
 
 | Rehearsal | Command | What it shows | Result |
 |---|---|---|---|
-| Kit tests | `node --test scripts/multichain/*.test.mjs` | configuration, plan, gate, opcode set, refusals | 14 pass |
-| Deploy script | `forge test --match-contract MultichainScriptTest` | planned addresses on the deployer's real runtime, a second run deploys nothing, refusals | pass |
+| Kit tests | `node --test scripts/multichain/*.test.mjs` | configuration, plan, gate and pair states, the deposit tool's minimums, confirmation rules, opcode set, refusals, start through a symbolic link | 19 pass |
+| Deploy script | `forge test --match-contract MultichainScriptTest` | planned addresses on the deployer's real runtime, a second run deploys nothing, refusals (the zero first depositor among them) | pass |
+| Opening of a pool | `forge test --match-contract MultichainFirstDepositTest` | the reviewer's attack against the package's plan: hostile first mint refused directly, through the router and from a contract; strict minimums alone; later pairs | 5 pass |
 | Pre gate on the public chains | `node scripts/multichain/gate.mjs <chain> pre --reference` | pins against the real chains, read-only | PASS, six of six |
-| Simulation on the real nodes | `node scripts/multichain/simulate-chain.mjs <chain> --out FILE` | deployment and flow on the chain's own node software, read-only | PASS, six of six |
-| Fork rehearsal | `node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR` | the owner's command, the post gate, the flow with signed transactions, gas, fee amounts | PASS, six of six, 13 checks each |
-| Page rehearsal | `node scripts/multichain/rehearse-page.mjs --port PORT --out DIR` | the multichain site in a real browser engine against six forks: network switch, one swap per chain, holds per chain | PASS: 6 chains, 37 assertions, 0 failed |
-| Page unit tests | `npm --prefix frontend test` | the multichain configuration, endpoint failover, wording, headers, selector | 513 pass (499 as before this line, 14 new), 1 skipped |
+| Simulation on the real nodes | `node scripts/multichain/simulate-chain.mjs <chain> --out FILE` | deployment, the hostile first mint and deposit (must revert), the guarded opening and the flow on the chain's own node software, read-only | PASS, six of six |
+| Fork rehearsal | `node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR` | the owner's command, the post gate, **the reviewer's attack on the fork** (someone else creates the pair, sends dust, tries the first mint and a first deposit: both revert), `first-deposit.mjs` refusing while the dust is there, the first deposit as printed, `verify`, the post gate again, then the flow with signed transactions, gas, fee amounts | PASS, six of six, 22 checks each |
+| Page rehearsal | `node scripts/multichain/rehearse-page.mjs --port PORT --out DIR` | the multichain site in a real browser engine against six forks whose pools were opened by a first deposit that also created the pair: network switch, one swap per chain settled by the chain's confirmation rule at the chain's block time, holds per chain | PASS: 6 chains, 59 assertions, 0 failed |
+| Page unit tests | `npm --prefix frontend test` | the above plus confirmation rules, agreeing endpoints, the strict reader | 526 pass (513 before this revision, 13 new), 1 skipped |
 
 Per chain:
 
 | Chain | Pre gate (real chain) | Simulation (real node) | Fork rehearsal | Deployment gas | Page: switch and swap |
 |---|---|---|---|---|---|
-| OP Mainnet | PASS | PASS (op-reth; anchored swap works) | PASS, 13 checks | 11,256,254 | PASS, swap 142,816 gas |
-| Base | PASS | PASS (reth; anchored swap works) | PASS, 13 checks | 11,256,244 | PASS, swap 142,746 gas |
-| Arbitrum One | PASS | PASS (nitro; anchored swap reverts) | PASS, 13 checks | 11,256,676 | PASS, swap 158,109 gas |
-| Linea | PASS | PASS (Geth; anchored swap works) | PASS, 13 checks | 11,256,686 | PASS, swap 146,883 gas |
-| BNB Smart Chain | PASS | PASS (Geth; anchored swap works) | PASS, 13 checks | 11,256,686 | PASS, swap 140,324 gas |
-| Ethereum | PASS | PASS (reth; anchored swap works) | PASS, 13 checks | 11,256,686 | PASS, swap 143,720 gas |
+| OP Mainnet | PASS | PASS (op-reth; anchored swap works) | PASS, 22 checks | 8,961,488 | PASS, swap 142,816 gas |
+| Base | PASS | PASS (reth; anchored swap works) | PASS, 22 checks | 8,961,488 | PASS, swap 142,746 gas |
+| Arbitrum One | PASS | PASS (nitro; anchored swap reverts) | PASS, 22 checks | 8,961,704 | PASS, swap 158,109 gas |
+| Linea | PASS | PASS (Geth; anchored swap works) | PASS, 22 checks | 8,961,704 | PASS, swap 146,883 gas |
+| BNB Smart Chain | PASS | PASS (Geth; anchored swap works) | PASS, 22 checks | 8,961,704 | PASS, swap 140,324 gas |
+| Ethereum | PASS | PASS (reth; anchored swap works) | PASS, 22 checks | 8,961,704 | PASS, swap 143,720 gas |
+
+The reviewer's attack in each fork rehearsal: the attacker's `mint` and `addLiquidityBLCH` reverted
+`BDEX: FIRST_DEPOSITOR`; the pool then opened at exactly 10 native and 30,000 token units; the attacker's 600
+token units bought 0.1955 native (their worth at that price, less the fee and the price impact), where the
+reviewer's test against open first deposits took more than 9.6 of the 10.
+
+Swap flow in the page rehearsal, from the wallet request to the page showing the outcome, with blocks mined at
+the chain's measured block time and only as many as the rule asks (the page looks every 4 seconds):
+
+| Chain | Rule | Blocks mined | Chain time | Measured | Fork's `finalized` behind the swap |
+|---|---|---|---|---|---|
+| OP Mainnet | 5 blocks | 6 | 12 s | 15.4 s (this chain's swap is the one held while another chain trades; time from its block) | yes |
+| Base | 50 blocks | 51 | 10.2 s | 20.3 s | yes |
+| Arbitrum One | 32 blocks | 33 | 10.2 s | 12.3 s | yes |
+| Linea | 1 block | 2 | 23 s | 25.0 s | yes |
+| BNB Smart Chain | chain's `finalized` | 67 at once (anvil's `finalized` is 64 blocks behind; the chain's is one or two) | 0.9 s | 20.6 s | not applicable |
+| Ethereum | 2 blocks | 3 | 36 s | 45.1 s | yes |
+
+In the first edition each of these waited for `finalized`: 15 to 23 minutes on four chains, hours on Linea. The
+Bloch L2 route is unchanged: its 513 unit tests pass unmodified and its browser harness passes on the clean export
+(27 scenarios, 163 assertions).
 
 Fork sources: the reviewed first endpoint, except BNB Smart Chain (both reviewed endpoints drop a block's state
 within minutes; the rehearsal forks from another public endpoint that keeps it) and Ethereum (its first endpoint
-answered the fork's block 0 request from a history-pruned backend; the second is used).
+answered the fork's block 0 request from a history-pruned backend; the second is used). OP Mainnet's first
+endpoint answered one trial with a rate limit (HTTP 429); the run of record passed.
 
 ## 12. Risks the owner should know
 
