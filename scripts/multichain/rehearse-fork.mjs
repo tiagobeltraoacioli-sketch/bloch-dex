@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Fork rehearsal of the multichain package for one chain (docs/MULTICHAIN-DEPLOY.md, "Fork rehearsals").
 //
-//   node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR [--fork-url URL]
+//   node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR [--fork-url URL] [--hold FILE]
+//
+// --hold FILE: the page rehearsal's mode (rehearse-page.mjs). The LP does not leave, DIR/ready is written when
+// everything above held, and the fork stays up, with its liquidity, while FILE exists.
 //
 // It starts `anvil --fork-url <the chain's first reviewed endpoint>` on loopback, runs the owner's command exactly as
 // documented (scripts/multichain/deploy.sh <chain> broadcast, with a throwaway key and the reference plan), passes
@@ -17,7 +20,7 @@
 // fees, Linea's prover limits): scripts/multichain/probe-chain.mjs reads those from the real nodes.
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ROOT, loadArtifacts, loadChain, loadShared, lower, planChain, refuse } from "./lib.mjs";
@@ -266,6 +269,17 @@ try {
   await send(trader, { to: pair, data: call("skim", [trader.address]) }, "anyone calls skim(to): the excess goes to the address the caller names");
   check("a third party's skim took the excess (no keeper can reserve it for the fee address on a public chain)", (await read(token.address, "balanceOf", [trader.address])) - strangerBefore === 5n * unit);
 
+  if (opt.hold) {
+    // The page rehearsal trades against this pool: the LP stays, and the fork stays up while the hold file exists.
+    evidence.held = true;
+    const bad = evidence.checks.filter((c) => !c.ok).length;
+    evidence.result = bad === 0 ? "PASS" : "FAIL";
+    save();
+    writeFileSync(join(opt.out, "ready"), `${evidence.result}\n`);
+    console.log(`fork rehearsal ${key}: ${evidence.result}, holding the fork on ${url} while ${opt.hold} exists`);
+    while (existsSync(opt.hold)) await delay(1000);
+    throw Object.assign(new Error("hold ended"), { held: true });
+  }
   // 3g. the LP leaves
   const lpShares = await read(pair, "balanceOf", [lp.address]);
   await send(lp, { to: pair, data: call("approve", [router, lpShares]) }, "LP approves its LP shares to the router");
@@ -275,9 +289,12 @@ try {
   evidence.afterExit = s;
   void factory;
 } catch (error) {
-  failed = true;
-  evidence.error = String(error.stack ?? error).slice(0, 1500);
-  console.error(error);
+  if (!error.held) {
+    failed = true;
+    evidence.error = String(error.stack ?? error).slice(0, 1500);
+    console.error(error);
+    if (opt.hold) writeFileSync(join(opt.out, "ready"), "FAIL\n");
+  }
 } finally {
   anvil.kill("SIGTERM");
 }

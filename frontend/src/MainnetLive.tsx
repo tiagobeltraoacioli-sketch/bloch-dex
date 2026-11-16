@@ -282,7 +282,7 @@ export default function MainnetLive({
           />
         </>
       )}
-      <BridgePanel network={network} />
+      {network.bridges.length > 0 && <BridgePanel network={network} />}
     </section>
   );
 }

@@ -2,13 +2,11 @@
 // network selector over the bundled chains; the selected chain is shown by the same route component as the
 // Bloch L2 mainnet (MainnetLive), with that chain's network file, record, endpoints and wording. Selecting a
 // network asks nothing of the wallet: the wallet is asked to switch (wallet_switchEthereumChain, then
-// wallet_addEthereumChain when it does not know the chain) by the explicit button here, or by the route itself
-// right before a transaction. This file is not part of the Bloch L2 site's bundle (multichain.html is its own
+// wallet_addEthereumChain when it does not know the chain) by the route's own "Add or switch to …" button, or by
+// the route itself right before a transaction. This file is not part of the Bloch L2 site's bundle (multichain.html is its own
 // entry, built by vite.multichain.config.ts).
 import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MainnetLive from './MainnetLive';
-import { ensureChain } from './devnet4/swap';
-import { addChainParameters } from './mainnet/config';
 import { setWording } from './mainnet/wording';
 import { bundledChains, type Chain } from './multichain/config';
 import { fallbackHttpRpc } from './multichain/rpc';
@@ -26,12 +24,8 @@ const keyFromHash = (chains: Chain[]): string => {
 export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] }) {
   const wallet = useWallet();
   const [key, setKey] = useState(() => keyFromHash(chains));
-  const [switchNote, setSwitchNote] = useState('');
   useEffect(() => {
-    const change = () => {
-      setKey(keyFromHash(chains));
-      setSwitchNote('');
-    };
+    const change = () => setKey(keyFromHash(chains));
     window.addEventListener('hashchange', change);
     window.dispatchEvent(new Event('postern:discover-wallets'));
     return () => window.removeEventListener('hashchange', change);
@@ -43,20 +37,6 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
   useEffect(() => {
     document.title = `PosternDEX — ${chain.network.chainName}`;
   }, [chain]);
-  const walletChain = wallet.account?.chainId?.toLowerCase();
-  const onOtherChain = !!wallet.provider && !!walletChain && walletChain !== chain.network.chainHex;
-  async function switchWallet() {
-    if (!wallet.provider) return;
-    setSwitchNote('Confirm the network change in your wallet.');
-    try {
-      await ensureChain(wallet.provider, addChainParameters(chain.network));
-      setSwitchNote('');
-    } catch (error) {
-      setSwitchNote(
-        `Your wallet did not switch to ${chain.network.chainName}: ${error instanceof Error ? error.message : 'the request failed'}. Nothing was sent.`,
-      );
-    }
-  }
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -82,19 +62,6 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         </div>
       </header>
       <main id="main-content" className="main-content">
-        {onOtherChain && (
-          <p className="notice" role="status" aria-label="Wallet network">
-            Your wallet is on another network (chain {Number.parseInt(walletChain, 16)}).{' '}
-            <button type="button" className="secondary" onClick={() => void switchWallet()}>
-              Switch wallet to {chain.network.chainName}
-            </button>
-          </p>
-        )}
-        {switchNote && (
-          <p className="microcopy" role="status" aria-label="Wallet network change">
-            {switchNote}
-          </p>
-        )}
         <MainnetLive
           key={chain.key}
           network={chain.network}
