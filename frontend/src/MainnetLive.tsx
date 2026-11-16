@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   ArrowUpRight,
   CircleCheck,
+  Layers,
   PanelRightOpen,
   LoaderCircle,
   RefreshCw,
@@ -28,6 +29,10 @@ import { Disclosure } from './ui/Disclosure';
 import { Expander } from './ui/Expander';
 import { ReferencePanel } from './ui/ReferencePanel';
 import { DeadlineClock } from './ui/DeadlineClock';
+import { ConfirmationProgress } from './ui/ConfirmationProgress';
+import { ReadFailureBlock } from './ui/ReadFailure';
+import { classifyReadFailure, readRetrySeconds } from './ui/read-failure';
+import type { ProgressRule } from './ui/confirmation-progress';
 import { quoteRate } from './ui/rate';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
@@ -76,7 +81,7 @@ import {
   type ReplacementProof,
 } from './mainnet/submission-outcome';
 import { idleWaitNote, usePendingSwap, walletOnChain } from './mainnet/pendingswap';
-import { wording } from './mainnet/wording';
+import { settledCapital, worded, wording } from './mainnet/wording';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
 import { explainSwapRevert, retryOffer, revertText, type SwapRetryInfo } from './mainnet/retry';
@@ -102,8 +107,20 @@ type Step = {
 const short = (value: string) => `${value.slice(0, 8)}…${value.slice(-6)}`;
 const percent = (part: bigint, whole: bigint) =>
   whole === 0n ? '0.00' : (Number((part * 10_000n) / whole) / 100).toFixed(2);
+// Every sentence that comes from an error of the route's logic passes through `worded` (mainnet/wording.ts): the
+// Bloch L2's words are returned as they are.
 const message = (error: unknown, fallback: string) =>
-  error instanceof Error ? error.message : fallback;
+  worded(error instanceof Error ? error.message : fallback);
+
+/**
+ * How a public network settles, for the page: the note that says what "confirmed" means there (always visible),
+ * and the rule a tracked transaction is counted against. Absent on the Bloch L2.
+ */
+export type ConfirmationView = {
+  note: string;
+  rule: ProgressRule;
+  blockSeconds: number | null;
+};
 
 function ExplorerLink({
   network,
@@ -148,6 +165,7 @@ export default function MainnetLive({
   now = () => Date.now(),
   receiptPollMs,
   ethRpc,
+  confirmation,
 }: {
   network: MainnetNetwork;
   load: () => Promise<MainnetState>;
@@ -158,6 +176,8 @@ export default function MainnetLive({
   receiptPollMs?: number;
   /** Ethereum RPC for the bUSDC hold status; defaults to the network file's status.ethRpcUrl. */
   ethRpc?: Rpc;
+  /** A public network's confirmation rule in words and numbers (the multichain site); none on the Bloch L2. */
+  confirmation?: ConfirmationView;
 }) {
   const [state, setState] = useState<MainnetState | null>(null);
   const [hold, setHold] = useState<BridgeHold | null>(null);
@@ -171,6 +191,10 @@ export default function MainnetLive({
   >(null);
   const [failure, setFailure] = useState('');
   const [generation, setGeneration] = useState(0);
+  // Presentation of a failed read (ui/read-failure.ts): two kinds are read again by the page itself, later each
+  // time; the count of failed reads in a row restarts with the first read that succeeds.
+  const failedReads = useRef(0);
+  const [retryAt, setRetryAt] = useState<number | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -201,6 +225,7 @@ export default function MainnetLive({
               } as const)
             : await readBridgeHold(eth!, rpc, holdSource, snap.finalized.hash);
         if (current) setHold(h);
+        if (current) failedReads.current = 0;
       } catch (error) {
         if (current) setFailure(message(error, 'Unavailable.'));
       }
@@ -211,6 +236,17 @@ export default function MainnetLive({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, rpc, generation]);
 
+  const readFailure = failure ? classifyReadFailure(failure) : null;
+  const autoRetry = readFailure?.retry === 'auto';
+  useEffect(() => {
+    if (!autoRetry) return setRetryAt(null);
+    const seconds = readRetrySeconds(failedReads.current++);
+    setRetryAt(now() + seconds * 1000);
+    const timer = setTimeout(() => setGeneration((g) => g + 1), seconds * 1000);
+    return () => clearTimeout(timer);
+    // One timer per failed read: `failure` is cleared when the next read starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRetry, failure]);
   const live = state?.status === 'live';
   const snapshot = useMemo(
     () =>
@@ -273,9 +309,9 @@ export default function MainnetLive({
           </span>
           <h1 id="mainnet-title">{wording.title}</h1>
           <p className="muted">
-            Pools, balances and quotes are read at the finalized {wording.block}, from a reviewed
-            deployment record; a quote is also compared with the latest block to warn when it has
-            gone stale. Swaps are sent only from your wallet, one explicit step at a time.{' '}
+            Pools, balances and quotes are read at the {wording.settled} {wording.block}, from a
+            reviewed deployment record; a quote is also compared with the latest block to warn when
+            it has gone stale. Swaps are sent only from your wallet, one explicit step at a time.{' '}
             {wording.launch}
           </p>
         </div>
@@ -285,10 +321,15 @@ export default function MainnetLive({
           </button>
         )}
       </div>
-      {failure ? (
-        <p className="form-error" role="alert">
-          Mainnet reads are unavailable: {failure}. No transaction can be sent from this page.
-        </p>
+      {failure && readFailure ? (
+        <ReadFailureBlock
+          failure={readFailure}
+          retryAt={retryAt}
+          now={now}
+          onRetry={() => setGeneration((g) => g + 1)}
+        >
+          {wording.reads} are unavailable: {failure}. No transaction can be sent from this page.
+        </ReadFailureBlock>
       ) : !state ? (
         <p className="muted" role="status">
           <LoaderCircle size={16} className="spin" /> Checking the bundled deployment record…
@@ -297,8 +338,8 @@ export default function MainnetLive({
         <NotLive reasons={state.reasons} planned={planned} />
       ) : !snapshot ? (
         <p className="muted" role="status">
-          <LoaderCircle size={16} className="spin" /> Verifying the deployment at the finalized
-          block…
+          <LoaderCircle size={16} className="spin" /> Verifying the deployment at the{' '}
+          {wording.settled} block…
         </p>
       ) : (
         <>
@@ -306,6 +347,7 @@ export default function MainnetLive({
           <BridgeHoldBanner hold={hold} network={network} />
         </>
       )}
+      {confirmation && <ConfirmationRule note={confirmation.note} />}
       {ready && state.status === 'live' && snapshot && (
         <TrustStrip
           snapshot={snapshot}
@@ -328,6 +370,8 @@ export default function MainnetLive({
             pendingSwap={pendingSwap}
             hold={hold}
             holdToken={holdSource?.token}
+            confirmation={confirmation}
+            receiptPollMs={receiptPollMs}
           />
         </div>
       ) : (
@@ -358,6 +402,26 @@ export default function MainnetLive({
         {network.bridges.length > 0 && <BridgePanel network={network} />}
       </ReferencePanel>
     </section>
+  );
+}
+
+/**
+ * What "confirmed" means on this network, always on the page (review R309-MC-2). One paragraph with the note's
+ * full text; its first sentence, the rule itself, is set in the reading colour.
+ */
+function ConfirmationRule({ note }: { note: string }) {
+  const cut = note.indexOf('. ');
+  const [rule, rest] = cut < 0 ? [note, ''] : [note.slice(0, cut + 1), note.slice(cut + 1)];
+  return (
+    <div className="confirmation-rule">
+      <span className="confirmation-rule-label">
+        <Layers size={14} aria-hidden="true" /> How this network settles here
+      </span>
+      <p data-testid="confirmation-rule">
+        <strong>{rule}</strong>
+        {rest}
+      </p>
+    </div>
   );
 }
 
@@ -557,16 +621,16 @@ function FinalityAge({
   if (seconds < FINALIZED_AGE_WARN_SECONDS)
     return (
       <p className="microcopy finality-line" aria-label="Finality age">
-        <CircleCheck size={16} aria-hidden="true" /> Finalized block {finalizedAt.number.toString()}{' '}
-        is {age} old.
+        <CircleCheck size={16} aria-hidden="true" /> {settledCapital()} block{' '}
+        {finalizedAt.number.toString()} is {age} old.
       </p>
     );
   return (
     <p className="form-error finality-line" role="alert" aria-label="Finality age">
-      <AlertTriangle size={16} /> {wording.finality} looks stalled: finalized block{' '}
+      <AlertTriangle size={16} /> {wording.finality} looks stalled: {wording.settled} block{' '}
       {finalizedAt.number.toString()} is {age} old. Pools, balances, caps and quotes on this page
       are from that block. A swap executes on the latest state, and anything mined now stays out of
-      these figures until finality resumes.
+      these figures until {wording.settled === 'finalized' ? 'finality' : 'confirmation'} resumes.
     </p>
   );
 }
@@ -592,9 +656,9 @@ function DeploymentPanel({
         </dd>
         <dt>Finality gate</dt>
         <dd>
-          {d.gate.decision} at finalized block {d.gate.finalizedNumber.toString()}
+          {d.gate.decision} at {wording.settled} block {d.gate.finalizedNumber.toString()}
         </dd>
-        <dt>Finalized now</dt>
+        <dt>{settledCapital()} now</dt>
         <dd>
           Block {s.finalized.number.toString()}; chain, genesis and every runtime code hash match
           the record
@@ -807,7 +871,9 @@ function PoolsTable({
   };
   return (
     <div className="card pools-card">
-      <h2>Pools at finalized block {snapshot.finalized.number.toString()}</h2>
+      <h2>
+        Pools at {wording.settled} block {snapshot.finalized.number.toString()}
+      </h2>
       <table className="devnet4-pools pool-cards">
         <thead>
           <tr>
@@ -878,6 +944,8 @@ function SwapPanel({
   pendingSwap,
   hold = null,
   holdToken,
+  confirmation,
+  receiptPollMs,
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
@@ -889,6 +957,8 @@ function SwapPanel({
   pendingSwap: ReturnType<typeof usePendingSwap>;
   hold?: BridgeHold | null;
   holdToken?: Address;
+  confirmation?: ConfirmationView;
+  receiptPollMs?: number;
 }) {
   const [holdAccepted, setHoldAccepted] = useState(false);
   const [quoting, setQuoting] = useState(false);
@@ -1080,7 +1150,7 @@ function SwapPanel({
         );
         setBlocked(checks.filter((c) => c.block));
         return setQuoteNote(
-          'No route can fill this amount at the finalized block; the swap would revert.',
+          `No route can fill this amount at the ${wording.settled} block; the swap would revert.`,
         );
       }
       setQuote(q);
@@ -1326,6 +1396,10 @@ function SwapPanel({
         : null,
     acknowledgementMissing: holdBlocksSend,
   });
+  // Presentation: a quote refused because the endpoints disagree, did not confirm or limit requests is named
+  // (ui/read-failure.ts); every other note is shown as before.
+  const quoteKind = quoteNote ? classifyReadFailure(quoteNote) : null;
+  const quoteFailure = quoteKind && quoteKind.kind !== 'other' ? quoteKind : null;
   const earlier = history.filter(
     (h) => !steps.some((x) => x.hash === h.hash) && tracked?.hash !== h.hash,
   );
@@ -1345,11 +1419,11 @@ function SwapPanel({
     <>
       {check?.status === 'worse' && (
         <div className="form-error" role="alert" aria-label="Stale quote">
-          <AlertTriangle size={16} /> The price moved after the finalized block. At the latest block
-          this swap returns {formatAmount(check.latest.amountOut, output.token.decimals)}{' '}
-          {output.label}, {percent(check.worseBps, 10_000n)}% worse than this quote and below your
-          minimum received, so it would revert. Reconfirm to use the latest price, or change the
-          amount.{' '}
+          <AlertTriangle size={16} /> The price moved after the {wording.settled} block. At the
+          latest block this swap returns{' '}
+          {formatAmount(check.latest.amountOut, output.token.decimals)} {output.label},{' '}
+          {percent(check.worseBps, 10_000n)}% worse than this quote and below your minimum received,
+          so it would revert. Reconfirm to use the latest price, or change the amount.{' '}
           <button className="button secondary" onClick={reconfirm}>
             Reconfirm at the latest price
           </button>
@@ -1392,7 +1466,7 @@ function SwapPanel({
               <li key={h.hash} data-state={h.state}>
                 <strong>{h.label}</strong>: {h.state}{' '}
                 <ExplorerLink network={network} kind="tx" value={h.hash} />
-                {h.detail && <span className="muted"> {h.detail}</span>}
+                {h.detail && <span className="muted"> {worded(h.detail)}</span>}
               </li>
             ))}
         </ol>
@@ -1408,20 +1482,32 @@ function SwapPanel({
                   <ExplorerLink network={network} kind="tx" value={s.hash} />
                 </>
               )}
-              {s.detail && <span className="muted"> {s.detail}</span>}
+              {s.detail && <span className="muted"> {worded(s.detail)}</span>}
             </li>
           ))}
           {tracked && (
             <li data-state={tracked.state}>
               <strong>{tracked.label}</strong>: <span className="state-pill">{tracked.state}</span>{' '}
               {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
-              <span className="muted"> {held.visible}</span>
+              <span className="muted"> {worded(held.visible)}</span>
+              {confirmation &&
+                tracked.hash &&
+                (tracked.state === 'pending' || tracked.state === 'unknown') && (
+                  <ConfirmationProgress
+                    rpc={rpc}
+                    hash={tracked.hash}
+                    rule={confirmation.rule}
+                    blockSeconds={confirmation.blockSeconds}
+                    pollMs={receiptPollMs}
+                  />
+                )}
               {tracked.deadline > 0n &&
                 (tracked.state === 'pending' || tracked.state === 'unknown') && (
                   <DeadlineClock
                     deadline={tracked.deadline}
                     sentAtMs={tracked.sentAtMs}
                     now={now}
+                    settled={wording.settled}
                   />
                 )}
               {held.why && (
@@ -1431,7 +1517,7 @@ function SwapPanel({
               )}
               {tracked.state === 'failed' && tracked.retry && tracked.cause && (
                 <p className="notice" role="status" aria-label="Why the swap reverted">
-                  {revertText(tracked.retry, tracked.cause)}
+                  {worded(revertText(tracked.retry, tracked.cause))}
                   {offer?.kind === 'retry' && (
                     <>
                       {' '}
@@ -1577,8 +1663,8 @@ function SwapPanel({
         </button>
       </div>
       {balances && (
-        <p className="microcopy" aria-label="Finalized balances">
-          Your balances at finalized block {snapshot.finalized.number.toString()}:{' '}
+        <p className="microcopy" aria-label={`${settledCapital()} balances`}>
+          Your balances at {wording.settled} block {snapshot.finalized.number.toString()}:{' '}
           {options
             .map((o) =>
               o.native
@@ -1589,8 +1675,10 @@ function SwapPanel({
         </p>
       )}
       {quoteNote && (
-        <p className="form-error" role="alert">
-          {quoteNote}
+        <p className="form-error" role="alert" data-kind={quoteFailure?.kind}>
+          {quoteFailure && <strong className="alert-title">{quoteFailure.title}. </strong>}
+          {worded(quoteNote)}
+          {quoteFailure && <span className="alert-advice"> {quoteFailure.advice}</span>}
         </p>
       )}
       {blocked.length > 0 && (
@@ -1604,7 +1692,7 @@ function SwapPanel({
       )}
       {pendingSwap.storageProblem && (
         <p role="alert" className="form-error">
-          {pendingSwap.storageProblem} No new transaction can be sent.
+          {worded(pendingSwap.storageProblem)} No new transaction can be sent.
         </p>
       )}
       {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
@@ -1646,8 +1734,8 @@ function SwapPanel({
               <dt className={reconfirmed || tightened ? 'glance' : undefined}>Quoted at</dt>
               <dd className={reconfirmed || tightened ? 'glance' : undefined}>
                 {reconfirmed
-                  ? `Latest block ${quote.blockNumber.toString()}, not finalized; you reconfirmed this price`
-                  : `Finalized block ${quote.blockNumber.toString()}`}{' '}
+                  ? `Latest block ${quote.blockNumber.toString()}, not ${wording.settled}; you reconfirmed this price`
+                  : `${settledCapital()} block ${quote.blockNumber.toString()}`}{' '}
                 (by the deployed lens, within the reserve caps)
                 {tightened &&
                   `. The latest block returns more than block ${quote.blockNumber.toString()}, so the expected output and minimum use the latest price`}
@@ -1670,8 +1758,8 @@ function SwapPanel({
           {!pendingSwap.open && staleAlerts}
           {check?.status === 'unknown' && (
             <p className="microcopy" role="status" aria-label="Stale quote">
-              The latest block could not be read, so this finalized quote was not cross-checked.
-              Your minimum received still applies on chain.
+              The latest block could not be read, so this {wording.settled} quote was not
+              cross-checked. Your minimum received still applies on chain.
             </p>
           )}
           <div className="notice" aria-label="Revert conditions">
@@ -1687,8 +1775,9 @@ function SwapPanel({
           )}
           {shortBalance && (
             <p className="form-error" role="alert">
-              Your finalized {input.label} balance ({formatAmount(balanceIn!, input.token.decimals)}
-              ) is below the amount; the swap would revert.
+              Your {wording.settled} {input.label} balance (
+              {formatAmount(balanceIn!, input.token.decimals)}) is below the amount; the swap would
+              revert.
             </p>
           )}
         </>
@@ -1779,8 +1868,8 @@ function DiscardUnreadable({ pendingSwap }: { pendingSwap: ReturnType<typeof use
         swap again, both swaps execute. Before you discard: open your wallet&apos;s activity, reject
         every open request from this site, and make sure no transaction of this account is pending.
         The safe alternative is to wait: the longest swap deadline this page allows is 180 minutes,
-        and once a finalized {wording.block} is later than that after your last request, no swap
-        from it can execute. This makes no wallet request and sends nothing.
+        and once a {wording.settled} {wording.block} is later than that after your last request, no
+        swap from it can execute. This makes no wallet request and sends nothing.
       </p>
       <label>
         <input
@@ -1825,7 +1914,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     try {
       await pendingSwap.recover(hash);
       setNote(
-        'The transaction matches the saved intent. Waiting for its canonical finalized receipt.',
+        worded(
+          'The transaction matches the saved intent. Waiting for its canonical finalized receipt.',
+        ),
       );
     } catch (error) {
       setNote(
@@ -1842,7 +1933,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     try {
       const candidate = await pendingSwap.reviewInWallet();
       setNote(
-        `Wallet returned ${candidate}. All known candidates remain tracked until one is canonically finalized.`,
+        worded(
+          `Wallet returned ${candidate}. All known candidates remain tracked until one is canonically finalized.`,
+        ),
       );
     } catch (error) {
       setNote(
@@ -1857,7 +1950,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     setBusy(true);
     setReplacement(null);
     setNote(
-      'Checking whether this different transaction canonically finalized at the original nonce…',
+      worded(
+        'Checking whether this different transaction canonically finalized at the original nonce…',
+      ),
     );
     try {
       setReplacement(await pendingSwap.checkReplacement(hash));
@@ -1891,9 +1986,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       </p>
       <p>
         A swap for which your wallet returned no hash ends in one of two ways only: its hash, found
-        in your wallet activity and checked here, or its deadline passing in a finalized block
-        (nothing to do: the page then releases the hold by itself). Nothing else on this page clears
-        a hold.
+        in your wallet activity and checked here, or its deadline passing in a {wording.settled}{' '}
+        block (nothing to do: the page then releases the hold by itself). Nothing else on this page
+        clears a hold.
       </p>
       <Disclosure clip className="hold-help" summary={() => 'What can I do?'}>
         <p>
@@ -1908,9 +2003,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
         </p>
         <p>
           If you cancelled or replaced the request in your wallet with a different call, check that
-          transaction separately. Only a canonical finalized receipt at the original sender and
-          nonce can establish that the original request cannot execute. This check makes no wallet
-          request.
+          transaction separately. Only a canonical {wording.settled} receipt at the original sender
+          and nonce can establish that the original request cannot execute. This check makes no
+          wallet request.
         </p>
       </Disclosure>
       <label>
@@ -1945,10 +2040,10 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       {replacement && (
         <div className="notice" aria-label="Verified replacement">
           <p>
-            A different transaction finalized at nonce {replacement.nonce}. The original request
-            cannot execute on this canonical chain. This is evidence of replacement, not successful
-            execution of the original request. Closing this hold only updates this browser; it sends
-            nothing.
+            A different transaction {wording.settled} at nonce {replacement.nonce}. The original
+            request cannot execute on this canonical chain. This is evidence of replacement, not
+            successful execution of the original request. Closing this hold only updates this
+            browser; it sends nothing.
           </p>
           <dl>
             <dt>Replacement hash</dt>
@@ -1961,7 +2056,7 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
             <dd>{replacement.value}</dd>
             <dt>Calldata</dt>
             <dd style={{ overflowWrap: 'anywhere' }}>{replacement.data}</dd>
-            <dt>Canonical finalized inclusion</dt>
+            <dt>Canonical {wording.settled} inclusion</dt>
             <dd>Block {replacement.blockNumber}</dd>
             <dt>Replacement receipt status</dt>
             <dd>{replacement.receiptStatus}</dd>
@@ -2004,7 +2099,7 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
           </button>
         </details>
       )}
-      {pendingSwap.review?.problem && <p>{pendingSwap.review.problem}</p>}
+      {pendingSwap.review?.problem && <p>{worded(pendingSwap.review.problem)}</p>}
       {note && <p role="status">{note}</p>}
     </div>
   );

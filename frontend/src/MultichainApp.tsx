@@ -41,6 +41,15 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
   setWording(chain.wording);
   // Hash-pinned reads from two agreeing endpoints, settled by this chain's confirmation rule (multichain/rpc.ts).
   const rpc = useMemo(() => chainHttpRpc(chain.rpcUrls, chain.confirmation), [chain]);
+  // What the route shows of the rule: the note (always on the page) and the count a sent swap is measured by.
+  const confirmationView = useMemo(
+    () => ({
+      note: chain.confirmationNote,
+      rule: chain.confirmation.settle,
+      blockSeconds: chain.blockSeconds,
+    }),
+    [chain],
+  );
   useEffect(() => {
     document.title = `PosternDEX — ${chain.network.chainName}`;
   }, [chain]);
@@ -117,9 +126,6 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         </>
       }
     >
-      <p className="confirmation-rule" data-testid="confirmation-rule">
-        {chain.confirmationNote}
-      </p>
       <MainnetLive
         key={chain.key}
         network={chain.network}
@@ -128,6 +134,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         wallet={wallet}
         planned={chain.planned}
         receiptPollMs={RECEIPT_POLL_MS}
+        confirmation={confirmationView}
       />
     </Shell>
   );

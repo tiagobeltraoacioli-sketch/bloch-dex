@@ -52,7 +52,7 @@ describe('expander and disclosure', () => {
 });
 
 describe('deadline line of a tracked swap', () => {
-  it('counts down by the given clock, rounds minutes up and says when the deadline has passed', () => {
+  it('shows the time left by the given clock, the bar, and says when the deadline has passed', () => {
     vi.useFakeTimers();
     try {
       let now = 1_000_000;
@@ -60,16 +60,21 @@ describe('deadline line of a tracked swap', () => {
       const { container } = render(
         <DeadlineClock deadline={deadline} sentAtMs={now} now={() => now} />,
       );
-      expect(container.textContent).toBe("Saved deadline in about 60 min, by this device's clock.");
+      // A real countdown (agent 327): hours, minutes and seconds, not "in about 60 min".
+      expect(container.textContent).toMatch(
+        /^Saved deadline in 1:00:00 \(at \d\d:\d\d\), by this device's clock\.$/,
+      );
       expect((container.querySelector('.deadline-bar > span') as HTMLElement).style.width).toBe(
         '0%',
       );
       now += 29 * 60_000 + 30_000;
-      act(() => void vi.advanceTimersByTime(15_000));
-      expect(container.textContent).toBe("Saved deadline in about 31 min, by this device's clock.");
+      act(() => void vi.advanceTimersByTime(1_000));
+      expect(container.textContent).toMatch(/^Saved deadline in 30:30 /);
       now += 31 * 60_000;
-      act(() => void vi.advanceTimersByTime(15_000));
-      expect(container.textContent).toBe("Saved deadline passed, by this device's clock.");
+      act(() => void vi.advanceTimersByTime(1_000));
+      expect(container.textContent).toMatch(
+        /^Saved deadline passed 0:30 ago \(at \d\d:\d\d\), by this device's clock\. Unless the swap's receipt arrives first, the page releases the hold by itself once a finalized block is later than the deadline\.$/,
+      );
       expect(container.querySelector('.deadline-clock')!.hasAttribute('data-passed')).toBe(true);
       expect((container.querySelector('.deadline-bar > span') as HTMLElement).style.width).toBe(
         '100%',

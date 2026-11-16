@@ -2627,3 +2627,203 @@ li[data-state='failed'] .state-pill {
 .hold-help {
   margin: var(--s-3) 0;
 }
+
+/* ---------- Fourth pass: public networks (confirmation rule, waiting states) and the deadline countdown ---------- */
+/* Figures that tick: fixed-width digits, so the line does not shift each second. */
+.clock-figure {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  color: var(--text);
+}
+.deadline-text {
+  line-height: 1.5;
+}
+.deadline-clock[data-soon] .deadline-bar > span {
+  background: var(--warn);
+}
+.deadline-clock[data-soon] .clock-figure {
+  color: var(--warn);
+}
+
+/* What "confirmed" means on this network: always on the page, a course of the wall above the gate. */
+.confirmation-rule {
+  justify-self: center;
+  width: 100%;
+  max-width: 640px;
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--net);
+  border-radius: var(--r-1) var(--r-2) var(--r-2) var(--r-1);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--text-small);
+  line-height: 1.55;
+}
+.confirmation-rule-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--s-1);
+  color: var(--text-2);
+  font-size: var(--text-micro);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.confirmation-rule-label svg {
+  color: var(--net);
+}
+.confirmation-rule p {
+  margin: 0;
+}
+.confirmation-rule strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* A sent transaction against the network's confirmation rule. */
+.confirm-progress {
+  display: grid;
+  gap: 6px;
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  font-size: var(--text-ui);
+}
+.confirm-head {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.confirm-bar {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.confirm-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--net);
+  transition: width 600ms var(--ease);
+}
+.confirm-progress[data-phase='unseen'] .confirm-bar {
+  background: repeating-linear-gradient(
+    90deg,
+    var(--surface-3) 0 8px,
+    var(--line-strong) 8px 16px
+  );
+  background-size: 32px 100%;
+  animation: postern-march 1.2s linear infinite;
+}
+.confirm-progress[data-phase='reached'] .confirm-bar > span {
+  background: var(--ok);
+}
+@keyframes postern-march {
+  to {
+    background-position: 32px 0;
+  }
+}
+.confirm-detail {
+  color: var(--text-2);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+}
+.confirm-trouble {
+  padding-left: var(--s-2);
+  border-left: 2px solid var(--warn);
+  color: var(--text);
+  font-size: var(--text-small);
+  line-height: 1.5;
+}
+.confirm-foot {
+  color: var(--text-3);
+  font-size: var(--text-micro);
+  line-height: 1.5;
+}
+
+/* The page could not read the chain: one block, the kind named, the route's sentence in full, one control. */
+.read-failure {
+  --tone: var(--danger);
+  justify-self: center;
+  width: 100%;
+  max-width: 640px;
+  padding: var(--s-4) var(--s-5);
+  border: 1px solid color-mix(in srgb, var(--tone) 36%, var(--line));
+  border-top: 3px solid var(--tone);
+  border-radius: var(--r-2);
+  background: color-mix(in srgb, var(--tone) 6%, var(--surface));
+  color: var(--text);
+  font-size: var(--text-ui);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.read-failure[data-kind='unconfirmed'],
+.read-failure[data-kind='rate-limited'] {
+  --tone: var(--warn);
+}
+.read-failure-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0 0 var(--s-2);
+  font-family: var(--font-display);
+  font-size: var(--text-lead);
+  font-weight: 500;
+}
+.read-failure-title svg {
+  flex: none;
+  color: var(--tone);
+}
+.read-failure-message {
+  margin: 0;
+}
+.read-failure-advice {
+  margin: var(--s-2) 0 0;
+  color: var(--text-2);
+  font-size: var(--text-small);
+}
+.read-failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2) var(--s-4);
+  margin-top: var(--s-4);
+  padding-top: var(--s-3);
+  border-top: 1px solid color-mix(in srgb, var(--tone) 24%, var(--line));
+}
+.read-failure-actions .button {
+  min-height: 40px;
+  margin-left: auto;
+  background: var(--surface);
+}
+.read-failure-countdown {
+  color: var(--text-2);
+  font-size: var(--text-small);
+}
+/* A quote refused for the same reasons: the kind first, the advice after the route's sentence. */
+.alert-title {
+  font-weight: 650;
+}
+.alert-advice {
+  display: block;
+  margin-top: var(--s-1);
+  color: var(--text-2);
+  font-size: var(--text-small);
+}
+.form-error[data-kind='unconfirmed'],
+.form-error[data-kind='rate-limited'] {
+  --tone: var(--warn);
+}
+@media (prefers-reduced-motion: reduce) {
+  .confirm-progress[data-phase='unseen'] .confirm-bar {
+    animation: none;
+  }
+  .confirm-bar > span {
+    transition: none;
+  }
+}

@@ -1,0 +1,68 @@
+// Presentation of a failed read: which kind it is, what to call it and what the user can do. The message itself is
+// always shown in full next to these words; nothing here decides whether anything is sent (a failed read sends
+// nothing, by the route's own logic).
+
+export type ReadFailureKind = 'disagreement' | 'unconfirmed' | 'rate-limited' | 'other';
+export type ReadFailure = {
+  kind: ReadFailureKind;
+  title: string;
+  advice: string;
+  /** `auto`: the page reads again by itself, backing off; `manual`: only when the user asks. */
+  retry: 'auto' | 'manual';
+};
+
+/** Seconds before each automatic new read; the last value repeats. */
+export const READ_RETRY_SECONDS = [15, 30, 60, 120] as const;
+export const readRetrySeconds = (attempt: number): number =>
+  READ_RETRY_SECONDS[Math.min(Math.max(0, attempt), READ_RETRY_SECONDS.length - 1)];
+
+/**
+ * The texts matched are the ones the page itself writes: `DISAGREEMENT` and `UNCONFIRMED` of multichain/rpc.ts
+ * (asserted against those constants in the tests), and the HTTP status or the JSON-RPC text of an endpoint that
+ * limits requests.
+ */
+export function classifyReadFailure(message: string): ReadFailure {
+  if (/the two RPC endpoints of this network disagree about the chain/.test(message))
+    return {
+      kind: 'disagreement',
+      title: 'The endpoints disagree',
+      advice:
+        'Two independent endpoints gave different answers for the same block, so at least one of them is wrong. This page does not choose between them and reads again only when you ask. If this stays, do not trade here until it clears.',
+      retry: 'manual',
+    };
+  if (/a second RPC endpoint could not confirm this read/.test(message))
+    return {
+      kind: 'unconfirmed',
+      title: 'A second endpoint has not confirmed',
+      advice:
+        'Every figure on this page must be the same on two endpoints. One of them did not answer, so the page waits and reads again by itself, a little later each time.',
+      retry: 'auto',
+    };
+  if (
+    /HTTP 429|too many requests|rate.?limit|request limit|limit exceeded|quota|throttl/i.test(
+      message,
+    )
+  )
+    return {
+      kind: 'rate-limited',
+      title: 'The endpoint is limiting requests',
+      advice:
+        'The public endpoints of this network are shared and refuse requests for a while when they are busy. The page backs off and reads again by itself; your funds and any transaction you already sent are not affected.',
+      retry: 'auto',
+    };
+  return {
+    kind: 'other',
+    title: 'Reads unavailable',
+    advice: '',
+    retry: 'manual',
+  };
+}
+
+/** m:ss, or h:mm:ss from one hour. */
+export function clockText(seconds: number): string {
+  const s = Math.max(0, Math.ceil(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const two = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${two(m)}:${two(s % 60)}` : `${m}:${two(s % 60)}`;
+}

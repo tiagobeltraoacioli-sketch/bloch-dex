@@ -28,6 +28,14 @@ export type Wording = {
    * RPC is behind (the user is told, the deadline is not changed).
    */
   quiet: 'idle-l2' | 'stale-rpc';
+  /**
+   * The word for the block this page reads and settles at: `finalized` where that is the chain's own finality
+   * (the Bloch L2, and a public chain whose rule is its `finalized` tag), `confirmed` where the network file
+   * names a confirmation depth or the `safe` tag (src/multichain/config.ts, `parseConfirmation`).
+   */
+  settled: 'finalized' | 'confirmed';
+  /** Subject of "… are unavailable" when the page cannot read the chain. */
+  reads: string;
 };
 export const BLOCH_L2_WORDING: Readonly<Wording> = Object.freeze({
   network: 'Bloch L2',
@@ -42,8 +50,30 @@ export const BLOCH_L2_WORDING: Readonly<Wording> = Object.freeze({
     "The page suggests a priority fee only when the call creates new storage slots on the L2, from its own simulation and never from an error's figures; you can adjust fees in the wallet.",
   chain: 'The L2',
   quiet: 'idle-l2',
+  settled: 'finalized',
+  reads: 'Mainnet reads',
 });
 export const wording: Wording = { ...BLOCH_L2_WORDING };
 export function setWording(next: Wording): void {
   Object.assign(wording, next);
+}
+
+/** `wording.settled` with a capital: "Finalized block 12", "Confirmed block 12". */
+export const settledCapital = (): string =>
+  wording.settled.charAt(0).toUpperCase() + wording.settled.slice(1);
+
+/**
+ * A sentence written by the route's logic modules (hold texts, refusals, receipts), in this network's words. Those
+ * modules were written for the Bloch L2 and say "finalized"; on a network that settles on a confirmation depth
+ * the page says "confirmed" instead (the network's confirmation note, always on the page, says what that means).
+ * With the Bloch L2's words, and on any network whose rule is the chain's own `finalized` block, the text is
+ * returned as it is.
+ */
+export function worded(text: string): string {
+  if (wording.settled === 'finalized') return text;
+  return text
+    .replace(/\bfinalized\b/g, wording.settled)
+    .replace(/\bFinalized\b/g, settledCapital())
+    .replace(/\bfinality\b/g, 'confirmation')
+    .replace(/\bFinality\b/g, 'Confirmation');
 }
