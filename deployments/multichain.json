@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain.v1",
+  "note": "The DEX on public EVM chains other than the Bloch L2. Contracts are the Bloch L2 release candidate byte for byte; this file and deployments/<chain>/chain.json hold every chain-specific value. TBD-owner marks an economic choice only the owner can make; tools refuse to plan a real deployment while one is left.",
+  "source": {
+    "compiler": {
+      "solc": "0.8.24",
+      "evmVersion": "paris",
+      "optimizer": true,
+      "optimizerRuns": 200,
+      "bytecodeHash": "none"
+    },
+    "pairInitCodeHash": "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683"
+  },
+  "create2": {
+    "deployer": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+    "deployerCodeHash": "0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989",
+    "saltPreimage": "postern-dex.multichain.v1",
+    "salt": "0xe5077402c0b97c1add3f60378312fa299385d66cf04b5d4576eb6db377d3c57a"
+  },
+  "feeTo": {
+    "address": "0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544",
+    "kind": "externally owned address (owner's choice, 2026-11-16)"
+  },
+  "firstDepositor": "TBD-owner",
+  "chains": [
+    "op-mainnet",
+    "base",
+    "arbitrum-one",
+    "linea",
+    "bnb-smart-chain",
+    "ethereum"
+  ],
+  "l2Only": {
+    "bridgeTokenPin": false,
+    "safePin": false,
+    "newSlotFee": false,
+    "creditRule": false,
+    "idleChainRule": false
+  }
+}

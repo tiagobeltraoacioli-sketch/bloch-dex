@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain-chain.v1",
+  "chain": {
+    "key": "linea",
+    "name": "Linea",
+    "chainId": 59144,
+    "genesisHash": "0xb6762a65689107b2326364aefc18f94cda413209fab35c00d4af51eaa20ffbc6",
+    "stack": "zkEVM rollup (Linea)"
+  },
+  "nativeCurrency": {
+    "name": "Ether",
+    "symbol": "ETH",
+    "decimals": 18
+  },
+  "rpc": [
+    "https://rpc.linea.build",
+    "https://linea-rpc.publicnode.com"
+  ],
+  "explorer": "https://lineascan.build",
+  "wrappedNative": {
+    "address": "0xe5D7C2a44FfDDf6b295A15c148167daaAf5Cf34f",
+    "symbol": "WETH",
+    "name": "Wrapped Ether",
+    "decimals": 18,
+    "codeHash": "0xa670ec6c272ddec6d328d6f3d5cad65a841a6ab45e8e5cf825150eb458be4f1f",
+    "kind": "WETH9 build, not upgradeable",
+    "source": "https://docs.linea.build (Linea mainnet contracts) and https://lineascan.build/token/0xe5d7c2a44ffddf6b295a15c148167daaaf5cf34f"
+  },
+  "tokens": [
+    {
+      "address": "0x176211869cA2b568f2A7D4EE941E073a821EE1ff",
+      "symbol": "USDC",
+      "name": "USDC",
+      "decimals": 6,
+      "codeHash": "0x469a90ba4c77663d6a9512da10e00f54cae91fda8007c53ad1ba2789457ea5fb",
+      "kind": "Circle-issued since the in-place upgrade of the bridged token (2025); upgradeable proxy, the issuer can pause and blacklist",
+      "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+    }
+  ],
+  "multicall3": {
+    "address": "0xcA11bde05977b3631167028862bE2a173976CA11",
+    "codeHash": "0x8ec8aa5d07a37e47597b3a254f5cbf39fa2080526ae34db3a564fffed82b99ad"
+  },
+  "initialPairs": [
+    {
+      "tokenA": "WETH",
+      "tokenB": "USDC"
+    }
+  ],
+  "reserveCaps": "TBD-owner",
+  "openingPrice": "TBD-owner",
+  "notes": [
+    "Multicall3 at the canonical address has another runtime code hash than on the other five chains (another build); its interface is checked by call"
+  ],
+  "verified": {
+    "at": "2026-11-16",
+    "how": "scripts/multichain/verify-chain.mjs: chain id, genesis hash, code hashes, name(), symbol(), decimals() read from both RPC endpoints"
+  }
+}

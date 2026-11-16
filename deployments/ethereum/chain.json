@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain-chain.v1",
+  "chain": {
+    "key": "ethereum",
+    "name": "Ethereum",
+    "chainId": 1,
+    "genesisHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3",
+    "stack": "Ethereum L1"
+  },
+  "nativeCurrency": {
+    "name": "Ether",
+    "symbol": "ETH",
+    "decimals": 18
+  },
+  "rpc": [
+    "https://ethereum-rpc.publicnode.com",
+    "https://eth.drpc.org"
+  ],
+  "explorer": "https://etherscan.io",
+  "wrappedNative": {
+    "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "symbol": "WETH",
+    "name": "Wrapped Ether",
+    "decimals": 18,
+    "codeHash": "0xd0a06b12ac47863b5c7be4185c2deaad1c61557033f56c7d4ea74429cbb25e23",
+    "kind": "WETH9, not upgradeable",
+    "source": "https://ethereum.org/en/wrapped-eth/ and https://etherscan.io/token/0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+  },
+  "tokens": [
+    {
+      "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6,
+      "codeHash": "0xd80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1d31383e6b41505",
+      "kind": "Circle-issued (native); upgradeable proxy, the issuer can pause and blacklist",
+      "source": "https://developers.circle.com/stablecoins/usdc-contract-addresses"
+    }
+  ],
+  "multicall3": {
+    "address": "0xcA11bde05977b3631167028862bE2a173976CA11",
+    "codeHash": "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891"
+  },
+  "initialPairs": [
+    {
+      "tokenA": "WETH",
+      "tokenB": "USDC"
+    }
+  ],
+  "reserveCaps": "TBD-owner",
+  "openingPrice": "TBD-owner",
+  "notes": [],
+  "verified": {
+    "at": "2026-11-16",
+    "how": "scripts/multichain/verify-chain.mjs: chain id, genesis hash, code hashes, name(), symbol(), decimals() read from both RPC endpoints"
+  }
+}
