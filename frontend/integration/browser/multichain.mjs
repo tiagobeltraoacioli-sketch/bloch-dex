@@ -7,8 +7,10 @@
 // throwaway key that knows only the first chain at the start. For every chain: select it in the page, let the page
 // ask the wallet to switch (wallet_switchEthereumChain; wallet_addEthereumChain when the wallet answers 4902), swap
 // the native coin for the listed token, and check on that chain's fork that the router call was mined for this
-// account and the token arrived. A swap left pending on one chain must not hold another chain, and must still
-// hold its own. Exit status 0 only when every assertion held. A simulated wallet is not a wallet extension.
+// account and the token arrived. After the wallet sent a swap, blocks are mined at the chain's measured block time
+// and only as many as the chain's confirmation rule asks (review R309-MC-2): the page must show the outcome then,
+// in seconds, while the fork's `finalized` block is still behind the swap. A swap left pending on one chain must
+// not hold another chain, and must still hold its own. Exit status 0 only when every assertion held. A simulated wallet is not a wallet extension.
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -35,6 +37,43 @@ async function rpc(chain, method, params = []) {
 }
 const tokenBalance = async (chain, holder) => BigInt(await rpc(chain, 'eth_call', [{ to: chain.token.address, data: encodeFunctionData({ abi: ERC20, functionName: 'balanceOf', args: [holder] }) }, 'latest']));
 const mineAndFinalize = (chain) => rpc(chain, 'anvil_mine', ['0x42']);
+const blockNumber = async (chain, tag = 'latest') => Number(BigInt((await rpc(chain, 'eth_getBlockByNumber', [tag, false])).number));
+/** How far behind the head the page's settled block is on this fork: the rule's depth, or anvil's `finalized` lag. */
+const settleLag = (chain) => chain.confirmation.settle.depth ?? 64;
+/** The wait this margin allows on top of the chain's own block time: the page looks every 4 s, plus its reads. */
+const SETTLE_MARGIN_SECONDS = 20;
+/**
+ * After the wallet sent `hash`: one block includes it, then blocks arrive at the chain's measured block time, and
+ * only as many as the confirmation rule asks. Returns what was mined and how long the page took to show `text`.
+ * For a chain that settles on its own `finalized` tag, anvil's tag is 64 blocks behind (the real chain's is one or
+ * two): those blocks are mined at once.
+ */
+async function settleAtChainPace(chain, page, hash, text, startedAt) {
+  const { settle, blockSeconds } = chain.confirmation;
+  await delay(Math.min(blockSeconds, 12) * 1000);
+  await rpc(chain, 'anvil_mine', ['0x1']);
+  const receipt = await rpc(chain, 'eth_getTransactionReceipt', [hash]);
+  const included = receipt ? Number(BigInt(receipt.blockNumber)) : null;
+  let mined = 1;
+  if ('depth' in settle) {
+    const tick = Math.max(blockSeconds, 0.5);
+    const perTick = Math.max(1, Math.round(tick / blockSeconds));
+    while (mined < 1 + settle.depth) {
+      await delay(tick * 1000);
+      const n = Math.min(perTick, 1 + settle.depth - mined);
+      await rpc(chain, 'anvil_mine', [hex(n)]);
+      mined += n;
+    }
+  } else {
+    await rpc(chain, 'anvil_mine', ['0x42']);
+    mined += 66;
+  }
+  await page.waitText(text, 90_000);
+  const seconds = (Date.now() - startedAt) / 1000;
+  const finalized = await blockNumber(chain, 'finalized');
+  const expected = 'depth' in settle ? (1 + settle.depth) * blockSeconds : 2 * blockSeconds;
+  return { rule: settle, blockSeconds, included, blocksMined: mined, seconds: Math.round(seconds * 10) / 10, expectedSeconds: Math.round(expected * 10) / 10, forkFinalized: finalized, finalizedBehindTheSwap: included !== null && finalized < included };
+}
 
 // ---- the simulated wallet: one throwaway key, several chains ----
 const account = privateKeyToAccount(generatePrivateKey());
@@ -85,7 +124,7 @@ const evidence = {
   revision: config.revision,
   engine: 'real browser engine (headless), production build of the multichain site with a rehearsal bundle, loopback anvil forks of the six chains',
   wallet: 'SIMULATED EIP-1193/EIP-6963 provider with one throwaway key; not a wallet extension, not WalletConnect',
-  finality: "anvil's `finalized` tag (latest - 64), advanced by anvil_mine; not the chains' own finality",
+  finality: "each chain's own confirmation rule from its network file; on a depth rule the harness mines that many blocks at the chain's measured block time and anvil's `finalized` tag (latest - 64) stays behind the swap; on a `finalized` rule anvil's tag stands in for the chain's",
   chains: [],
   assertions: [],
 };
@@ -126,7 +165,7 @@ try {
     await page.waitText('/Pools at finalized block \\d+/', 60_000);
   };
   const fresh = async (chain) => {
-    const want = Number(BigInt(await rpc(chain, 'eth_blockNumber'))) - 64;
+    const want = Number(BigInt(await rpc(chain, 'eth_blockNumber'))) - settleLag(chain);
     const shown = `(() => { const m = /Pools at finalized block (\\d+)/.exec(document.body.innerText); return m ? Number(m[1]) : -1; })()`;
     if ((await page.evaluate(shown)) < want) {
       if (await page.button('Refresh')) await page.click('Refresh');
@@ -167,6 +206,11 @@ try {
     const text = await flat();
     check(`${chain.key}: the page shows this network's words and none of the Bloch L2's`, new RegExp(`PosternDEX on ${chain.name}`).test(text) && !L2_WORDS.test(text), L2_WORDS.exec(text)?.[0]);
     check(`${chain.key}: the pool of ${chain.wrapped.symbol} and ${chain.token.symbol} is shown and the native coin is ${chain.native}`, text.includes(`${chain.wrapped.symbol}/${chain.token.symbol}`) || text.includes(`${chain.token.symbol}/${chain.wrapped.symbol}`), text.slice(text.indexOf('Pools at finalized'), text.indexOf('Pools at finalized') + 300));
+    const depth = chain.confirmation.settle.depth;
+    check(
+      `${chain.key}: the page says what "finalized" means on this network (${depth ? `${depth} block${depth === 1 ? '' : 's'} on top` : "the chain's own finalized block"})`,
+      depth ? new RegExp(`On ${chain.name} this page treats a block as settled once ${depth} blocks? (is|are) on top of it`).test(text) : text.includes(`On ${chain.name} this page reads and settles at the chain's own finalized block.`),
+    );
     const before = wallet.requests.length;
     // The last two chains are not switched by the button: the route itself must ask right before the transaction.
     const byButton = index > 0 && index < config.chains.length - 2;
@@ -180,8 +224,10 @@ try {
       check(`${chain.key}: the network entry names the chain, its coin and this build's endpoint`, added?.params[0].chainName === chain.name && added.params[0].nativeCurrency.symbol === chain.native && added.params[0].rpcUrls[0] === chain.rpc, added?.params[0]);
     }
     await quote(chain);
+    check(`${chain.key}: the default deadline is this chain's ${chain.deadlineMinutes} minutes, not the Bloch L2's 60`, (await flat()).includes(`${chain.deadlineMinutes} minutes after you confirm`));
     const tokenBefore = await tokenBalance(chain, address);
     await page.click('Swap');
+    const sentAt = Date.now();
     await page.waitText(PENDING, 60_000);
     const sent = swapsOn(chain);
     check(`${chain.key}: one wallet transaction, on chain ${chain.chainId}, to this chain's router, with the page's 250,000 gas limit`, sent.length === 1 && sent[0].to === chain.router && BigInt(sent[0].gas) === 250_000n && wallet.current === hex(chain.chainId), sent);
@@ -194,8 +240,14 @@ try {
       record.leftPending = true;
       continue;
     }
-    await mineAndFinalize(chain);
-    await page.waitText(`/${swapLabel(chain)}: mined/`, 90_000);
+    const settled = await settleAtChainPace(chain, page, sent[0].hash, `/${swapLabel(chain)}: mined/`, sentAt);
+    record.settle = settled;
+    check(
+      `${chain.key}: the swap flow completed ${settled.seconds} s after the wallet request, with ${settled.blocksMined} block${settled.blocksMined === 1 ? '' : 's'} at this chain's ${settled.blockSeconds} s block time (rule: ${JSON.stringify(settled.rule)}; chain time ${settled.expectedSeconds} s, plus at most ${SETTLE_MARGIN_SECONDS} s for the page)`,
+      settled.seconds <= settled.expectedSeconds + SETTLE_MARGIN_SECONDS,
+      settled,
+    );
+    if ('depth' in settled.rule) check(`${chain.key}: the page did not wait for finality: the fork's finalized block ${settled.forkFinalized} was still behind the swap's block ${settled.included}`, settled.finalizedBehindTheSwap, settled);
     const receipt = await rpc(chain, 'eth_getTransactionReceipt', [sent[0].hash]);
     const got = (await tokenBalance(chain, address)) - tokenBefore;
     check(`${chain.key}: the router call was mined on this chain's fork and ${chain.token.symbol} arrived`, receipt?.status === '0x1' && got > 0n, { status: receipt?.status, got });
@@ -208,8 +260,8 @@ try {
       check(`${first.key}: after a swap on ${second.key}, this chain's own pending swap still holds it (Swap disabled)`, await disabled('Swap'));
       check(`${first.key}: no second transaction was asked for this chain`, swapsOn(first).length === 1, swapsOn(first).length);
       const tokenBeforeFirst = await tokenBalance(first, address);
-      await mineAndFinalize(first);
-      await page.waitText(`/${swapLabel(first)}: mined/`, 90_000);
+      evidence.chains[0].settle = await settleAtChainPace(first, page, swapsOn(first)[0].hash, `/${swapLabel(first)}: mined/`, Date.now());
+      if ('depth' in first.confirmation.settle) check(`${first.key}: its held swap was released ${evidence.chains[0].settle.seconds} s after its block, by the chain's rule, without waiting for finality`, evidence.chains[0].settle.seconds <= evidence.chains[0].settle.expectedSeconds + SETTLE_MARGIN_SECONDS && evidence.chains[0].settle.finalizedBehindTheSwap, evidence.chains[0].settle);
       const firstReceipt = await rpc(first, 'eth_getTransactionReceipt', [swapsOn(first)[0].hash]);
       check(`${first.key}: its swap was then mined on its own fork and ${first.token.symbol} arrived`, firstReceipt?.status === '0x1' && (await tokenBalance(first, address)) > tokenBeforeFirst, firstReceipt?.status);
       Object.assign(evidence.chains[0], { hash: swapsOn(first)[0].hash, gasUsed: firstReceipt ? BigInt(firstReceipt.gasUsed) : null });

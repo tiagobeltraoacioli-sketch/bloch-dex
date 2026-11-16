@@ -5,7 +5,8 @@
 //   node scripts/multichain/rehearse-page.mjs --port BASE --out DIR [--chains key,key,…]
 //
 // For each chain, in turn: rehearse-fork.mjs in hold mode (an anvil fork on BASE+i, the owner's deploy command, the
-// post gate, a seeded pool that stays). Then the rehearsal files of the page are derived from each fork's gate
+// post gate, the first depositor's first deposit as first-deposit.mjs prints it, the post gate again, a pool that
+// stays). Then the rehearsal files of the page are derived from each fork's gate
 // report, the multichain site is built with them (a "not for publication" build), served on BASE+10 with its own
 // headers, and frontend/integration/browser/multichain.mjs drives it in headless Chrome (DevTools on BASE+11).
 // Everything is loopback and throwaway; the forks read the public endpoints. Exit status 0 only when every fork
@@ -76,6 +77,9 @@ try {
       wrapped: { address: lower(chain.wrappedNative.address), symbol: chain.wrappedNative.symbol },
       token: { address: lower(chain.tokens[0].address), symbol: chain.tokens[0].symbol },
       router: lower(report.plan.contracts.router.address),
+      // The chain's confirmation rule and measured block time: the browser scenarios mine at that pace.
+      confirmation: { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds },
+      deadlineMinutes: chain.swap.deadlineMinutes,
     });
   }
   // 2. The page's rehearsal files, from each fork's gate report.

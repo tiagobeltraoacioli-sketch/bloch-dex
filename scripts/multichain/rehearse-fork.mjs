@@ -324,7 +324,10 @@ try {
   // 3d. protocol fee: accrues as LP shares of the fee address at the next liquidity event
   const before = await state();
   check("swaps alone mint nothing to the fee address (the fee is settled lazily)", before.feeToLp === 0n, before.feeToLp);
-  await send(lp, { to: router, data: call("addLiquidityBLCH", [token.address, 3_000n * unit, 0n, 0n, lp.address, deadline]), value: 10n ** 18n }, "LP adds liquidity again (a liquidity event settles the protocol fee)");
+  // A deposit into the OPEN pool by an account that is not the first depositor: the restriction is on the first
+  // deposit only.
+  await send(lp, { to: token.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `LP approves ${token.symbol} to the router`);
+  await send(lp, { to: router, data: call("addLiquidityBLCH", [token.address, 3_000n * unit, 0n, 0n, lp.address, deadline]), value: 10n ** 18n }, "another account adds liquidity to the open pool (a liquidity event settles the protocol fee)");
   s = await state();
   const feeShareNative = (s.feeToLp * s.reserveNative) / s.totalSupply;
   const feeShareToken = (s.feeToLp * s.reserveToken) / s.totalSupply;
