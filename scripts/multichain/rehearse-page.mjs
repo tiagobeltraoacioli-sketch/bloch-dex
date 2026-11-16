@@ -36,6 +36,7 @@ const hold = join(out, "hold");
 writeFileSync(hold, "the forks stay up while this file exists\n");
 const children = [];
 const stop = () => {
+  // Removing the hold file ends each fork rehearsal, which stops its own anvil; SIGTERM does the same.
   rmSync(hold, { force: true });
   for (const child of children) child.kill("SIGTERM");
 };

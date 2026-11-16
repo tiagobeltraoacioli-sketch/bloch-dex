@@ -95,7 +95,15 @@ const check = (name, ok, detail) => {
   save();
 };
 
+// The port must be free: a node left there by an earlier run would be rehearsed instead of a new fork.
+if (await rpc("eth_chainId").then(() => true, () => false)) {
+  console.error(`something already answers on ${url}; stop it first`);
+  process.exit(2);
+}
 const anvil = spawn("anvil", ["--fork-url", forkUrl, "--port", String(port), "--host", "127.0.0.1", "--silent"], { stdio: ["ignore", "ignore", "inherit"] });
+// The fork never outlives this process.
+for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => (anvil.kill("SIGTERM"), process.exit(143)));
+process.on("exit", () => anvil.kill("SIGTERM"));
 let failed = false;
 try {
   for (let i = 0; ; i++) {
