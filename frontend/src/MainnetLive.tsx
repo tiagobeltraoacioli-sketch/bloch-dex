@@ -58,6 +58,7 @@ import {
   type ReplacementProof,
 } from './mainnet/submission-outcome';
 import { usePendingSwap, walletOnChain } from './mainnet/pendingswap';
+import { wording } from './mainnet/wording';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
 import { explainSwapRevert, retryOffer, revertText, type SwapRetryInfo } from './mainnet/retry';
@@ -219,15 +220,15 @@ export default function MainnetLive({
       <div className="section-heading">
         <div>
           <span className="badge">
-            Bloch L2 mainnet · Chain {network.chainId}
+            {wording.title} · Chain {network.chainId}
             {live ? '' : ' · Not yet live'}
           </span>
-          <h1 id="mainnet-title">Bloch L2 mainnet</h1>
+          <h1 id="mainnet-title">{wording.title}</h1>
           <p className="muted">
-            Pools, balances and quotes are read at the finalized L2 block, from a reviewed
+            Pools, balances and quotes are read at the finalized {wording.block}, from a reviewed
             deployment record; a quote is also compared with the latest block to warn when it has
-            gone stale. Swaps are sent only from your wallet, one explicit step at a time. Pools
-            have fixed reserve caps; this is a guarded launch.
+            gone stale. Swaps are sent only from your wallet, one explicit step at a time.{' '}
+            {wording.launch}
           </p>
         </div>
         {live && (
@@ -324,7 +325,7 @@ function NetworkPanel({ network, wallet }: { network: MainnetNetwork; wallet: De
             'Not published yet'
           )}
         </dd>
-        <dt>L2 genesis</dt>
+        <dt>{wording.genesis}</dt>
         <dd>{network.genesisHash ? <code>{network.genesisHash}</code> : 'Not pinned yet'}</dd>
       </dl>
       {!network.rpcLive ? (
@@ -364,7 +365,7 @@ function NotLive({
     <div className="card mainnet-not-live" aria-label="Not yet live">
       <h2>Not yet live</h2>
       <p className="notice" role="status">
-        The DEX is not deployed on the Bloch L2 mainnet yet. This page sends no RPC request and no
+        The DEX is not deployed on the {wording.title} yet. This page sends no RPC request and no
         transaction until a verified deployment record is published with this site.
       </p>
       <ul>
@@ -430,7 +431,7 @@ function FinalityAge({
     );
   return (
     <p className="form-error" role="alert" aria-label="Finality age">
-      <AlertTriangle size={16} /> L2 finality looks stalled: finalized block{' '}
+      <AlertTriangle size={16} /> {wording.finality} looks stalled: finalized block{' '}
       {finalizedAt.number.toString()} is {age} old. Pools, balances, caps and quotes on this page
       are from that block. A swap executes on the latest state, and anything mined now stays out of
       these figures until finality resumes.
@@ -554,7 +555,7 @@ function PendingExcess({
             await pendingSwap.rejected(intentId);
             intentId = undefined;
             throw new Error(
-              'Your wallet is no longer on the Bloch L2 network. Nothing was sent. Select the network in your wallet and try again.',
+              `Your wallet is no longer on the ${wording.network} network. Nothing was sent. Select the network in your wallet and try again.`,
             );
           }
           if (
@@ -752,7 +753,7 @@ function SwapPanel({
     () =>
       snapshot.tokens.map((token) =>
         token.wrapped
-          ? { key: token.address, label: 'BLCH', token, native: true }
+          ? { key: token.address, label: wording.native, token, native: true }
           : { key: token.address, label: token.symbol, token, native: false },
       ),
     [snapshot],
@@ -1007,7 +1008,7 @@ function SwapPanel({
             await pendingSwap.rejected(intentId);
             intentId = undefined;
             throw new Error(
-              'Your wallet is no longer on the Bloch L2 network. Nothing was sent. Select the network in your wallet and try again.',
+              `Your wallet is no longer on the ${wording.network} network. Nothing was sent. Select the network in your wallet and try again.`,
             );
           }
           if (
@@ -1078,7 +1079,7 @@ function SwapPanel({
         timestamp?: unknown;
       } | null;
       if (!head || typeof head.timestamp !== 'string' || !/^0x[0-9a-f]+$/i.test(head.timestamp))
-        return setQuoteNote('The latest L2 block could not be read, so nothing was sent.');
+        return setQuoteNote(`The latest ${wording.block} could not be read, so nothing was sent.`);
       const clock = swapClock(now(), BigInt(head.timestamp), network.idle, deadlineMinutes);
       if (!clock.ok) return setQuoteNote(clock.problem);
       // An idle L2 does not close the page: the user is told the wait, and the deadline covers it.
@@ -1218,7 +1219,7 @@ function SwapPanel({
           {options
             .map((o) =>
               o.native
-                ? `${formatAmount(balances.native, 18, 6)} BLCH`
+                ? `${formatAmount(balances.native, 18, 6)} ${wording.native}`
                 : `${formatAmount(balances.tokens.get(o.token.address) ?? 0n, o.token.decimals)} ${o.label}`,
             )
             .join(' · ')}
@@ -1463,8 +1464,8 @@ function DiscardUnreadable({ pendingSwap }: { pendingSwap: ReturnType<typeof use
         swap again, both swaps execute. Before you discard: open your wallet&apos;s activity, reject
         every open request from this site, and make sure no transaction of this account is pending.
         The safe alternative is to wait: the longest swap deadline this page allows is 180 minutes,
-        and once a finalized L2 block is later than that after your last request, no swap from it
-        can execute. This makes no wallet request and sends nothing.
+        and once a finalized {wording.block} is later than that after your last request, no swap
+        from it can execute. This makes no wallet request and sends nothing.
       </p>
       <label>
         <input
@@ -1659,11 +1660,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
             and unchanged call. This is offered for approvals and skims only, where a second copy is
             harmless; a swap is never requested twice. An earlier attempt may still execute. This
             never chooses a new nonce. Review the decoded amounts, addresses and gas limit below.
-            The page suggests a priority fee only when the call creates new storage slots on the L2,
-            from its own simulation and never from an error's figures; you can adjust fees in the
-            wallet. Cancelling this review keeps the hold. Some wallets ignore the nonce a site asks
-            for: if your wallet shows a nonce other than the one below, reject the request there,
-            because it would be a second transaction.
+            {wording.feeSuggestion} Cancelling this review keeps the hold. Some wallets ignore the
+            nonce a site asks for: if your wallet shows a nonce other than the one below, reject the
+            request there, because it would be a second transaction.
           </p>
           <dl aria-label="Validated original transaction">
             {pendingSwap.review.details.map(([name, value]) => (

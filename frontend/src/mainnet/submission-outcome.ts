@@ -1,5 +1,6 @@
 // A wallet hash is an observation, not proof that it identifies the requested
 // transaction. Keep the durable hold until its exact call is canonically finalized.
+import { wording } from './wording';
 import { decodeFunctionData, sha256, stringToBytes, type Address, type Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
 import { stableJson, type DevnetDeployment } from '../devnet4/record';
@@ -384,7 +385,9 @@ export async function requireFinality(rpc: Rpc) {
     await canonical(rpc, finalized);
     return finalized;
   } catch {
-    throw new Error('L2 finality is unavailable, so nothing was sent. Refresh when it is back.');
+    throw new Error(
+      `${wording.finality} is unavailable, so nothing was sent. Refresh when it is back.`,
+    );
   }
 }
 
@@ -398,7 +401,7 @@ async function recheckFinality(
     final.number >= earlier.number &&
       final.number <= head.number &&
       (final.number !== earlier.number || final.hash === earlier.hash),
-    'L2 finality moved backwards, changed or exceeded the canonical head. No wallet request was made.',
+    `${wording.finality} moved backwards, changed or exceeded the canonical head. No wallet request was made.`,
   );
   await canonical(rpc, earlier);
 }

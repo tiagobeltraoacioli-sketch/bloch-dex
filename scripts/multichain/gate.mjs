@@ -77,7 +77,7 @@ export function gateConfig(shared, chain) {
  * Evaluate the gate. `request(method, params)` is one endpoint's JSON-RPC; `others` are further endpoints that must
  * agree on the chain. Returns the report; `report.decision` is "pass" or "fail".
  */
-export async function evaluateGate({ shared, chain, plan, phase, request, others = [], rehearsal = false }) {
+export async function evaluateGate({ shared, chain, plan, phase, request, others = [], identityOnly = [], rehearsal = false }) {
   const checks = [];
   const check = (name, ok, detail) => {
     checks.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });
@@ -96,7 +96,9 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
   };
 
   // 1. The chain: id and genesis on every endpoint; block 0 must be served by at least one.
-  const endpoints = [request, ...others];
+  // `identityOnly` endpoints answer for the chain id and block 0 only (a rehearsal fork shares the chain's history
+  // up to its fork block, and its upstream may not serve block 0: the reviewed endpoints then name the genesis).
+  const endpoints = [request, ...others, ...identityOnly];
   const ids = await Promise.all(endpoints.map((r) => soft(() => r("eth_chainId", []))));
   check("every endpoint reports the pinned chain id", ids.every((id) => typeof id === "string" && Number(BigInt(id)) === chain.chain.chainId), ids);
   const genesis = await Promise.all(endpoints.map((r) => soft(async () => (await r("eth_getBlockByNumber", ["0x0", false]))?.hash ?? null)));
@@ -215,7 +217,8 @@ export async function main(argv) {
   refuse(!plan.reference || options.rehearsal || options.phase === "pre", "a reference plan (owner choices open) can pass the post gate only in a rehearsal");
   const urls = options.rehearsal ? [options.rpc] : chain.rpc;
   const [request, ...others] = urls.map((url) => createRpcTransport(url, { timeoutMs: 30_000 }));
-  const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, rehearsal: options.rehearsal });
+  const identityOnly = options.rehearsal ? chain.rpc.map((url) => createRpcTransport(url, { timeoutMs: 30_000 })) : [];
+  const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, identityOnly, rehearsal: options.rehearsal });
   if (options.out) writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
   for (const c of report.checks) console.log(`${c.ok ? "ok  " : "FAIL"} ${c.name}${c.ok || c.detail === undefined ? "" : ` (${JSON.stringify(c.detail)})`}`);
   console.log(`multichain gate ${options.key} ${options.phase}: ${report.decision.toUpperCase()}${report.finalized ? ` at finalized block ${report.finalized.number}` : ""}${plan.reference ? " (reference plan)" : ""}${report.feeTo?.delegate ? `; fee address has an EIP-7702 delegation to ${report.feeTo.delegate}` : ""}`);

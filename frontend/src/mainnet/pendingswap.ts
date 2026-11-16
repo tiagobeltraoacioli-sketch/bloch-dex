@@ -1,6 +1,7 @@
 // One durable wallet-submission hold per chain/account, shared by swaps,
 // approvals and skims. The intent exists before the wallet is called; losing
 // the reply does not establish that no transaction was sent.
+import { wording } from './wording';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Address, Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
@@ -339,7 +340,8 @@ const DO_NOT_RESEND =
 
 /** What ends the wait of a swap hold on a quiet chain, said to the user who is waiting (review R309-3P-3). */
 export function idleWaitNote(swap: PendingSwap, heartbeatSeconds: number): string {
-  if (swap.intent?.kind !== 'swap' || swap.deadline <= 0n) return '';
+  // No heartbeat: a chain that makes blocks whether or not it has work (the public chains of src/multichain).
+  if (swap.intent?.kind !== 'swap' || swap.deadline <= 0n || !(heartbeatSeconds > 0)) return '';
   const hours = Math.max(1, Math.round(heartbeatSeconds / 3_600));
   return ` The L2 makes a block only when it has work: on a quiet chain the finalized block that ends this wait can be up to ${hours} hours away (the L2's heartbeat, then its proof), and comes sooner when anyone transacts.`;
 }
@@ -364,7 +366,7 @@ function describeHold(
       ? 'The RPC did not answer with verifiable transaction and finalized receipt evidence; the outcome is unknown.'
       : late
         ? 'No verified finalized receipt after an hour, so the outcome is unknown.'
-        : 'Waiting for the next L2 block and canonical finality.';
+        : `Waiting for the next ${wording.block} and canonical finality.`;
   const lost = saved
     ? ''
     : ' The hash update could not be saved; the earlier submission hold remains after reload.';
