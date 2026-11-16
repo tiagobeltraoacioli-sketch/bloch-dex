@@ -189,9 +189,16 @@ were worth:
 
 | Chain | Fee shares worth | Redeemed by the fee address |
 |---|---|---|
-FEE_TABLE
+| OP Mainnet | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 264,535 gas |
+| Base | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 266,683 gas |
+| Arbitrum One | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 268,538 gas |
+| Linea | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 268,673 gas |
+| BNB Smart Chain | 0.000922 BNB + 2.623572 USDC | 0.000922 BNB + 2.623572 USDC, in two transactions of 269,358 gas |
+| Ethereum | 0.000922 ETH + 2.623572 USDC | 0.000922 ETH + 2.623572 USDC, in two transactions of 265,212 gas |
 
-The same sequence on each chain's own node (simulation): FEE_SIM.
+The fee address received exactly what its shares were worth; on Base it did so with its EIP-7702 delegation in place.
+
+The same sequence on each chain's own node (simulation, read-only), fee shares worth: OP Mainnet 0.000897 ETH + 2.554720 USDC; Base 0.000897 ETH + 2.554720 USDC; Arbitrum One 0.000889 ETH + 2.577511 USDC; Linea 0.000897 ETH + 2.554720 USDC; BNB Smart Chain 0.000897 BNB + 2.554720 USDC; Ethereum 0.000897 ETH + 2.554720 USDC. Arbitrum One differs because its anchored swap reverted there (section 5), so that pool saw one swap less.
 
 To see what has accrued (read-only), per pool:
 
@@ -231,13 +238,19 @@ and lens through the CREATE2 deployer, and `createPair` for the wrapped native t
 | **Total** | **about 11,256,500** |
 
 In native coin, at the gas price each chain's node reported at the time of the run, with the rollup's data fee read
-from its own oracle (`scripts/multichain/cost.mjs`):
+from its own oracle (`scripts/multichain/cost.mjs`, 2026-11-16 about 19:25 UTC):
 
 | Chain | Gas price used | Data fee | Total |
 |---|---|---|---|
-COST_TABLE
+| OP Mainnet | 0.001030 gwei | 0.000000465 ETH | **0.000012 ETH** |
+| Base | 0.006000 gwei | 0.000000322 ETH | **0.000068 ETH** |
+| Arbitrum One | 0.020048 gwei | 106,084 gas added | **0.000228 ETH** |
+| Linea | 0.039593 gwei | in the gas price | **0.000446 ETH** |
+| BNB Smart Chain | 0.050000 gwei | none | **0.000563 BNB** |
+| Ethereum | 0.156815 gwei | none | **0.001765 ETH** |
 
-A real deployment pays the price of its own hour. For Ethereum, execution gas only: 0.0113 ETH at 1 gwei, 0.0563
+Gas prices were low at that hour (Ethereum 0.16 gwei). A real deployment pays the price of its own hour; plan with
+the figures that follow, not with the table. For Ethereum, execution gas only: 0.0113 ETH at 1 gwei, 0.0563
 ETH at 5 gwei, 0.2251 ETH at 20 gwei, 0.5628 ETH at 50 gwei. The deploying account needs that much native coin on
 each chain, plus a margin. It can be any account; it does not have to be the fee address.
 
@@ -352,23 +365,28 @@ sections 6 and 8, or with any tool that speaks to the router).
 
 ## 11. Rehearsals and how to repeat them
 
-Everything below is loopback or read-only, with throwaway keys. Run of record: REHEARSAL_COMMIT.
+Everything below is loopback or read-only, with throwaway keys. Run of record: code commit `a986365`, 2026-11-16 (commits after it change documents and Solidity formatting only; the suites were run again on the final commit).
 
 | Rehearsal | Command | What it shows | Result |
 |---|---|---|---|
-| Kit tests | `node --test scripts/multichain/*.test.mjs` | configuration, plan, gate, opcode set, refusals | KIT_TESTS |
+| Kit tests | `node --test scripts/multichain/*.test.mjs` | configuration, plan, gate, opcode set, refusals | 14 pass |
 | Deploy script | `forge test --match-contract MultichainScriptTest` | planned addresses on the deployer's real runtime, a second run deploys nothing, refusals | pass |
 | Pre gate on the public chains | `node scripts/multichain/gate.mjs <chain> pre --reference` | pins against the real chains, read-only | PASS, six of six |
 | Simulation on the real nodes | `node scripts/multichain/simulate-chain.mjs <chain> --out FILE` | deployment and flow on the chain's own node software, read-only | PASS, six of six |
-| Fork rehearsal | `node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR` | the owner's command, the post gate, the flow with signed transactions, gas, fee amounts | FORK_RESULT |
-| Page rehearsal | `node scripts/multichain/rehearse-page.mjs --port PORT --out DIR` | the multichain site in a real browser engine against six forks: network switch, one swap per chain, holds per chain | PAGE_RESULT |
-| Page unit tests | `npm --prefix frontend test` | the multichain configuration, endpoint failover, wording, headers, selector | FRONT_TESTS |
+| Fork rehearsal | `node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR` | the owner's command, the post gate, the flow with signed transactions, gas, fee amounts | PASS, six of six, 13 checks each |
+| Page rehearsal | `node scripts/multichain/rehearse-page.mjs --port PORT --out DIR` | the multichain site in a real browser engine against six forks: network switch, one swap per chain, holds per chain | PASS: 6 chains, 37 assertions, 0 failed |
+| Page unit tests | `npm --prefix frontend test` | the multichain configuration, endpoint failover, wording, headers, selector | 513 pass (499 as before this line, 14 new), 1 skipped |
 
 Per chain:
 
 | Chain | Pre gate (real chain) | Simulation (real node) | Fork rehearsal | Deployment gas | Page: switch and swap |
 |---|---|---|---|---|---|
-CHAIN_TABLE
+| OP Mainnet | PASS | PASS (op-reth; anchored swap works) | PASS, 13 checks | 11,256,254 | PASS, swap 142,816 gas |
+| Base | PASS | PASS (reth; anchored swap works) | PASS, 13 checks | 11,256,244 | PASS, swap 142,746 gas |
+| Arbitrum One | PASS | PASS (nitro; anchored swap reverts) | PASS, 13 checks | 11,256,676 | PASS, swap 158,109 gas |
+| Linea | PASS | PASS (Geth; anchored swap works) | PASS, 13 checks | 11,256,686 | PASS, swap 146,883 gas |
+| BNB Smart Chain | PASS | PASS (Geth; anchored swap works) | PASS, 13 checks | 11,256,686 | PASS, swap 140,324 gas |
+| Ethereum | PASS | PASS (reth; anchored swap works) | PASS, 13 checks | 11,256,686 | PASS, swap 143,720 gas |
 
 Fork sources: the reviewed first endpoint, except BNB Smart Chain (both reviewed endpoints drop a block's state
 within minutes; the rehearsal forks from another public endpoint that keeps it) and Ethereum (its first endpoint

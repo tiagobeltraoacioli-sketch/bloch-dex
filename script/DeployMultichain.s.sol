@@ -69,7 +69,9 @@ contract DeployMultichain {
     }
 
     function predict(bytes memory initCode) public pure returns (address) {
-        return address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), CREATE2_DEPLOYER, SALT, keccak256(initCode))))));
+        return address(
+            uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), CREATE2_DEPLOYER, SALT, keccak256(initCode)))))
+        );
     }
 
     /// @dev One CREATE2 through the deployer, or nothing when the address already has code.
