@@ -7,18 +7,30 @@
 //              no reserve caps); such a plan is marked `reference: true` and deploy.sh refuses to broadcast it.
 // --env        print the MC_* environment of script/DeployMultichain.s.sol (one chain).
 // --json       print the plan as JSON (without transaction data).
-import { forgeEnvironment, loadArtifacts, loadChain, loadShared, MultichainError, planChain, planSummary } from "./lib.mjs";
+// --write-gate-config  write deployments/<chain>/gate.json (the gate's pins and switches; no plan, so it is the same
+//              whatever the owner's choices are; a test keeps the committed files equal to it).
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { gateConfig } from "./gate.mjs";
+import { ROOT, forgeEnvironment, loadArtifacts, loadChain, loadShared, MultichainError, planChain, planSummary } from "./lib.mjs";
 
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith("--")));
 const [target] = argv.filter((a) => !a.startsWith("--"));
-for (const f of flags) if (!["--reference", "--env", "--json"].includes(f)) { console.error(`unknown option ${f}`); process.exit(2); }
+for (const f of flags) if (!["--reference", "--env", "--json", "--write-gate-config"].includes(f)) { console.error(`unknown option ${f}`); process.exit(2); }
 if (!target) { console.error("usage: plan.mjs <chain>|all [--reference] [--env] [--json]"); process.exit(2); }
 try {
   const shared = loadShared();
   const artifacts = loadArtifacts();
   const keys = target === "all" ? shared.chains : [target];
   if (target !== "all" && !shared.chains.includes(target)) throw new MultichainError(`multichain: ${target} is not in deployments/multichain.json chains`);
+  if (flags.has("--write-gate-config")) {
+    for (const key of keys) {
+      writeFileSync(join(ROOT, "deployments", key, "gate.json"), `${JSON.stringify(gateConfig(shared, loadChain(key)), null, 2)}\n`);
+      console.log(`wrote deployments/${key}/gate.json`);
+    }
+    process.exit(0);
+  }
   const plans = keys.map((key) => {
     const chain = loadChain(key);
     return { chain, plan: planChain(shared, chain, artifacts, { reference: flags.has("--reference") }) };
