@@ -159,6 +159,22 @@ try {
     },
   });
   const flat = async () => (await page.text()).replace(/\s+/g, ' ');
+  // Optional (agent 318): MULTICHAIN_SHOTS=<dir> saves the quoted swap screen of each chain in both themes at 390 and
+  // 1440 px. It changes the viewport and the theme attribute only, and restores both.
+  const shots = async (chain) => {
+    const dir = process.env.MULTICHAIN_SHOTS;
+    if (!dir) return;
+    mkdirSync(dir, { recursive: true });
+    for (const v of [{ theme: 'dark', width: 1440, height: 900, dsf: 1, mobile: false }, { theme: 'light', width: 1440, height: 900, dsf: 1, mobile: false }, { theme: 'dark', width: 390, height: 844, dsf: 2, mobile: true }, { theme: 'light', width: 390, height: 844, dsf: 2, mobile: true }]) {
+      await page.cdp('Emulation.setDeviceMetricsOverride', { width: v.width, height: v.height, deviceScaleFactor: v.dsf, mobile: v.mobile });
+      await page.evaluate(`(document.documentElement.dataset.theme = ${JSON.stringify(v.theme)}, new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))`);
+      const { cssContentSize: size } = await page.cdp('Page.getLayoutMetrics');
+      const { data } = await page.cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip: { x: 0, y: 0, width: size.width, height: size.height, scale: 1 } });
+      writeFileSync(join(dir, `mc-${chain.key ?? chain.name}-swap-quoted--${v.theme}--${v.width}.png`), Buffer.from(data, 'base64'));
+    }
+    await page.cdp('Emulation.clearDeviceMetricsOverride');
+    await page.evaluate(`void (document.documentElement.dataset.theme = 'dark')`);
+  };
   const select = async (chain) => {
     await page.evaluate(`(() => { const a = [...document.querySelectorAll('nav[aria-label="Networks"] a')].find((x) => x.textContent.trim() === ${JSON.stringify(chain.name)}); if (!a) throw new Error('no network link'); a.click(); })()`);
     await page.waitText(`/PosternDEX on ${chain.name} · Chain ${chain.chainId}/`);
@@ -187,6 +203,7 @@ try {
       }
     }
     await delay(700);
+    await shots(chain);
   };
   const swapLabel = (chain) => `Swap ${AMOUNT} ${chain.native} for ${chain.token.symbol}`;
   const swapsOn = (chain) => wallet.sent.filter((s) => s.chainId === chain.chainId);
