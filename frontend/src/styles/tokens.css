@@ -96,6 +96,9 @@
   --danger: #f59585;
   --info: #9dbbea;
   --focus: #eceae3;
+  --accent-fg: #0b0e0f;
+  --masonry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='176' height='96' fill='none' stroke='%238a9492' stroke-opacity='.13'%3E%3Cpath d='M0 .5h176M0 48.5h176M.5 0v48M88.5 48v48'/%3E%3C/svg%3E");
+  --card-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05), 0 40px 80px -48px rgb(0 0 0 / 0.9);
   --scrim: rgb(4 6 7 / 0.72);
   --shadow-overlay: 0 24px 64px -16px rgb(0 0 0 / 0.7), 0 2px 8px rgb(0 0 0 / 0.4);
   --net: #c8fa72;
@@ -130,6 +133,9 @@
   --danger: #ad281f;
   --info: #245c9f;
   --focus: #14191a;
+  --accent-fg: #ffffff;
+  --masonry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='176' height='96' fill='none' stroke='%235d6765' stroke-opacity='.17'%3E%3Cpath d='M0 .5h176M0 48.5h176M.5 0v48M88.5 48v48'/%3E%3C/svg%3E");
+  --card-shadow: inset 0 1px 0 rgb(255 255 255 / 0.9), 0 32px 64px -44px rgb(20 25 26 / 0.45);
   --scrim: rgb(20 25 26 / 0.45);
   --shadow-overlay: 0 24px 64px -20px rgb(20 25 26 / 0.35), 0 2px 8px rgb(20 25 26 / 0.12);
   --net: #486f00;
@@ -172,7 +178,7 @@
   --net: var(--net-bright);
 }
 [data-network='preview'] {
-  --net-bright: #a8b0ae;
+  --net-bright: #c8fa72;
   --net: var(--net-bright);
 }
 :root[data-theme='light'] [data-network='bloch-l2'] {
@@ -200,7 +206,7 @@
   --net: #5b3fc4;
 }
 :root[data-theme='light'] [data-network='preview'] {
-  --net: #5d6765;
+  --net: #486f00;
 }
 
 /* Names the pre-redesign stylesheet uses, mapped onto the tokens above. */

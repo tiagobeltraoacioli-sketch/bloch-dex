@@ -1329,6 +1329,7 @@ function SwapPanel({
       className="card devnet4-swap swap-card"
       data-phase={quote ? 'quoted' : 'form'}
       data-quoting={quoting || undefined}
+      data-hold={pendingSwap.open || undefined}
     >
       <h2>Swap</h2>
       <div className="devnet4-form swap-form">
@@ -1338,6 +1339,7 @@ function SwapPanel({
             <select
               className="token-native-select"
               tabIndex={-1}
+              aria-hidden="true"
               value={inKey}
               onChange={(e) => choosePay(e.target.value)}
             >
@@ -1371,6 +1373,7 @@ function SwapPanel({
             <select
               className="token-native-select"
               tabIndex={-1}
+              aria-hidden="true"
               value={outKey}
               onChange={(e) => chooseReceive(e.target.value)}
             >

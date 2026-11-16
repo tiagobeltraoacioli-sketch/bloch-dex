@@ -46,6 +46,7 @@ for (const [name, { tokens: t, net }] of Object.entries(themes)) {
     check(name, `--control-border on ${s}`, t['--control-border'], t[s], 3);
     for (const n of NETWORKS) check(name, `lamp ${n} on ${s}`, net(n), t[s], 3);
   }
+  for (const n of NETWORKS) check(name, `primary action label on the ${n} lamp`, t['--accent-fg'], net(n), 4.5);
   check(name, 'primary button label', t['--primary-fg'], t['--primary-bg'], 4.5);
   check(name, 'primary button label (hover)', t['--primary-fg'], t['--primary-bg-hover'], 4.5);
   check(name, 'primary button against the page', t['--primary-bg'], t['--surface'], 3);

@@ -2,7 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './styles/tokens.css';
-import './styles.css';
+import './styles/preview.css';
 import './styles/postern.css';
 import { applyTheme, initialTheme } from './shell/theme';
 
