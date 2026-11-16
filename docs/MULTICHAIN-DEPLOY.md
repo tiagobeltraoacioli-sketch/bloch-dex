@@ -277,6 +277,9 @@ For each chain, with its key in place of `op-mainnet` (`op-mainnet`, `base`, `ar
 `bnb-smart-chain`, `ethereum`):
 
 Step 1. Dry run. It builds, plans, runs the pre gate (read-only) and simulates the deployment. Nothing is sent.
+The simulation runs from the signer's account, which must already hold the gas: with an unfunded account it prints
+"Script ran successfully" with the planned addresses and then stops with "lack of funds" (seen in a dry run
+against OP Mainnet with no signer). Fund the account and repeat until it ends without an error.
 
 ```
 scripts/multichain/deploy.sh op-mainnet dry-run -- --ledger
