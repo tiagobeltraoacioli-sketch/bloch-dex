@@ -580,7 +580,7 @@ button:disabled,
   padding: 0 12px;
   border: 1px solid var(--control-border);
   border-radius: var(--r-2);
-  background: var(--bg);
+  background: var(--field);
   color: var(--text);
   font-size: var(--text-body);
   transition: border-color var(--t-fast) var(--ease);
@@ -1926,5 +1926,79 @@ details dl dd {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- Review round 1 (after reading the screenshots) ---------- */
+/* The two sides of a pool's caps are separate groups, not one run of lines. */
+.pool-cards td[data-label='Reserve caps'] > span.muted,
+.pool-cards td[data-label='Reserve caps'] > span.form-error {
+  display: block;
+  margin-bottom: var(--s-3);
+  font-size: var(--text-small);
+}
+.pool-cards td[data-label='Reserve caps'] > span + br {
+  display: none;
+}
+/* What the page says about a tracked transaction is a safety message: full text colour, reading size. */
+.devnet4-steps li .muted {
+  color: var(--text);
+  font-size: var(--text-ui);
+  margin-top: var(--s-1);
+}
+.devnet4-steps li strong {
+  font-weight: 600;
+}
+.swap-leg > * {
+  min-width: 0;
+}
+.swap-leg {
+  grid-template-columns: minmax(0, 1fr);
+}
+.devnet4-page > .section-heading {
+  align-items: flex-start;
+}
+.devnet4-page > .section-heading > .button {
+  margin-top: var(--s-6);
+}
+@media (max-width: 640px) {
+  .devnet4-page > .section-heading > .button {
+    margin-top: 0;
+    align-self: flex-start;
+  }
+}
+
+/* ---------- Review round 2 ---------- */
+/* The header wallet control is never the primary action: that belongs to the page. */
+.header-actions .wallet-button[data-state='disconnected'] {
+  background: transparent;
+  border-color: var(--control-border);
+  color: var(--text);
+}
+.header-actions .wallet-button[data-state='disconnected']:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--text-2);
+}
+.popover-panel {
+  width: 348px;
+}
+.network-row-status {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.footer button,
+.footer a {
+  display: inline-flex;
+  align-items: center;
+}
+@media (max-width: 860px) {
+  .main-nav {
+    flex: 0 0 calc(100% + 2 * var(--gutter));
+  }
+}
+@media (max-width: 640px) {
+  .popover-panel {
+    width: auto;
   }
 }

@@ -35,7 +35,8 @@
   /* Type */
   --font-ui: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-display: 'Fraunces Variable', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
-  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --font-mono:
+    ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
   --text-micro: 0.75rem; /* 12 */
   --text-small: 0.8125rem; /* 13 */
   --text-ui: 0.875rem; /* 14 */
@@ -77,6 +78,7 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
   --bg: #0b0e0f;
+  --field: #0b0e0f;
   --surface: #111516;
   --surface-2: #171c1e;
   --surface-3: #1f2629;
@@ -110,6 +112,7 @@
 :root[data-theme='light'] {
   color-scheme: light;
   --bg: #f2f0e9;
+  --field: #ffffff;
   --surface: #fbfaf6;
   --surface-2: #f0ede4;
   --surface-3: #e6e2d6;
