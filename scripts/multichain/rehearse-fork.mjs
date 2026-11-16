@@ -9,9 +9,13 @@
 // It starts `anvil --fork-url <the chain's first reviewed endpoint>` on loopback, runs the owner's command exactly as
 // documented (scripts/multichain/deploy.sh <chain> broadcast, with a throwaway key and the reference plan), passes
 // the post gate at the fork's finalized block, and then plays the whole flow with throwaway accounts and the chain's
-// real wrapped native token and listed token: first deposit, swaps both ways with the native coin and with the
-// wrapped token, protocol fee accrual to the owner's fee address, redemption of that fee by the fee address (it is
-// impersonated on the fork: no key of it exists here), a permissionless skim, and the removal of the liquidity.
+// real wrapped native token and listed token: the attack of review R309-MC-1 on the pool's opening (someone else
+// creates the pair, sends dust and tries the first mint, directly and through the router: every form must fail),
+// the owner's first deposit exactly as scripts/multichain/first-deposit.mjs prints it (the reference plan's first
+// depositor is the fee address; it is impersonated on the fork: no key of it exists here), the post gate again,
+// swaps both ways with the native coin and with the wrapped token, protocol fee accrual to the owner's fee
+// address, redemption of that fee by the fee address, a permissionless skim, and the removal of the liquidity.
+// In hold mode nobody interferes: the first deposit creates the pair itself, in one transaction.
 // Every step records its gas and amounts in DIR/evidence.json. Nothing leaves loopback except the fork's read
 // requests to the public endpoint. Exit status 0 only when every check held.
 //
@@ -58,6 +62,9 @@ const ABI = parseAbi([
   "function getReserves() view returns (uint112,uint112,uint32)",
   "function kLast() view returns (uint256)",
   "function skim(address)",
+  "function mint(address) returns (uint256)",
+  "function createPair(address,address) returns (address)",
+  "function getPair(address,address) view returns (address)",
   "function addLiquidityBLCH(address token,uint256 amountTokenDesired,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) payable returns (uint256,uint256,uint256)",
   "function removeLiquidityBLCH(address token,uint256 liquidity,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) returns (uint256,uint256)",
   "function swapExactBLCHForTokens(uint256 amountOutMin,address[] path,address to,uint256 deadline) payable returns (uint256[])",
@@ -80,7 +87,7 @@ const evidence = {
   schema: "postern.dex.multichain-fork-rehearsal.v1",
   chain: plan.chain,
   forkOf: forkUrl,
-  what: "anvil fork on loopback; throwaway keys; reference plan (first deposits open, no reserve caps); the fee address is impersonated",
+  what: "anvil fork on loopback; throwaway keys; reference plan (first deposits by the fee address only, no reserve caps, no pair created at deployment); the fee address is impersonated",
   anvil: spawnSync("anvil", ["--version"], { encoding: "utf8" }).stdout.split("\n")[0],
   feeTo: shared.feeTo.address,
   addresses: Object.fromEntries(Object.values(plan.contracts).map((c) => [c.name, c.address])),
@@ -121,8 +128,8 @@ try {
   const account = () => privateKeyToAccount(generatePrivateKey());
   const deployerKey = generatePrivateKey();
   const deployer = privateKeyToAccount(deployerKey);
-  const [lp, trader, stranger] = [account(), account(), account()];
-  for (const a of [deployer, lp, trader, stranger]) await rpc("anvil_setBalance", [a.address, hex(1000n * 10n ** 18n)]);
+  const [lp, trader, stranger, attacker] = [account(), account(), account(), account()];
+  for (const a of [deployer, lp, trader, stranger, attacker]) await rpc("anvil_setBalance", [a.address, hex(1000n * 10n ** 18n)]);
 
   const gasPrice = async () => BigInt(await rpc("eth_gasPrice"));
   async function send(from, { to, data = "0x", value = 0n }, label, extra = {}) {
@@ -158,6 +165,21 @@ try {
     save();
     return entry;
   }
+  /** A transaction that must be mined and revert with `reason` (the gas limit is stated: an estimate would fail). */
+  async function sendExpectingRevert(from, { to, data = "0x", value = 0n }, label, reason) {
+    const raw = await from.signTransaction({ type: "legacy", chainId: chain.chain.chainId, nonce: Number(BigInt(await rpc("eth_getTransactionCount", [from.address, "pending"]))), to, data, value, gas: 3_000_000n, gasPrice: (await gasPrice()) * 2n + 1n });
+    const hash = await rpc("eth_sendRawTransaction", [raw]);
+    let receipt = null;
+    for (let i = 0; i < 100 && !receipt; i++) {
+      receipt = await rpc("eth_getTransactionReceipt", [hash]);
+      if (!receipt) await delay(100);
+    }
+    refuse(receipt, `no receipt for ${label}`);
+    const why = await rpc("eth_call", [{ from: from.address, to, data, value: hex(value) }, hex(BigInt(receipt.blockNumber) - 1n)]).then(() => "the replayed call succeeds", (error) => error.message);
+    evidence.steps.push({ step: label, hash, status: receipt.status, gasUsed: BigInt(receipt.gasUsed), revert: why, expectedRevert: reason });
+    save();
+    return receipt.status === "0x0" && why.includes(reason) ? true : `status ${receipt.status}, ${why}`;
+  }
 
   // ---- 1. the owner's command, as documented ----
   const run = spawnSync("bash", ["scripts/multichain/deploy.sh", key, "broadcast", "--rehearsal-rpc", url, "--reference", "--", "--private-key", deployerKey], { cwd: ROOT, encoding: "utf8", env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1" } });
@@ -165,20 +187,24 @@ try {
   check("scripts/multichain/deploy.sh broadcast exits 0 on the fork", run.status === 0, run.status === 0 ? undefined : `${run.stdout}\n${run.stderr}`.slice(-600));
   if (run.status !== 0) throw new Error("the deployment failed");
   const broadcast = JSON.parse(readFileSync(join(ROOT, "broadcast/DeployMultichain.s.sol", String(chain.chain.chainId), "run-latest.json"), "utf8"));
-  const names = ["factory (CREATE2)", "router (CREATE2)", "lens (CREATE2)", ...plan.pairs.map((p) => `createPair ${p.tokenA}/${p.tokenB}`)];
+  const names = ["factory (CREATE2)", "router (CREATE2)", "lens (CREATE2)"];
   for (const [i, receipt] of broadcast.receipts.entries()) {
     const tx = broadcast.transactions[i]?.transaction ?? {};
     evidence.deployment.push({ step: names[i] ?? `transaction ${i}`, hash: receipt.transactionHash, to: receipt.to, gasUsed: BigInt(receipt.gasUsed), status: receipt.status, calldataBytes: tx.input ? (tx.input.length - 2) / 2 : null, input: tx.input ?? null });
   }
-  check("the deployment is the planned number of transactions, all successful, sent by the throwaway key", evidence.deployment.length === 3 + plan.pairs.length && evidence.deployment.every((d) => d.status === "0x1") && broadcast.receipts.every((r) => lower(r.from) === lower(deployer.address)), evidence.deployment.map((d) => d.status));
+  check("the deployment is three transactions (no pair is created), all successful, sent by the throwaway key", evidence.deployment.length === 3 && evidence.deployment.every((d) => d.status === "0x1") && broadcast.receipts.every((r) => lower(r.from) === lower(deployer.address)), evidence.deployment.map((d) => d.status));
   evidence.deploymentGas = evidence.deployment.reduce((n, d) => n + d.gasUsed, 0n);
   for (const d of evidence.deployment) delete d.input;
 
   // ---- 2. the post gate at the fork's finalized block ----
   await rpc("anvil_mine", [hex(200)]);
-  const gate = spawnSync("node", ["scripts/multichain/gate.mjs", key, "post", "--reference", "--rpc", url, "--rehearsal", "--out", join(opt.out, "gate-report.json")], { cwd: ROOT, encoding: "utf8" });
-  writeFileSync(join(opt.out, "gate.log"), `${gate.stdout}\n${gate.stderr}`);
-  check("the post gate passes at the fork's finalized block", gate.status === 0, gate.status === 0 ? undefined : gate.stdout.split("\n").filter((l) => l.startsWith("FAIL")).join(" | ").slice(0, 600));
+  const runGate = (file, log) => {
+    const gate = spawnSync("node", ["scripts/multichain/gate.mjs", key, "post", "--reference", "--rpc", url, "--rehearsal", "--out", join(opt.out, file)], { cwd: ROOT, encoding: "utf8" });
+    writeFileSync(join(opt.out, log), `${gate.stdout}\n${gate.stderr}`);
+    return { ok: gate.status === 0, detail: gate.status === 0 ? undefined : gate.stdout.split("\n").filter((l) => l.startsWith("FAIL")).join(" | ").slice(0, 600), report: gate.status === 0 ? JSON.parse(readFileSync(join(opt.out, file), "utf8")) : null };
+  };
+  const deployedGate = runGate("gate-report-deployed.json", "gate-deployed.log");
+  check("the post gate passes at the fork's finalized block, with the planned pair not created", deployedGate.ok && deployedGate.report.pairs.every((p) => p.state === "absent"), deployedGate.detail ?? deployedGate.report?.pairs.map((p) => p.state));
 
   // ---- 3. the flow ----
   const { factory, router } = evidence.addresses;
@@ -215,11 +241,62 @@ try {
     return { reserveNative: wrappedIs0 ? r0 : r1, reserveToken: wrappedIs0 ? r1 : r0, totalSupply: await read(pair, "totalSupply"), feeToLp: await read(pair, "balanceOf", [shared.feeTo.address]) };
   };
 
-  // 3a. first deposit, through the router, with the native coin
-  await send(lp, { to: token.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `LP approves ${token.symbol} to the router`);
-  await send(lp, { to: router, data: call("addLiquidityBLCH", [token.address, SEED_TOKEN, 0n, 0n, lp.address, deadline]), value: SEED_NATIVE }, `first deposit: 10 ${chain.nativeCurrency.symbol} + 30,000 ${token.symbol} (addLiquidityBLCH)`);
+  // 3a. the opening of the pool (review R309-MC-1)
+  const depositor = plan.arguments.firstDepositor;
+  refuse(lower(depositor) === lower(shared.feeTo.address), "the reference plan's first depositor is the fee address");
+  await rpc("anvil_impersonateAccount", [depositor]);
+  evidence.depositorNativeBefore = await nativeOf(depositor);
+  await rpc("anvil_setBalance", [depositor, hex(1000n * 10n ** 18n)]);
+  await fund(depositor, SEED_TOKEN);
+  await fund(attacker.address, 10_000n * unit);
+  const firstDeposit = (mode, extra = []) => {
+    const out = join(opt.out, `first-deposit-${mode}.json`);
+    const run = spawnSync("node", ["scripts/multichain/first-deposit.mjs", key, mode, "--pair", `${wrapped.symbol}/${token.symbol}`, "--native", "10", "--token", "30000", "--reference", "--rpc", url, "--rehearsal", "--out", out, ...extra], { cwd: ROOT, encoding: "utf8" });
+    return { status: run.status, text: `${run.stdout}\n${run.stderr}`, result: existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null };
+  };
+  const gateReport = ["--gate-report", join(opt.out, "gate-report-deployed.json"), "--to", lp.address];
+  if (!opt.hold) {
+    // The reviewer's attack. Anyone may create the pair; nobody but the first depositor can open it.
+    const dustNative = 10n ** 12n;
+    const dustToken = unit / 1000n > 0n ? unit / 1000n : 1n;
+    await send(attacker, { to: factory, data: call("createPair", [wrapped.address, token.address]) }, "attacker creates the pair (createPair is permissionless)");
+    check("the attacker's createPair made the pair at the planned address", lower(await read(factory, "getPair", [wrapped.address, token.address])) === lower(pair));
+    await send(attacker, { to: wrapped.address, data: call("deposit", []), value: dustNative }, "attacker wraps dust");
+    await send(attacker, { to: wrapped.address, data: call("transfer", [pair, dustNative]) }, `attacker sends dust ${wrapped.symbol} to the pair`);
+    await send(attacker, { to: token.address, data: call("transfer", [pair, dustToken]) }, `attacker sends dust ${token.symbol} to the pair (a false price)`);
+    check("R309-MC-1: the attacker's first mint reverts with BDEX: FIRST_DEPOSITOR", await sendExpectingRevert(attacker, { to: pair, data: call("mint", [attacker.address]) }, "attacker calls mint on the empty pair", "FIRST_DEPOSITOR"));
+    await send(attacker, { to: token.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `attacker approves ${token.symbol} to the router`);
+    check("R309-MC-1: the attacker's first deposit through the router reverts with BDEX: FIRST_DEPOSITOR", await sendExpectingRevert(attacker, { to: router, data: call("addLiquidityBLCH", [token.address, dustToken, 0n, 0n, attacker.address, deadline]), value: dustNative }, "attacker calls addLiquidityBLCH with dust and no minimums", "FIRST_DEPOSITOR"));
+    check("the pair has no shares after the attack", (await read(pair, "totalSupply")) === 0n);
+    const refused = firstDeposit("prepare", gateReport);
+    writeFileSync(join(opt.out, "first-deposit-refused.log"), refused.text);
+    check("first-deposit.mjs prepare refuses while the attacker's dust sits at the pair", refused.status === 1 && refused.result?.pair.state === "donated", refused.text.slice(-300));
+    await send(lp, { to: pair, data: call("skim", [lp.address]) }, "the dust is skimmed out (anyone may)");
+  }
+  const prepared = firstDeposit("prepare", gateReport);
+  writeFileSync(join(opt.out, "first-deposit-prepare.log"), prepared.text);
+  check(`first-deposit.mjs prepare passes and prints the two transactions (the pair is ${opt.hold ? "not created yet" : "empty"})`, prepared.status === 0 && prepared.result?.transactions.length === 2 && prepared.result.pair.state === (opt.hold ? "absent" : "empty"), prepared.text.slice(-400));
+  if (prepared.status !== 0) throw new Error("first-deposit.mjs prepare failed");
+  const depositorAccount = { address: depositor, sign: false };
+  let opening;
+  for (const t of prepared.result.transactions) opening = await send(depositorAccount, { to: t.to, data: t.data, value: BigInt(t.value) }, t.step === "approve" ? `first depositor approves exactly 30,000 ${token.symbol} to the router` : `first deposit: 10 ${chain.nativeCurrency.symbol} + 30,000 ${token.symbol}, minimums equal to the amounts${opt.hold ? "; the same transaction creates the pair" : ""} (addLiquidityBLCH)`);
   let s = await state();
-  check("the first deposit set the reserves and locked the minimum liquidity", s.reserveNative === SEED_NATIVE && s.reserveToken === SEED_TOKEN && s.totalSupply > 1000n && s.feeToLp === 0n, s);
+  check("the first deposit set the reserves to exactly the intended amounts and locked the minimum liquidity", s.reserveNative === SEED_NATIVE && s.reserveToken === SEED_TOKEN && s.totalSupply > 1000n && s.feeToLp === 0n, s);
+  const verified = firstDeposit("verify", ["--tx", opening.hash]);
+  writeFileSync(join(opt.out, "first-deposit-verify.log"), verified.text);
+  check("first-deposit.mjs verify: the pool is open at the intended price and the deposit carried strict minimums", verified.status === 0, verified.text.slice(-400));
+  if (!opt.hold) {
+    // The second half of the reviewer's attack: 600 token no longer buys the native side (0.2 native at this price).
+    const before = await nativeOf(attacker.address);
+    const swap = await send(attacker, { to: router, data: call("swapExactTokensForBLCH", [600n * unit, 0n, [token.address, wrapped.address], attacker.address, deadline]) }, `attacker swaps 600 ${token.symbol} for the native coin`);
+    const taken = (await nativeOf(attacker.address)) - before + swap.feeWei;
+    evidence.attack = { tokenIn: `600 ${token.symbol}`, nativeOut: formatUnits(taken, 18), reviewerResultWithOpenFirstDeposits: "more than 9.6 of 10" };
+    check("R309-MC-1: the attacker's 600 token buy less than 0.2 native (the reviewer's attack took more than 9.6 of 10)", taken < 2n * 10n ** 17n && taken > 19n * 10n ** 16n, formatUnits(taken, 18));
+  }
+  await rpc("anvil_mine", [hex(200)]);
+  const openGate = runGate("gate-report.json", "gate.log");
+  check("the post gate passes again and reports the pair open", openGate.ok && openGate.report.pairs.every((p) => p.state === "open"), openGate.detail ?? openGate.report?.pairs.map((p) => p.state));
+  await rpc("anvil_setBalance", [depositor, hex(evidence.depositorNativeBefore)]);
 
   // 3b. swaps: native in, native out, wrapped token in, wrapped token out
   const tokenBefore = await read(token.address, "balanceOf", [trader.address]);
@@ -255,7 +332,6 @@ try {
   check("the owner's fee address holds LP shares minted by the protocol fee", s.feeToLp > 0n, evidence.protocolFee);
 
   // 3e. the fee address redeems its shares itself: approve the router, removeLiquidityBLCH (impersonated on the fork)
-  await rpc("anvil_impersonateAccount", [shared.feeTo.address]);
   if ((await nativeOf(shared.feeTo.address)) < 10n ** 17n) {
     await rpc("anvil_setBalance", [shared.feeTo.address, hex(10n ** 18n)]);
     evidence.feeToGasNote = "the fee address held too little native coin on this chain to pay gas; the fork gave it 1 for the rehearsal";

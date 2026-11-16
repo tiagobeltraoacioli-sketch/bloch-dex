@@ -13,6 +13,7 @@ import type { DevnetDeployment } from '../devnet4/record';
 import type { MainnetNetwork, MainnetState, PlannedCap } from '../mainnet/config';
 import { NEW_SLOT_FEE_OFF } from '../mainnet/newslotfee';
 import type { Wording } from '../mainnet/wording';
+import { FINALIZED_ONLY, type Confirmation, type ConfirmationRule } from './rpc';
 
 export const NETWORK_DOMAIN = 'postern.dex.multichain-frontend-network.v1';
 export const RECORD_DOMAIN = 'postern.dex.multichain-frontend-record.v1';
@@ -39,6 +40,10 @@ export type Chain = {
   multicall3: { address: Address; codeHash: Hex };
   feeTo: Address;
   wording: Wording;
+  /** The chain's confirmation rule (network file `confirmation`; absent: `finalized` for everything). */
+  confirmation: Confirmation;
+  /** What the rule means, in words, shown above the route. */
+  confirmationNote: string;
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
   load: () => Promise<MainnetState>;
 };
@@ -80,6 +85,69 @@ function url(value: unknown, field: string, rehearsal: boolean): string {
     `${field} must be https without credentials, query or fragment`,
   );
   return value;
+}
+
+function rule(value: AnyRecord, field: string): ConfirmationRule {
+  const keys =
+    value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value) : [];
+  refuse(keys.length === 1 && (keys[0] === 'tag' || keys[0] === 'depth'), field);
+  if (keys[0] === 'tag') {
+    refuse(value.tag === 'finalized' || value.tag === 'safe', `${field}.tag`);
+    return { tag: value.tag };
+  }
+  refuse(
+    Number.isInteger(value.depth) && value.depth >= 1 && value.depth <= 100_000,
+    `${field}.depth`,
+  );
+  return { depth: value.depth };
+}
+const span = (seconds: number): string =>
+  seconds < 90
+    ? `about ${Math.max(1, Math.round(seconds))} seconds`
+    : seconds < 5400
+      ? `about ${Math.round(seconds / 60)} minutes`
+      : `about ${Math.round(seconds / 3600)} hours`;
+const blocks = (n: number): string => (n === 1 ? '1 block' : `${n.toLocaleString('en-US')} blocks`);
+
+/** The optional `confirmation` block of a network file (review R309-MC-2); absent means `finalized` only. */
+export function parseConfirmation(
+  value: unknown,
+  chainName: string,
+): { confirmation: Confirmation; note: string } {
+  if (value === undefined)
+    return {
+      confirmation: FINALIZED_ONLY,
+      note: `On ${chainName} this page reads and settles at the chain's own finalized block.`,
+    };
+  const v = value as AnyRecord;
+  refuse(
+    v &&
+      typeof v === 'object' &&
+      !Array.isArray(v) &&
+      Object.keys(v).every((k) => ['settle', 'strict', 'blockSeconds'].includes(k)),
+    'confirmation has an unknown field',
+  );
+  const settle = rule(v.settle, 'confirmation.settle');
+  const strict = rule(v.strict, 'confirmation.strict');
+  refuse(
+    typeof v.blockSeconds === 'number' && v.blockSeconds > 0 && v.blockSeconds <= 60,
+    'confirmation.blockSeconds',
+  );
+  // The strict rule ends a hold without a receipt; it is never weaker than the settle rule.
+  const rank = (r: ConfirmationRule) => ('depth' in r ? r.depth : r.tag === 'safe' ? 1e6 : 1e7);
+  refuse(rank(strict) >= rank(settle), 'confirmation.strict is weaker than confirmation.settle');
+  const tagWords = (r: { tag: 'finalized' | 'safe' }) => `the chain's own ${r.tag} block`;
+  const strictWords =
+    'depth' in strict
+      ? `${blocks(strict.depth)} on top (${span(strict.depth * v.blockSeconds)}; this is not the chain's own finality)`
+      : tagWords(strict);
+  const note =
+    'depth' in settle
+      ? `On ${chainName} this page treats a block as settled once ${blocks(settle.depth)} ${settle.depth === 1 ? 'is' : 'are'} on top of it (${span(settle.depth * v.blockSeconds)}), not at the chain's own finality. Where this page says "finalized" on this network, it means that. Prices and balances are read at that block and your swap is bound by its minimum and its deadline. A hold that ends without your transaction's own receipt (its deadline passed, or another transaction used its nonce) waits for ${strictWords}.`
+      : settle.tag === 'finalized' && 'tag' in strict && strict.tag === 'finalized'
+        ? `On ${chainName} this page reads and settles at the chain's own finalized block.`
+        : `On ${chainName} this page reads and settles at ${tagWords(settle)}. Where this page says "finalized" on this network, it means that. A hold that ends without your transaction's own receipt waits for ${strictWords}.`;
+  return { confirmation: { settle, strict }, note };
 }
 
 export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
@@ -127,6 +195,19 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     'multicall3',
   );
   refuse(ADDRESS.test(n.feeTo ?? ''), 'feeTo');
+  const { confirmation, note: confirmationNote } = parseConfirmation(n.confirmation, n.chainName);
+  // Optional (review R309-MC-6): the default swap deadline of this chain; absent: the route's own default.
+  const deadlineMinutes = n.swap?.deadlineMinutes;
+  refuse(
+    n.swap === undefined ||
+      (typeof n.swap === 'object' &&
+        n.swap !== null &&
+        Object.keys(n.swap).every((k) => k === 'deadlineMinutes') &&
+        Number.isInteger(deadlineMinutes) &&
+        deadlineMinutes >= 5 &&
+        deadlineMinutes <= 60),
+    'swap.deadlineMinutes',
+  );
 
   const network: MainnetNetwork = {
     chainId: n.chainId,
@@ -144,6 +225,7 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     newSlotFee: NEW_SLOT_FEE_OFF,
     idle: { skipIdleBlocks: false, heartbeatSeconds: 600, blockIntervalSeconds: 600 },
     noIdleHeartbeat: true,
+    ...(deadlineMinutes === undefined ? {} : { defaultDeadlineMinutes: deadlineMinutes as number }),
   };
   const wording: Wording = {
     network: n.chainName,
@@ -171,6 +253,8 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     multicall3,
     feeTo: n.feeTo,
     wording,
+    confirmation,
+    confirmationNote,
     planned: { caps: [], pairs: tokens.map((t) => [wrapped.symbol, t.symbol]) },
   };
   const state = parseRecord(recordInput, chain, rehearsal);

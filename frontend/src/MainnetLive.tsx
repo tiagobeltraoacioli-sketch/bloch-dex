@@ -764,7 +764,9 @@ function SwapPanel({
   const [slippage, setSlippage] = useState((DEFAULT_SLIPPAGE_BPS / 100).toFixed(2));
   // 2 once the user took the page's one retry after a revert on the minimum (DEX-5).
   const [attempt, setAttempt] = useState<1 | 2>(1);
-  const [deadline, setDeadline] = useState(String(DEFAULT_DEADLINE_MINUTES));
+  const [deadline, setDeadline] = useState(
+    String(network.defaultDeadlineMinutes ?? DEFAULT_DEADLINE_MINUTES),
+  );
   const [quote, setQuote] = useState<LensQuote | null>(null);
   const [blocked, setBlocked] = useState<RouteCheck[]>([]);
   const [quoteNote, setQuoteNote] = useState('');

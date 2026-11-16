@@ -93,6 +93,8 @@ contract DeployMultichain {
         address firstDepositor = vm.envAddress("MC_FIRST_DEPOSITOR");
         address wrapped = vm.envAddress("MC_WRAPPED");
         require(feeTo != address(0), "MC: FEE_TO");
+        // Review R309-MC-1: first deposits are never open on a public chain.
+        require(firstDepositor != address(0), "MC: FIRST_DEPOSITOR");
         require(wrapped.codehash == vm.envBytes32("MC_WRAPPED_CODE_HASH"), "MC: WRAPPED_CODE");
         address[] memory capTokens = vm.envOr("MC_CAP_TOKENS", ",", new address[](0));
         uint256[] memory caps = vm.envOr("MC_CAPS", ",", new uint256[](0));

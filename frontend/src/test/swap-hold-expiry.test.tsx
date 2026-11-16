@@ -360,6 +360,34 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     expect(await expiredSwap(c.rpc, swapIntent, context, 5n, [])).toBeNull();
   });
 
+  it('R309-MC-2: an RPC that carries a strict reader decides the deadline there; one without it is unchanged', async () => {
+    // The settled view (a confirmation depth on a public chain) is already past the deadline…
+    const settled = chain();
+    settled.state.finalized = settled.state.latest = {
+      number: 20n,
+      hash: hash('9'),
+      timestamp: DEADLINE + 1n,
+    };
+    expect(await expiredSwap(settled.rpc, swapIntent, context, DEADLINE, [])).not.toBeNull();
+    // …but the chain's strict block is not: the hold stays, and only the strict reader was asked.
+    const strict = chain();
+    strict.state.finalized = { number: 16n, hash: hash('a'), timestamp: DEADLINE - 1n };
+    settled.rpc.mockClear();
+    const rpc = Object.assign(settled.rpc, { strict: strict.rpc });
+    expect(await expiredSwap(rpc, swapIntent, context, DEADLINE, [])).toBeNull();
+    expect(strict.rpc).toHaveBeenCalledWith('eth_getBlockByNumber', ['finalized', false]);
+    expect(settled.rpc).not.toHaveBeenCalled();
+    strict.state.finalized = strict.state.latest = {
+      number: 20n,
+      hash: hash('9'),
+      timestamp: DEADLINE + 1n,
+    };
+    expect(await expiredSwap(rpc, swapIntent, context, DEADLINE, [])).toMatchObject({
+      blockNumber: '20',
+      nonceUsed: false,
+    });
+  });
+
   it('refuses evidence that changes while it is read, and non-swaps', async () => {
     const c = chain();
     c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE + 1n };

@@ -10,9 +10,14 @@
 //       token and Multicall3 have the pinned code and answer name()/symbol()/decimals() as listed, the fee address
 //       is an externally owned account (no code, or an EIP-7702 delegation, which is reported), and each planned
 //       address is empty or already holds exactly the planned code.
-// post  after deploying, read at the `finalized` block: the three contracts and every planned pair hold the planned
-//       code, the factory's feeTo, firstDepositor and every cap are the planned values, the router and the lens
-//       point at the factory and the wrapped native token. The report is what the frontend record is made from.
+// post  after deploying, read at the `finalized` block: the three contracts hold the planned code, the factory's
+//       feeTo, firstDepositor (never the zero address) and every cap are the planned values, the router and the
+//       lens point at the factory and the wrapped native token. Each planned pair is reported with its state:
+//       "absent" (not created: the first deposit creates it), "empty", "donated" (tokens sit in it, no shares:
+//       anyone may skim them), or "open" with its reserves and share supply. Run it after the deployment (before
+//       any deposit) and again after the first deposits: the frontend record is made only from a report whose
+//       pairs are all open. A contract that has the planned code at the latest block but not yet at the finalized
+//       one is reported as WAIT: nothing is wrong, the chain has not finalized the deployment yet.
 //
 // The Bloch-L2-only rules (bridge token pin, Safe pin, new-slot fee, credit rule, idle-chain rule) are off for these
 // chains by configuration: deployments/multichain.json `l2Only` and deployments/<chain>/gate.json `l2Only`. The
@@ -20,10 +25,10 @@
 // Exit status: 0 pass, 1 a check failed, 2 usage or configuration.
 import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse,
+  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse,
 } from "./lib.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
@@ -45,6 +50,9 @@ const ABI = parseAbi([
   "function token1() view returns (address)",
   "function reserveCaps() view returns (uint112,uint112)",
   "function getChainId() view returns (uint256)",
+  "function totalSupply() view returns (uint256)",
+  "function getReserves() view returns (uint112,uint112,uint32)",
+  "function balanceOf(address) view returns (uint256)",
 ]);
 
 const codeHashOf = (code) => {
@@ -79,6 +87,7 @@ export function gateConfig(shared, chain) {
  */
 export async function evaluateGate({ shared, chain, plan, phase, request, others = [], identityOnly = [], rehearsal = false }) {
   const checks = [];
+  const waiting = [];
   const check = (name, ok, detail) => {
     checks.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });
     return Boolean(ok);
@@ -135,8 +144,16 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
     const hash = await codeAt(c.address);
     contracts[c.name] = { address: c.address, codeHash: hash, planned: c.runtimeCodeHash };
     if (phase === "pre") check(`${c.name} ${c.address} is empty, or already holds exactly the planned code`, hash === EMPTY_CODE_HASH || hash === c.runtimeCodeHash, hash);
-    else check(`${c.name} ${c.address} holds the planned code at the finalized block`, hash === c.runtimeCodeHash, hash);
+    else {
+      const ok = check(`${c.name} ${c.address} holds the planned code at the finalized block`, hash === c.runtimeCodeHash, hash);
+      // Review R309-MC-5: deployed but not finalized yet is "wait", not "something is wrong".
+      if (!ok && hash === EMPTY_CODE_HASH) {
+        const latest = await soft(async () => codeHashOf(await request("eth_getCode", [c.address, "latest"])));
+        if (latest === c.runtimeCodeHash) waiting.push(c.name);
+      }
+    }
   }
+  check("the plan's firstDepositor is an account, not the zero address (first deposits are never open on a public chain)", lower(plan.arguments.firstDepositor) !== ZERO_ADDRESS);
   const pairs = [];
   if (phase === "post" && Object.values(contracts).every((c) => c.codeHash === c.planned)) {
     const f = plan.contracts.factory.address;
@@ -155,7 +172,16 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
     for (const p of plan.pairs) {
       const got = await soft(() => call(f, "getPair", [p.token0, p.token1], at));
       const created = same(got, p.address);
-      const entry = { tokenA: p.tokenA, tokenB: p.tokenB, address: p.address, token0: p.token0, token1: p.token1, created };
+      const entry = { tokenA: p.tokenA, tokenB: p.tokenB, address: p.address, token0: p.token0, token1: p.token1, created, state: "absent" };
+      // Tokens can be sent to the pair's address before it exists; they would join the first deposit.
+      const held = await soft(async () => [await call(p.token0, "balanceOf", [p.address], at), await call(p.token1, "balanceOf", [p.address], at)]);
+      check(`the token balances at the pair address ${p.tokenA}/${p.tokenB} can be read`, Array.isArray(held), held?.failed);
+      if (Array.isArray(held)) entry.balances = held.map(String);
+      if (!created) {
+        // Not an error: the first depositor's first deposit creates the pair in the same transaction.
+        check(`pair ${p.tokenA}/${p.tokenB} is not created yet, or is created at the planned address`, typeof got === "string" && /^0x0{40}$/.test(got), got);
+        if (Array.isArray(held) && held.some((b) => b > 0n)) entry.state = "donated";
+      }
       if (created) {
         entry.codeHash = await codeAt(p.address);
         check(`pair ${p.tokenA}/${p.tokenB} ${p.address} holds the release candidate's pair code`, entry.codeHash === plan.pair.runtimeCodeHash, entry.codeHash);
@@ -164,7 +190,17 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
         const want = [capOf.get(lower(p.token0)) ?? 0n, capOf.get(lower(p.token1)) ?? 0n];
         check(`pair ${p.tokenA}/${p.tokenB} copied the planned caps`, Array.isArray(caps) && caps[0] === want[0] && caps[1] === want[1], Array.isArray(caps) ? caps.map(String) : caps);
         entry.reserveCaps = want.map(String);
-      } else check(`pair ${p.tokenA}/${p.tokenB} is created at the planned address`, false, got);
+        const supply = await soft(() => call(p.address, "totalSupply", [], at));
+        const reserves = await soft(() => call(p.address, "getReserves", [], at));
+        const read = check(`pair ${p.tokenA}/${p.tokenB} answers totalSupply() and getReserves()`, typeof supply === "bigint" && Array.isArray(reserves), supply?.failed ?? reserves?.failed);
+        if (read && Array.isArray(held)) {
+          entry.totalSupply = supply.toString();
+          entry.reserves = [reserves[0].toString(), reserves[1].toString()];
+          entry.state = supply > 0n ? "open" : held.some((b) => b > 0n) ? "donated" : "empty";
+          // Only the first depositor can open a pool of this factory, so an open pool was opened by the owner.
+          if (supply > 0n) check(`pair ${p.tokenA}/${p.tokenB} is open with both reserves above zero`, reserves[0] > 0n && reserves[1] > 0n, entry.reserves);
+        }
+      }
       pairs.push(entry);
     }
   }
@@ -185,6 +221,7 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       plan: planSummary(plan),
       pairs,
       l2Only: { ...shared.l2Only },
+      waiting,
       checks,
       failed,
     };
@@ -221,11 +258,14 @@ export async function main(argv) {
   const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, identityOnly, rehearsal: options.rehearsal });
   if (options.out) writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
   for (const c of report.checks) console.log(`${c.ok ? "ok  " : "FAIL"} ${c.name}${c.ok || c.detail === undefined ? "" : ` (${JSON.stringify(c.detail)})`}`);
+  for (const p of report.pairs) console.log(`pair ${p.tokenA}/${p.tokenB} ${p.address}: ${p.state}${p.state === "open" ? `, reserves ${p.reserves.join(" / ")}, shares ${p.totalSupply}` : p.state === "donated" ? `, tokens sit in it without shares (${p.balances.join(" / ")}): anyone may call skim(to)` : ""}`);
+  if (report.waiting.length) console.log(`WAIT: ${report.waiting.join(", ")} ${report.waiting.length === 1 ? "has" : "have"} the planned code at the latest block but not at the finalized block yet. Nothing is wrong; run this gate again later (docs/MULTICHAIN-DEPLOY.md gives the wait per chain).`);
   console.log(`multichain gate ${options.key} ${options.phase}: ${report.decision.toUpperCase()}${report.finalized ? ` at finalized block ${report.finalized.number}` : ""}${plan.reference ? " (reference plan)" : ""}${report.feeTo?.delegate ? `; fee address has an EIP-7702 delegation to ${report.feeTo.delegate}` : ""}`);
   return report.decision === "pass" ? 0 : 1;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+// isMain: a start through a symbolic link must not do nothing and exit 0 (review R309-MC-4).
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (error) => {

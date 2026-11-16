@@ -234,6 +234,15 @@ export function savedSwapDeadline(data: Hex): bigint | null {
   }
 }
 
+/**
+ * Two decisions end a hold WITHOUT the saved call's own receipt: its deadline passed (`expiredSwap`), or another
+ * transaction used its nonce (`finalizedReplacementReceipt`). If either were wrong, a second request could execute
+ * next to the first. An RPC of a public chain whose page settles on a confirmation depth carries a stricter
+ * reader for exactly these two (multichain/rpc.ts `chainRpc`, review R309-MC-2). The Bloch L2's RPC carries
+ * none, so nothing changes there: `finalized` for everything.
+ */
+const strictOf = (rpc: Rpc): Rpc => (rpc as Rpc & { strict?: Rpc }).strict ?? rpc;
+
 export type ExpiredSwap = {
   /** The canonical finalized block whose timestamp is past the deadline. */
   blockNumber: string;
@@ -257,6 +266,7 @@ export async function expiredSwap(
   deadline: bigint,
   hashes: readonly Hex[] = [],
 ): Promise<ExpiredSwap | null> {
+  rpc = strictOf(rpc);
   assertSubmissionContext(intent, context);
   if (intent.kind !== 'swap' || deadline <= 0n) return null;
   // Never on a deadline other than the one in the call a wallet may have signed.
@@ -502,6 +512,7 @@ export async function finalizedReplacementReceipt(
   intent: SubmissionIntent,
   context: SubmissionContext,
 ): Promise<ReplacementProof | null> {
+  rpc = strictOf(rpc);
   let first:
     | { from: Address; to: Address | null; data: Hex; value: string; nonce: string }
     | undefined;

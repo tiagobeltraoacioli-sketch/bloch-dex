@@ -46,5 +46,17 @@
     "newSlotFee": false,
     "creditRule": false,
     "idleChainRule": false
+  },
+  "confirmation": {
+    "settle": {
+      "depth": 1
+    },
+    "strict": {
+      "depth": 300
+    },
+    "blockSeconds": 11.5
+  },
+  "swap": {
+    "deadlineMinutes": 20
   }
 }

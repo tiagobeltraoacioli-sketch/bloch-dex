@@ -2,12 +2,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CHAIN_DEPENDENT_OPCODES, POST_PARIS_OPCODES, ROOT, ZERO_ADDRESS, checksummed, choicesFor, forgeEnvironment, loadArtifacts, loadChain, loadShared, lower,
-  opcodesOf, pendingChoices, planChain, validateChain, validateShared,
+  opcodesOf, pendingChoices, planChain, validateChain, validateRule, validateShared,
 } from "./lib.mjs";
+import { MAX_TOLERANCE_BPS, addTransactions, hasStrictMinimums, openingTransactions } from "./first-deposit.mjs";
 import { evaluateGate, gateConfig } from "./gate.mjs";
 import { frontendNetwork, frontendRecord } from "./frontend-files.mjs";
 
@@ -76,7 +78,7 @@ test("with equal constructor arguments the factory and the lens have one address
   assert.equal(routerOf["op-mainnet"], routerOf.base, "OP Mainnet and Base share the WETH predeploy address");
   assert.equal(new Set(Object.values(routerOf)).size, 5);
   // A cap names a token address, which differs per chain: the factory address then differs too.
-  const capped = (chain) => planChain({ ...clone(shared), firstDepositor: ZERO_ADDRESS }, { ...clone(chain), reserveCaps: [{ token: chain.tokens[0].symbol, cap: "1000000" }] }, artifacts);
+  const capped = (chain) => planChain({ ...clone(shared), firstDepositor: shared.feeTo.address }, { ...clone(chain), reserveCaps: [{ token: chain.tokens[0].symbol, cap: "1000000" }] }, artifacts);
   assert.notEqual(capped(chains[0]).contracts.factory.address, capped(chains[2]).contracts.factory.address);
   assert.notEqual(capped(chains[0]).contracts.factory.address, plans[0].contracts.factory.address);
 });
@@ -96,14 +98,16 @@ test("the plan's addresses are CREATE2 addresses of the deterministic deployer w
     }
 });
 
-test("the forge environment carries the plan and creates only pairs of the wrapped native token", () => {
+test("the forge environment carries the plan and creates no pair (the first deposit creates it)", () => {
   const chain = chains.find((c) => c.chain.key === "base");
   const plan = plans.find((p) => p.chain.key === "base");
   const env = forgeEnvironment(plan, chain);
   assert.equal(env.MC_CHAIN_ID, "8453");
   assert.equal(env.MC_FEE_TO, shared.feeTo.address);
   assert.equal(env.MC_WRAPPED, "0x4200000000000000000000000000000000000006");
-  assert.equal(env.MC_PAIR_TOKENS, chain.tokens[0].address);
+  assert.equal(env.MC_PAIR_TOKENS, undefined);
+  assert.equal(env.MC_FIRST_DEPOSITOR, shared.feeTo.address);
+  assert.equal(forgeEnvironment(plan, chain, { createPairs: true }).MC_PAIR_TOKENS, chain.tokens[0].address);
   assert.equal(env.MC_CAP_TOKENS, undefined);
 });
 
@@ -136,7 +140,13 @@ test("each chain lists two https endpoints, the wrapped native token and one tok
   for (const chain of chains) {
     assert.ok(chain.rpc.length >= 2 && chain.rpc.every((u) => u.startsWith("https://")));
     assert.equal(chain.tokens.length, 1);
-    for (const t of [chain.wrappedNative, ...chain.tokens]) assert.ok(t.source.length > 10 && t.kind.length > 5);
+    for (const t of [chain.wrappedNative, ...chain.tokens]) {
+      assert.ok(t.source.length > 10 && t.kind.length > 5);
+      // The address was compared with the issuer's or the chain's own page, fetched on the date stated.
+      assert.equal(t.sourceChecked.url, t.source);
+      assert.match(t.sourceChecked.fetched, /^2026-\d\d-\d\d$/);
+      assert.ok(t.sourceChecked.found.length > 10);
+    }
   }
   const bnb = chains.find((c) => c.chain.key === "bnb-smart-chain");
   assert.match(bnb.tokens[0].kind, /NOT Circle-issued/);
@@ -161,6 +171,110 @@ test("the commands refuse what must never happen", () => {
   assert.match(gateReference.stderr, /only in a rehearsal/);
   const unknown = run("node", "scripts/multichain/plan.mjs", "bloch-l2");
   assert.equal(unknown.status, 2);
+  // The deposit tool has no option for other minimums, needs the gate report, and refuses a reference plan
+  // outside a rehearsal.
+  const deposit = (...a) => run("node", "scripts/multichain/first-deposit.mjs", "base", ...a);
+  const loose = deposit("prepare", "--pair", "WETH/USDC", "--native", "10", "--token", "30000", "--gate-report", "x.json", "--min-token", "0");
+  assert.equal(loose.status, 2);
+  assert.match(loose.stderr, /no option for other minimums/);
+  const noReport = deposit("prepare", "--pair", "WETH/USDC", "--native", "10", "--token", "30000");
+  assert.equal(noReport.status, 2);
+  assert.match(noReport.stderr, /--gate-report FILE is required/);
+  const open = deposit("prepare", "--pair", "WETH/USDC", "--native", "10", "--token", "30000", "--gate-report", "x.json");
+  assert.equal(open.status, 2);
+  assert.match(open.stderr, /owner choices are still open/);
+});
+
+test("R309-MC-4: a tool started through a symbolic link runs; it does not do nothing and exit 0", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mc-link-"));
+  try {
+    symlinkSync(ROOT, join(dir, "repo"), "dir");
+    for (const [tool, args] of [["gate.mjs", ["base"]], ["frontend-files.mjs", []], ["first-deposit.mjs", ["base"]]]) {
+      const run = spawnSync("node", [join(dir, "repo/scripts/multichain", tool), ...args], { encoding: "utf8" });
+      assert.equal(run.status, 2, tool);
+      assert.match(run.stderr, /usage:/, tool);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("R309-MC-1: no plan has open first deposits; the reference plan's first depositor is the fee address", () => {
+  const zero = { ...clone(shared), firstDepositor: ZERO_ADDRESS };
+  assert.throws(() => validateShared(zero), /first deposits would be open to anyone/);
+  for (const chain of chains) {
+    assert.throws(() => planChain(zero, { ...clone(chain), reserveCaps: [] }, artifacts), /first deposits would be open/);
+    assert.throws(() => planChain(zero, chain, artifacts, { reference: true }), /first deposits would be open/);
+  }
+  for (const plan of plans) {
+    assert.equal(plan.arguments.firstDepositor, shared.feeTo.address);
+    assert.notEqual(lower(plan.arguments.firstDepositor), ZERO_ADDRESS);
+  }
+  assert.throws(() => validateShared({ ...clone(shared), firstDepositor: shared.create2.deployer }), /not an account/);
+  const script = readFileSync(join(ROOT, "script/DeployMultichain.s.sol"), "utf8");
+  assert.ok(script.includes('require(firstDepositor != address(0), "MC: FIRST_DEPOSITOR")'));
+});
+
+test("R309-MC-1: the first deposit's minimums equal its amounts, and a later deposit's are at most 1% below", async () => {
+  const require = (await import("node:module")).createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const { decodeFunctionData, parseAbi } = require("viem");
+  const abi = parseAbi(["function addLiquidityBLCH(address token,uint256 amountTokenDesired,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) payable returns (uint256,uint256,uint256)", "function approve(address,uint256) returns (bool)"]);
+  const chain = chains.find((c) => c.chain.key === "base");
+  const plan = plans.find((p) => p.chain.key === "base");
+  const base = { router: plan.contracts.router.address, token: chain.tokens[0].address, to: shared.feeTo.address, deadline: 2_000_000_000n };
+  const [approve, deposit] = openingTransactions({ ...base, native: 10n ** 19n, tokenAmount: 30_000_000_000n });
+  assert.deepEqual(decodeFunctionData({ abi, data: approve.data }).args, [base.router, 30_000_000_000n]);
+  const args = decodeFunctionData({ abi, data: deposit.data }).args;
+  assert.deepEqual(args, [base.token, 30_000_000_000n, 30_000_000_000n, 10n ** 19n, base.to, 2_000_000_000n]);
+  assert.equal(deposit.value, 10n ** 19n);
+  assert.equal(lower(deposit.to), lower(base.router));
+  assert.equal(hasStrictMinimums(deposit.data, deposit.value), true);
+  // The reviewer's step 5 ("the minimums as the owner chooses": 0 and 0) is not a strict deposit.
+  const { encodeFunctionData } = require("viem");
+  const looseData = encodeFunctionData({ abi, functionName: "addLiquidityBLCH", args: [base.token, 30_000_000_000n, 0n, 0n, base.to, 2_000_000_000n] });
+  assert.equal(hasStrictMinimums(looseData, 10n ** 19n), false);
+  assert.equal(hasStrictMinimums(deposit.data, 1n), false);
+  assert.throws(() => openingTransactions({ ...base, native: 0n, tokenAmount: 1n }), /above zero/);
+  // A later deposit follows the pool's price: 1 native at 10 : 30,000 is 3,000 token; minimums 0.5% below.
+  const [, add] = addTransactions({ ...base, native: 10n ** 18n, reserveNative: 10n ** 19n, reserveToken: 30_000_000_000n, toleranceBps: 50 });
+  assert.deepEqual(decodeFunctionData({ abi, data: add.data }).args.slice(1, 4), [3_000_000_000n, 2_985_000_000n, 995n * 10n ** 15n]);
+  assert.equal(MAX_TOLERANCE_BPS, 100);
+  assert.throws(() => addTransactions({ ...base, native: 10n ** 18n, reserveNative: 10n ** 19n, reserveToken: 30_000_000_000n, toleranceBps: 101 }), /tolerance/);
+  assert.throws(() => addTransactions({ ...base, native: 10n ** 18n, reserveNative: 0n, reserveToken: 0n, toleranceBps: 50 }), /not open/);
+});
+
+test("R309-MC-2: every chain states its confirmation rule, what was measured and the residual risk; the network file carries the rule and the deadline", () => {
+  const rules = Object.fromEntries(chains.map((c) => [c.chain.key, [c.confirmation.settle, c.confirmation.strict]]));
+  assert.deepEqual(rules, {
+    "op-mainnet": [{ depth: 5 }, { tag: "finalized" }],
+    base: [{ depth: 50 }, { tag: "finalized" }],
+    "arbitrum-one": [{ depth: 32 }, { tag: "finalized" }],
+    linea: [{ depth: 1 }, { depth: 300 }],
+    "bnb-smart-chain": [{ tag: "finalized" }, { tag: "finalized" }],
+    ethereum: [{ depth: 2 }, { tag: "finalized" }],
+  });
+  for (const chain of chains) {
+    assert.ok(chain.confirmation.residualRisk.length > 40);
+    assert.match(chain.confirmation.measured.at, /^2026-/);
+    const file = frontendNetwork(shared, chain);
+    assert.deepEqual(file.confirmation, { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds });
+    assert.deepEqual(file.swap, { deadlineMinutes: 20 });
+    // A settle depth is seconds, not minutes: at most 30 s at the measured block time.
+    if ("depth" in chain.confirmation.settle) assert.ok(chain.confirmation.settle.depth * chain.confirmation.measured.blockSeconds <= 30, chain.chain.key);
+    const none = clone(chain);
+    delete none.confirmation;
+    assert.throws(() => validateChain(none, none.chain.key), /confirmation rule is required/);
+    const weak = clone(chain);
+    weak.confirmation.settle = { depth: 50 };
+    weak.confirmation.strict = { depth: 10 };
+    assert.throws(() => validateChain(weak, weak.chain.key), /weaker/);
+    const slow = clone(chain);
+    slow.swap.deadlineMinutes = 90;
+    assert.throws(() => validateChain(slow, slow.chain.key), /deadlineMinutes/);
+  }
+  assert.throws(() => validateRule({ tag: "latest" }, "x"), /finalized or safe/);
+  assert.throws(() => validateRule({ depth: 0 }, "x"), /whole number of blocks/);
+  assert.throws(() => validateRule({ depth: 1, tag: "safe" }, "x"), /must be/);
 });
 
 test("the committed frontend files of each chain are the generated ones, and no chain is recorded as deployed", () => {
@@ -221,5 +335,91 @@ test("the gate passes a correct chain, reports an EIP-7702 fee address, and fail
   const post = await evaluateGate({ shared: local, chain, plan, phase: "post", request: world() });
   assert.equal(post.decision, "fail");
   assert.match(post.failed.join(), /factory .* holds the planned code at the finalized block/);
+  assert.deepEqual(post.waiting, []);
   assert.throws(() => frontendRecord(local, chain, post), /not a passed post gate/);
+});
+
+test("the post gate reports each pair's state; the record needs every pair open; 'not finalized yet' is reported as WAIT", async () => {
+  const require = (await import("node:module")).createRequire(new URL("../../frontend/package.json", import.meta.url));
+  const { keccak256, encodeFunctionResult, decodeFunctionData, parseAbi, toHex } = require("viem");
+  const chain = clone(chains.find((c) => c.chain.key === "base"));
+  const local = clone(shared);
+  const code = (label) => toHex(`code:${label}`);
+  local.create2.deployerCodeHash = keccak256(code("deployer"));
+  chain.wrappedNative.codeHash = keccak256(code("wrapped"));
+  chain.tokens[0].codeHash = keccak256(code("token"));
+  chain.multicall3.codeHash = keccak256(code("multicall"));
+  const plan = planChain(local, chain, artifacts, { reference: true });
+  const pair = plan.pairs[0];
+  const abi = parseAbi([
+    "function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)", "function getChainId() view returns (uint256)",
+    "function feeTo() view returns (address)", "function firstDepositor() view returns (address)", "function reserveCap(address) view returns (uint256)", "function INIT_CODE_PAIR_HASH() view returns (bytes32)",
+    "function getPair(address,address) view returns (address)", "function factory() view returns (address)", "function WBLCH() view returns (address)", "function token0() view returns (address)",
+    "function token1() view returns (address)", "function reserveCaps() view returns (uint112,uint112)", "function totalSupply() view returns (uint256)", "function getReserves() view returns (uint112,uint112,uint32)",
+    "function balanceOf(address) view returns (uint256)",
+  ]);
+  // Runtime codes whose hashes are the plan's: the gate compares hashes, so the test serves the linked runtimes.
+  const { linkImmutables } = await import("./lib.mjs");
+  const word = (address) => `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
+  const runtime = {
+    [lower(plan.contracts.factory.address)]: linkImmutables(artifacts.factory, [word(local.feeTo.address), word(plan.arguments.firstDepositor)], "factory"),
+    [lower(plan.contracts.router.address)]: linkImmutables(artifacts.router, [word(plan.contracts.factory.address), word(chain.wrappedNative.address)], "router"),
+    [lower(plan.contracts.lens.address)]: linkImmutables(artifacts.lens, [word(plan.contracts.factory.address)], "lens"),
+  };
+  // state: "absent" | "empty" | "donated" | "open"; finalizedHasCode: false = deployed but not finalized yet.
+  const world = ({ state = "absent", finalizedHasCode = true } = {}) => {
+    const codes = new Map([[lower(local.create2.deployer), code("deployer")], [lower(chain.wrappedNative.address), code("wrapped")], [lower(chain.tokens[0].address), code("token")], [lower(chain.multicall3.address), code("multicall")]]);
+    const created = state !== "absent";
+    return async (method, params) => {
+      if (method === "eth_chainId") return "0x2105";
+      if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: chain.chain.genesisHash } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
+      if (method === "eth_getCode") {
+        const address = lower(params[0]);
+        if (runtime[address]) return finalizedHasCode || params[1] === "latest" ? runtime[address] : "0x";
+        if (address === lower(pair.address)) return created ? artifacts.pair.deployedBytecode : "0x";
+        return codes.get(address) ?? "0x";
+      }
+      if (method === "eth_call") {
+        const to = lower(params[0].to);
+        const { functionName: fn, args } = decodeFunctionData({ abi, data: params[0].data });
+        const out = (result) => encodeFunctionResult({ abi, functionName: fn, result });
+        const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === to);
+        if (fn === "balanceOf") return out(state === "donated" ? 5n : state === "open" ? 1000n : 0n);
+        if (token) return out(fn === "decimals" ? token.decimals : token[fn]);
+        if (fn === "getChainId") return out(8453n);
+        if (fn === "feeTo") return out(local.feeTo.address);
+        if (fn === "firstDepositor") return out(plan.arguments.firstDepositor);
+        if (fn === "reserveCap") return out(0n);
+        if (fn === "INIT_CODE_PAIR_HASH") return out(plan.pair.initCodeHash);
+        if (fn === "getPair") return out(created ? pair.address : ZERO_ADDRESS);
+        if (fn === "factory") return out(plan.contracts.factory.address);
+        if (fn === "WBLCH") return out(chain.wrappedNative.address);
+        if (fn === "token0") return out(pair.token0);
+        if (fn === "token1") return out(pair.token1);
+        if (fn === "reserveCaps") return out([0n, 0n]);
+        if (fn === "totalSupply") return out(state === "open" ? 10n ** 12n : 0n);
+        if (fn === "getReserves") return out(state === "open" ? [1000n, 1000n, 1] : [0n, 0n, 0]);
+        void args;
+      }
+      throw new Error(`unexpected ${method}`);
+    };
+  };
+  const gate = (options) => evaluateGate({ shared: local, chain, plan, phase: "post", request: world(options), rehearsal: true });
+  for (const state of ["absent", "empty", "donated", "open"]) {
+    const report = await gate({ state });
+    assert.equal(report.decision, "pass", `${state}: ${JSON.stringify(report.failed)}`);
+    assert.equal(report.pairs[0].state, state);
+    assert.equal(report.pairs[0].created, state !== "absent");
+    if (state === "open") {
+      assert.deepEqual([report.pairs[0].totalSupply, report.pairs[0].reserves], ["1000000000000", ["1000", "1000"]]);
+      const record = frontendRecord(local, chain, report, { rehearsal: true });
+      assert.equal(record.status, "deployed");
+      assert.equal(record.firstDepositor, lower(local.feeTo.address));
+      assert.equal(record.pairs.length, 1);
+    } else assert.throws(() => frontendRecord(local, chain, report, { rehearsal: true }), state === "absent" ? /does not show every planned pair created/ : /not open yet/);
+  }
+  // Review R309-MC-5: deployed, not finalized yet: the gate fails and says WAIT for the three contracts.
+  const early = await gate({ finalizedHasCode: false });
+  assert.equal(early.decision, "fail");
+  assert.deepEqual(early.waiting, ["factory", "router", "lens"]);
 });

@@ -7,10 +7,12 @@
 #   scripts/multichain/deploy.sh <chain> broadcast --rehearsal-rpc http://127.0.0.1:PORT [--reference] -- --private-key KEY
 #
 # Steps: build the unchanged contracts, derive the plan, run the pre gate (read-only), run
-# script/DeployMultichain.s.sol (three CREATE2 deployments through 0x4e59…956C and one createPair per planned pair of
-# the wrapped native token; a step whose address already has code is skipped), print what to do next. `dry-run`
-# simulates and sends nothing. A plan with open owner choices (TBD-owner) is refused unless --reference is given,
-# and --reference broadcasts only to a loopback fork. MC_RPC_URL replaces the first reviewed endpoint as the RPC the
+# script/DeployMultichain.s.sol (three CREATE2 deployments through 0x4e59…956C; a step whose address already has
+# code is skipped; NO pair is created: the first depositor's first deposit creates each pair in the same
+# transaction, scripts/multichain/first-deposit.mjs), print what to do next. `dry-run` simulates and sends nothing.
+# A plan with open owner choices (TBD-owner) is refused unless --reference is given, and --reference broadcasts
+# only to a loopback fork. No plan has open first deposits: `firstDepositor` must name the owner's depositing
+# account (review R309-MC-1). MC_RPC_URL replaces the first reviewed endpoint as the RPC the
 # transactions are sent through (an owner's own provider); the gate always reads the reviewed endpoints.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -63,8 +65,9 @@ BROADCAST=()
 echo "== forge script ($MODE) through $RPC_URL"
 forge script script/DeployMultichain.s.sol:DeployMultichain --rpc-url "$RPC_URL" ${BROADCAST[@]+"${BROADCAST[@]}"} ${FORGE_ARGS[@]+"${FORGE_ARGS[@]}"}
 if [ "$MODE" = broadcast ]; then
-  echo "== sent. When the chain has finalized these transactions, run:"
+  echo "== sent. When the chain has finalized these transactions (docs/MULTICHAIN-DEPLOY.md gives the wait), run:"
   echo "node scripts/multichain/gate.mjs $CHAIN post --out deployments/$CHAIN/gate-report.json"
+  echo "then open each pool ONLY with scripts/multichain/first-deposit.mjs (it prints the transactions; minimums equal the amounts)"
 else
   echo "== dry run only: nothing was sent"
 fi

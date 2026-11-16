@@ -221,6 +221,8 @@ export type MainnetNetwork = {
   rpcUrls?: string[];
   /** A chain that makes blocks without waiting for work: no heartbeat text for a waiting swap. */
   noIdleHeartbeat?: boolean;
+  /** The swap form's default deadline on this chain (the multichain site); absent: DEFAULT_DEADLINE_MINUTES. */
+  defaultDeadlineMinutes?: number;
   rpcLive: boolean;
   explorerUrl: string | null;
   bridges: BridgeLink[];

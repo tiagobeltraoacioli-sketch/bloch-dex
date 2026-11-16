@@ -25,7 +25,12 @@
     "decimals": 18,
     "codeHash": "0xb7d84205eaaf83ce7b3940c6beaad6d22790255e34a9a2b486aa8cdfff118fe6",
     "kind": "WETH9-style, not upgradeable",
-    "source": "https://docs.bnbchain.org and https://bscscan.com/token/0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+    "source": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
+    "sourceChecked": {
+      "url": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
+      "fetched": "2026-11-16",
+      "found": "Binance's public network list, coin WBNB, network BSC (docs.bnbchain.org pages reached did not show the address)"
+    }
   },
   "tokens": [
     {
@@ -35,12 +40,35 @@
       "decimals": 18,
       "codeHash": "0x56069ff2fd59ae482f7984aa894b6d3bc84cb910354dcda9cd6c828d61526914",
       "kind": "NOT Circle-issued: Binance-Peg USD Coin (a token issued by Binance against USDC it holds), 18 decimals; upgradeable proxy. Circle issues no native USDC on BNB Smart Chain. Listing it is an owner decision",
-      "source": "https://bscscan.com/token/0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d (Circle's address list has no BNB Smart Chain entry)"
+      "source": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
+      "sourceChecked": {
+        "url": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
+        "fetched": "2026-11-16",
+        "found": "Binance's public network list, coin USDC, network BSC: the Binance-Peg token; Circle's table has no BNB Smart Chain row"
+      }
     }
   ],
   "multicall3": {
     "address": "0xcA11bde05977b3631167028862bE2a173976CA11",
     "codeHash": "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891"
+  },
+  "confirmation": {
+    "settle": {
+      "tag": "finalized"
+    },
+    "strict": {
+      "tag": "finalized"
+    },
+    "measured": {
+      "at": "2026-11-16",
+      "blockSeconds": 0.45,
+      "safeLagSeconds": "0",
+      "finalizedLagSeconds": "0 to 1"
+    },
+    "residualRisk": "The chain's own fast finality is one or two blocks behind the head, so the page keeps `finalized` for everything, as on the Bloch L2. Residual: fast finality stalling (the page then says so and waits)."
+  },
+  "swap": {
+    "deadlineMinutes": 20
   },
   "initialPairs": [
     {
@@ -55,6 +83,7 @@
   ],
   "verified": {
     "at": "2026-11-16",
-    "how": "scripts/multichain/verify-chain.mjs: chain id, genesis hash, code hashes, name(), symbol(), decimals() read from both RPC endpoints"
+    "how": "scripts/multichain/verify-chain.mjs: chain id, genesis hash, code hashes, name(), symbol(), decimals() read from both RPC endpoints",
+    "sources": "the wrapped native token and USDC addresses were compared with the pages named in sourceChecked, fetched read-only on 2026-11-16"
   }
 }

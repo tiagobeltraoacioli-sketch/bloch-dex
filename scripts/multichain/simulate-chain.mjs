@@ -6,8 +6,10 @@
 //
 // One `eth_simulateV1` request to a reviewed public endpoint of the chain: a sequence of calls on top of the latest
 // block, with state overrides for throwaway balances. Nothing is signed, nothing is sent, nothing changes on the
-// chain. The node executes, in order, the three CREATE2 deployments through the deterministic deployer, createPair,
-// a first deposit, swaps both ways with the native coin and the wrapped token, a second deposit (which settles the
+// chain. The node executes, in order, the three CREATE2 deployments through the deterministic deployer, the attack
+// of review R309-MC-1 (a stranger creates the pair and tries the first deposit: it must revert), the first
+// depositor's first deposit with minimums equal to the amounts (the reference plan's first depositor is the fee
+// address), swaps both ways with the native coin and the wrapped token, a second deposit (which settles the
 // protocol fee), the fee address redeeming its LP shares, a skim, the LP's exit, and one anchored swap that names
 // the chain's real latest block. Unlike the anvil fork rehearsal, this is the chain's real EVM (Nitro on Arbitrum
 // One, the OP Stack's op-geth or op-reth, Linea's besu, BNB Smart Chain's geth fork), so opcode and precompile
@@ -41,6 +43,8 @@ const ABI = parseAbi([
   "function feeTo() view returns (address)",
   "function getPair(address,address) view returns (address)",
   "function createPair(address,address) returns (address)",
+  "function firstDepositor() view returns (address)",
+  "function mint(address) returns (uint256)",
   "function addLiquidityBLCH(address token,uint256 amountTokenDesired,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) payable returns (uint256,uint256,uint256)",
   "function removeLiquidityBLCH(address token,uint256 liquidity,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) returns (uint256,uint256)",
   "function swapExactBLCHForTokens(uint256 amountOutMin,address[] path,address to,uint256 deadline) payable returns (uint256[])",
@@ -72,8 +76,8 @@ async function simulateWith(request, slot, latest) {
     [TRADER]: { balance: hex(1000n * 10n ** 18n) },
     [STRANGER]: { balance: hex(10n ** 18n) },
     [SENDER]: { balance: hex(10n ** 18n) },
-    [FEE]: { balance: hex(10n ** 18n) },
-    [token.address]: { stateDiff: { [slotOf(LP)]: word(100_000n * unit), [slotOf(TRADER)]: word(10_000n * unit), [slotOf(STRANGER)]: word(100n * unit) } },
+    [FEE]: { balance: hex(1000n * 10n ** 18n) },
+    [token.address]: { stateDiff: { [slotOf(FEE)]: word(30_000n * unit), [slotOf(LP)]: word(100_000n * unit), [slotOf(TRADER)]: word(10_000n * unit), [slotOf(STRANGER)]: word(100n * unit) } },
   };
   const deadline = BigInt(latest.timestamp) + 86_400n;
   const steps = [];
@@ -84,9 +88,16 @@ async function simulateWith(request, slot, latest) {
   add(0, "deploy router through the CREATE2 deployer", SENDER, shared.create2.deployer, router.transaction.data);
   add(0, "deploy lens through the CREATE2 deployer", SENDER, shared.create2.deployer, lens.transaction.data);
   add(0, "factory.feeTo()", SENDER, factory.address, data("feeTo"));
-  add(0, `createPair(${wrapped.symbol}, ${token.symbol})`, SENDER, factory.address, data("createPair", [wrapped.address, token.address]));
+  add(0, "factory.firstDepositor()", SENDER, factory.address, data("firstDepositor"));
+  // Review R309-MC-1: anyone may create the pair; nobody but the first depositor can open it.
+  add(0, `createPair(${wrapped.symbol}, ${token.symbol})`, STRANGER, factory.address, data("createPair", [wrapped.address, token.address]));
+  add(0, "a stranger calls mint on the empty pair", STRANGER, pair.address, data("mint", [STRANGER]), 0n, "revert FIRST_DEPOSITOR");
+  add(0, `the stranger approves ${token.symbol}`, STRANGER, token.address, data("approve", [router.address, 2n ** 256n - 1n]));
+  add(0, "a stranger's first deposit through the router, with dust and no minimums", STRANGER, router.address, data("addLiquidityBLCH", [token.address, unit, 0n, 0n, STRANGER, deadline]), 10n ** 12n, "revert FIRST_DEPOSITOR");
+  add(0, `the first depositor approves exactly 30,000 ${token.symbol}`, FEE, token.address, data("approve", [router.address, 30_000n * unit]));
+  add(0, "first deposit by the first depositor (addLiquidityBLCH: 10 native + 30,000 token, minimums equal to the amounts)", FEE, router.address, data("addLiquidityBLCH", [token.address, 30_000n * unit, 30_000n * unit, 10n * 10n ** 18n, LP, deadline]), 10n * 10n ** 18n);
+  add(0, "pair.getReserves() after the first deposit", SENDER, pair.address, data("getReserves"));
   add(0, `LP approves ${token.symbol}`, LP, token.address, data("approve", [router.address, 2n ** 256n - 1n]));
-  add(0, "first deposit (addLiquidityBLCH: 10 native + 30,000 token)", LP, router.address, data("addLiquidityBLCH", [token.address, 30_000n * unit, 0n, 0n, LP, deadline]), 10n * 10n ** 18n);
   add(0, "swap 1 native for the token (swapExactBLCHForTokens)", TRADER, router.address, data("swapExactBLCHForTokens", [0n, [wrapped.address, token.address], TRADER, deadline]), 10n ** 18n);
   add(0, `trader approves ${token.symbol}`, TRADER, token.address, data("approve", [router.address, 2n ** 256n - 1n]));
   add(0, "swap 3,000 token for native (swapExactTokensForBLCH: unwrap and native payout)", TRADER, router.address, data("swapExactTokensForBLCH", [3_000n * unit, 0n, [token.address, wrapped.address], TRADER, deadline]));
@@ -182,6 +193,17 @@ check("every required step succeeds on the chain's own node", required.every(ok)
 check("the token balance override took (100,000 units)", value("token balance of the LP after the override (must be 100,000)") === 100_000n * unit);
 check("the node's CREATE2 returns the planned factory, router and lens addresses", ["factory", "router", "lens"].every((n) => lower(addr(`deploy ${n} through the CREATE2 deployer`) ?? "") === lower(plan.contracts[n].address)));
 check("factory.feeTo() is the owner's fee address", lower(addr("factory.feeTo()") ?? "") === lower(FEE));
+check("factory.firstDepositor() is the plan's first depositor, not the zero address", lower(addr("factory.firstDepositor()") ?? "") === lower(plan.arguments.firstDepositor) && !/^0x0{40}$/.test(plan.arguments.firstDepositor));
+// "FIRST_DEPOSITOR" as it appears in the revert data (Error(string)) or in the node's message.
+const refusedFirstDeposit = (s) => s.result?.status === "0x0" && (JSON.stringify(s.result.error ?? "").includes("FIRST_DEPOSITOR") || String(s.result.returnData ?? "").includes(Buffer.from("FIRST_DEPOSITOR").toString("hex")));
+const hostile = done.steps.filter((s) => s.expect === "revert FIRST_DEPOSITOR");
+check("R309-MC-1: a stranger's first mint and first deposit both revert with BDEX: FIRST_DEPOSITOR on the chain's own node", hostile.length === 2 && hostile.every(refusedFirstDeposit), hostile.map((s) => s.result?.error ?? s.result?.status));
+{
+  const opened = done.steps.find((s) => s.name === "pair.getReserves() after the first deposit");
+  const r = opened && ok(opened) ? decodeFunctionResult({ abi: ABI, functionName: "getReserves", data: opened.result.returnData }) : null;
+  const wrappedIs0 = lower(pair.token0) === lower(wrapped.address);
+  check("the first deposit opened the pool at exactly 10 native and 30,000 token", r !== null && (wrappedIs0 ? r[0] : r[1]) === 10n * 10n ** 18n && (wrappedIs0 ? r[1] : r[0]) === 30_000n * unit, r);
+}
 check("createPair returns the planned pair address", lower(addr(`createPair(${wrapped.symbol}, ${token.symbol})`) ?? "") === lower(pair.address));
 check("swaps alone mint nothing to the fee address", value("fee address LP shares before a liquidity event (must be 0)") === 0n);
 check("the liquidity event mints LP shares to the fee address", (done.feeShares ?? 0n) > 0n, done.feeShares);

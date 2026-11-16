@@ -72,7 +72,13 @@ export function validateShared(shared) {
   refuse(shared.create2.salt === keccak256(stringToHex(shared.create2.saltPreimage)), "create2.salt is not keccak256 of create2.saltPreimage");
   checksummed(shared.feeTo?.address, "feeTo.address");
   refuse(lower(shared.feeTo.address) !== ZERO_ADDRESS, "feeTo.address is the zero address (the protocol fee would be off for ever)");
-  if (!isPending(shared.firstDepositor)) checksummed(shared.firstDepositor, "firstDepositor");
+  if (!isPending(shared.firstDepositor)) {
+    checksummed(shared.firstDepositor, "firstDepositor");
+    // Review R309-MC-1: on a public chain a factory whose first deposits are open lets anyone open a pool at a
+    // false price before the owner's deposit. There is no override: the factory cannot be changed afterwards.
+    refuse(lower(shared.firstDepositor) !== ZERO_ADDRESS, "firstDepositor is the zero address: first deposits would be open to anyone. Name the owner's depositing account (an ordinary key account)");
+    refuse(lower(shared.firstDepositor) !== lower(shared.create2.deployer), "firstDepositor is the CREATE2 deployer, not an account");
+  }
   refuse(Array.isArray(shared.chains) && shared.chains.length > 0 && new Set(shared.chains).size === shared.chains.length, "chains");
   const off = shared.l2Only;
   refuse(
@@ -89,6 +95,30 @@ function validateToken(token, field) {
   refuse(Number.isInteger(token.decimals) && token.decimals >= 0 && token.decimals <= 36, `${field}.decimals`);
   refuse(HASH.test(token.codeHash ?? "") && token.codeHash !== EMPTY_CODE_HASH, `${field}.codeHash`);
   refuse(typeof token.kind === "string" && typeof token.source === "string" && token.source.length > 0, `${field}: kind and source are required`);
+}
+
+/**
+ * One confirmation rule: the chain's own `finalized` or `safe` block, or the block `depth` blocks behind the head.
+ * (review R309-MC-2: `finalized` is minutes to hours behind on most of these chains.)
+ */
+export function validateRule(rule, field) {
+  const keys = rule && typeof rule === "object" ? Object.keys(rule) : [];
+  refuse(keys.length === 1 && (keys[0] === "tag" || keys[0] === "depth"), `${field} must be {"tag": "finalized"|"safe"} or {"depth": N}`);
+  if (keys[0] === "tag") refuse(rule.tag === "finalized" || rule.tag === "safe", `${field}.tag must be finalized or safe`);
+  else refuse(Number.isInteger(rule.depth) && rule.depth >= 1 && rule.depth <= 100_000, `${field}.depth must be a whole number of blocks from 1 to 100000`);
+  return rule;
+}
+/** Seconds a rule lags the head, by the chain's measured block time; null for a tag (the chain decides). */
+export const ruleSeconds = (rule, blockSeconds) => ("depth" in rule ? Math.round(rule.depth * blockSeconds) : null);
+function validateConfirmation(c) {
+  refuse(c && typeof c === "object", "confirmation: the chain's confirmation rule is required (settle, strict, measured, residualRisk)");
+  validateRule(c.settle, "confirmation.settle");
+  validateRule(c.strict, "confirmation.strict");
+  refuse(c.measured && typeof c.measured.at === "string" && typeof c.measured.blockSeconds === "number" && c.measured.blockSeconds > 0 && c.measured.blockSeconds <= 60, "confirmation.measured: at and blockSeconds");
+  // The strict rule ends a hold without a receipt: it is never weaker than the settle rule.
+  const rank = (r) => ("depth" in r ? r.depth : r.tag === "safe" ? 1e6 : 1e7);
+  refuse(rank(c.strict) >= rank(c.settle), "confirmation.strict is weaker than confirmation.settle");
+  refuse(typeof c.residualRisk === "string" && c.residualRisk.length >= 40, "confirmation.residualRisk: state the residual risk of the choice");
 }
 
 export function validateChain(chain, key) {
@@ -116,6 +146,8 @@ export function validateChain(chain, key) {
   refuse(new Set(symbols).size === symbols.length, "a symbol is listed twice");
   checksummed(chain.multicall3?.address, "multicall3.address");
   refuse(HASH.test(chain.multicall3.codeHash ?? ""), "multicall3.codeHash");
+  validateConfirmation(chain.confirmation);
+  refuse(chain.swap && Number.isInteger(chain.swap.deadlineMinutes) && chain.swap.deadlineMinutes >= 5 && chain.swap.deadlineMinutes <= 60, "swap.deadlineMinutes: the page's default swap deadline, 5 to 60 minutes");
   refuse(Array.isArray(chain.initialPairs) && chain.initialPairs.length <= 4, "initialPairs");
   for (const [i, p] of chain.initialPairs.entries())
     refuse(symbols.includes(p.tokenA) && symbols.includes(p.tokenB) && p.tokenA !== p.tokenB, `initialPairs[${i}] names a token that is not listed`);
@@ -141,16 +173,19 @@ export function pendingChoices(shared, chain) {
 
 /**
  * The owner's choices a plan is made for. `reference: true` replaces every open choice with the reference
- * rehearsal values (first deposits open to anyone, no reserve caps) and marks the plan as not for a real deployment.
+ * rehearsal values (first deposits by the fee address only, no reserve caps) and marks the plan as not for a real
+ * deployment. No plan, reference or real, has open first deposits (review R309-MC-1).
  */
 export function choicesFor(shared, chain, { reference = false } = {}) {
   const open = pendingChoices(shared, chain);
   refuse(reference || open.length === 0, `owner choices are still open (${open.join("; ")}); use --reference for a rehearsal plan`);
+  // Also here, for a caller that builds its own configuration object: no plan has open first deposits.
+  refuse(isPending(shared.firstDepositor) || lower(shared.firstDepositor) !== ZERO_ADDRESS, "firstDepositor is the zero address: first deposits would be open to anyone");
   const bySymbol = new Map([chain.wrappedNative, ...chain.tokens].map((t) => [t.symbol, t]));
   const caps = isPending(chain.reserveCaps) ? [] : chain.reserveCaps.map((c) => ({ token: bySymbol.get(c.token).address, symbol: c.token, cap: c.cap }));
   return {
     reference: open.length > 0,
-    firstDepositor: isPending(shared.firstDepositor) ? ZERO_ADDRESS : shared.firstDepositor,
+    firstDepositor: isPending(shared.firstDepositor) ? shared.feeTo.address : shared.firstDepositor,
     caps,
   };
 }
@@ -239,7 +274,7 @@ export function planChain(shared, chain, artifacts, options = {}) {
 }
 
 /** The MC_* environment of script/DeployMultichain.s.sol for this plan. */
-export function forgeEnvironment(plan, chain, { createPairs = true } = {}) {
+export function forgeEnvironment(plan, chain, { createPairs = false } = {}) {
   const bySymbol = new Map([chain.wrappedNative, ...chain.tokens].map((t) => [t.symbol, t]));
   const env = {
     MC_CHAIN_ID: String(plan.chain.chainId),
@@ -255,8 +290,9 @@ export function forgeEnvironment(plan, chain, { createPairs = true } = {}) {
     env.MC_CAP_TOKENS = plan.arguments.reserveCaps.map((c) => c.token).join(",");
     env.MC_CAPS = plan.arguments.reserveCaps.map((c) => c.cap).join(",");
   }
-  // The script creates pairs of the wrapped native token only; any other planned pair is a separate, permissionless
-  // createPair call.
+  // By default the deployment creates no pair (review R309-MC-1): each planned pair is created by the first
+  // depositor's first deposit, in the same transaction (the router calls createPair), so no pair of the owner's
+  // ever exists empty. `createPairs` is kept for tests of the script's own pair step.
   const w = chain.wrappedNative.symbol;
   const others = plan.pairs.filter((p) => p.tokenA === w || p.tokenB === w).map((p) => bySymbol.get(p.tokenA === w ? p.tokenB : p.tokenA).address);
   if (createPairs && others.length) env.MC_PAIR_TOKENS = others.join(",");

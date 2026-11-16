@@ -9,10 +9,12 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MainnetLive from './MainnetLive';
 import { setWording } from './mainnet/wording';
 import { bundledChains, type Chain } from './multichain/config';
-import { fallbackHttpRpc } from './multichain/rpc';
+import { chainHttpRpc } from './multichain/rpc';
 import { useWallet } from './useWallet';
 
 const CHAINS = bundledChains();
+/** A pending swap is looked up this often: these chains settle in seconds, the Bloch L2 route's default is 10 s. */
+const RECEIPT_POLL_MS = 4_000;
 export const MULTICHAIN_RENDER_BANNER =
   'Local rehearsal build against loopback forks: not for publication.';
 
@@ -33,7 +35,8 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
   const chain = chains.find((c) => c.key === key) ?? chains[0];
   // The route's chain words, before it renders (mainnet/wording.ts).
   setWording(chain.wording);
-  const rpc = useMemo(() => fallbackHttpRpc(chain.rpcUrls), [chain]);
+  // Hash-pinned reads from two agreeing endpoints, settled by this chain's confirmation rule (multichain/rpc.ts).
+  const rpc = useMemo(() => chainHttpRpc(chain.rpcUrls, chain.confirmation), [chain]);
   useEffect(() => {
     document.title = `PosternDEX — ${chain.network.chainName}`;
   }, [chain]);
@@ -62,6 +65,9 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         </div>
       </header>
       <main id="main-content" className="main-content">
+        <p className="muted" data-testid="confirmation-rule">
+          {chain.confirmationNote}
+        </p>
         <MainnetLive
           key={chain.key}
           network={chain.network}
@@ -69,6 +75,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
           rpc={rpc}
           wallet={wallet}
           planned={chain.planned}
+          receiptPollMs={RECEIPT_POLL_MS}
         />
       </main>
       <footer className="footer">
@@ -77,8 +84,9 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
             {chain.network.chainName} · chain {chain.network.chainId}
           </span>
           <span className="muted">
-            Reviewed deployment record · Finalized reads · Explicit wallet transactions · The same
-            contracts on every listed network; each network has its own pools and liquidity
+            Reviewed deployment record · Reads pinned to one block, from two endpoints that agree ·
+            Explicit wallet transactions · The same contracts on every listed network; each network
+            has its own pools and liquidity
           </span>
         </div>
       </footer>

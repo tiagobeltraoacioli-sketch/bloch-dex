@@ -55,7 +55,6 @@ const baseFee = latest.baseFeePerGas ? BigInt(latest.baseFeePerGas) : null;
 
 const transactions = [
   ...Object.values(plan.contracts).map((c) => ({ to: c.transaction.to, data: c.transaction.data })),
-  ...plan.pairs.map((p) => ({ to: plan.contracts.factory.address, data: encodeFunctionData({ abi: ORACLE, functionName: "createPair", args: [p.token0, p.token1] }) })),
 ];
 if (transactions.length !== evidence.deployment.length) throw new Error("the fork evidence has another number of deployment transactions than the plan");
 const stack = chain.chain.stack;

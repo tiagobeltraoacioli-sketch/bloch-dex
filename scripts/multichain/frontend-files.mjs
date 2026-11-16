@@ -13,8 +13,8 @@
 // --out writes both files into DIR/<chain>/ instead of deployments/<chain>/ (rehearsals). No RPC is contacted.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { GATE_DOMAIN, MultichainError, ROOT, loadChain, loadShared, lower, refuse } from "./lib.mjs";
+import { isMain } from "../staging/is-main.mjs";
+import { GATE_DOMAIN, MultichainError, ROOT, ZERO_ADDRESS, loadChain, loadShared, lower, refuse } from "./lib.mjs";
 
 export const FRONTEND_NETWORK_DOMAIN = "postern.dex.multichain-frontend-network.v1";
 export const FRONTEND_RECORD_DOMAIN = "postern.dex.multichain-frontend-record.v1";
@@ -35,6 +35,10 @@ export function frontendNetwork(shared, chain, { rpc = null } = {}) {
     multicall3: { address: lower(chain.multicall3.address), codeHash: chain.multicall3.codeHash },
     feeTo: lower(shared.feeTo.address),
     l2Only: { ...shared.l2Only },
+    // Optional fields (added by review R309-MC-2 and MC-6; a page that does not know them keeps `finalized` and
+    // its own default deadline).
+    confirmation: { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds },
+    swap: { deadlineMinutes: chain.swap.deadlineMinutes },
   };
 }
 
@@ -46,8 +50,12 @@ export function frontendRecord(shared, chain, report = null, { rehearsal = false
   refuse(rehearsal || (!report.rehearsal && !report.referencePlan), "the gate report is a rehearsal or a reference plan; a page for the public chain needs the real one");
   refuse(lower(report.plan.arguments.feeTo) === lower(shared.feeTo.address), "the gate report has another fee address");
   refuse(report.finalized && Number.isSafeInteger(report.finalized.number) && /^0x[0-9a-f]{64}$/.test(report.finalized.hash), "the gate report has no finalized block");
+  refuse(lower(report.plan.arguments.firstDepositor) !== ZERO_ADDRESS, "the gate report is of a factory with open first deposits");
   const pairs = report.pairs.filter((p) => p.created);
-  refuse(pairs.length === report.pairs.length && pairs.length > 0, "the gate report does not show every planned pair created");
+  refuse(pairs.length === report.pairs.length && pairs.length > 0, "the gate report does not show every planned pair created: make the first deposit of each (first-deposit.mjs), then run the post gate again");
+  // A page for a pool nobody opened would show an empty market; and an opened pool is the proof that the first
+  // deposit went through the guarded path (only the first depositor can open a pool of this factory).
+  refuse(pairs.every((p) => p.state === "open"), "the gate report shows a planned pair that is not open yet: make its first deposit (first-deposit.mjs), then run the post gate again");
   const contracts = report.plan.contracts;
   return {
     ...base,
@@ -102,7 +110,8 @@ function existsRecord(dir) {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+// isMain: a start through a symbolic link must not do nothing and exit 0 (review R309-MC-4).
+if (isMain(import.meta.url)) {
   try {
     main(process.argv.slice(2));
   } catch (error) {

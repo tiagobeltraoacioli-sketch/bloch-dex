@@ -22,6 +22,8 @@ interface MultichainTestVm {
 contract MultichainScriptTest is TestBase {
     MultichainTestVm constant cheats = MultichainTestVm(address(uint160(uint256(keccak256("hevm cheat code")))));
     address constant FEE_TO = 0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544;
+    /// @dev The owner's depositing account of the plan under test.
+    address constant DEPOSITOR = address(0xA11CE);
     bytes constant DEPLOYER_RUNTIME =
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
@@ -57,7 +59,7 @@ contract MultichainScriptTest is TestBase {
     /// @dev One test, in sequence: the script reads the process environment, which parallel tests would share.
     function testScriptRefusalsDeploymentIdempotenceAndFirstDepositor() public {
         // 1. Refusals, before anything exists.
-        (address factory, address router, address lens) = _env(address(0));
+        (address factory, address router, address lens) = _env(DEPOSITOR);
         vm.chainId(1);
         vm.expectRevert(bytes("MC: CHAIN_ID"));
         script.run();
@@ -70,7 +72,7 @@ contract MultichainScriptTest is TestBase {
         cheats.setEnv("MC_EXPECT_ROUTER", cheats.toString(address(0xdead)));
         vm.expectRevert(bytes("MC: PLAN_ROUTER"));
         script.run();
-        _env(address(0));
+        _env(DEPOSITOR);
         cheats.setEnv("MC_WRAPPED_CODE_HASH", cheats.toString(bytes32(uint256(1))));
         vm.expectRevert(bytes("MC: WRAPPED_CODE"));
         script.run();
@@ -78,9 +80,13 @@ contract MultichainScriptTest is TestBase {
         vm.expectRevert(bytes("MC: CREATE2_DEPLOYER"));
         script.run();
         cheats.etch(script.CREATE2_DEPLOYER(), DEPLOYER_RUNTIME);
+        // Open first deposits are refused before anything is sent (review R309-MC-1).
+        _env(address(0));
+        vm.expectRevert(bytes("MC: FIRST_DEPOSITOR"));
+        script.run();
 
         // 2. The deployment: planned addresses, the owner's fee address, the release candidate's pair code.
-        _env(address(0));
+        _env(DEPOSITOR);
         assertEq(script.CREATE2_DEPLOYER().codehash, script.CREATE2_DEPLOYER_CODE_HASH());
         assertEq(script.SALT(), keccak256("postern-dex.multichain.v1"));
         DeployMultichain.Result memory r = script.run();
@@ -89,7 +95,7 @@ contract MultichainScriptTest is TestBase {
         assertEq(r.lens, lens);
         assertTrue(!r.factoryExisted && !r.routerExisted && !r.lensExisted);
         assertEq(UniswapV2Factory(factory).feeTo(), FEE_TO);
-        assertEq(UniswapV2Factory(factory).firstDepositor(), address(0));
+        assertEq(UniswapV2Factory(factory).firstDepositor(), DEPOSITOR);
         assertEq(UniswapV2Factory(factory).INIT_CODE_PAIR_HASH(), script.PAIR_INIT_CODE_HASH());
         assertEq(BDexRouter(payable(router)).WBLCH(), address(wrapped));
         assertEq(address(BDexLens(lens).factory()), factory);
