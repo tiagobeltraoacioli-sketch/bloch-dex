@@ -755,6 +755,107 @@ describe('mainnet route', () => {
     expect(requests).toHaveLength(0);
   });
 
+  // Review 318: the token sheet of the swap card must be the select by another face.
+  describe('token sheet of the swap card', () => {
+    const flow = async (choose: 'select' | 'sheet') => {
+      const user = userEvent.setup();
+      const { rpc, state } = fakeChain();
+      const calls: string[] = [];
+      const logged: Rpc = (method, params) => {
+        calls.push(stableJson([method, params]));
+        return rpc(method, params);
+      };
+      const { wallet, requests } = fakeWallet(state);
+      const view = render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={logged}
+          wallet={wallet}
+          planned={PLANNED}
+        />,
+      );
+      await screen.findByLabelText('Finalized balances');
+      const before = calls.length;
+      if (choose === 'select') {
+        await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+        await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+      } else {
+        await user.click(screen.getByTestId('token-chip-pay'));
+        await user.click(await screen.findByRole('button', { name: 'Choose bUSDC' }));
+        await user.click(screen.getByTestId('token-chip-receive'));
+        await user.click(await screen.findByRole('button', { name: 'Choose BLCH' }));
+      }
+      const selected = {
+        pay: (screen.getByLabelText('You pay') as HTMLSelectElement).value,
+        receive: (screen.getByLabelText('You receive') as HTMLSelectElement).value,
+      };
+      await user.type(screen.getByLabelText('Amount'), '10');
+      await user.click(screen.getByRole('button', { name: 'Get quote' }));
+      const quote = (await screen.findByLabelText('Quote')).textContent;
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Get quote' }).getAttribute('aria-busy'),
+        ).toBeNull(),
+      );
+      const approve = await screen.findByRole('button', { name: /^Approve 10 bUSDC/ });
+      await user.click(approve);
+      await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+      const result = {
+        selected,
+        quote,
+        rpc: calls.slice(before),
+        wallet: stableJson(requests),
+      };
+      view.unmount();
+      localStorage.clear();
+      return result;
+    };
+
+    it('passes the same token keys and causes the same RPC and wallet calls as the select', async () => {
+      const bySelect = await flow('select');
+      const bySheet = await flow('sheet');
+      expect(bySheet.selected).toEqual(bySelect.selected);
+      expect(bySheet.selected.pay.toLowerCase()).toBe(BUSDC);
+      expect(bySheet.quote).toBe(bySelect.quote);
+      expect(bySheet.rpc).toEqual(bySelect.rpc);
+      expect(bySheet.wallet).toBe(bySelect.wallet);
+      expect(bySelect.rpc.length).toBeGreaterThan(0);
+    });
+
+    it('lists exactly the options of the select and marks a read in progress on Get quote', async () => {
+      const user = userEvent.setup();
+      const { rpc, state } = fakeChain();
+      const { wallet } = fakeWallet(state);
+      render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={rpc}
+          wallet={wallet}
+          planned={PLANNED}
+        />,
+      );
+      await screen.findByLabelText('Finalized balances');
+      const options = [...(screen.getByLabelText('You pay') as HTMLSelectElement).options].map(
+        (o) => o.textContent,
+      );
+      await user.click(screen.getByTestId('token-chip-pay'));
+      const dialog = await screen.findByRole('dialog');
+      expect(
+        within(dialog)
+          .getAllByRole('button', { name: /^Choose / })
+          .map((b) => b.getAttribute('aria-label')),
+      ).toEqual(options.map((o) => `Choose ${o}`));
+      await user.click(within(dialog).getByRole('button', { name: 'Close dialog' }));
+      await user.type(screen.getByLabelText('Amount'), '1');
+      const button = screen.getByRole('button', { name: 'Get quote' });
+      await user.click(button);
+      await waitFor(() => expect(button.getAttribute('aria-busy')).toBeNull());
+      expect(button.textContent).toBe('Get quote');
+    });
+  });
+
   it('blocks a swap above the finalized balance and refuses out-of-range settings', async () => {
     const user = userEvent.setup();
     const { rpc, state } = fakeChain();

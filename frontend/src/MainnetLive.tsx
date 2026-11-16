@@ -9,8 +9,26 @@
 // tightens the signed minimum after a better one (mainnet/quotecheck.ts); a
 // worse price needs an explicit reconfirmation. A sent swap holds the Swap button
 // until its outcome is known (mainnet/pendingswap.ts).
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  CircleCheck,
+  PanelRightOpen,
+  LoaderCircle,
+  RefreshCw,
+  ShieldCheck,
+  Wallet,
+} from 'lucide-react';
+import { GateGlyph } from './shell/BrandMark';
+import { CopyButton } from './ui/CopyButton';
+import { nextStep } from './ui/next-step';
+import { TokenSheet } from './ui/TokenSheet';
+import { Disclosure } from './ui/Disclosure';
+import { Expander } from './ui/Expander';
+import { ReferencePanel } from './ui/ReferencePanel';
+import { DeadlineClock } from './ui/DeadlineClock';
+import { quoteRate } from './ui/rate';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
 import { approveTransaction, ensureChain, sendTransaction, swapTransaction } from './devnet4/swap';
@@ -96,16 +114,28 @@ function ExplorerLink({
   kind: 'tx' | 'address';
   value: string;
 }) {
-  if (!network.explorerUrl) return <code>{value}</code>;
+  const what = kind === 'tx' ? 'transaction hash' : 'address';
+  if (!network.explorerUrl)
+    return (
+      <span className="hashline">
+        <code>{value}</code>
+        <CopyButton value={value} what={what} />
+      </span>
+    );
   return (
-    <a
-      href={`${network.explorerUrl.replace(/\/$/, '')}/${kind}/${value}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      referrerPolicy="no-referrer"
-    >
-      <code>{value}</code>
-    </a>
+    <span className="hashline">
+      <a
+        href={`${network.explorerUrl.replace(/\/$/, '')}/${kind}/${value}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        referrerPolicy="no-referrer"
+        title="Open in the explorer"
+      >
+        <code>{value}</code>
+        <ArrowUpRight size={14} aria-hidden="true" />
+      </a>
+      <CopyButton value={value} what={what} />
+    </span>
   );
 }
 
@@ -215,6 +245,24 @@ export default function MainnetLive({
         : Promise.resolve('unknown'),
     intervalMs: receiptPollMs,
   });
+  // The same conditions as the status block below, named for the layout.
+  const ready = !failure && state?.status === 'live' && !!snapshot;
+  const loading = !failure && (!state || (state.status === 'live' && !snapshot));
+  // Presentation: the reference layer is a side panel unless a pool carries a notice the user must see
+  // (excess above the reserves, a side at its cap, the k ceiling, held bUSDC exits) or the wallet is on
+  // another chain; then it stays on the page.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const attention =
+    exitsBlocked(hold) ||
+    // A wallet on another chain: the network block with its switch button stays on the page.
+    (wallet.account !== null && BigInt(wallet.account.chainId) !== BigInt(network.chainId)) ||
+    (snapshot?.pools ?? []).some(
+      (p) =>
+        (p.excess && (p.excess.excess0 > 0n || p.excess.excess1 > 0n)) ||
+        atKCeiling(p) ||
+        headroom(p.reserve0 + (p.excess?.excess0 ?? 0n), p.cap0) === 0n ||
+        headroom(p.reserve1 + (p.excess?.excess1 ?? 0n), p.cap1) === 0n,
+    );
   return (
     <section className="page devnet4-page mainnet-page" aria-labelledby="mainnet-title">
       <div className="section-heading">
@@ -237,7 +285,6 @@ export default function MainnetLive({
           </button>
         )}
       </div>
-      <NetworkPanel network={network} wallet={wallet} />
       {failure ? (
         <p className="form-error" role="alert">
           Mainnet reads are unavailable: {failure}. No transaction can be sent from this page.
@@ -257,16 +304,18 @@ export default function MainnetLive({
         <>
           <FinalityAge finalizedAt={snapshot.finalized} now={now} />
           <BridgeHoldBanner hold={hold} network={network} />
-          <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
-          <PoolsTable
-            snapshot={snapshot}
-            network={network}
-            rpc={rpc}
-            wallet={wallet}
-            pendingSwap={pendingSwap}
-            now={now}
-            heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
-          />
+        </>
+      )}
+      {ready && state.status === 'live' && snapshot && (
+        <TrustStrip
+          snapshot={snapshot}
+          attention={attention}
+          onDetails={() => setDetailsOpen(true)}
+        />
+      )}
+      {/* The swap card is the page; verification and reference sit in the layer after it. */}
+      {ready && state.status === 'live' && snapshot ? (
+        <div className="live-hero">
           <SwapPanel
             key={`${snapshot.finalized.hash}:${pendingSwap.contextKey}`}
             network={network}
@@ -280,10 +329,92 @@ export default function MainnetLive({
             hold={hold}
             holdToken={holdSource?.token}
           />
-        </>
+        </div>
+      ) : (
+        loading && <LoadingBlocks />
       )}
-      {network.bridges.length > 0 && <BridgePanel network={network} />}
+      {/* Docked (part of the page) until the route is live, and whenever a pool carries a notice. */}
+      <ReferencePanel
+        docked={!ready || attention}
+        open={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        title="Pools and verification"
+      >
+        {ready && state.status === 'live' && snapshot && (
+          <PoolsTable
+            snapshot={snapshot}
+            network={network}
+            rpc={rpc}
+            wallet={wallet}
+            pendingSwap={pendingSwap}
+            now={now}
+            heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
+          />
+        )}
+        <NetworkPanel network={network} wallet={wallet} />
+        {ready && state.status === 'live' && snapshot && (
+          <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
+        )}
+        {network.bridges.length > 0 && <BridgePanel network={network} />}
+      </ReferencePanel>
     </section>
+  );
+}
+
+/** Placeholders with the height of the swap card while the record and the finalized block are checked. */
+function LoadingBlocks() {
+  return (
+    <div className="live-hero" aria-hidden="true">
+      <div className="card skeleton-card">
+        <span className="skeleton skeleton-title" />
+        <span className="skeleton skeleton-leg" />
+        <span className="skeleton skeleton-leg" />
+        <span className="skeleton skeleton-line" />
+        <span className="skeleton skeleton-button" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One line of what stands behind the page (verified record, caps in use) and the button that opens the full
+ * reference layer. A summary of figures shown in full there; it replaces nothing.
+ */
+function TrustStrip({
+  snapshot,
+  attention,
+  onDetails,
+}: {
+  snapshot: Snapshot;
+  attention: boolean;
+  onDetails: () => void;
+}) {
+  return (
+    <div className="trust-strip" data-testid="trust-strip">
+      <span className="trust-item">
+        <ShieldCheck size={16} aria-hidden="true" /> Record verified
+      </span>
+      {snapshot.pools.map((p) => (
+        <span className="trust-item" key={p.address}>
+          {p.token0.symbol}/{p.token1.symbol} caps in use: {percent(p.reserve0, p.cap0)}% ·{' '}
+          {percent(p.reserve1, p.cap1)}%
+        </span>
+      ))}
+      {attention ? (
+        <button
+          type="button"
+          className="trust-details"
+          data-attention
+          onClick={() => document.querySelector('.reference')?.scrollIntoView({ block: 'start' })}
+        >
+          <AlertTriangle size={16} aria-hidden="true" /> Notices and network below
+        </button>
+      ) : (
+        <button type="button" className="trust-details" onClick={onDetails}>
+          <PanelRightOpen size={16} aria-hidden="true" /> Pools and verification
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -425,12 +556,13 @@ function FinalityAge({
       : `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
   if (seconds < FINALIZED_AGE_WARN_SECONDS)
     return (
-      <p className="microcopy" aria-label="Finality age">
-        Finalized block {finalizedAt.number.toString()} is {age} old.
+      <p className="microcopy finality-line" aria-label="Finality age">
+        <CircleCheck size={16} aria-hidden="true" /> Finalized block {finalizedAt.number.toString()}{' '}
+        is {age} old.
       </p>
     );
   return (
-    <p className="form-error" role="alert" aria-label="Finality age">
+    <p className="form-error finality-line" role="alert" aria-label="Finality age">
       <AlertTriangle size={16} /> {wording.finality} looks stalled: finalized block{' '}
       {finalizedAt.number.toString()} is {age} old. Pools, balances, caps and quotes on this page
       are from that block. A swap executes on the latest state, and anything mined now stays out of
@@ -650,6 +782,16 @@ function PoolsTable({
     return (
       <>
         {formatAmount(cap, t.decimals)} {t.symbol} ({percent(reserve, cap)}% used)
+        {cap > 0n && (
+          <span
+            className="cap-meter"
+            aria-hidden="true"
+            data-full={room === 0n || closed || undefined}
+            style={
+              { '--used': `${Math.min(100, Number(percent(reserve, cap)))}%` } as CSSProperties
+            }
+          />
+        )}
         <br />
         <span className={room === 0n || closed ? 'form-error' : 'muted'}>
           {room === null
@@ -664,9 +806,9 @@ function PoolsTable({
     );
   };
   return (
-    <div className="card">
+    <div className="card pools-card">
       <h2>Pools at finalized block {snapshot.finalized.number.toString()}</h2>
-      <table className="devnet4-pools">
+      <table className="devnet4-pools pool-cards">
         <thead>
           <tr>
             <th scope="col">Pool</th>
@@ -682,7 +824,7 @@ function PoolsTable({
                 <br />
                 <code>{short(p.address)}</code>
               </th>
-              <td>
+              <td data-label="Reserves">
                 {formatAmount(p.reserve0, p.token0.decimals)} {p.token0.symbol}
                 <br />
                 {formatAmount(p.reserve1, p.token1.decimals)} {p.token1.symbol}
@@ -712,7 +854,7 @@ function PoolsTable({
                   </div>
                 )}
               </td>
-              <td>
+              <td data-label="Reserve caps">
                 {side(p.reserve0, p.excess?.excess0 ?? 0n, p.cap0, p.token0, closedByExcess(p))}
                 <br />
                 {side(p.reserve1, p.excess?.excess1 ?? 0n, p.cap1, p.token1, closedByExcess(p))}
@@ -749,6 +891,7 @@ function SwapPanel({
   holdToken?: Address;
 }) {
   const [holdAccepted, setHoldAccepted] = useState(false);
+  const [quoting, setQuoting] = useState(false);
   const options = useMemo<Option[]>(
     () =>
       snapshot.tokens.map((token) =>
@@ -1146,70 +1289,166 @@ function SwapPanel({
   const holdBlocksSend = buysHeld && exitsBlocked(hold) && !holdAccepted;
   const uses = signed ? headroomUse(snapshot.pools, signed.path, signed.amounts) : [];
   const symbolOf = (a: Address) => options.find((o) => o.token.address === a)?.label ?? short(a);
+  // The token of a leg changes through one handler, whether the select or the token sheet asks.
+  const choosePay = (key: string) => (setInKey(key), setAttempt(1), clear());
+  const chooseReceive = (key: string) => (setOutKey(key), setAttempt(1), clear());
+  const choices = options.map((o) => ({
+    key: o.key,
+    label: o.label,
+    detail: balances
+      ? o.native
+        ? formatAmount(balances.native, 18, 6)
+        : formatAmount(balances.tokens.get(o.token.address) ?? 0n, o.token.decimals)
+      : undefined,
+  }));
+  const rate =
+    quote && signed && input
+      ? quoteRate(quote.amountIn, input.token.decimals, signed.amountOut)
+      : null;
+  // Presentation only: the line that says what the buttons below will do next.
+  const next = nextStep({
+    connected: !!wallet.account,
+    walletPending: wallet.pending,
+    onChain,
+    chainId: d.chainId,
+    storageBlocked: !!pendingSwap.storageProblem || !!pendingSwap.unreadable,
+    busy,
+    holdOpen: pendingSwap.open,
+    hasQuote: !!quote,
+    staleForm,
+    shortBalance,
+    quoteBlocked: blocksSwap(check),
+    approval:
+      needsApproval && quote && input
+        ? `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`
+        : null,
+    acknowledgementMissing: holdBlocksSend,
+  });
+  const earlier = history.filter(
+    (h) => !steps.some((x) => x.hash === h.hash) && tracked?.hash !== h.hash,
+  );
 
   return (
-    <div className="card devnet4-swap">
+    <div
+      className="card devnet4-swap swap-card"
+      data-phase={quote ? 'quoted' : 'form'}
+      data-quoting={quoting || undefined}
+      data-hold={pendingSwap.open || undefined}
+    >
       <h2>Swap</h2>
-      <div className="devnet4-form">
-        <label className="field-label">
-          You pay
-          <select
-            value={inKey}
-            onChange={(e) => (setInKey(e.target.value), setAttempt(1), clear())}
-          >
-            {options.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field-label">
-          Amount
-          <input
-            className="text-input"
-            inputMode="decimal"
-            value={amount}
-            onChange={(e) => (setAmount(e.target.value), setAttempt(1), clear())}
-          />
-        </label>
-        <label className="field-label">
-          You receive
-          <select
+      <div className="devnet4-form swap-form">
+        <div className="swap-leg" data-leg="pay">
+          <label className="field-label token-field">
+            You pay
+            <select
+              className="token-native-select"
+              tabIndex={-1}
+              aria-hidden="true"
+              value={inKey}
+              onChange={(e) => choosePay(e.target.value)}
+            >
+              {options.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TokenSheet caption="You pay" value={inKey} options={choices} onChoose={choosePay} />
+          <label className="field-label amount-field">
+            Amount
+            <input
+              className="text-input amount-input"
+              inputMode="decimal"
+              placeholder="0"
+              autoComplete="off"
+              spellCheck={false}
+              value={amount}
+              onChange={(e) => (setAmount(e.target.value), setAttempt(1), clear())}
+            />
+          </label>
+        </div>
+        <div className="swap-gate" aria-hidden="true">
+          <GateGlyph />
+        </div>
+        <div className="swap-leg" data-leg="receive">
+          <label className="field-label token-field">
+            You receive
+            <select
+              className="token-native-select"
+              tabIndex={-1}
+              aria-hidden="true"
+              value={outKey}
+              onChange={(e) => chooseReceive(e.target.value)}
+            >
+              {options.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TokenSheet
+            caption="You receive"
             value={outKey}
-            onChange={(e) => (setOutKey(e.target.value), setAttempt(1), clear())}
-          >
-            {options.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field-label">
-          Slippage tolerance (%)
-          <input
-            className="text-input"
-            inputMode="decimal"
-            value={slippage}
-            onChange={(e) => (setSlippage(e.target.value), clear())}
+            options={choices}
+            onChoose={chooseReceive}
           />
-        </label>
-        <p className="microcopy" aria-label="Slippage note">
-          Plan to lose up to this share of your output. Block order follows the tip paid, so someone
-          can trade just before and after you and keep the difference, up to your minimum. Keep it
-          low, and split large swaps.
-        </p>
-        <label className="field-label">
-          Deadline (minutes)
-          <input
-            className="text-input"
-            inputMode="numeric"
-            value={deadline}
-            onChange={(e) => (setDeadline(e.target.value), clear())}
-          />
-        </label>
-        <button className="button secondary" onClick={() => void getQuote()}>
+          {/* Mirror of "Expected output" in the quote below, which is the accessible figure. */}
+          <div className="amount-field amount-mirror" aria-hidden="true">
+            <span className="amount-output" data-empty={!(quote && signed && output) || undefined}>
+              {quote && signed && output
+                ? formatAmount(signed.amountOut, output.token.decimals)
+                : '\u2014'}
+            </span>
+          </div>
+        </div>
+        <Disclosure
+          className="swap-settings"
+          summary={() => (
+            <>
+              <span className="settings-label">Settings</span>
+              <span className="chip">Slippage {slippage}%</span>
+              <span className="chip">Deadline {deadline} min</span>
+            </>
+          )}
+        >
+          <div className="swap-terms">
+            <label className="field-label">
+              Slippage tolerance (%)
+              <input
+                className="text-input"
+                inputMode="decimal"
+                value={slippage}
+                onChange={(e) => (setSlippage(e.target.value), clear())}
+              />
+            </label>
+            <label className="field-label">
+              Deadline (minutes)
+              <input
+                className="text-input"
+                inputMode="numeric"
+                value={deadline}
+                onChange={(e) => (setDeadline(e.target.value), clear())}
+              />
+            </label>
+            <p className="microcopy" aria-label="Slippage note">
+              Plan to lose up to this share of your output. Block order follows the tip paid, so
+              someone can trade just before and after you and keep the difference, up to your
+              minimum. Keep it low, and split large swaps.
+            </p>
+          </div>
+        </Disclosure>
+        <button
+          className="button secondary get-quote"
+          aria-busy={quoting || undefined}
+          onClick={() => {
+            // Presentation: the card shows that a quote is being read. getQuote itself is unchanged.
+            setQuoting(true);
+            void getQuote().finally(() => setQuoting(false));
+          }}
+        >
+          {quoting && <LoaderCircle size={16} className="spin" aria-hidden="true" />}
           Get quote
         </button>
       </div>
@@ -1241,45 +1480,55 @@ function SwapPanel({
       )}
       {quote && signed && input && output && (
         <>
-          <dl className="detail-list" aria-label="Quote">
-            <dt>Route</dt>
-            <dd>{signed.path.map(symbolOf).join(' → ')}</dd>
-            <dt>Amount in</dt>
-            <dd>
-              {formatAmount(quote.amountIn, input.token.decimals)} {input.label}
-            </dd>
-            <dt>Expected output</dt>
-            <dd>
-              {formatAmount(signed.amountOut, output.token.decimals)} {output.label}
-            </dd>
-            <dt>Minimum received</dt>
-            <dd>
-              {formatAmount(signed.minimumOut, output.token.decimals)} {output.label} ({slippage}%
-              slippage{tightened && ' from the better price at the latest block'})
-            </dd>
-            <dt>Quoted at</dt>
-            <dd>
-              {reconfirmed
-                ? `Latest block ${quote.blockNumber.toString()}, not finalized; you reconfirmed this price`
-                : `Finalized block ${quote.blockNumber.toString()}`}{' '}
-              (by the deployed lens, within the reserve caps)
-              {tightened &&
-                `. The latest block returns more than block ${quote.blockNumber.toString()}, so the expected output and minimum use the latest price`}
-            </dd>
-            <dt>Reserve cap headroom used</dt>
-            <dd>
-              {uses.length === 0
-                ? 'No capped reserve on this route'
-                : uses
-                    .map(
-                      (u) =>
-                        `${u.pool.token0.symbol}/${u.pool.token1.symbol}: ${percent(u.bps, 10_000n)}% of the ${u.token.symbol} headroom`,
-                    )
-                    .join('; ')}
-            </dd>
-            <dt>Deadline</dt>
-            <dd>{deadlineMinutes} minutes after you confirm (wall-clock seconds)</dd>
-          </dl>
+          <Expander className="quote-box" more="All quote details" less="Fewer quote details">
+            <dl className="detail-list quote-list" aria-label="Quote">
+              {rate !== null && (
+                <>
+                  <dt className="glance">Rate</dt>
+                  <dd className="glance">
+                    1 {input.label} = {formatAmount(rate, output.token.decimals)} {output.label}
+                  </dd>
+                </>
+              )}
+              <dt>Route</dt>
+              <dd>{signed.path.map(symbolOf).join(' → ')}</dd>
+              <dt>Amount in</dt>
+              <dd>
+                {formatAmount(quote.amountIn, input.token.decimals)} {input.label}
+              </dd>
+              <dt>Expected output</dt>
+              <dd>
+                {formatAmount(signed.amountOut, output.token.decimals)} {output.label}
+              </dd>
+              <dt className="glance">Minimum received</dt>
+              <dd className="glance">
+                {formatAmount(signed.minimumOut, output.token.decimals)} {output.label} ({slippage}%
+                slippage{tightened && ' from the better price at the latest block'})
+              </dd>
+              <dt>Quoted at</dt>
+              <dd>
+                {reconfirmed
+                  ? `Latest block ${quote.blockNumber.toString()}, not finalized; you reconfirmed this price`
+                  : `Finalized block ${quote.blockNumber.toString()}`}{' '}
+                (by the deployed lens, within the reserve caps)
+                {tightened &&
+                  `. The latest block returns more than block ${quote.blockNumber.toString()}, so the expected output and minimum use the latest price`}
+              </dd>
+              <dt>Reserve cap headroom used</dt>
+              <dd>
+                {uses.length === 0
+                  ? 'No capped reserve on this route'
+                  : uses
+                      .map(
+                        (u) =>
+                          `${u.pool.token0.symbol}/${u.pool.token1.symbol}: ${percent(u.bps, 10_000n)}% of the ${u.token.symbol} headroom`,
+                      )
+                      .join('; ')}
+              </dd>
+              <dt>Deadline</dt>
+              <dd>{deadlineMinutes} minutes after you confirm (wall-clock seconds)</dd>
+            </dl>
+          </Expander>
           {check?.status === 'worse' && (
             <div className="form-error" role="alert" aria-label="Stale quote">
               <AlertTriangle size={16} /> The price moved after the finalized block. At the latest
@@ -1324,7 +1573,7 @@ function SwapPanel({
         </>
       )}
       {!wallet.account ? (
-        <div className="wallet-options">
+        <div className="wallet-options" data-wallet-connect tabIndex={-1}>
           {wallet.wallets.length === 0 && <p className="muted">No browser wallet found.</p>}
           {wallet.wallets.map((w) => (
             <button
@@ -1339,8 +1588,8 @@ function SwapPanel({
           {wallet.error && <p className="form-error">{wallet.error}</p>}
         </div>
       ) : (
-        <div className="devnet4-actions">
-          <p className="muted">
+        <div className="devnet4-actions swap-actions">
+          <p className="muted wallet-line">
             Wallet <code>{wallet.account.address}</code> on chain{' '}
             {BigInt(wallet.account.chainId).toString()}
             {!onChain && ` (it will be asked to switch to chain ${d.chainId})`}
@@ -1379,6 +1628,9 @@ function SwapPanel({
           </button>
         </div>
       )}
+      <p className="next-step" data-tone={next.tone} data-testid="next-step">
+        {next.text}
+      </p>
       {pendingSwap.storageProblem && (
         <p role="alert" className="form-error">
           {pendingSwap.storageProblem} No new transaction can be sent.
@@ -1387,6 +1639,13 @@ function SwapPanel({
       {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
       {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
         <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
+      )}
+      <h3 className="activity-title">Activity</h3>
+      {wallet.account && earlier.length === 0 && steps.length === 0 && !tracked && (
+        <p className="activity-empty">No transactions from this page yet.</p>
+      )}
+      {!wallet.account && (
+        <p className="activity-empty">Transactions you send from this page are listed here.</p>
       )}
       {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
         <ol className="devnet4-steps" aria-label="Earlier transactions">
@@ -1420,6 +1679,14 @@ function SwapPanel({
               <strong>{tracked.label}</strong>: {tracked.state}{' '}
               {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
               <span className="muted"> {tracked.detail}</span>
+              {tracked.deadline > 0n &&
+                (tracked.state === 'pending' || tracked.state === 'unknown') && (
+                  <DeadlineClock
+                    deadline={tracked.deadline}
+                    sentAtMs={tracked.sentAtMs}
+                    now={now}
+                  />
+                )}
               {tracked.state === 'failed' && tracked.retry && tracked.cause && (
                 <p className="notice" role="status" aria-label="Why the swap reverted">
                   {revertText(tracked.retry, tracked.cause)}

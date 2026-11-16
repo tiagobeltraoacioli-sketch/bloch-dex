@@ -1,6 +1,7 @@
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { siteMeta } from './site-meta';
 
 const env =
   (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
@@ -48,7 +49,8 @@ const RENDER_OVERRIDES = [
 ];
 
 export default defineConfig(({ command, mode }) => ({
-  plugins: [react()],
+  // POSTERN_SITE_URL: the https URL the build is published at (social-preview tags; see site-meta.ts).
+  plugins: [react(), siteMeta(env.POSTERN_SITE_URL)],
   define: {
     __POSTERN_LOCAL_RENDER__: JSON.stringify(
       command === 'serve' ||
@@ -73,6 +75,8 @@ export default defineConfig(({ command, mode }) => ({
         '../deployments/networks.json',
         '../deployments/devnet4/mainnet-procedure-2pairs-20261016',
         '../deployments/mainnet',
+        // Per-chain files, read by name for the network switcher (src/shell/chain-index.ts).
+        '../deployments',
         mainnetNetwork,
         mainnetRecord,
       ],

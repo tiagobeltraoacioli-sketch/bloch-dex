@@ -1,10 +1,16 @@
 import { QrWalletButton } from './QrWalletButton';
 import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ArrowRight, ChevronDown, Info, LoaderCircle, Wallet } from 'lucide-react';
+import { ArrowRight, Info, LoaderCircle, Wallet } from 'lucide-react';
 import { parseAmount } from './amm';
 import { compactUsd, TOKENS, usd } from './data';
 import { Detail, ExternalLink, Modal, PairIcons } from './components';
 import LiquidityDialog from './LiquidityDialog';
+import { Shell } from './shell/Shell';
+import { GateGlyph } from './shell/BrandMark';
+import { NetworkSwitcher } from './shell/NetworkSwitcher';
+import { WalletStatus } from './shell/WalletStatus';
+import { networkEntries } from './shell/networks';
+import { CHAIN_INDEX, indexedStatus, plannedFromIndex } from './shell/chain-index';
 import LivePoolsRuntime from './LivePoolsRuntime';
 import Pools from './Pools';
 import Portfolio from './Portfolio';
@@ -52,6 +58,47 @@ const MAINNET_HOLD_URL =
   renderOverride(import.meta.env.VITE_BRIDGE_ETH_RPC_URL) ??
   MAINNET_NETWORK.bridges.find((b) => b.status)?.status?.ethRpcUrl;
 const MAINNET_ETH_RPC = MAINNET_HOLD_URL ? httpRpc(MAINNET_HOLD_URL) : undefined;
+// Header network switcher (presentation only; see shell/networks.ts).
+// The public chains come from their reviewed files (shell/chain-index.ts). They are selectable only when the
+// address of the multichain site is configured (VITE_MULTICHAIN_URL); this bundle holds none of their endpoints.
+const MULTICHAIN_URL: string | undefined = /^(https:\/\/|\.\/|\/)/.test(
+  import.meta.env.VITE_MULTICHAIN_URL ?? '',
+)
+  ? import.meta.env.VITE_MULTICHAIN_URL
+  : undefined;
+const NETWORKS = networkEntries(
+  [
+    {
+      key: 'bloch-l2',
+      name: 'Bloch L2',
+      chainId: MAINNET_NETWORK.chainId,
+      href: '#/mainnet',
+      status: MAINNET_NETWORK.rpcLive ? 'Guarded launch' : 'Not yet live',
+    },
+    ...(MULTICHAIN_URL
+      ? CHAIN_INDEX.map((c) => ({
+          key: c.key,
+          name: c.name,
+          chainId: c.chainId,
+          href: `${MULTICHAIN_URL}#/${c.key}`,
+          status: indexedStatus(c),
+        }))
+      : []),
+    ...(DEVNET4_ROUTE
+      ? [
+          {
+            key: 'devnet4',
+            name: 'Bloch L2 devnet4',
+            chainId: 700771,
+            href: '#/devnet4',
+            status: 'Zero value',
+          },
+        ]
+      : []),
+    { key: 'preview', name: 'Preview', href: '#/trade', status: 'Sample data, no network' },
+  ],
+  [{ key: 'bloch-l2', name: 'Bloch L2', chainId: MAINNET_NETWORK.chainId }, ...plannedFromIndex()],
+);
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
@@ -133,6 +180,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean
   render() {
     return this.state.failed ? (
       <main className="error-page">
+        <GateGlyph size={40} />
         <h1>Something interrupted the preview.</h1>
         <p>Your wallet and funds have not been changed.</p>
         <button className="button primary" onClick={() => location.reload()}>
@@ -193,65 +241,65 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
   }
 
   return (
-    <div className="app-shell">
-      <a
-        href="#main-content"
-        className="skip-link"
-        onClick={(e) => {
-          e.preventDefault();
-          main.current?.focus();
-        }}
-      >
-        Skip to content
-      </a>
-      <header className="topbar">
-        <div className="topbar-inner">
-          <a className="brand" href="#/trade" aria-label="Postern home">
-            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
-            <span>POSTERN</span>
-          </a>
-          <nav className="main-nav" aria-label="Main navigation">
-            {(['trade', 'pools', 'portfolio'] as Page[]).map((p) => (
-              <a key={p} href={`#/${p}`} aria-current={page === p ? 'page' : undefined}>
-                {p === 'trade' ? 'Trade' : p === 'pools' ? 'Pools' : 'Portfolio'}
-              </a>
-            ))}
-            {liveAvailable && <a href="#/live-pools">Live read</a>}
-            <a href="#/mainnet">Mainnet</a>
-            {DEVNET4_ROUTE && <a href="#/devnet4">Devnet4 live</a>}
-          </nav>
-          <div className="header-actions">
-            <button className="network-button" onClick={() => setModal('network')}>
-              <span className="status-dot" />
-              <span>
+    <Shell
+      brandLabel="Postern home"
+      navLabel="Main navigation"
+      network="preview"
+      mainRef={main}
+      nav={
+        <>
+          {(['trade', 'pools', 'portfolio'] as Page[]).map((p) => (
+            <a key={p} href={`#/${p}`} aria-current={page === p ? 'page' : undefined}>
+              {p === 'trade' ? 'Trade' : p === 'pools' ? 'Pools' : 'Portfolio'}
+            </a>
+          ))}
+          {liveAvailable && <a href="#/live-pools">Live read</a>}
+          <a href="#/mainnet">Mainnet</a>
+          {DEVNET4_ROUTE && <a href="#/devnet4">Devnet4 live</a>}
+        </>
+      }
+      actions={
+        <>
+          <NetworkSwitcher
+            current="preview"
+            entries={NETWORKS}
+            label={
+              <>
                 Bloch L2 <span className="muted">· Preview</span>
-              </span>
-              <ChevronDown size={15} />
-            </button>
-            <button className="button connect-button" onClick={() => setModal('wallet')}>
-              <Wallet size={16} />
-              <span>
-                {wallet.account
-                  ? `${wallet.account.address.slice(0, 6)}…${wallet.account.address.slice(-4)}`
-                  : 'Connect wallet'}
-              </span>
-            </button>
-          </div>
-        </div>
-      </header>
-      <main id="main-content" ref={main} tabIndex={-1} className="main-content">
-        {page === 'trade' && <Trade slippage={slippage} onSettings={() => setModal('settings')} />}
-        {page === 'pools' && (
-          <Pools
-            onPool={setPool}
-            onAdd={(p) => openLiquidity({ mode: 'add', pool: p })}
-            onGuide={() => setModal('guide')}
+              </>
+            }
+            footer={(close) => (
+              <button
+                className="popover-action"
+                onClick={() => {
+                  close();
+                  setModal('network');
+                }}
+              >
+                <Info size={16} aria-hidden="true" /> About the preview network
+              </button>
+            )}
           />
-        )}
-        {page === 'portfolio' && <Portfolio onLiquidity={openLiquidity} />}
-      </main>
-      <footer className="footer">
-        <div className="footer-inner">
+          <button
+            className="button connect-button wallet-button"
+            data-state={wallet.account ? 'connected' : wallet.pending ? 'pending' : 'disconnected'}
+            onClick={() => setModal('wallet')}
+          >
+            {wallet.account ? (
+              <span className="wallet-dot" aria-hidden="true" />
+            ) : (
+              <Wallet size={16} aria-hidden="true" />
+            )}
+            <span>
+              {wallet.account
+                ? `${wallet.account.address.slice(0, 6)}…${wallet.account.address.slice(-4)}`
+                : 'Connect wallet'}
+            </span>
+          </button>
+        </>
+      }
+      footer={
+        <>
           <span className="footer-status">
             <span className="status-dot" /> Interactive preview{' '}
             <span className="footer-divider">/</span> Sample data
@@ -262,228 +310,246 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
             <button onClick={() => setModal('settings')}>Settings</button>
             <span className="footer-version">v0.1</span>
           </div>
-        </div>
-      </footer>
-
-      {modal === 'settings' && (
-        <Settings value={slippage} save={saveSlippage} close={() => setModal(null)} />
-      )}
-      {modal === 'wallet' && (
-        <Modal
-          title={wallet.account ? 'Connected wallet' : 'Connect a wallet'}
-          onClose={() => {
-            if (wallet.pending) wallet.disconnect();
-            setModal(null);
-          }}
-        >
-          <p className="notice wallet-notice">
-            <Info size={18} />
-            Connection only. Quotes and positions remain sample data. No signatures or transactions
-            are requested.
-          </p>
-          {wallet.account ? (
-            <>
-              <div className="connected-account">
-                <Wallet size={28} />
-                <strong>{wallet.account.name}</strong>
-                <code>{wallet.account.address}</code>
-              </div>
-              <Detail label="Wallet chain ID">{BigInt(wallet.account.chainId).toString()}</Detail>
-              <p className="microcopy">
-                This is the network reported by your wallet. It is not a configured Postern
-                deployment.
+        </>
+      }
+      after={
+        <>
+          {modal === 'settings' && (
+            <Settings value={slippage} save={saveSlippage} close={() => setModal(null)} />
+          )}
+          {modal === 'wallet' && (
+            <Modal
+              title={wallet.account ? 'Connected wallet' : 'Connect a wallet'}
+              onClose={() => {
+                if (wallet.pending) wallet.disconnect();
+                setModal(null);
+              }}
+            >
+              <p className="notice wallet-notice">
+                <Info size={18} />
+                Connection only. Quotes and positions remain sample data. No signatures or
+                transactions are requested.
               </p>
-              <button className="button secondary full-width" onClick={wallet.disconnect}>
-                Disconnect from this app
-              </button>
-            </>
-          ) : (
-            <>
-              <p className="microcopy">
-                Allow Postern to view your selected account address. Approve the connection in your
-                wallet.
-              </p>
-              <QrWalletButton onConnect={wallet.connect} disabled={wallet.pending} />
-              <div className="wallet-options">
-                {wallet.wallets.map((w) => (
-                  <button
-                    className="wallet-option"
-                    key={w.id}
-                    aria-label={`Connect ${w.name}`}
-                    disabled={wallet.pending}
-                    onClick={() => void wallet.connect(w)}
-                  >
-                    <span className="wallet-option-icon">
-                      <Wallet size={23} />
-                    </span>
-                    <span>
-                      <strong>{w.name}</strong>
-                      <small>Connect in this browser</small>
-                    </span>
-                    {wallet.pending ? (
-                      <LoaderCircle className="spin" size={20} />
-                    ) : (
-                      <ArrowRight size={19} />
-                    )}
+              {wallet.account ? (
+                <>
+                  <div className="connected-account">
+                    <Wallet size={28} />
+                    <strong>{wallet.account.name}</strong>
+                    <code>{wallet.account.address}</code>
+                  </div>
+                  <Detail label="Wallet chain ID">
+                    {BigInt(wallet.account.chainId).toString()}
+                  </Detail>
+                  <p className="microcopy">
+                    This is the network reported by your wallet. It is not a configured Postern
+                    deployment.
+                  </p>
+                  <button className="button secondary full-width" onClick={wallet.disconnect}>
+                    Disconnect from this app
                   </button>
-                ))}
-                {!wallet.wallets.some(isMetaMaskWallet) && (
-                  <a
-                    className="wallet-option"
-                    href={wallet.pending ? undefined : METAMASK_MOBILE_URL}
-                    aria-label="Open MetaMask Mobile"
-                    aria-disabled={wallet.pending}
-                    referrerPolicy="no-referrer"
-                    onClick={(event) => {
-                      if (wallet.pending) event.preventDefault();
-                      else setMobileOpened(true);
-                    }}
-                  >
-                    <span className="wallet-option-icon">
-                      <Wallet size={23} />
-                    </span>
-                    <span>
-                      <strong>MetaMask</strong>
-                      <small>Open the MetaMask app to connect</small>
-                    </span>
-                    <ArrowRight size={19} />
-                  </a>
-                )}
-              </div>
-              {mobileOpened && (
-                <p role="status" className="notice">
-                  Continue in MetaMask: select Connect MetaMask and approve account access. If the
-                  app did not open, open MetaMask yourself, choose its browser and enter
-                  blochdex.com.
-                </p>
-              )}
-              {wallet.wallets.length === 0 && (
-                <div className="wallet-empty">
-                  <Wallet size={32} />
-                  <h3>Open your wallet app to connect</h3>
-                  <p>
-                    On iPhone Safari, tap MetaMask above to open the app. Then select Connect
-                    MetaMask inside the app to approve account access. Safari alone does not provide
-                    the wallet connection used here.
+                </>
+              ) : (
+                <>
+                  <p className="microcopy">
+                    Allow Postern to view your selected account address. Approve the connection in
+                    your wallet.
                   </p>
-                  <p>
-                    If the app does not open, open MetaMask, choose its browser and enter{' '}
-                    <strong>blochdex.com</strong>. On desktop, use a compatible wallet extension.
-                  </p>
+                  <QrWalletButton onConnect={wallet.connect} disabled={wallet.pending} />
+                  <div className="wallet-options">
+                    {wallet.wallets.map((w) => (
+                      <button
+                        className="wallet-option"
+                        key={w.id}
+                        aria-label={`Connect ${w.name}`}
+                        disabled={wallet.pending}
+                        onClick={() => void wallet.connect(w)}
+                      >
+                        <span className="wallet-option-icon">
+                          <Wallet size={23} />
+                        </span>
+                        <span>
+                          <strong>{w.name}</strong>
+                          <small>Connect in this browser</small>
+                        </span>
+                        {wallet.pending ? (
+                          <LoaderCircle className="spin" size={20} />
+                        ) : (
+                          <ArrowRight size={19} />
+                        )}
+                      </button>
+                    ))}
+                    {!wallet.wallets.some(isMetaMaskWallet) && (
+                      <a
+                        className="wallet-option"
+                        href={wallet.pending ? undefined : METAMASK_MOBILE_URL}
+                        aria-label="Open MetaMask Mobile"
+                        aria-disabled={wallet.pending}
+                        referrerPolicy="no-referrer"
+                        onClick={(event) => {
+                          if (wallet.pending) event.preventDefault();
+                          else setMobileOpened(true);
+                        }}
+                      >
+                        <span className="wallet-option-icon">
+                          <Wallet size={23} />
+                        </span>
+                        <span>
+                          <strong>MetaMask</strong>
+                          <small>Open the MetaMask app to connect</small>
+                        </span>
+                        <ArrowRight size={19} />
+                      </a>
+                    )}
+                  </div>
+                  {mobileOpened && (
+                    <p role="status" className="notice">
+                      Continue in MetaMask: select Connect MetaMask and approve account access. If
+                      the app did not open, open MetaMask yourself, choose its browser and enter
+                      blochdex.com.
+                    </p>
+                  )}
+                  {wallet.wallets.length === 0 && (
+                    <div className="wallet-empty">
+                      <Wallet size={32} />
+                      <h3>Open your wallet app to connect</h3>
+                      <p>
+                        On iPhone Safari, tap MetaMask above to open the app. Then select Connect
+                        MetaMask inside the app to approve account access. Safari alone does not
+                        provide the wallet connection used here.
+                      </p>
+                      <p>
+                        If the app does not open, open MetaMask, choose its browser and enter{' '}
+                        <strong>blochdex.com</strong>. On desktop, use a compatible wallet
+                        extension.
+                      </p>
+                      <button
+                        className="button secondary full-width"
+                        disabled={wallet.pending}
+                        onClick={() => window.dispatchEvent(new Event('postern:discover-wallets'))}
+                      >
+                        Check for wallet again
+                      </button>
+                    </div>
+                  )}
+                  {wallet.pending && (
+                    <p role="status" className="muted">
+                      Confirm the connection in your wallet…
+                    </p>
+                  )}
+                  {wallet.error && (
+                    <p role="alert" className="form-error">
+                      {wallet.error}
+                    </p>
+                  )}
                   <button
                     className="button secondary full-width"
-                    disabled={wallet.pending}
-                    onClick={() => window.dispatchEvent(new Event('postern:discover-wallets'))}
+                    onClick={() => {
+                      if (wallet.pending) wallet.disconnect();
+                      setModal(null);
+                    }}
                   >
-                    Check for wallet again
+                    Continue exploring
                   </button>
-                </div>
+                </>
               )}
-              {wallet.pending && (
-                <p role="status" className="muted">
-                  Confirm the connection in your wallet…
-                </p>
+            </Modal>
+          )}
+          {modal === 'network' && (
+            <Modal title="Network preview" onClose={() => setModal(null)}>
+              <span className="badge">Bloch L2 · Preview</span>
+              <p className="notice">
+                No live network or contract deployment is configured. All market data, positions and
+                operation previews are illustrative.
+              </p>
+              <p className="muted">
+                Wallet connection identifies an EVM account. It does not enable trading or change
+                your wallet network.
+              </p>
+              {wallet.account && (
+                <Detail label="Connected wallet chain ID">
+                  {BigInt(wallet.account.chainId).toString()}
+                </Detail>
               )}
-              {wallet.error && (
-                <p role="alert" className="form-error">
-                  {wallet.error}
-                </p>
-              )}
-              <button
-                className="button secondary full-width"
-                onClick={() => {
-                  if (wallet.pending) wallet.disconnect();
-                  setModal(null);
-                }}
-              >
-                Continue exploring
+              <button className="button primary full-width" onClick={() => setModal(null)}>
+                Got it
               </button>
-            </>
+            </Modal>
           )}
-        </Modal>
-      )}
-      {modal === 'network' && (
-        <Modal title="Network preview" onClose={() => setModal(null)}>
-          <span className="badge">Bloch L2 · Preview</span>
-          <p className="notice">
-            No live network or contract deployment is configured. All market data, positions and
-            operation previews are illustrative.
-          </p>
-          <p className="muted">
-            Wallet connection identifies an EVM account. It does not enable trading or change your
-            wallet network.
-          </p>
-          {wallet.account && (
-            <Detail label="Connected wallet chain ID">
-              {BigInt(wallet.account.chainId).toString()}
-            </Detail>
+          {modal === 'guide' && (
+            <Modal title="Understand your liquidity" onClose={() => setModal(null)} wide>
+              <div className="guide-content">
+                <span className="badge">Postern basics</span>
+                <h3>Two tokens. One pool share.</h3>
+                <p>
+                  Adding liquidity deposits both assets in the pool's current ratio. Your LP tokens
+                  represent a share of its reserves, which change as people trade.
+                </p>
+                <h3>Fees and position value</h3>
+                <p>
+                  Each pool charges a 0.30% swap fee. Fees accrue in the pool; they are not a
+                  guaranteed yield. If relative token prices change, your position may be worth less
+                  than holding the tokens separately.
+                </p>
+                <h3>Review before you act</h3>
+                <p>
+                  A quote is an estimate. Slippage sets your minimum received amount. Multi-pool
+                  routes pay a fee at every hop. Deposits and withdrawals can differ from
+                  reserve-based estimates for taxed or rebasing assets.
+                </p>
+                <h3>About this preview</h3>
+                <p>
+                  All figures are sample data. Deposits, withdrawals and swaps are calculation
+                  previews. A wallet connection never replaces these samples with real balances.
+                </p>
+                <p>
+                  EVM compatibility belongs to the selected EVM environment. Bloch L1 authorization
+                  remains a separate post-quantum boundary.
+                </p>
+                <ExternalLink href="https://github.com/tiagobeltraoacioli-sketch/postern-dex">
+                  Repository and contract documentation
+                </ExternalLink>
+              </div>
+            </Modal>
           )}
-          <button className="button primary full-width" onClick={() => setModal(null)}>
-            Got it
-          </button>
-        </Modal>
+          {pool && (
+            <Modal title={`${pool.token0} / ${pool.token1}`} onClose={() => setPool(null)}>
+              <div className="liquidity-pair">
+                <PairIcons a={pool.token0} b={pool.token1} />
+                <span className="badge">Sample pool</span>
+              </div>
+              <div className="review-details">
+                <Detail label="Liquidity">{compactUsd(pool.liquidity)}</Detail>
+                <Detail label="Volume · 24h">{usd(pool.volume, 0)}</Detail>
+                <Detail label="Fees · 24h">{usd(pool.fees)}</Detail>
+                <Detail label="Pool fee">0.30%</Detail>
+                <Detail label={TOKENS[pool.token0].name}>{pool.token0}</Detail>
+                <Detail label={TOKENS[pool.token1].name}>{pool.token1}</Detail>
+              </div>
+              <p className="microcopy">
+                Symbolic demo assets; no contract addresses are configured.
+              </p>
+              <button
+                className="button primary full-width"
+                onClick={() => openLiquidity({ mode: 'add', pool })}
+              >
+                Preview adding liquidity <ArrowRight size={17} />
+              </button>
+            </Modal>
+          )}
+          {liquidity && <LiquidityDialog action={liquidity} onClose={() => setLiquidity(null)} />}
+        </>
+      }
+    >
+      {page === 'trade' && <Trade slippage={slippage} onSettings={() => setModal('settings')} />}
+      {page === 'pools' && (
+        <Pools
+          onPool={setPool}
+          onAdd={(p) => openLiquidity({ mode: 'add', pool: p })}
+          onGuide={() => setModal('guide')}
+        />
       )}
-      {modal === 'guide' && (
-        <Modal title="Understand your liquidity" onClose={() => setModal(null)} wide>
-          <div className="guide-content">
-            <span className="badge">Postern basics</span>
-            <h3>Two tokens. One pool share.</h3>
-            <p>
-              Adding liquidity deposits both assets in the pool's current ratio. Your LP tokens
-              represent a share of its reserves, which change as people trade.
-            </p>
-            <h3>Fees and position value</h3>
-            <p>
-              Each pool charges a 0.30% swap fee. Fees accrue in the pool; they are not a guaranteed
-              yield. If relative token prices change, your position may be worth less than holding
-              the tokens separately.
-            </p>
-            <h3>Review before you act</h3>
-            <p>
-              A quote is an estimate. Slippage sets your minimum received amount. Multi-pool routes
-              pay a fee at every hop. Deposits and withdrawals can differ from reserve-based
-              estimates for taxed or rebasing assets.
-            </p>
-            <h3>About this preview</h3>
-            <p>
-              All figures are sample data. Deposits, withdrawals and swaps are calculation previews.
-              A wallet connection never replaces these samples with real balances.
-            </p>
-            <p>
-              EVM compatibility belongs to the selected EVM environment. Bloch L1 authorization
-              remains a separate post-quantum boundary.
-            </p>
-            <ExternalLink href="https://github.com/tiagobeltraoacioli-sketch/postern-dex">
-              Repository and contract documentation
-            </ExternalLink>
-          </div>
-        </Modal>
-      )}
-      {pool && (
-        <Modal title={`${pool.token0} / ${pool.token1}`} onClose={() => setPool(null)}>
-          <div className="liquidity-pair">
-            <PairIcons a={pool.token0} b={pool.token1} />
-            <span className="badge">Sample pool</span>
-          </div>
-          <div className="review-details">
-            <Detail label="Liquidity">{compactUsd(pool.liquidity)}</Detail>
-            <Detail label="Volume · 24h">{usd(pool.volume, 0)}</Detail>
-            <Detail label="Fees · 24h">{usd(pool.fees)}</Detail>
-            <Detail label="Pool fee">0.30%</Detail>
-            <Detail label={TOKENS[pool.token0].name}>{pool.token0}</Detail>
-            <Detail label={TOKENS[pool.token1].name}>{pool.token1}</Detail>
-          </div>
-          <p className="microcopy">Symbolic demo assets; no contract addresses are configured.</p>
-          <button
-            className="button primary full-width"
-            onClick={() => openLiquidity({ mode: 'add', pool })}
-          >
-            Preview adding liquidity <ArrowRight size={17} />
-          </button>
-        </Modal>
-      )}
-      {liquidity && <LiquidityDialog action={liquidity} onClose={() => setLiquidity(null)} />}
-    </div>
+      {page === 'portfolio' && <Portfolio onLiquidity={openLiquidity} />}
+    </Shell>
   );
 }
 
@@ -519,36 +585,32 @@ function LiveReadApplication({ gate }: { gate: LiveReadGate }) {
     document.title = 'PosternDEX — Live read only';
   }, []);
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-inner">
-          <a className="brand" href="#/trade" aria-label="Postern preview home">
-            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
-            <span>POSTERN</span>
+    <Shell
+      network="preview"
+      brandLabel="Postern preview home"
+      navLabel="Read-only navigation"
+      nav={
+        <>
+          <a href="#/live-pools" aria-current="page">
+            Live pools
           </a>
-          <nav className="main-nav" aria-label="Read-only navigation">
-            <a href="#/live-pools" aria-current="page">
-              Live pools
-            </a>
-            <a href="#/trade">Preview</a>
-          </nav>
-          <span className="badge">Read only · No wallet</span>
-        </div>
-      </header>
-      <main id="main-content" className="main-content">
-        {gate.available ? (
-          <LivePoolsRuntime factory={gate.factory} />
-        ) : (
-          <LiveReadUnavailable reason={gate.reason} />
-        )}
-      </main>
-      <footer className="footer">
-        <div className="footer-inner">
+          <a href="#/trade">Preview</a>
+        </>
+      }
+      actions={<span className="badge">Read only · No wallet</span>}
+      footer={
+        <>
           <span className="footer-status">Reviewed deployment reads only</span>
           <span className="muted">No signing · No transactions · No fixture fallback</span>
-        </div>
-      </footer>
-    </div>
+        </>
+      }
+    >
+      {gate.available ? (
+        <LivePoolsRuntime factory={gate.factory} />
+      ) : (
+        <LiveReadUnavailable reason={gate.reason} />
+      )}
+    </Shell>
   );
 }
 
@@ -559,39 +621,40 @@ function Devnet4Application() {
     window.dispatchEvent(new Event('postern:discover-wallets'));
   }, []);
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-inner">
-          <a className="brand" href="#/trade" aria-label="Postern preview home">
-            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
-            <span>POSTERN</span>
+    <Shell
+      network="devnet4"
+      brandLabel="Postern preview home"
+      navLabel="Devnet4 navigation"
+      nav={
+        <>
+          <a href="#/devnet4" aria-current="page">
+            Devnet4 live
           </a>
-          <nav className="main-nav" aria-label="Devnet4 navigation">
-            <a href="#/devnet4" aria-current="page">
-              Devnet4 live
-            </a>
-            <a href="#/trade">Preview</a>
-          </nav>
-          <span className="badge">Devnet4 · Zero value</span>
-        </div>
-      </header>
-      <main id="main-content" className="main-content">
-        <Devnet4Live
-          load={loadDevnet4Record}
-          rpc={DEVNET4_RPC}
-          walletRpcUrl={DEVNET4_WALLET_RPC}
-          wallet={wallet}
-        />
-      </main>
-      <footer className="footer">
-        <div className="footer-inner">
+          <a href="#/trade">Preview</a>
+        </>
+      }
+      actions={
+        <>
+          <NetworkSwitcher current="devnet4" entries={NETWORKS} label="Devnet4 · Zero value" />
+          <WalletStatus wallet={wallet} chainId={700771} chainName="Bloch L2 devnet4" />
+        </>
+      }
+      footer={
+        <>
           <span className="footer-status">Bloch L2 devnet4 · chain 700771 · not mainnet</span>
           <span className="muted">
             Reviewed deployment record · Finalized reads · Explicit wallet transactions
           </span>
-        </div>
-      </footer>
-    </div>
+        </>
+      }
+    >
+      <Devnet4Live
+        load={loadDevnet4Record}
+        rpc={DEVNET4_RPC}
+        walletRpcUrl={DEVNET4_WALLET_RPC}
+        wallet={wallet}
+      />
+    </Shell>
   );
 }
 
@@ -602,42 +665,52 @@ function MainnetApplication() {
     window.dispatchEvent(new Event('postern:discover-wallets'));
   }, []);
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-inner">
-          <a className="brand" href="#/trade" aria-label="Postern preview home">
-            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
-            <span>POSTERN</span>
+    <Shell
+      network="bloch-l2"
+      brandLabel="Postern preview home"
+      navLabel="Mainnet navigation"
+      nav={
+        <>
+          <a href="#/mainnet" aria-current="page">
+            Mainnet
           </a>
-          <nav className="main-nav" aria-label="Mainnet navigation">
-            <a href="#/mainnet" aria-current="page">
-              Mainnet
-            </a>
-            <a href="#/trade">Preview</a>
-          </nav>
-          <span className="badge">Bloch L2 · Chain {MAINNET_NETWORK.chainId}</span>
-        </div>
-      </header>
-      <main id="main-content" className="main-content">
-        <MainnetLive
-          network={MAINNET_NETWORK}
-          load={bundledState}
-          rpc={MAINNET_RPC}
-          wallet={wallet}
-          planned={MAINNET_PLANNED}
-          ethRpc={MAINNET_ETH_RPC}
-        />
-      </main>
-      <footer className="footer">
-        <div className="footer-inner">
+          <a href="#/trade">Preview</a>
+        </>
+      }
+      actions={
+        <>
+          <NetworkSwitcher
+            current="bloch-l2"
+            entries={NETWORKS}
+            label={<>Bloch L2 · Chain {MAINNET_NETWORK.chainId}</>}
+          />
+          <WalletStatus
+            wallet={wallet}
+            chainId={MAINNET_NETWORK.chainId}
+            chainName={MAINNET_NETWORK.chainName}
+            explorerUrl={MAINNET_NETWORK.explorerUrl || undefined}
+          />
+        </>
+      }
+      footer={
+        <>
           <span className="footer-status">Bloch L2 mainnet · chain {MAINNET_NETWORK.chainId}</span>
           <span className="muted">
             Reviewed deployment record · Finalized reads · Fixed reserve caps · Explicit wallet
             transactions
           </span>
-        </div>
-      </footer>
-    </div>
+        </>
+      }
+    >
+      <MainnetLive
+        network={MAINNET_NETWORK}
+        load={bundledState}
+        rpc={MAINNET_RPC}
+        wallet={wallet}
+        planned={MAINNET_PLANNED}
+        ethRpc={MAINNET_ETH_RPC}
+      />
+    </Shell>
   );
 }
 
@@ -677,7 +750,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       {__POSTERN_LOCAL_RENDER__ && import.meta.env.PROD && (
-        <p className="form-error" role="alert">
+        <p className="form-error local-render-banner" role="alert">
           {LOCAL_RENDER_BANNER}
         </p>
       )}

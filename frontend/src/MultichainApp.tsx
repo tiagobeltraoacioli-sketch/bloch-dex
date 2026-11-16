@@ -11,6 +11,10 @@ import { setWording } from './mainnet/wording';
 import { bundledChains, type Chain } from './multichain/config';
 import { fallbackHttpRpc } from './multichain/rpc';
 import { useWallet } from './useWallet';
+import { Shell } from './shell/Shell';
+import { NetworkSwitcher } from './shell/NetworkSwitcher';
+import { WalletStatus } from './shell/WalletStatus';
+import { networkEntries } from './shell/networks';
 
 const CHAINS = bundledChains();
 export const MULTICHAIN_RENDER_BANNER =
@@ -37,42 +41,68 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
   useEffect(() => {
     document.title = `PosternDEX — ${chain.network.chainName}`;
   }, [chain]);
+  // Header status of each network, from its bundled record (no RPC request: `load` reads the bundle).
+  const [live, setLive] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    let current = true;
+    void Promise.all(
+      chains.map((c) =>
+        c.load().then(
+          (state) => [c.key, state.status === 'live'] as const,
+          () => [c.key, false] as const,
+        ),
+      ),
+    ).then((entries) => current && setLive(Object.fromEntries(entries)));
+    return () => {
+      current = false;
+    };
+  }, [chains]);
+  const entries = useMemo(
+    () =>
+      networkEntries(
+        chains.map((c) => ({
+          key: c.key,
+          name: c.network.chainName,
+          chainId: c.network.chainId,
+          href: `#/${c.key}`,
+          status: live[c.key] ? 'Live' : 'Not yet live',
+        })),
+        [],
+      ),
+    [chains, live],
+  );
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="topbar-inner">
-          <a className="brand" href={`#/${chains[0].key}`} aria-label="Postern home">
-            <img src={`${import.meta.env.BASE_URL}postern.svg`} alt="" width="38" height="38" />
-            <span>POSTERN</span>
-          </a>
-          <nav className="main-nav" aria-label="Networks">
-            {chains.map((c) => (
-              <a
-                key={c.key}
-                href={`#/${c.key}`}
-                aria-current={c.key === chain.key ? 'page' : undefined}
-              >
-                {c.network.chainName}
-              </a>
-            ))}
-          </nav>
-          <span className="badge">
-            {chain.network.chainName} · Chain {chain.network.chainId}
-          </span>
-        </div>
-      </header>
-      <main id="main-content" className="main-content">
-        <MainnetLive
-          key={chain.key}
-          network={chain.network}
-          load={chain.load}
-          rpc={rpc}
-          wallet={wallet}
-          planned={chain.planned}
-        />
-      </main>
-      <footer className="footer">
-        <div className="footer-inner">
+    <Shell
+      network={chain.key}
+      brandLabel="Postern home"
+      homeHref={`#/${chains[0].key}`}
+      navLabel="Networks"
+      nav={chains.map((c) => (
+        <a key={c.key} href={`#/${c.key}`} aria-current={c.key === chain.key ? 'page' : undefined}>
+          {c.network.chainName}
+        </a>
+      ))}
+      actions={
+        <>
+          <NetworkSwitcher
+            current={chain.key}
+            entries={entries}
+            label={
+              <>
+                {chain.network.chainName} · Chain {chain.network.chainId}
+              </>
+            }
+          />
+          <WalletStatus
+            wallet={wallet}
+            chainId={chain.network.chainId}
+            chainName={chain.network.chainName}
+            explorerUrl={chain.network.explorerUrl || undefined}
+          />
+        </>
+      }
+      footer={
+        <>
           <span className="footer-status">
             {chain.network.chainName} · chain {chain.network.chainId}
           </span>
@@ -80,9 +110,18 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
             Reviewed deployment record · Finalized reads · Explicit wallet transactions · The same
             contracts on every listed network; each network has its own pools and liquidity
           </span>
-        </div>
-      </footer>
-    </div>
+        </>
+      }
+    >
+      <MainnetLive
+        key={chain.key}
+        network={chain.network}
+        load={chain.load}
+        rpc={rpc}
+        wallet={wallet}
+        planned={chain.planned}
+      />
+    </Shell>
   );
 }
 
@@ -108,7 +147,7 @@ export default function MultichainApp() {
   return (
     <ErrorBoundary>
       {__POSTERN_LOCAL_RENDER__ && import.meta.env.PROD && (
-        <p className="form-error" role="alert">
+        <p className="form-error local-render-banner" role="alert">
           {MULTICHAIN_RENDER_BANNER}
         </p>
       )}
