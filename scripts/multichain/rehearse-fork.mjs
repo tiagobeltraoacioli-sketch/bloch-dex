@@ -38,10 +38,12 @@ const plan = planChain(shared, chain, loadArtifacts(), { reference: true });
 const port = Number(opt.port);
 const url = `http://127.0.0.1:${port}`;
 // The fork source must keep the state of the fork block for the length of the rehearsal and serve what anvil asks.
-// Two reviewed first endpoints do not (seen 2026-11-16): BNB Smart Chain's keeps state for under 200 blocks, and
-// Ethereum's answered anvil's block 0 request from a history-pruned backend. Their second endpoints are used.
-const FORK_SOURCE = { "bnb-smart-chain": 1, ethereum: 1 };
-const forkUrl = opt["fork-url"] ?? chain.rpc[FORK_SOURCE[key] ?? 0];
+// Seen 2026-11-16: both reviewed BNB Smart Chain endpoints drop a block's state within a minute or two (the chain
+// makes more than two blocks a second), so its rehearsal forks from another public endpoint that keeps it; that
+// endpoint is a fork source only and is not in the page's endpoint list. Ethereum's first endpoint answered anvil's
+// block 0 request from a history-pruned backend; its second is used.
+const FORK_SOURCE = { "bnb-smart-chain": "https://bsc-mainnet.public.blastapi.io", ethereum: chain.rpc[1] };
+const forkUrl = opt["fork-url"] ?? FORK_SOURCE[key] ?? chain.rpc[0];
 mkdirSync(opt.out, { recursive: true });
 
 const ABI = parseAbi([
