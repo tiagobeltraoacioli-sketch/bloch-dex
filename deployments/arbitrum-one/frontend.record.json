@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain-frontend-record.v1",
+  "key": "arbitrum-one",
+  "chainId": 42161,
+  "status": "not-deployed"
+}

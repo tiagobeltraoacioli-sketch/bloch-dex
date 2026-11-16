@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain-frontend-network.v1",
+  "key": "op-mainnet",
+  "chainId": 10,
+  "chainName": "OP Mainnet",
+  "nativeCurrency": {
+    "name": "Ether",
+    "symbol": "ETH",
+    "decimals": 18
+  },
+  "genesisHash": "0x7ca38a1916c42007829c55e69d3e9a73265554b586a499015373241b8a3fa48b",
+  "rpc": {
+    "urls": [
+      "https://mainnet.optimism.io",
+      "https://optimism-rpc.publicnode.com"
+    ],
+    "rehearsal": false
+  },
+  "explorer": {
+    "url": "https://optimistic.etherscan.io"
+  },
+  "wrappedNative": {
+    "address": "0x4200000000000000000000000000000000000006",
+    "symbol": "WETH",
+    "codeHash": "0x779bbf2a738ef09d961c945116197e2ac764c1b39304b2b4418cd4e42668b173"
+  },
+  "tokens": [
+    {
+      "address": "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6,
+      "codeHash": "0xaad43333d28e146557f1c682e8a4226743fb231fdd00a577512233bd9e920008",
+      "kind": "Circle-issued (native), not the bridged USDC.e; upgradeable proxy, the issuer can pause and blacklist"
+    }
+  ],
+  "multicall3": {
+    "address": "0xca11bde05977b3631167028862be2a173976ca11",
+    "codeHash": "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891"
+  },
+  "feeTo": "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544",
+  "l2Only": {
+    "bridgeTokenPin": false,
+    "safePin": false,
+    "newSlotFee": false,
+    "creditRule": false,
+    "idleChainRule": false
+  }
+}

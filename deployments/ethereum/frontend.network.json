@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain-frontend-network.v1",
+  "key": "ethereum",
+  "chainId": 1,
+  "chainName": "Ethereum",
+  "nativeCurrency": {
+    "name": "Ether",
+    "symbol": "ETH",
+    "decimals": 18
+  },
+  "genesisHash": "0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3",
+  "rpc": {
+    "urls": [
+      "https://ethereum-rpc.publicnode.com",
+      "https://eth.drpc.org"
+    ],
+    "rehearsal": false
+  },
+  "explorer": {
+    "url": "https://etherscan.io"
+  },
+  "wrappedNative": {
+    "address": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "symbol": "WETH",
+    "codeHash": "0xd0a06b12ac47863b5c7be4185c2deaad1c61557033f56c7d4ea74429cbb25e23"
+  },
+  "tokens": [
+    {
+      "address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6,
+      "codeHash": "0xd80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1d31383e6b41505",
+      "kind": "Circle-issued (native); upgradeable proxy, the issuer can pause and blacklist"
+    }
+  ],
+  "multicall3": {
+    "address": "0xca11bde05977b3631167028862be2a173976ca11",
+    "codeHash": "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891"
+  },
+  "feeTo": "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544",
+  "l2Only": {
+    "bridgeTokenPin": false,
+    "safePin": false,
+    "newSlotFee": false,
+    "creditRule": false,
+    "idleChainRule": false
+  }
+}

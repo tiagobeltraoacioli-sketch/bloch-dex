@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain-frontend-network.v1",
+  "key": "arbitrum-one",
+  "chainId": 42161,
+  "chainName": "Arbitrum One",
+  "nativeCurrency": {
+    "name": "Ether",
+    "symbol": "ETH",
+    "decimals": 18
+  },
+  "genesisHash": "0x7ee576b35482195fc49205cec9af72ce14f003b9ae69f6ba0faef4514be8b442",
+  "rpc": {
+    "urls": [
+      "https://arb1.arbitrum.io/rpc",
+      "https://arbitrum-one-rpc.publicnode.com"
+    ],
+    "rehearsal": false
+  },
+  "explorer": {
+    "url": "https://arbiscan.io"
+  },
+  "wrappedNative": {
+    "address": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "symbol": "WETH",
+    "codeHash": "0x2d240bb4510ed1acfeaba905eb4bcc4524d63c8ae66e48fcccac55ea714db7a7"
+  },
+  "tokens": [
+    {
+      "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+      "symbol": "USDC",
+      "name": "USD Coin",
+      "decimals": 6,
+      "codeHash": "0xad30d819dbc47814b7e6cb837fd7cc57fcb591479a38596ee93de4fc52e8c435",
+      "kind": "Circle-issued (native), not the bridged USDC.e; upgradeable proxy, the issuer can pause and blacklist"
+    }
+  ],
+  "multicall3": {
+    "address": "0xca11bde05977b3631167028862be2a173976ca11",
+    "codeHash": "0xd5c15df687b16f2ff992fc8d767b4216323184a2bbc6ee2f9c398c318e770891"
+  },
+  "feeTo": "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544",
+  "l2Only": {
+    "bridgeTokenPin": false,
+    "safePin": false,
+    "newSlotFee": false,
+    "creditRule": false,
+    "idleChainRule": false
+  }
+}

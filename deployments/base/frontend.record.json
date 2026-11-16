@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.multichain-frontend-record.v1",
+  "key": "base",
+  "chainId": 8453,
+  "status": "not-deployed"
+}
