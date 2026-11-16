@@ -953,6 +953,11 @@ describe('mainnet route', () => {
       expect(screen.getByLabelText('Quote').textContent).toContain(
         'Latest block 500, not finalized',
       );
+      // Review R309-UI-2: once reconfirmed, "Quoted at" is one of the rows shown without a click.
+      const quotedAt = within(screen.getByLabelText('Quote')).getByText('Quoted at');
+      expect(quotedAt.className).toBe('glance');
+      expect((quotedAt.nextElementSibling as HTMLElement).className).toBe('glance');
+      expect(quotedAt.nextElementSibling!.textContent).toContain('you reconfirmed this price');
       expect(screen.queryByLabelText('Stale quote')).toBeNull();
       expect(swap.disabled).toBe(false);
       await user.click(swap);
@@ -2346,6 +2351,48 @@ describe('swap panel safety fixes', () => {
       first.view.unmount();
       const again = await mount(chain, state);
       const recovery = await screen.findByLabelText('Recover transaction tracking');
+      // Review R309-UI-1 and the hold ruling: in the document (and so in focus order) the tracked transaction and
+      // the recovery controls come before the old quote and the disabled Swap; what must be read is outside the
+      // disclosures, the explanations are inside them, and no sentence is lost.
+      const before = (a: Element, b: Element) =>
+        !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const tracked = screen.getByLabelText('Transactions');
+      expect(before(tracked, recovery)).toBe(true);
+      expect(before(recovery, screen.getByRole('button', { name: 'Swap' }))).toBe(true);
+      const hidden = (root: HTMLElement) =>
+        [...root.querySelectorAll('.disclosure-clip .disclosure-region')]
+          .map((r) => r.textContent)
+          .join(' ');
+      const shown = (root: HTMLElement) => {
+        const copy = root.cloneNode(true) as HTMLElement;
+        copy.querySelectorAll('.disclosure-clip .disclosure-region').forEach((r) => r.remove());
+        return copy.textContent ?? '';
+      };
+      for (const text of [
+        'Do not resend with a new nonce; Swap stays disabled until the outcome is known.',
+        'The hold ends by itself once the swap deadline has passed in a finalized block.',
+        'Saved deadline',
+      ])
+        expect(shown(tracked)).toContain(text);
+      expect(hidden(tracked)).toContain('makes a block only when it has work');
+      expect(shown(tracked)).not.toContain('makes a block only when it has work');
+      for (const text of [
+        'Time passing or an empty explorer result cannot clear the hold.',
+        'Nothing else on this page clears a hold.',
+        'its deadline passing in a finalized block',
+        'Check transaction hash',
+        'Check cancellation or replacement',
+      ])
+        expect(shown(recovery)).toContain(text);
+      for (const text of [
+        'This check only restores tracking after matching the saved sender, destination, call, value and nonce. It never sends or replaces a transaction.',
+        'Another transaction at the same nonce does not release it, because an open wallet request could still be signed at another nonce.',
+        'For an approval or a skim your wallet never signed, send any other transaction from this account, paste its hash and use the replacement check.',
+        'Only a canonical finalized receipt at the original sender and nonce can establish that the original request cannot execute. This check makes no wallet request.',
+      ])
+        expect(hidden(recovery).replace(/\s+/g, ' ')).toContain(text);
+      expect(within(recovery).getByRole('button', { name: 'What can I do?' })).toBeTruthy();
+      expect(within(tracked).getByRole('button', { name: 'Why is this waiting?' })).toBeTruthy();
       const input = within(recovery).getByLabelText('Transaction hash from wallet activity');
       const check = within(recovery).getByRole('button', { name: 'Check transaction hash' });
       state.transactions.set(HASH, {

@@ -11,17 +11,26 @@ export function Disclosure({
   summary,
   children,
   defaultOpen = false,
+  clip = false,
 }: {
   className?: string;
   /** Content of the toggle button; told whether the region is open. */
   summary: (open: boolean) => ReactNode;
   children: ReactNode;
   defaultOpen?: boolean;
+  /**
+   * Closed, the region is clipped to no height instead of removed from rendering: its text is still part of the
+   * page's text (tools that read the page see it), it is inert and takes no space.
+   */
+  clip?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const id = useId();
   return (
-    <div className={`disclosure ${className}`} data-open={open || undefined}>
+    <div
+      className={`disclosure ${clip ? 'disclosure-clip' : ''} ${className}`}
+      data-open={open || undefined}
+    >
       <button
         type="button"
         className="disclosure-toggle"

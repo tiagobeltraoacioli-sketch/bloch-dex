@@ -63,7 +63,12 @@ export function WalletStatus({
             <AlertTriangle size={16} aria-hidden="true" />
           )}
           <span className="wallet-button-text">
-            {!onChain && <span className="wallet-wrong">Wrong network · </span>}
+            {!onChain && (
+              <>
+                <span className="wallet-wrong">Wrong network</span>
+                <span className="wallet-sep"> · </span>
+              </>
+            )}
             <span className="numeric">{shortAddress(address)}</span>
           </span>
         </>

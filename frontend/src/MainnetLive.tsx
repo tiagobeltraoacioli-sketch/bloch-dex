@@ -75,7 +75,7 @@ import {
   submissionContext,
   type ReplacementProof,
 } from './mainnet/submission-outcome';
-import { usePendingSwap, walletOnChain } from './mainnet/pendingswap';
+import { idleWaitNote, usePendingSwap, walletOnChain } from './mainnet/pendingswap';
 import { wording } from './mainnet/wording';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
@@ -1328,6 +1328,128 @@ function SwapPanel({
     (h) => !steps.some((x) => x.hash === h.hash) && tracked?.hash !== h.hash,
   );
 
+  // The tracked transaction's text, with the idle-chain explanation (the exact sentence pendingswap.ts appended)
+  // set apart so it can sit behind "Why is this waiting?". No word is changed or dropped.
+  const idleNote = tracked
+    ? idleWaitNote(tracked, network.noIdleHeartbeat ? 0 : longestQuiet(network.idle))
+    : '';
+  const held =
+    tracked && idleNote && tracked.detail.includes(idleNote)
+      ? { visible: tracked.detail.replace(idleNote, ''), why: idleNote.trim() }
+      : { visible: tracked?.detail ?? '', why: '' };
+  // Blocks of the card that change place while a hold is open (alerts, then the tracked transaction and its
+  // recovery controls, come directly under the form). The same elements in either place; nothing is duplicated.
+  const staleAlerts = quote && signed && input && output && (
+    <>
+      {check?.status === 'worse' && (
+        <div className="form-error" role="alert" aria-label="Stale quote">
+          <AlertTriangle size={16} /> The price moved after the finalized block. At the latest block
+          this swap returns {formatAmount(check.latest.amountOut, output.token.decimals)}{' '}
+          {output.label}, {percent(check.worseBps, 10_000n)}% worse than this quote and below your
+          minimum received, so it would revert. Reconfirm to use the latest price, or change the
+          amount.{' '}
+          <button className="button secondary" onClick={reconfirm}>
+            Reconfirm at the latest price
+          </button>
+        </div>
+      )}
+      {check?.status === 'unavailable' && (
+        <p className="form-error" role="alert" aria-label="Stale quote">
+          At the latest block no route can fill this amount, so the swap would revert. Lower the
+          amount or get a new quote.
+        </p>
+      )}
+    </>
+  );
+  const nextLine = (
+    <p className="next-step" data-tone={next.tone} data-testid="next-step">
+      {next.text}
+    </p>
+  );
+  const recoveryBlock = (
+    <>
+      {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
+        <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
+      )}
+    </>
+  );
+  const activityBlock = (
+    <>
+      <h3 className="activity-title">Activity</h3>
+      {wallet.account && earlier.length === 0 && steps.length === 0 && !tracked && (
+        <p className="activity-empty">No transactions from this page yet.</p>
+      )}
+      {!wallet.account && (
+        <p className="activity-empty">Transactions you send from this page are listed here.</p>
+      )}
+      {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
+        <ol className="devnet4-steps" aria-label="Earlier transactions">
+          {history
+            .filter((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash)
+            .map((h) => (
+              <li key={h.hash} data-state={h.state}>
+                <strong>{h.label}</strong>: {h.state}{' '}
+                <ExplorerLink network={network} kind="tx" value={h.hash} />
+                {h.detail && <span className="muted"> {h.detail}</span>}
+              </li>
+            ))}
+        </ol>
+      )}
+      {(steps.length > 0 || tracked) && (
+        <ol className="devnet4-steps" aria-label="Transactions">
+          {steps.map((s, i) => (
+            <li key={i} data-state={s.state}>
+              <strong>{s.label}</strong>: {s.state}
+              {s.hash && (
+                <>
+                  {' '}
+                  <ExplorerLink network={network} kind="tx" value={s.hash} />
+                </>
+              )}
+              {s.detail && <span className="muted"> {s.detail}</span>}
+            </li>
+          ))}
+          {tracked && (
+            <li data-state={tracked.state}>
+              <strong>{tracked.label}</strong>: <span className="state-pill">{tracked.state}</span>{' '}
+              {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
+              <span className="muted"> {held.visible}</span>
+              {tracked.deadline > 0n &&
+                (tracked.state === 'pending' || tracked.state === 'unknown') && (
+                  <DeadlineClock
+                    deadline={tracked.deadline}
+                    sentAtMs={tracked.sentAtMs}
+                    now={now}
+                  />
+                )}
+              {held.why && (
+                <Disclosure clip className="hold-why" summary={() => 'Why is this waiting?'}>
+                  <p>{held.why}</p>
+                </Disclosure>
+              )}
+              {tracked.state === 'failed' && tracked.retry && tracked.cause && (
+                <p className="notice" role="status" aria-label="Why the swap reverted">
+                  {revertText(tracked.retry, tracked.cause)}
+                  {offer?.kind === 'retry' && (
+                    <>
+                      {' '}
+                      <button
+                        className="button secondary"
+                        disabled={busy || pendingSwap.open || attempt === 2}
+                        onClick={() => retryAt(tracked.retry!, offer.slippageBps)}
+                      >
+                        Retry once at {(offer.slippageBps / 100).toFixed(2)}%
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
+            </li>
+          )}
+        </ol>
+      )}
+    </>
+  );
   return (
     <div
       className="card devnet4-swap swap-card"
@@ -1478,6 +1600,20 @@ function SwapPanel({
           ))}
         </ul>
       )}
+      {pendingSwap.storageProblem && (
+        <p role="alert" className="form-error">
+          {pendingSwap.storageProblem} No new transaction can be sent.
+        </p>
+      )}
+      {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
+      {pendingSwap.open && (
+        <>
+          {staleAlerts}
+          {nextLine}
+          {activityBlock}
+          {recoveryBlock}
+        </>
+      )}
       {quote && signed && input && output && (
         <>
           <Expander className="quote-box" more="All quote details" less="Fewer quote details">
@@ -1505,8 +1641,8 @@ function SwapPanel({
                 {formatAmount(signed.minimumOut, output.token.decimals)} {output.label} ({slippage}%
                 slippage{tightened && ' from the better price at the latest block'})
               </dd>
-              <dt>Quoted at</dt>
-              <dd>
+              <dt className={reconfirmed || tightened ? 'glance' : undefined}>Quoted at</dt>
+              <dd className={reconfirmed || tightened ? 'glance' : undefined}>
                 {reconfirmed
                   ? `Latest block ${quote.blockNumber.toString()}, not finalized; you reconfirmed this price`
                   : `Finalized block ${quote.blockNumber.toString()}`}{' '}
@@ -1529,24 +1665,7 @@ function SwapPanel({
               <dd>{deadlineMinutes} minutes after you confirm (wall-clock seconds)</dd>
             </dl>
           </Expander>
-          {check?.status === 'worse' && (
-            <div className="form-error" role="alert" aria-label="Stale quote">
-              <AlertTriangle size={16} /> The price moved after the finalized block. At the latest
-              block this swap returns {formatAmount(check.latest.amountOut, output.token.decimals)}{' '}
-              {output.label}, {percent(check.worseBps, 10_000n)}% worse than this quote and below
-              your minimum received, so it would revert. Reconfirm to use the latest price, or
-              change the amount.{' '}
-              <button className="button secondary" onClick={reconfirm}>
-                Reconfirm at the latest price
-              </button>
-            </div>
-          )}
-          {check?.status === 'unavailable' && (
-            <p className="form-error" role="alert" aria-label="Stale quote">
-              At the latest block no route can fill this amount, so the swap would revert. Lower the
-              amount or get a new quote.
-            </p>
-          )}
+          {!pendingSwap.open && staleAlerts}
           {check?.status === 'unknown' && (
             <p className="microcopy" role="status" aria-label="Stale quote">
               The latest block could not be read, so this finalized quote was not cross-checked.
@@ -1628,85 +1747,12 @@ function SwapPanel({
           </button>
         </div>
       )}
-      <p className="next-step" data-tone={next.tone} data-testid="next-step">
-        {next.text}
-      </p>
-      {pendingSwap.storageProblem && (
-        <p role="alert" className="form-error">
-          {pendingSwap.storageProblem} No new transaction can be sent.
-        </p>
-      )}
-      {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
-      {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
-        <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
-      )}
-      <h3 className="activity-title">Activity</h3>
-      {wallet.account && earlier.length === 0 && steps.length === 0 && !tracked && (
-        <p className="activity-empty">No transactions from this page yet.</p>
-      )}
-      {!wallet.account && (
-        <p className="activity-empty">Transactions you send from this page are listed here.</p>
-      )}
-      {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
-        <ol className="devnet4-steps" aria-label="Earlier transactions">
-          {history
-            .filter((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash)
-            .map((h) => (
-              <li key={h.hash} data-state={h.state}>
-                <strong>{h.label}</strong>: {h.state}{' '}
-                <ExplorerLink network={network} kind="tx" value={h.hash} />
-                {h.detail && <span className="muted"> {h.detail}</span>}
-              </li>
-            ))}
-        </ol>
-      )}
-      {(steps.length > 0 || tracked) && (
-        <ol className="devnet4-steps" aria-label="Transactions">
-          {steps.map((s, i) => (
-            <li key={i} data-state={s.state}>
-              <strong>{s.label}</strong>: {s.state}
-              {s.hash && (
-                <>
-                  {' '}
-                  <ExplorerLink network={network} kind="tx" value={s.hash} />
-                </>
-              )}
-              {s.detail && <span className="muted"> {s.detail}</span>}
-            </li>
-          ))}
-          {tracked && (
-            <li data-state={tracked.state}>
-              <strong>{tracked.label}</strong>: {tracked.state}{' '}
-              {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
-              <span className="muted"> {tracked.detail}</span>
-              {tracked.deadline > 0n &&
-                (tracked.state === 'pending' || tracked.state === 'unknown') && (
-                  <DeadlineClock
-                    deadline={tracked.deadline}
-                    sentAtMs={tracked.sentAtMs}
-                    now={now}
-                  />
-                )}
-              {tracked.state === 'failed' && tracked.retry && tracked.cause && (
-                <p className="notice" role="status" aria-label="Why the swap reverted">
-                  {revertText(tracked.retry, tracked.cause)}
-                  {offer?.kind === 'retry' && (
-                    <>
-                      {' '}
-                      <button
-                        className="button secondary"
-                        disabled={busy || pendingSwap.open || attempt === 2}
-                        onClick={() => retryAt(tracked.retry!, offer.slippageBps)}
-                      >
-                        Retry once at {(offer.slippageBps / 100).toFixed(2)}%
-                      </button>
-                    </>
-                  )}
-                </p>
-              )}
-            </li>
-          )}
-        </ol>
+      {!pendingSwap.open && (
+        <>
+          {nextLine}
+          {recoveryBlock}
+          {activityBlock}
+        </>
       )}
     </div>
   );
@@ -1836,22 +1882,35 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     }
   };
   return (
-    <div className="notice" aria-label="Recover transaction tracking">
+    <div className="notice hold-recovery" aria-label="Recover transaction tracking">
       <p>
-        Check your wallet activity on this chain and copy the transaction hash. This check only
-        restores tracking after matching the saved sender, destination, call, value and nonce. It
-        never sends or replaces a transaction. Time passing or an empty explorer result cannot clear
-        the hold.
+        Check your wallet activity on this chain and copy the transaction hash. Time passing or an
+        empty explorer result cannot clear the hold.
       </p>
       <p>
         A swap for which your wallet returned no hash ends in one of two ways only: its hash, found
         in your wallet activity and checked here, or its deadline passing in a finalized block
-        (nothing to do: the page then releases the hold by itself). Another transaction at the same
-        nonce does not release it, because an open wallet request could still be signed at another
-        nonce. For an approval or a skim your wallet never signed, send any other transaction from
-        this account, paste its hash and use the replacement check. Nothing else on this page clears
+        (nothing to do: the page then releases the hold by itself). Nothing else on this page clears
         a hold.
       </p>
+      <Disclosure clip className="hold-help" summary={() => 'What can I do?'}>
+        <p>
+          This check only restores tracking after matching the saved sender, destination, call,
+          value and nonce. It never sends or replaces a transaction.
+        </p>
+        <p>
+          Another transaction at the same nonce does not release it, because an open wallet request
+          could still be signed at another nonce. For an approval or a skim your wallet never
+          signed, send any other transaction from this account, paste its hash and use the
+          replacement check.
+        </p>
+        <p>
+          If you cancelled or replaced the request in your wallet with a different call, check that
+          transaction separately. Only a canonical finalized receipt at the original sender and
+          nonce can establish that the original request cannot execute. This check makes no wallet
+          request.
+        </p>
+      </Disclosure>
       <label>
         Transaction hash from wallet activity
         <input
@@ -1874,11 +1933,6 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       >
         Check transaction hash
       </button>
-      <p>
-        If you cancelled or replaced the request in your wallet with a different call, check that
-        transaction separately. Only a canonical finalized receipt at the original sender and nonce
-        can establish that the original request cannot execute. This check makes no wallet request.
-      </p>
       <button
         className="button secondary"
         disabled={busy || !hash.trim() || !!pendingSwap.storageProblem}

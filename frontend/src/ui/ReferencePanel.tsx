@@ -27,7 +27,28 @@ export function ReferencePanel({
     const previous = document.activeElement as HTMLElement | null;
     panel.current?.focus();
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') return onClose();
+      if (event.key !== 'Tab' || !panel.current) return;
+      // Keep Tab inside the open panel: the page behind it is under the scrim.
+      const stops = [
+        ...panel.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), summary, [tabindex]:not([tabindex="-1"])',
+        ),
+      ].filter((el) => !el.closest('[inert]'));
+      if (stops.length === 0) return event.preventDefault();
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || active === panel.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      } else if (!panel.current.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => {
@@ -45,6 +66,8 @@ export function ReferencePanel({
         data-mode={docked ? 'docked' : 'panel'}
         data-open={floating && open ? true : undefined}
         aria-label={title}
+        role={floating ? 'dialog' : undefined}
+        aria-modal={floating && open ? true : undefined}
         tabIndex={-1}
         inert={floating && !open}
       >

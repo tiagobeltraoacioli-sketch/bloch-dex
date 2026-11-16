@@ -1738,7 +1738,9 @@ details dl dd {
     padding: 0 6px;
     gap: 2px;
   }
-  .wallet-wrong {
+  /* The words stay on phones; the address gives way (R309-UI-3). */
+  .wallet-button[data-state='wrong-network'] .numeric,
+  .wallet-sep {
     display: none;
   }
   .wallet-button,
@@ -2493,22 +2495,6 @@ p.finality-line.microcopy {
 .chip {
   white-space: nowrap;
 }
-.swap-card {
-  display: flex;
-  flex-direction: column;
-}
-.swap-card[data-hold] > h2 {
-  order: -9;
-}
-.swap-card[data-hold] > .swap-form {
-  order: -8;
-}
-.swap-card[data-hold] > .activity-title {
-  margin-top: var(--s-4) !important;
-}
-.swap-card[data-hold] > .next-step {
-  margin-bottom: var(--s-4);
-}
 @media (max-width: 640px) {
   .mainnet-page:has(.live-hero) > .trust-strip {
     order: -3;
@@ -2523,23 +2509,6 @@ p.finality-line.microcopy {
   .swap-settings .disclosure-chevron {
     margin-left: auto;
   }
-}
-.swap-card[data-hold] > .next-step {
-  order: -7;
-  margin: var(--s-3) 0 0;
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-.swap-card[data-hold] > .activity-title {
-  order: -6;
-}
-.swap-card[data-hold] > .devnet4-steps,
-.swap-card[data-hold] > .activity-empty {
-  order: -5;
-}
-.swap-card[data-hold] > .notice[aria-label='Recover transaction tracking'] {
-  order: -4;
-  margin-bottom: var(--s-5);
 }
 @media (max-width: 640px) {
   .mainnet-page:has(.live-hero) > .section-heading > .button {
@@ -2556,4 +2525,105 @@ p.finality-line.microcopy {
   .mainnet-page:has(.live-hero) > .trust-strip {
     grid-row: 1;
   }
+}
+
+/* ---------- Third pass: the hold state ---------- */
+/* A disclosure whose closed region is clipped, not removed: its text stays part of the page's text. */
+.disclosure-clip:not([data-open]) > .disclosure-region {
+  display: block;
+  max-height: 0;
+  overflow: hidden;
+  animation: none;
+}
+.disclosure-clip > .disclosure-toggle {
+  width: auto;
+  min-height: 40px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--control-border);
+  color: var(--text);
+  font-weight: 600;
+}
+.disclosure-clip > .disclosure-toggle:hover {
+  border-color: var(--text-2);
+}
+.disclosure-clip .disclosure-chevron {
+  margin-left: var(--s-1);
+}
+.disclosure-clip[data-open] > .disclosure-region {
+  margin-top: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-left: 2px solid var(--line-strong);
+  color: var(--text);
+  font-size: var(--text-ui);
+  line-height: 1.55;
+}
+.disclosure-clip .disclosure-region p + p {
+  margin-top: var(--s-3);
+}
+/* The tracked transaction is the status header of the hold: label, state, hash, what to do, the clock. */
+.swap-card[data-hold] .activity-title {
+  margin-top: var(--s-4) !important;
+}
+.swap-card[data-hold] .devnet4-steps[aria-label='Transactions'] > li:last-child {
+  margin-top: var(--s-2);
+  padding: var(--s-4) var(--s-4) var(--s-4) 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-3);
+  background: var(--surface-2);
+}
+.swap-card[data-hold] .devnet4-steps[aria-label='Transactions'] > li:last-child::before {
+  left: 16px;
+  top: 21px;
+}
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-arch);
+  font-size: var(--text-micro);
+  font-weight: 600;
+}
+li[data-state='pending'] .state-pill {
+  border-color: var(--info);
+  color: var(--info);
+}
+li[data-state='unknown'] .state-pill {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+li[data-state='mined'] .state-pill {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+li[data-state='failed'] .state-pill {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.swap-card[data-hold] .deadline-clock {
+  margin-top: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-ui);
+  font-weight: 500;
+}
+.swap-card[data-hold] .deadline-bar {
+  height: 6px;
+  border-radius: 3px;
+}
+.hold-why {
+  margin-top: var(--s-3);
+}
+.hold-recovery {
+  margin-bottom: var(--s-5);
+}
+.hold-recovery > .button {
+  margin-top: var(--s-2);
+}
+.hold-help {
+  margin: var(--s-3) 0;
 }
