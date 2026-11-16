@@ -365,7 +365,7 @@ sections 6 and 8, or with any tool that speaks to the router).
 
 ## 11. Rehearsals and how to repeat them
 
-Everything below is loopback or read-only, with throwaway keys. Run of record: code commit `a986365`, 2026-11-16 (commits after it change documents and Solidity formatting only; the suites were run again on the final commit).
+Everything below is loopback or read-only, with throwaway keys. Run of record: code commit `f4c0df6`, 2026-11-16 (commits after it change documents and Solidity formatting only; the suites were run again on the final commit).
 
 | Rehearsal | Command | What it shows | Result |
 |---|---|---|---|

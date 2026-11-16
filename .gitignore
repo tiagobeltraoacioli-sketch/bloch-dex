@@ -14,3 +14,4 @@ node_modules/
 !/frontend/.env.example
 .wrangler/
 /frontend/dist-multichain/
+/frontend/node_modules
