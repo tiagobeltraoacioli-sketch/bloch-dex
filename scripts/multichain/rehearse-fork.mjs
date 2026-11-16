@@ -129,7 +129,7 @@ try {
       if (!receipt) await delay(100);
     }
     refuse(receipt, `no receipt for ${label}`);
-    const entry = { step: label, hash, status: receipt.status, gasUsed: BigInt(receipt.gasUsed), gasLimit: gas, ...extra };
+    const entry = { step: label, hash, status: receipt.status, gasUsed: BigInt(receipt.gasUsed), gasLimit: gas, feeWei: BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice), ...extra };
     evidence.steps.push(entry);
     if (receipt.status !== "0x1") {
       // Replay as a call on the block before, for the revert reason.
@@ -212,7 +212,8 @@ try {
   await send(trader, { to: token.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `trader approves ${token.symbol} to the router`);
   const nativeBefore = await nativeOf(trader.address);
   const out = await send(trader, { to: router, data: call("swapExactTokensForBLCH", [3_000n * unit, 0n, [token.address, wrapped.address], trader.address, deadline]) }, `swap 3,000 ${token.symbol} for ${chain.nativeCurrency.symbol} (swapExactTokensForBLCH: the router unwraps and pays the native coin)`);
-  check("the trader received the native coin (the wrapped token's withdraw pays the router, the router pays the trader)", (await nativeOf(trader.address)) > nativeBefore - out.gasUsed * ((await gasPrice()) * 2n + 1n), undefined);
+  const nativeGot = (await nativeOf(trader.address)) - nativeBefore + out.feeWei;
+  check("the trader received the native coin (the wrapped token's withdraw pays the router, the router pays the trader)", nativeGot > 0n, formatUnits(nativeGot, 18));
   await send(trader, { to: wrapped.address, data: call("deposit", []), value: 10n ** 18n }, `trader wraps 1 ${chain.nativeCurrency.symbol} (deposit)`);
   await send(trader, { to: wrapped.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `trader approves ${wrapped.symbol} to the router`);
   await send(trader, { to: router, data: call("swapExactTokensForTokens", [10n ** 18n, 0n, [wrapped.address, token.address], trader.address, deadline]) }, `swap 1 ${wrapped.symbol} for ${token.symbol} (swapExactTokensForTokens)`);
@@ -246,9 +247,9 @@ try {
   const feeToken0 = await read(token.address, "balanceOf", [shared.feeTo.address]);
   const a1 = await send(feeAccount, { to: pair, data: call("approve", [router, s.feeToLp]) }, "fee address approves its LP shares to the router");
   const a2 = await send(feeAccount, { to: router, data: call("removeLiquidityBLCH", [token.address, s.feeToLp, 0n, 0n, shared.feeTo.address, deadline]) }, "fee address redeems its LP shares (removeLiquidityBLCH): native coin and token arrive at the fee address");
-  const price = (await gasPrice()) * 2n + 1n;
   const redeemedToken = (await read(token.address, "balanceOf", [shared.feeTo.address])) - feeToken0;
-  const redeemedNative = (await nativeOf(shared.feeTo.address)) - feeNative0 + (a1.gasUsed + a2.gasUsed) * price;
+  // The native coin that arrived: the balance change plus the gas the fee address paid for its two transactions.
+  const redeemedNative = (await nativeOf(shared.feeTo.address)) - feeNative0 + a1.feeWei + a2.feeWei;
   evidence.protocolFee.redeemed = { native: `${formatUnits(redeemedNative, 18)} ${chain.nativeCurrency.symbol}`, token: `${formatUnits(redeemedToken, token.decimals)} ${token.symbol}`, nativeWei: redeemedNative, tokenUnits: redeemedToken, gas: a1.gasUsed + a2.gasUsed };
   check("the fee address received the token and the native coin of its shares", redeemedToken > 0n && redeemedNative > 0n && (await read(pair, "balanceOf", [shared.feeTo.address])) === 0n, evidence.protocolFee.redeemed);
   await rpc("anvil_stopImpersonatingAccount", [shared.feeTo.address]);
