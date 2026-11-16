@@ -12,7 +12,15 @@ export function BrandMark({ size = 30 }: { size?: number }) {
       aria-hidden="true"
       focusable="false"
     >
-      <rect width="32" height="32" rx="7" fill="var(--tile)" />
+      <rect
+        x="0.5"
+        y="0.5"
+        width="31"
+        height="31"
+        rx="6.5"
+        fill="var(--tile)"
+        stroke="var(--tile-edge)"
+      />
       <path d="M10.5 26V16.5a5.5 5.5 0 0 1 11 0V26Z" fill="var(--tile-fg)" />
       <rect x="6" y="26" width="20" height="1.5" rx="0.75" fill="var(--tile-fg)" opacity="0.55" />
       <circle cx="16" cy="6.75" r="1.75" fill="var(--net-bright)" />

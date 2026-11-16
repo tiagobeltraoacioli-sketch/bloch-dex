@@ -64,6 +64,8 @@ const STATES = [
   'preview-pools',
   'preview-portfolio',
   'live-pools-unavailable',
+  // Added after the header network control became a popover: the dialog behind its "About the preview network" action.
+  'preview-network-about',
 ];
 const VARIANTS = [
   { theme: 'dark', width: 1440, height: 900, dsf: 1, mobile: false },
@@ -621,16 +623,28 @@ group('preview', STATES.filter((s) => s.startsWith('preview-') || s === 'live-po
   }, independent);
   await w.step('preview-settings', async () => (await route('#/trade'), await press('Swap settings'), await dialog('the settings dialog'), page), independent);
   await w.step('preview-wallet-dialog', async () => (await route('#/trade'), await press('Connect wallet'), await dialog('the wallet dialog'), page), independent);
-  await w.step('preview-network', async () => {
-    await route('#/trade');
-    // The header network button: its text starts with the network name; an aria-label naming the network also counts.
+  // The header network control: a button whose text holds the network name (or whose aria-label names the network).
+  // It opens a dialog, or a popover (a panel labelled "Select network", the button then aria-expanded).
+  const openNetwork = async () => {
     const found = await page.evaluate(`(() => {
-      const all = [...document.querySelectorAll('header button, button')].filter((b) => window.__h.visible(b));
-      const b = all.find((x) => /^Bloch L2/.test(x.textContent.replace(/\\s+/g, ' ').trim())) ?? all.find((x) => /network/i.test(x.getAttribute('aria-label') ?? ''));
+      const text = (b) => b.textContent.replace(/\\s+/g, ' ').trim();
+      const inHeader = [...document.querySelectorAll('header button')].filter((b) => window.__h.visible(b));
+      const all = [...document.querySelectorAll('button')].filter((b) => window.__h.visible(b));
+      const pick = (list) => list.find((x) => /Bloch L2/.test(text(x))) ?? list.find((x) => /network/i.test(x.getAttribute('aria-label') ?? ''));
+      const b = pick(inHeader) ?? pick(all);
       if (b) b.click();
       return !!b;
     })()`);
-    if (!found) throw new Error('no header network button (text "Bloch L2…" or an aria-label naming the network)');
+    if (!found) throw new Error('no header network button (text holding "Bloch L2" or an aria-label naming the network)');
+    await page.waitFor('the network dialog or popover', `!!document.querySelector('[role="dialog"], dialog[open], [aria-modal="true"], [aria-label="Select network"], header button[aria-expanded="true"]')`, 5000);
+    await delay(300);
+  };
+  await w.step('preview-network', async () => (await route('#/trade'), await openNetwork(), page), independent);
+  await w.step('preview-network-about', async () => {
+    await route('#/trade');
+    await openNetwork();
+    if (!(await page.evaluate(`!!window.__s.control('About the preview network')`))) skip('the network control has no "About the preview network" action (it opens the dialog directly: see preview-network)');
+    await press('About the preview network');
     await dialog('the network dialog');
     return page;
   }, independent);
