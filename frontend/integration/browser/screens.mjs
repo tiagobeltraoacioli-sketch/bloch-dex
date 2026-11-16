@@ -66,6 +66,9 @@ const STATES = [
   'live-pools-unavailable',
   // Added after the header network control became a popover: the dialog behind its "About the preview network" action.
   'preview-network-about',
+  // Second pass: the reference layer docked on the page because a pool carries a notice. Last: it leaves bUSDC
+  // above the reserves of the pair.
+  'mainnet-docked-pool-notice',
 ];
 const VARIANTS = [
   { theme: 'dark', width: 1440, height: 900, dsf: 1, mobile: false },
@@ -652,6 +655,17 @@ group('preview', STATES.filter((s) => s.startsWith('preview-') || s === 'live-po
   await w.step('preview-portfolio', async () => (await route('#/portfolio'), page), independent);
   await w.step('live-pools-unavailable', async () => (await route('#/live-pools'), page), independent);
 });
+
+group('docked-pool-notice', ['mainnet-docked-pool-notice'], async (w) => {
+  await w.step('mainnet-docked-pool-notice', async () => {
+    // A plain token transfer to the pair: 5 bUSDC above its reserves ("Pending excess", skim offered).
+    await fund(config.pair, { busdc: 5_000_000n });
+    const page = await w.begin();
+    await page.waitText('/Pending excess/', 15_000);
+    return page;
+  });
+});
+
 
 // ---- run ----
 const started = Date.now();

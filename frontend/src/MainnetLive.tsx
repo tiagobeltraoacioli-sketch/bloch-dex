@@ -248,10 +248,13 @@ export default function MainnetLive({
   const ready = !failure && state?.status === 'live' && !!snapshot;
   const loading = !failure && (!state || (state.status === 'live' && !snapshot));
   // Presentation: the reference layer is a side panel unless a pool carries a notice the user must see
-  // (excess above the reserves, a side at its cap, the k ceiling, held bUSDC exits); then it stays on the page.
+  // (excess above the reserves, a side at its cap, the k ceiling, held bUSDC exits) or the wallet is on
+  // another chain; then it stays on the page.
   const [detailsOpen, setDetailsOpen] = useState(false);
   const attention =
     exitsBlocked(hold) ||
+    // A wallet on another chain: the network block with its switch button stays on the page.
+    (wallet.account !== null && BigInt(wallet.account.chainId) !== BigInt(network.chainId)) ||
     (snapshot?.pools ?? []).some(
       (p) =>
         (p.excess && (p.excess.excess0 > 0n || p.excess.excess1 > 0n)) ||
@@ -403,7 +406,7 @@ function TrustStrip({
           data-attention
           onClick={() => document.querySelector('.reference')?.scrollIntoView({ block: 'start' })}
         >
-          <AlertTriangle size={16} aria-hidden="true" /> Pool notice below
+          <AlertTriangle size={16} aria-hidden="true" /> Notices and network below
         </button>
       ) : (
         <button type="button" className="trust-details" onClick={onDetails}>

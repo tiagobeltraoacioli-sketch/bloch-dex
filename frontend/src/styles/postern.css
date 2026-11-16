@@ -2264,7 +2264,8 @@ p.finality-line.microcopy {
 .swap-card[data-phase='quoted'] .get-quote {
   font-size: var(--text-small);
 }
-.swap-card[data-phase='form'] .swap-actions > .button {
+/* A disabled Swap stays drawn while a hold is open: it is the visible sign of the hold. */
+.swap-card[data-phase='form']:not([data-hold]) .swap-actions > .button {
   display: none;
 }
 .swap-card[data-phase='form'] .swap-actions {
