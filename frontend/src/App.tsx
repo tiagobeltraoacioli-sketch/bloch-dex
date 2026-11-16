@@ -58,11 +58,27 @@ const MAINNET_HOLD_URL =
   MAINNET_NETWORK.bridges.find((b) => b.status)?.status?.ethRpcUrl;
 const MAINNET_ETH_RPC = MAINNET_HOLD_URL ? httpRpc(MAINNET_HOLD_URL) : undefined;
 // Header network switcher (presentation only; see shell/networks.ts).
-const NETWORKS = networkEntries({
-  blochChainId: MAINNET_NETWORK.chainId,
-  blochRpcLive: MAINNET_NETWORK.rpcLive,
-  devnet4: DEVNET4_ROUTE,
-});
+const NETWORKS = networkEntries([
+  {
+    key: 'bloch-l2',
+    name: 'Bloch L2',
+    chainId: MAINNET_NETWORK.chainId,
+    href: '#/mainnet',
+    status: MAINNET_NETWORK.rpcLive ? 'Guarded launch' : 'Not yet live',
+  },
+  ...(DEVNET4_ROUTE
+    ? [
+        {
+          key: 'devnet4',
+          name: 'Bloch L2 devnet4',
+          chainId: 700771,
+          href: '#/devnet4',
+          status: 'Zero value',
+        },
+      ]
+    : []),
+  { key: 'preview', name: 'Preview', href: '#/trade', status: 'Sample data, no network' },
+]);
 
 const pageFromHash = (): Page =>
   location.hash === '#/pools' ? 'pools' : location.hash === '#/portfolio' ? 'portfolio' : 'trade';
