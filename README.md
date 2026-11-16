@@ -71,6 +71,14 @@ parity, protocol-fee dilution and stateful liquidity invariants. Fuzz tests run
 512 cases each; the invariant campaign runs 128 sequences of 64 operations
 with unexpected reverts treated as failures.
 
+## Other EVM chains
+
+The same contracts can be deployed, unchanged, on six public EVM chains (OP Mainnet, Base, Arbitrum One, Linea,
+BNB Smart Chain, Ethereum) with the protocol fee fixed to one address. This is a separate product line with its own
+tools (`scripts/multichain/`), its own page build (`npm --prefix frontend run build:multichain`) and its own
+document: [multichain deployment package](docs/MULTICHAIN-DEPLOY.md). Nothing is deployed there; the owner runs the
+deployment. Non-EVM networks: [assessment](docs/MULTICHAIN-NON-EVM.md).
+
 ## Contracts
 
 Fixed-supply EVM asset issuance is available through
