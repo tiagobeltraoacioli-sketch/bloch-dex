@@ -364,8 +364,9 @@ try {
     await shots(stage, 'state-waiting-rate-limited');
     await endpointMode(stage, 'ok');
     await rpc(stage, 'anvil_mine', [hex(deep - part)]);
-    await page.waitText(`/${swapLabel(stage)}: mined/`, 120_000);
-    check(`${stage.key}: after the endpoints answer again and the depth is reached, the held swap is released as mined`, (await rpc(stage, 'eth_getTransactionReceipt', [stageHash]))?.status === '0x1');
+    // This swap's own line (an earlier swap of this chain is already listed as mined): found by its hash.
+    const released = await page.waitFor('the held swap shown as mined', `[...document.querySelectorAll('li[data-state="mined"]')].some((li) => li.textContent.includes(${JSON.stringify(stageHash)}) && window.__h.reachable(li))`, 120_000).then(() => true, () => false);
+    check(`${stage.key}: after the endpoints answer again and the depth is reached, the held swap is released as mined (shown on screen, mined on the fork)`, released && (await rpc(stage, 'eth_getTransactionReceipt', [stageHash]))?.status === '0x1');
     // 1. The endpoints disagree.
     await page.waitFor('the page after the mined swap', `(() => { const b = window.__h.button('Refresh'); return !!b && !b.disabled; })()`, 60_000);
     await endpointMode(stage, ['ok', 'lie']);

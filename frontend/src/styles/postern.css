@@ -2711,11 +2711,7 @@ li[data-state='failed'] .state-pill {
   transition: width 600ms var(--ease);
 }
 .confirm-progress[data-phase='unseen'] .confirm-bar {
-  background: repeating-linear-gradient(
-    90deg,
-    var(--surface-3) 0 8px,
-    var(--line-strong) 8px 16px
-  );
+  background: repeating-linear-gradient(90deg, var(--surface-3) 0 8px, var(--line-strong) 8px 16px);
   background-size: 32px 100%;
   animation: postern-march 1.2s linear infinite;
 }
