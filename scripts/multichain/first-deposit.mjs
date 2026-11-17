@@ -180,6 +180,10 @@ function parseArgs(argv) {
   return o;
 }
 
+/** Review R369-13: how far the head the deposit tool reads at may lie behind another endpoint's head (Linea makes a
+ * block only when there is work, up to 82 s apart when measured; the printed deposit's deadline is 20 minutes). */
+export const HEAD_AGE_BOUND_SECONDS = 300;
+
 export async function main(argv, print = console.log) {
   const o = parseArgs(argv);
   const shared = loadShared();
@@ -228,6 +232,13 @@ export async function main(argv, print = console.log) {
       if (same === null) await new Promise((r) => setTimeout(r, 1500));
     }
     check("the other reviewed endpoint has the same block at that height", same === head.hash, same);
+  }
+  // Review R369-13: the head is the first endpoint's choice; an old canonical block would pass the check above.
+  if (others.length) {
+    const heads = await Promise.all(others.map((r) => r("eth_getBlockByNumber", ["latest", false]).then((b) => b?.timestamp ?? null, () => null)));
+    const newest = [head.timestamp, ...heads].filter((t) => typeof t === "string").map((t) => Number(BigInt(t))).reduce((a, b) => Math.max(a, b), 0);
+    const age = newest - Number(BigInt(head.timestamp));
+    check(`the block read at is at most ${HEAD_AGE_BOUND_SECONDS} s behind the newest head of the reviewed endpoints (it is ${age} s)`, age <= HEAD_AGE_BOUND_SECONDS, heads);
   }
   // Every state answer at that block's HASH, from every endpoint; used only when two (one in a loopback rehearsal)
   // answered and all that answered agree (review R369-1). The market read below does the same itself.
@@ -347,7 +358,8 @@ export async function main(argv, print = console.log) {
       const gift = side(balances);
       const deposit = { native, token: tokenAmount };
       const tolerated = giftWithinTolerance(gift, deposit);
-      const skim = `${created ? "" : `cast send ${factory.address} "createPair(address,address)" ${token0} ${token1}; then `}cast send ${planned.address} "skim(address)" ${depositor}`;
+      // Review R369-10: every printed line pins the chain (the factory has the same address on all six).
+      const skim = `${created ? "" : `cast send ${factory.address} "createPair(address,address)" ${token0} ${token1} --chain ${chain.chain.chainId}; then `}cast send ${planned.address} "skim(address)" ${depositor} --chain ${chain.chain.chainId}`;
       check(
         "what sits at the pair's address is at most 0.1% of either side of the deposit",
         state === "open" || tolerated,

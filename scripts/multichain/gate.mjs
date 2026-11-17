@@ -107,6 +107,15 @@ export function gateConfig(shared, chain) {
  * Evaluate the gate. `request(method, params)` is one endpoint's JSON-RPC; `others` are further endpoints that must
  * agree on the chain. Returns the report; `report.decision` is "pass" or "fail".
  */
+/**
+ * Review R369-13: how far the finalized block the gate reads at may lie behind the newest head, in seconds of chain
+ * time. Measured (docs/MULTICHAIN-DEPLOY.md section 8, "finality"): `finalized` is 15 to 23 minutes behind the head
+ * on OP Mainnet, Base, Arbitrum One and Ethereum, seconds on BNB Smart Chain, and 1 h 40 min to more than 5 hours
+ * on Linea's first endpoint (the block proven on Ethereum). A bound about twice the worst measured, so a slow day
+ * waits rather than fails, and a block days old is refused.
+ */
+export const FINALIZED_AGE_BOUND_SECONDS = { default: 3600, "bnb-smart-chain": 600, linea: 8 * 3600 };
+
 export async function evaluateGate({ shared, chain, plan, phase, request, others = [], identityOnly = [], rehearsal = false, openings = {}, feeProof = null }) {
   const checks = [];
   const waiting = [];
@@ -147,6 +156,16 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
   if (others.length) {
     const same = await Promise.all(others.map((r) => soft(async () => (await r("eth_getBlockByNumber", [at, false]))?.hash ?? null)));
     check("the other endpoints have the same block at the finalized height", same.every((h) => h === finalized.hash), same);
+  }
+  // Review R369-13: the finalized block is the first endpoint's choice, and an OLD canonical block would pass the
+  // hash check on every endpoint (state from before a delegation or a transaction). With other endpoints, it must
+  // be at most FINALIZED_AGE_BOUND_SECONDS (per chain, stated below) behind the NEWEST head any endpoint reports.
+  if (others.length) {
+    const heads = await Promise.all([request, ...others].map((r) => soft(async () => (await r("eth_getBlockByNumber", ["latest", false]))?.timestamp ?? null)));
+    const newest = heads.filter((t) => typeof t === "string").map((t) => Number(BigInt(t))).reduce((a, b) => Math.max(a, b), 0);
+    const bound = FINALIZED_AGE_BOUND_SECONDS[chain.chain.key] ?? FINALIZED_AGE_BOUND_SECONDS.default;
+    const age = newest - Number(BigInt(finalized.timestamp ?? "0x0"));
+    check(`the finalized block is at most ${bound} s behind the newest head of the endpoints (it is ${age} s)`, newest > 0 && age <= bound, heads);
   }
   state = pinnedStateReader([request, ...others], finalized.hash, {
     onRead: ({ failed }) => {
@@ -279,6 +298,15 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
   }
   return report();
 
+  // A report made before these were reached (an early stop) must not throw on the not-yet-initialized constants.
+  function declared(read) {
+    try {
+      return read() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   function report() {
     const failed = checks.filter((c) => !c.ok).map((c) => c.name);
     return {
@@ -290,8 +318,8 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       referencePlan: plan.reference,
       chain: { key: chain.chain.key, chainId: chain.chain.chainId, genesisHash: chain.chain.genesisHash },
       finalized: finalized && typeof finalized.hash === "string" ? { number: Number(BigInt(finalized.number)), hash: finalized.hash, timestamp: Number(BigInt(finalized.timestamp ?? "0x0")) } : null,
-      feeTo: typeof feeTo === "undefined" ? null : feeTo,
-      firstDepositor: typeof firstDepositor === "undefined" ? null : firstDepositor,
+      feeTo: declared(() => feeTo),
+      firstDepositor: declared(() => firstDepositor),
       stateReads,
       plan: planSummary(plan),
       pairs,
