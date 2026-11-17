@@ -88,6 +88,7 @@ export async function launch(executable, port) {
 }
 
 // Page-side helpers, evaluated in the page. Controls are found the way a user finds them: by visible text and label.
+const R344_STRICT = process.env.R344_STRICT === '1';
 const HELPERS = String.raw`
 window.__h = {
   visible: (el) => !!el && el.getClientRects().length > 0,
@@ -152,7 +153,21 @@ export async function openPage(browser, contextId, { initScript, url, onBinding,
   await cdp('Page.enable');
   await cdp('Runtime.enable');
   await cdp('Runtime.addBinding', { name: '__walletBridge' });
-  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `${HELPERS}\n${initScript}` });
+  // Review 344 demonstration: with R344_STRICT=1 the texts the unchanged assertions of the pre-redesign harness read
+  // (page.text(), page.labelled()) are what is on screen without a click (visibleText), so an assertion that now
+  // passes on text behind a click fails and is listed. Waits and clicks are as in the line's harness.
+  const STRICT = R344_STRICT
+    ? String.raw`
+(() => {
+  const h = window.__h;
+  h.labelled = function (name) {
+    const el = [...document.querySelectorAll('[aria-label]')].find((x) => x.getAttribute('aria-label') === name && this.reachable(x));
+    return el ? el.innerText : null;
+  };
+  h.strict = true;
+})();`
+    : '';
+  await cdp('Page.addScriptToEvaluateOnNewDocument', { source: `${HELPERS}\n${STRICT}\n${initScript}` });
   const evaluate = async (expression) => {
     const { result, exceptionDetails } = await cdp('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
     if (exceptionDetails) throw new Error(`page evaluation failed: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
@@ -190,7 +205,7 @@ export async function openPage(browser, contextId, { initScript, url, onBinding,
       await delay(300);
       await waitFor('document', 'document.readyState === "complete" && !!window.__h');
     },
-    text: () => evaluate('document.body.innerText'),
+    text: () => evaluate(R344_STRICT ? 'window.__h.visibleText()' : 'document.body.innerText'),
     /** The text on screen without a click (see `visibleText` above); `text()` also returns clipped and inert regions. */
     visibleText: () => evaluate('window.__h.visibleText()'),
     waitVisibleText: (pattern, timeoutMs) => waitFor(`visible text ${pattern}`, `(${pattern}).test(window.__h.visibleText())`, timeoutMs),
