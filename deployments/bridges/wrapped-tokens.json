@@ -1,0 +1,196 @@
+{
+  "domain": "postern.dex.wrapped-tokens.v1",
+  "schemaVersion": 1,
+  "l2ChainId": 700770,
+  "tokens": [
+    {
+      "symbol": "bUSDC",
+      "name": "Bloch Bridged USDC",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "ethereum",
+        "name": "Ethereum",
+        "kind": "evm"
+      },
+      "asset": {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "issuer": "Circle",
+        "issuerNative": true
+      },
+      "exit": "token-burn",
+      "description": "USDC held in the bridge vault on Ethereum, and no other asset. It is not USDC and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bUSDC.arb",
+      "name": "Bloch Bridged USDC (Arbitrum)",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "arbitrum-one",
+        "name": "Arbitrum One",
+        "kind": "evm"
+      },
+      "asset": {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "issuer": "Circle",
+        "issuerNative": true
+      },
+      "exit": "token-burn",
+      "description": "USDC held in the bridge vault on Arbitrum One, and no other asset. It is not USDC and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bUSDC.op",
+      "name": "Bloch Bridged USDC (OP Mainnet)",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "op-mainnet",
+        "name": "OP Mainnet",
+        "kind": "evm"
+      },
+      "asset": {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "issuer": "Circle",
+        "issuerNative": true
+      },
+      "exit": "token-burn",
+      "description": "USDC held in the bridge vault on OP Mainnet, and no other asset. It is not USDC and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bUSDC.linea",
+      "name": "Bloch Bridged USDC (Linea)",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "linea",
+        "name": "Linea",
+        "kind": "evm"
+      },
+      "asset": {
+        "symbol": "USDC",
+        "name": "USDC",
+        "issuer": "Circle",
+        "issuerNative": true
+      },
+      "exit": "token-burn",
+      "description": "USDC held in the bridge vault on Linea, and no other asset. It is not USDC and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bUSDC.base",
+      "name": "Bloch Bridged USDC (Base)",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "not-available-yet",
+      "network": {
+        "id": "base",
+        "name": "Base",
+        "kind": "evm"
+      },
+      "asset": {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "issuer": "Circle",
+        "issuerNative": true
+      },
+      "exit": "token-burn",
+      "description": "USDC held in the bridge vault on Base, and no other asset. It is not USDC and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bBTC",
+      "name": "Bloch Bridged Bitcoin",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "bitcoin",
+        "name": "Bitcoin",
+        "kind": "utxo"
+      },
+      "asset": {
+        "symbol": "BTC",
+        "name": "Bitcoin",
+        "issuer": "none",
+        "issuerNative": true
+      },
+      "exit": "router",
+      "description": "BTC held in the bridge vault on Bitcoin, and no other asset. It is not BTC and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bUSDC.sol",
+      "name": "Bloch Bridged USDC (Solana)",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "solana",
+        "name": "Solana",
+        "kind": "svm"
+      },
+      "asset": {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "issuer": "Circle",
+        "issuerNative": true
+      },
+      "exit": "router",
+      "description": "USDC held in the bridge vault on Solana, and no other asset. It is not USDC and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bUSDT.trx",
+      "name": "Bloch Bridged USDT (Tron)",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "tron",
+        "name": "TRON",
+        "kind": "tvm"
+      },
+      "asset": {
+        "symbol": "USDT",
+        "name": "Tether USD",
+        "issuer": "Tether",
+        "issuerNative": true
+      },
+      "exit": "token-burn",
+      "description": "USDT held in the bridge vault on TRON, and no other asset. It is not USDT and not interchangeable with a wrapped token of another network."
+    },
+    {
+      "symbol": "bUSDC.xlm",
+      "name": "Bloch Bridged USDC (Stellar)",
+      "decimals": 6,
+      "address": null,
+      "status": "not-deployed",
+      "offered": "shown",
+      "network": {
+        "id": "stellar",
+        "name": "Stellar",
+        "kind": "stellar"
+      },
+      "asset": {
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "issuer": "Circle (issuer account GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN, home domain circle.com)",
+        "issuerNative": true
+      },
+      "exit": "router",
+      "description": "USDC held in the bridge vault on Stellar, and no other asset. It is not USDC and not interchangeable with a wrapped token of another network."
+    }
+  ]
+}

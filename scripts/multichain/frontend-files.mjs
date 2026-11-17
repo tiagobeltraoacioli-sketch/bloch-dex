@@ -32,13 +32,15 @@ export function frontendNetwork(shared, chain, { rpc = null } = {}) {
     rpc: { urls: rpc ? [rpc] : chain.rpc, rehearsal: Boolean(rpc) },
     explorer: { url: rpc ? null : chain.explorer },
     wrappedNative: { address: lower(chain.wrappedNative.address), symbol: chain.wrappedNative.symbol, codeHash: chain.wrappedNative.codeHash },
-    tokens: chain.tokens.map((t) => ({ address: lower(t.address), symbol: t.symbol, name: t.name, decimals: t.decimals, codeHash: t.codeHash, kind: t.kind })),
+    // `label` and `note` (optional): what the page shows instead of the contract's own symbol, and one line under it
+    // (BNB Smart Chain's Binance-Peg "USDC" is never shown as plain USDC).
+    tokens: chain.tokens.map((t) => ({ address: lower(t.address), symbol: t.symbol, ...(t.label ? { label: t.label, note: t.note } : {}), name: t.name, decimals: t.decimals, codeHash: t.codeHash, kind: t.kind })),
     multicall3: { address: lower(chain.multicall3.address), codeHash: chain.multicall3.codeHash },
     feeTo: lower(shared.feeTo.address),
     l2Only: { ...shared.l2Only },
     // Optional fields (added by review R309-MC-2 and MC-6; a page that does not know them keeps `finalized` and
     // its own default deadline).
-    confirmation: { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds },
+    confirmation: { settle: chain.confirmation.settle, strict: chain.confirmation.strict, ...(chain.confirmation.reverted ? { reverted: chain.confirmation.reverted } : {}), blockSeconds: chain.confirmation.measured.blockSeconds },
     swap: { deadlineMinutes: chain.swap.deadlineMinutes },
   };
 }

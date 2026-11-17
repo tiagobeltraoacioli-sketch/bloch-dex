@@ -113,6 +113,24 @@ async function one(key: string) {
   row.strict =
     strict.error ??
     `ok${strict.retried ? ' (second try)' : ''}: block ${Number(BigInt(strict.value!.number))}, ${Math.round((Date.now() / 1000 - Number(BigInt(strict.value!.timestamp))) / 60)} min old`;
+  // What settles a reverted swap (the chain's own rule for it, R328-3P-3), and the comparison quote's shape: an
+  // eth_call at the TAG `latest`, which the stack must turn into a read at a hash two endpoints agree on.
+  const reverted = await attempt(async () => {
+    const final = await block(rpc.reverted, 'finalized');
+    await rpc.reverted('eth_getTransactionCount', [
+      who,
+      { blockHash: final.hash, requireCanonical: true },
+    ]);
+    return final;
+  });
+  row.reverted =
+    reverted.error ??
+    `ok${reverted.retried ? ' (second try)' : ''}: ${Math.round(Date.now() / 1000 - Number(BigInt(reverted.value!.timestamp)))} s old`;
+  const byTag = await attempt(async () => {
+    await rpc('eth_call', [{ to: chain.tokens[0].address, data: '0x95d89b41' }, 'latest']);
+    return Number(BigInt((await rpc('eth_getTransactionCount', [who, 'pending'])) as string));
+  });
+  row.latestTagRead = byTag.error ?? `ok${byTag.retried ? ' (second try)' : ''}`;
   const aged: string[] = [];
   if (first.value) {
     const started = Date.now();
@@ -131,7 +149,7 @@ async function one(key: string) {
   row.renewed =
     renewed.error ??
     `ok${renewed.retried ? ' (second try)' : ''}: block ${Number(BigInt(renewed.value!.settled.number))}`;
-  row.pass = [first, head, strict, renewed].every((r) => r.value !== undefined);
+  row.pass = [first, head, strict, reverted, byTag, renewed].every((r) => r.value !== undefined);
   return row;
 }
 

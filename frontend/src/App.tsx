@@ -1,5 +1,5 @@
 import { QrWalletButton } from './QrWalletButton';
-import { Component, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, Suspense, lazy, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ArrowRight, Info, LoaderCircle, Wallet } from 'lucide-react';
 import { parseAmount } from './amm';
 import { compactUsd, TOKENS, usd } from './data';
@@ -25,6 +25,11 @@ import { verifyDeploymentRecord } from './devnet4/record';
 import MainnetLive from './MainnetLive';
 import { bundledNetwork, bundledState, plannedCaps, plannedPairs } from './mainnet/config';
 import { DEFAULT_SLIPPAGE_BPS, SLIPPAGE_RANGE_TEXT, isAllowedSlippageBps } from './slippage';
+
+// The bridge route and the bridges' interface files it bundles load only when the route is opened.
+const BridgeApplication = lazy(() =>
+  import('./bridge/BridgeApplication').then((m) => ({ default: m.BridgeApplication })),
+);
 
 // Devnet4 live route. The settled RPC sends no CORS headers: the app reads it
 // through the dev/preview server proxy at /devnet4-rpc (see README); a wallet
@@ -255,6 +260,7 @@ function Application({ liveAvailable }: { liveAvailable: boolean }) {
           ))}
           {liveAvailable && <a href="#/live-pools">Live read</a>}
           <a href="#/mainnet">Mainnet</a>
+          <a href="#/bridge">Bridge</a>
           {DEVNET4_ROUTE && <a href="#/devnet4">Devnet4 live</a>}
         </>
       }
@@ -674,6 +680,7 @@ function MainnetApplication() {
           <a href="#/mainnet" aria-current="page">
             Mainnet
           </a>
+          <a href="#/bridge">Bridge</a>
           <a href="#/trade">Preview</a>
         </>
       }
@@ -733,6 +740,21 @@ function ApplicationRouter() {
   }, []);
   return hash === '#/mainnet' ? (
     <MainnetApplication />
+  ) : hash === '#/bridge' || hash.startsWith('#/bridge/') || hash === '#/bridge-states' ? (
+    <Suspense
+      fallback={
+        <p className="muted" role="status">
+          Loading the bridge…
+        </p>
+      }
+    >
+      <BridgeApplication
+        network={MAINNET_NETWORK}
+        rpc={MAINNET_RPC}
+        networks={NETWORKS}
+        states={hash === '#/bridge-states'}
+      />
+    </Suspense>
   ) : DEVNET4_ROUTE && hash === '#/devnet4' ? (
     <Devnet4Application />
   ) : hash === '#/live-pools' ? (

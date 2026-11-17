@@ -134,6 +134,36 @@ describe('multichain configuration', () => {
     });
   });
 
+  it("shows BNB Smart Chain's Binance-Peg token under its label, never as plain USDC; no other chain has a label", () => {
+    const e = entry('bnb-smart-chain');
+    const chain = parseChain(e.network, deployedRecord('bnb-smart-chain'));
+    expect([chain.tokens[0].symbol, chain.tokens[0].label, chain.tokens[0].decimals]).toEqual([
+      'USDC',
+      'USDC (Binance-Peg)',
+      18,
+    ]);
+    expect(chain.tokenNotes).toEqual([
+      'USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.',
+    ]);
+    expect(chain.planned.pairs).toEqual([['WBNB', 'USDC (Binance-Peg)']]);
+    const state = parseRecord(deployedRecord('bnb-smart-chain'), chain);
+    if (state.status !== 'live') throw new Error('expected a live state');
+    // The deployment the route renders from: the label is the shown symbol.
+    expect(state.deployment.tokens.map((t) => t.symbol)).toEqual(['WBNB', 'USDC (Binance-Peg)']);
+    for (const c of bundledChains().filter((x) => x.key !== 'bnb-smart-chain')) {
+      expect(c.tokens[0].label).toBeUndefined();
+      expect(c.tokenNotes).toEqual([]);
+      expect(c.planned.pairs[0][1]).toBe('USDC');
+    }
+    // A label goes with a note and begins with the contract's own symbol.
+    const bad = clone(e) as unknown as { network: { tokens: { label?: string; note?: string }[] }; record: unknown };
+    bad.network.tokens[0].label = 'Dollar';
+    expect(() => parseChain(bad.network, bad.record)).toThrow(/label/);
+    bad.network.tokens[0].label = 'USDC (Binance-Peg)';
+    delete bad.network.tokens[0].note;
+    expect(() => parseChain(bad.network, bad.record)).toThrow(/note/);
+  });
+
   it('refuses a record for another chain, genesis, fee address or wrapped token, a rehearsal record, and an unlisted pair token', () => {
     const e = entry('base');
     const chain = parseChain(e.network, e.record);
@@ -156,6 +186,7 @@ describe('multichain configuration', () => {
       nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
       rpcUrls: [
         'https://arb1.arbitrum.io/rpc',
+        'https://arbitrum.gateway.tenderly.co',
         'https://arbitrum-one.public.blastapi.io',
         'https://arbitrum-one-rpc.publicnode.com',
       ],
@@ -283,7 +314,11 @@ describe('multichain application', () => {
       'PosternDEX on BNB Smart Chain',
     );
     expect((await screen.findByLabelText('Not yet live')).textContent).toContain(
-      'Pools: WBNB/USDC.',
+      'Pools: WBNB/USDC (Binance-Peg).',
+    );
+    // The token's note is on screen with the route: this "USDC" is not Circle's.
+    expect(screen.getByTestId('token-note').textContent).toBe(
+      'USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.',
     );
     expect(document.title).toBe('PosternDEX — BNB Smart Chain');
     // An unknown key shows the first network.

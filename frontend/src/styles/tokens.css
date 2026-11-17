@@ -45,7 +45,8 @@
   --text-title: 1.375rem; /* 22 */
   --text-figure: 1.75rem; /* 28: a headline figure inside a card (preview screens) */
   --text-display: clamp(1.75rem, 1.2rem + 2vw, 2.5rem); /* 28 to 40 */
-  --text-numeral: clamp(1.75rem, 1.3rem + 2vw, 2.375rem); /* amount inputs */
+  --text-numeral: clamp(2rem, 1.5rem + 2.2vw, 2.75rem); /* amount inputs: 32 to 44 */
+  --text-eyebrow: 0.75rem; /* 12: small-caps eyebrows (font-variant-caps), never running text */
 
   /* Space: 4-point scale */
   --s-1: 4px;
@@ -63,11 +64,20 @@
   --r-3: 12px;
   --r-4: 18px;
   --r-arch: 999px;
+  --r-gate: 6px; /* the foot of the gate: dressed stone, barely eased */
 
   /* Motion */
   --t-fast: 120ms;
   --t-base: 200ms;
+  --t-slow: 420ms;
+  --t-lamp: 900ms; /* the lamp changing state: slow enough to read as light, never gating an action */
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-spring: cubic-bezier(0.3, 1.4, 0.5, 1);
+
+  /* A raised hand (stop): the mark of a sentence that tells the user what not to do. */
+  --icon-hand: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9.5'/%3E%3Cpath d='M5.4 5.4l13.2 13.2'/%3E%3C/svg%3E");
+  /* Fine stone grain, laid over the wall and the gate. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n' x='0' y='0' width='100%25' height='100%25'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .34 -.13'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
 
   --shell-max: 1280px;
   --gutter: clamp(16px, 4vw, 40px);
@@ -103,6 +113,23 @@
   --scrim: rgb(4 6 7 / 0.72);
   --shadow-overlay: 0 24px 64px -16px rgb(0 0 0 / 0.7), 0 2px 8px rgb(0 0 0 / 0.4);
   --net: #c8fa72;
+  /* Dressed stone of the gate (never behind text), its mortar, the lamp's ironwork and unlit glass. */
+  --stone-1: #232a2d;
+  --stone-2: #2a3235;
+  --stone-3: #1d2426;
+  --stone-edge: #3b474b;
+  --mortar: #06090a;
+  --lamp-iron: #6b7b81;
+  --lamp-glass-off: #1d2426;
+  --masonry-lit: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='176' height='96' fill='none' stroke='%23d8d6cc' stroke-opacity='.34'%3E%3Cpath d='M0 .5h176M0 48.5h176M.5 0v48M88.5 48v48'/%3E%3C/svg%3E");
+  --glow-blend: screen;
+  --glow-wall: 0.2; /* how far the lamp reaches on the wall */
+  --glow-halo: 0.62;
+  --grain-opacity: 0.5;
+  --recess: rgb(0 0 0 / 0.5); /* the shade under the arch */
+  --gate-shadow:
+    0 1px 0 rgb(255 255 255 / 0.04) inset, 0 60px 90px -50px rgb(0 0 0 / 0.95),
+    0 18px 30px -22px rgb(0 0 0 / 0.8);
 }
 :root {
   /* The lamp as it looks on dark stone, in both themes (brand mark, network tiles). */
@@ -140,6 +167,22 @@
   --scrim: rgb(20 25 26 / 0.45);
   --shadow-overlay: 0 24px 64px -20px rgb(20 25 26 / 0.35), 0 2px 8px rgb(20 25 26 / 0.12);
   --net: #486f00;
+  --stone-1: #e7e3d6;
+  --stone-2: #ded9ca;
+  --stone-3: #eeeadf;
+  --stone-edge: #c4bfb0;
+  --mortar: #a9a393;
+  --lamp-iron: #2b3332;
+  --lamp-glass-off: #f6f4ee;
+  --masonry-lit: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='176' height='96' fill='none' stroke='%23ffffff' stroke-opacity='.9'%3E%3Cpath d='M0 1.5h176M0 49.5h176M1.5 0v48M89.5 48v48'/%3E%3C/svg%3E");
+  --glow-blend: multiply;
+  --glow-wall: 0.1;
+  --glow-halo: 0.3;
+  --grain-opacity: 0.35;
+  --recess: rgb(60 52 30 / 0.2);
+  --gate-shadow:
+    0 1px 0 rgb(255 255 255 / 0.8) inset, 0 50px 70px -48px rgb(60 52 30 / 0.55),
+    0 14px 24px -18px rgb(60 52 30 / 0.35);
 }
 
 /*
@@ -181,6 +224,19 @@
 [data-network='preview'] {
   --net-bright: #c8fa72;
   --net: var(--net-bright);
+}
+/* Networks a bridged token comes from (badges of token marks only: no route, no lamp of a page). */
+[data-network='bitcoin'] {
+  --net-bright: #f5a53b;
+}
+[data-network='solana'] {
+  --net-bright: #b596ff;
+}
+[data-network='tron'] {
+  --net-bright: #ff7a6e;
+}
+[data-network='stellar'] {
+  --net-bright: #c9d3da;
 }
 :root[data-theme='light'] [data-network='bloch-l2'] {
   --net: #486f00;

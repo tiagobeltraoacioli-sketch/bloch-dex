@@ -1,0 +1,30 @@
+{
+  "domain": "postern.dex.bridge-import.v1",
+  "repo": "~/worktrees/bridge-solana-r17-20261117",
+  "note": "Any checkout or worktree of bloch-l2-bridge that holds these refs. Rerun scripts/bridge/import-interfaces.mjs when a ref moves; sources.json records the commit each file was taken from.",
+  "schema": {
+    "ref": "codex/bridge-evm-nets-r17-20261117",
+    "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"],
+    "path": "deployments/schema/bridge.network.schema.json"
+  },
+  "networks": [
+    {
+      "id": "ethereum",
+      "ref": "cc2511a",
+      "derive": {
+        "vaultConfig": "deployments/mainnet/busdc-vault-mainnet.config.json",
+        "tokenConfig": "deployments/mainnet/busdc-mainnet.config.json",
+        "template": "ethereum/derive.template.json"
+      }
+    },
+    { "id": "arbitrum-one", "ref": "codex/bridge-evm-nets-r17-20261117", "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"], "path": "deployments/arbitrum-one/bridge.network.json" },
+    { "id": "op-mainnet", "ref": "codex/bridge-evm-nets-r17-20261117", "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"], "path": "deployments/op-mainnet/bridge.network.json" },
+    { "id": "linea", "ref": "codex/bridge-evm-nets-r17-20261117", "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"], "path": "deployments/linea/bridge.network.json" },
+    { "id": "base", "ref": "codex/bridge-evm-nets-r17-20261117", "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"], "path": "deployments/base/bridge.network.json" },
+    { "id": "bnb", "ref": "codex/bridge-evm-nets-r17-20261117", "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"], "path": "deployments/bnb/bridge.network.json" },
+    { "id": "bitcoin", "ref": "codex/bridge-btc-r17-20261117", "path": "deployments/bitcoin/bridge.network.json" },
+    { "id": "solana", "ref": "codex/bridge-solana-r17-20261117", "path": "deployments/solana/bridge.network.json" },
+    { "id": "tron", "ref": "codex/bridge-tron-r17-20261117", "path": "deployments/tron/bridge.network.json" },
+    { "id": "stellar", "ref": "codex/bridge-stellar-r17-20261117", "path": "deployments/stellar/bridge.network.json" }
+  ]
+}

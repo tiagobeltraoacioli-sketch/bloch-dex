@@ -4,6 +4,7 @@ import App from './App';
 import './styles/tokens.css';
 import './styles/preview.css';
 import './styles/postern.css';
+import './styles/gate.css';
 import { applyTheme, initialTheme } from './shell/theme';
 
 applyTheme(initialTheme());

@@ -3,7 +3,8 @@
 // chain and prints the exact transactions; it signs and sends nothing. Reviews R309-MC-1 and R328-1 to R328-3: a
 // pool is opened only through this path.
 //
-//   node scripts/multichain/first-deposit.mjs <chain> prepare --pair WETH/USDC --native 10 --token 30000 --gate-report FILE [--to ADDRESS] [--out FILE]
+//   node scripts/multichain/first-deposit.mjs <chain> prepare --pair WETH/USDC --native 10 --gate-report FILE [--to ADDRESS] [--out FILE]
+//                                             (or --token AMOUNT instead of --native: ONE side; the tool computes the other at the market price)
 //   node scripts/multichain/first-deposit.mjs <chain> verify  --pair WETH/USDC --native 10 --token 30000 --tx HASH [--out FILE]
 //   node scripts/multichain/first-deposit.mjs <chain> add     --pair WETH/USDC --native 1 --token 3000 [--tolerance-bps 50] --gate-report FILE [--to ADDRESS] [--out FILE]
 //   every mode: [--reference] [--rpc http://127.0.0.1:PORT --rehearsal]
@@ -29,6 +30,13 @@
 //      either side and says so (one base unit sent again and again must not block the opening, review R328-3),
 //      and refuses a larger one with the skim command that takes it out; `verify` reads from the opening
 //      transaction what joined the pool and states the opening price.
+//   6. The opening PRICE is the chain's market price, not a number typed by hand (decision of 2026-11-17).
+//      `prepare` reads the market on that chain from two independent on-chain references at one block that two
+//      endpoints agree on (market.mjs: a Chainlink feed pair and an established pool's time-weighted price,
+//      configured per chain in chain.json `openingPrice`), and they must agree with each other. The owner gives
+//      ONE amount and the tool computes the other. When both amounts are given they are refused if their price
+//      is more than 0.5% from the market. No market price (a stale feed, references apart): nothing is printed.
+//      The SIZE of the deposit is the owner's; the tool refuses less than the chain's stated minimum.
 // `add` is for a pool that is already open and proven: the owner gives both amounts at the market price; the tool
 // refuses when the pool's own price differs from them by more than the tolerance (default 0.5%, at most 1%), and
 // the deposit's minimums are that tolerance below its amounts.
@@ -42,6 +50,7 @@ import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
   EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, planChain, refuse, retrying,
 } from "./lib.mjs";
+import { deviationBps, marketRecord, nativeFor, priceOf, readMarket, tokenFor } from "./market.mjs";
 import { decodeDeposit, openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
@@ -64,6 +73,29 @@ export const MAX_TOLERANCE_BPS = 100;
  * `verify` reports without a warning: at most 0.1% of either side of the deposit.
  */
 export const DONATION_BPS = 10n;
+/**
+ * The share supply a first deposit must create, sqrt(native x token) in base units: the pair locks 1,000 units for
+ * ever, and with at least 10^12 they are at most a billionth of the pool.
+ */
+export const MIN_OPENING_SHARES = 10n ** 12n;
+
+/**
+ * The two amounts of a first deposit from what the owner gave and the market. Pure.
+ * `given`: { native?, token? } in base units (one or both); `market`: token base units per whole native coin.
+ * Returns { native, token, computed: "token" | "native" | null, priceBps } or throws MultichainError with the reason.
+ */
+export function openingAmounts({ given, market, maxDeviationBps, minimumNative }) {
+  refuse(typeof market === "bigint" && market > 0n, "there is no market price");
+  refuse(given.native !== undefined || given.token !== undefined, "give the amount of one side: --native or --token");
+  const native = given.native ?? nativeFor(given.token, market);
+  const token = given.token ?? tokenFor(native, market);
+  refuse(native > 0n && token > 0n, "the amounts are too small");
+  const priceBps = Number(deviationBps(priceOf(native, token), market));
+  refuse(priceBps <= maxDeviationBps, `the opening price of these amounts is ${(priceBps / 100).toFixed(2)}% from the chain's market price, more than the ${maxDeviationBps / 100}% allowed. Give ONE amount and let the tool compute the other`);
+  refuse(native >= minimumNative, `the deposit is below this chain's minimum of ${minimumNative} wei of the native coin (deployments/<chain>/chain.json openingPrice.minimumNative, with the reason)`);
+  refuse(native * token >= MIN_OPENING_SHARES * MIN_OPENING_SHARES, "the deposit would create fewer than 10^12 share units: too small");
+  return { native, token, computed: given.token === undefined ? "token" : given.native === undefined ? "native" : null, priceBps };
+}
 /** True when what sits at the pair's address is within DONATION_BPS of the deposit, on both sides. Pure. */
 export const giftWithinTolerance = (gift, deposit) => gift.native * 10_000n <= deposit.native * DONATION_BPS && gift.token * 10_000n <= deposit.token * DONATION_BPS;
 
@@ -125,7 +157,7 @@ export function addTransactions({ router, token, native, expectedToken, reserveN
 }
 
 function parseArgs(argv) {
-  const usage = "usage: first-deposit.mjs <chain> prepare|verify|add --pair A/B --native AMOUNT --token AMOUNT [--gate-report FILE] [--to ADDRESS] [--tx HASH] [--tolerance-bps N] [--out FILE] [--reference] [--rpc URL --rehearsal]";
+  const usage = "usage: first-deposit.mjs <chain> prepare --pair A/B --native AMOUNT | --token AMOUNT --gate-report FILE [--to ADDRESS] [--out FILE]\n       first-deposit.mjs <chain> verify|add --pair A/B --native AMOUNT --token AMOUNT [--gate-report FILE] [--to ADDRESS] [--tx HASH] [--tolerance-bps N] [--out FILE] [--reference] [--rpc URL --rehearsal]";
   const [key, mode, ...rest] = argv;
   refuse(key && ["prepare", "verify", "add"].includes(mode), usage);
   const o = { key, mode, reference: false, rehearsal: false };
@@ -137,11 +169,11 @@ function parseArgs(argv) {
       o[rest[i].slice(2)] = rest[++i];
     } else refuse(false, `unknown option ${rest[i]} (there is no option for other minimums)\n${usage}`);
   }
-  refuse(o.pair && o.native, usage);
+  refuse(o.pair && (o.native || (o.mode === "prepare" && o.token)), usage);
   refuse(!o.rpc || o.rehearsal, "--rpc replaces the chain's reviewed endpoints and is for a rehearsal only: add --rehearsal");
   refuse(!o.rehearsal || /^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/.test(o.rpc ?? ""), "--rehearsal needs --rpc http://127.0.0.1:PORT (a loopback fork)");
   refuse(o.mode === "verify" || o["gate-report"], "--gate-report FILE is required: the report of a passed `gate.mjs <chain> post`, so that money goes only into the verified contracts");
-  refuse(o.token !== undefined, o.mode === "add" ? "--token AMOUNT is required: the token amount you expect for that native amount at the market price. The tool refuses when the pool's own price is not that price" : "--token AMOUNT is required");
+  refuse(o.mode === "prepare" || o.token !== undefined, o.mode === "add" ? "--token AMOUNT is required: the token amount you expect for that native amount at the market price. The tool refuses when the pool's own price is not that price" : "--token AMOUNT is required");
   refuse(o.mode !== "verify" || o.tx !== undefined, "--tx HASH is required: the hash of the deposit transaction. The opening is proven from that transaction, not from the pool's reserves, which change with the first swap");
   refuse(o.mode === "verify" || o.tx === undefined, "--tx belongs to verify");
   refuse(o.mode !== "add" || o["tolerance-bps"] === undefined || /^[0-9]{1,3}$/.test(o["tolerance-bps"]), "--tolerance-bps is a whole number");
@@ -170,8 +202,9 @@ export async function main(argv, print = console.log) {
     refuse(value > 0n, `${field} must be above zero`);
     return value;
   };
-  const native = decimal(o.native, 18, "--native");
-  const tokenAmount = decimal(o.token, token.decimals, "--token");
+  // prepare: one side is enough, the other comes from the market (below). verify and add: both are given.
+  let native = o.native === undefined ? undefined : decimal(o.native, 18, "--native");
+  let tokenAmount = o.token === undefined ? undefined : decimal(o.token, token.decimals, "--token");
   const to = o.to ? checksummed(o.to, "--to") : depositor;
   refuse(lower(to) !== ZERO_ADDRESS && lower(to) !== lower(planned.address), "--to must be an account that will hold the LP shares");
   const { router, factory } = plan.contracts;
@@ -237,6 +270,38 @@ export async function main(argv, print = console.log) {
   const result = { schema: "postern.dex.multichain-deposit.v1", chain: chain.chain.key, chainId: chain.chain.chainId, mode: o.mode, pair: { name: o.pair, address: planned.address, state }, block: { number: Number(BigInt(at)), hash: head.hash }, depositor, to };
 
   const price = (pool) => (pool.native > 0n ? formatUnits((pool.token * 10n ** 18n) / pool.native, token.decimals) : "?");
+  if (o.mode === "prepare") {
+    // The opening price is the chain's market price, read here and now, at the same block as everything else and
+    // from the first two reviewed endpoints, which must give the same answers.
+    const rule = chain.openingPrice;
+    const market = await readMarket({ chain, token, requests: [request, ...others].slice(0, 2), at: head });
+    result.market = marketRecord(market);
+    for (const r of market.references) print(`     ${r.name}: ${r.problem ?? `1 ${chain.nativeCurrency.symbol} = ${formatUnits(r.price, token.decimals)} ${token.symbol}`}`);
+    check(`the chain's market price is established: two independent on-chain references agree within ${rule.referencesAgreeBps / 100}%`, market.ok, market.problems.join("; "));
+    let amounts = null;
+    if (market.ok) {
+      print(`     market: 1 ${chain.nativeCurrency.symbol} = ${formatUnits(market.market, token.decimals)} ${token.symbol} at block ${market.block.number} (references ${(market.spreadBps / 100).toFixed(2)}% apart)`);
+      try {
+        amounts = openingAmounts({ given: { native, token: tokenAmount }, market: market.market, maxDeviationBps: rule.maxDeviationBps, minimumNative: parseUnits(rule.minimumNative, 18) });
+        check(`the opening price is within ${rule.maxDeviationBps / 100}% of the market, and the deposit is at least the chain's minimum (${rule.minimumNative} ${chain.nativeCurrency.symbol})`, true);
+      } catch (error) {
+        if (!(error instanceof MultichainError)) throw error;
+        check(`the opening price is within ${rule.maxDeviationBps / 100}% of the market, and the deposit is at least the chain's minimum (${rule.minimumNative} ${chain.nativeCurrency.symbol})`, false, error.message.replace(/^multichain: /, ""));
+      }
+    }
+    if (!amounts) {
+      // Nothing can be printed without both amounts at a market price.
+      const failed = checks.filter((c) => !c.ok).map((c) => c.name);
+      result.checks = checks;
+      result.decision = "fail";
+      if (o.out) writeFileSync(o.out, `${JSON.stringify(result, null, 2)}\n`);
+      print(`multichain prepare ${o.key} ${o.pair}: FAIL; nothing to send (${failed.length} check${failed.length === 1 ? "" : "s"} failed)`);
+      return 1;
+    }
+    ({ native, token: tokenAmount } = amounts);
+    result.amounts = { native: native.toString(), token: tokenAmount.toString(), nativeText: formatUnits(native, 18), tokenText: formatUnits(tokenAmount, token.decimals), computed: amounts.computed, fromMarketBps: amounts.priceBps };
+    if (amounts.computed) print(`     computed at the market price: ${amounts.computed === "token" ? amountText(tokenAmount, token) : nativeText(native)} for the ${amounts.computed === "token" ? nativeText(native) : amountText(tokenAmount, token)} given`);
+  }
   if (o.mode === "verify") {
     // From the deposit transaction itself, not from the reserves (they change with the first swap).
     refuse(/^0x[0-9a-fA-F]{64}$/.test(o.tx), "--tx is a transaction hash");
@@ -290,7 +355,7 @@ export async function main(argv, print = console.log) {
         result.gift = { native: gift.native.toString(), token: gift.token.toString() };
         print(`note: ${nativeText(gift.native)} and ${amountText(gift.token, token)} sit at the pair's address (someone sent them). They join the pool as a gift to it: the pool would open with ${nativeText(joined.native)} + ${amountText(joined.token, token)}, at 1 ${chain.nativeCurrency.symbol} = ${price(joined)} ${token.symbol} instead of ${price(deposit)}.`);
       }
-      print(`opening price of these amounts: 1 ${chain.nativeCurrency.symbol} = ${price(deposit)} ${token.symbol}. Compare it with the market price on ${chain.chain.name} before sending: a pool opened away from the market is traded back at the depositor's cost.`);
+      print(`opening price of these amounts: 1 ${chain.nativeCurrency.symbol} = ${price(deposit)} ${token.symbol}, ${(result.amounts.fromMarketBps / 100).toFixed(2)}% from the market read above. The market moves: send within minutes, and run prepare again if you waited.`);
       transactions = openingTransactions({ router: router.address, token: token.address, native, tokenAmount, to, deadline });
     } else {
       check("the pool is open", state === "open", "use `prepare` for the first deposit");
@@ -317,12 +382,12 @@ export async function main(argv, print = console.log) {
     if (checks.every((c) => c.ok)) {
       print("");
       print(`Send these two transactions FROM ${depositor} (the factory's first depositor), exactly as printed, and send nothing else from that account.`);
-      print(`Add your signer option (--ledger, --trezor or --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
+      print(`Add your signer option (--keystore FILE for the depositing key's encrypted keystore, or --ledger, --trezor, --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
       // --chain: cast refuses to send when the RPC URL added by hand is another chain's.
       for (const t of transactions) print(`cast send ${t.to} "${t.signature}" ${t.args.join(" ")}${t.value > 0n ? ` --value ${t.value}` : ""} --from ${depositor} --chain ${chain.chain.chainId}`);
       print("");
       print(o.mode === "prepare"
-        ? `The deposit is ${nativeText(native)} + ${amountText(tokenAmount, token)}, and its minimums are those same amounts: nobody else can have opened the pool before it (it would revert). Tokens that someone sends to the pair's address before it is mined join the pool as a gift and move the opening price by their size; verify reports it. Then: node scripts/multichain/first-deposit.mjs ${o.key} verify --pair ${o.pair} --native ${o.native} --token ${o.token} --tx <hash of the deposit>`
+        ? `The deposit is ${nativeText(native)} + ${amountText(tokenAmount, token)}, and its minimums are those same amounts: nobody else can have opened the pool before it (it would revert). Tokens that someone sends to the pair's address before it is mined join the pool as a gift and move the opening price by their size; verify reports it. Then: node scripts/multichain/first-deposit.mjs ${o.key} verify --pair ${o.pair} --native ${formatUnits(native, 18)} --token ${formatUnits(tokenAmount, token.decimals)} --tx <hash of the deposit>`
         : `The deposit is ${nativeText(native)} + ${amountText(need, token)} at the pool's current price; it reverts if the price moves more than ${Number(o["tolerance-bps"] ?? 50) / 100}% first.`);
     }
   }

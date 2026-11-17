@@ -1,0 +1,25 @@
+{
+  "domain": "postern.dex.bridge-launch.v1",
+  "decidedBy": "coordinator, round 17 (2026-11-17)",
+  "note": "Which source networks the bridge page shows. 'shown' is not 'live': a shown network is live only when its addresses are deployed (see src/bridge/config.ts). A bridge.network.json whose own launch block says v1 false is never offered, whatever this file says.",
+  "l2ChainId": 700770,
+  "order": ["ethereum", "arbitrum-one", "op-mainnet", "linea", "base", "bitcoin", "solana", "tron", "stellar"],
+  "networks": {
+    "ethereum": { "state": "shown" },
+    "arbitrum-one": { "state": "shown" },
+    "op-mainnet": { "state": "shown" },
+    "linea": { "state": "shown" },
+    "base": {
+      "state": "not-available-yet",
+      "reason": "The bridge from Base is not deployed in the first version: a release there must land inside a window of about 51 seconds, and that has not been shown with the production signers."
+    },
+    "bnb": {
+      "state": "not-offered",
+      "reason": "BNB Smart Chain is not part of the first version of the bridge."
+    },
+    "bitcoin": { "state": "shown" },
+    "solana": { "state": "shown" },
+    "tron": { "state": "shown" },
+    "stellar": { "state": "shown" }
+  }
+}

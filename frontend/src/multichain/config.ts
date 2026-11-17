@@ -30,7 +30,21 @@ const LOOPBACK = /^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped JSON, checked field by field
 type AnyRecord = Record<string, any>;
 
-export type ChainToken = { address: Address; symbol: string; decimals: number; codeHash: Hex };
+/**
+ * `symbol` is the token contract's own symbol (what `--pair` and the pins use). `label`, when the network file
+ * gives one, is what the page SHOWS instead, with `note` as one line about it: a token whose symbol says more
+ * than is true is never shown under that symbol alone (BNB Smart Chain: "USDC (Binance-Peg)", not "USDC").
+ */
+export type ChainToken = {
+  address: Address;
+  symbol: string;
+  decimals: number;
+  codeHash: Hex;
+  label?: string;
+  note?: string;
+};
+/** The name the page shows for a token. */
+export const shownSymbol = (t: ChainToken): string => t.label ?? t.symbol;
 export type Chain = {
   key: string;
   network: MainnetNetwork;
@@ -46,6 +60,8 @@ export type Chain = {
   confirmationNote: string;
   /** The network file's `confirmation.blockSeconds` (the measured block time), or null without the block. */
   blockSeconds: number | null;
+  /** One line per listed token that carries a note (network file `tokens[].note`), shown with the route. */
+  tokenNotes: string[];
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
   load: () => Promise<MainnetState>;
 };
@@ -59,7 +75,31 @@ function token(value: AnyRecord, field: string): ChainToken {
   refuse(HASH.test(value.codeHash ?? ''), `${field}.codeHash`);
   const decimals = value.decimals ?? 18;
   refuse(Number.isInteger(decimals) && decimals >= 0 && decimals <= 36, `${field}.decimals`);
-  return { address: value.address, symbol: value.symbol, decimals, codeHash: value.codeHash };
+  const shown: { label?: string; note?: string } = {};
+  if (value.label !== undefined || value.note !== undefined) {
+    refuse(
+      typeof value.label === 'string' &&
+        /^[A-Za-z0-9. ()-]{2,24}$/.test(value.label) &&
+        value.label.startsWith(value.symbol),
+      `${field}.label`,
+    );
+    refuse(
+      typeof value.note === 'string' &&
+        value.note.length >= 10 &&
+        value.note.length <= 160 &&
+        !/[<>\n]/.test(value.note),
+      `${field}.note`,
+    );
+    shown.label = value.label;
+    shown.note = value.note;
+  }
+  return {
+    address: value.address,
+    symbol: value.symbol,
+    decimals,
+    codeHash: value.codeHash,
+    ...shown,
+  };
 }
 
 function url(value: unknown, field: string, rehearsal: boolean): string {
@@ -127,7 +167,7 @@ export function parseConfirmation(
     v &&
       typeof v === 'object' &&
       !Array.isArray(v) &&
-      Object.keys(v).every((k) => ['settle', 'strict', 'blockSeconds'].includes(k)),
+      Object.keys(v).every((k) => ['settle', 'strict', 'reverted', 'blockSeconds'].includes(k)),
     'confirmation has an unknown field',
   );
   const settle = rule(v.settle, 'confirmation.settle');
@@ -139,6 +179,12 @@ export function parseConfirmation(
   // The strict rule ends a hold without a receipt; it is never weaker than the settle rule.
   const rank = (r: ConfirmationRule) => ('depth' in r ? r.depth : r.tag === 'safe' ? 1e6 : 1e7);
   refuse(rank(strict) >= rank(settle), 'confirmation.strict is weaker than confirmation.settle');
+  // Optional (review R328-3P-3): the rule that settles a REVERTED swap, between the two.
+  const reverted = v.reverted === undefined ? undefined : rule(v.reverted, 'confirmation.reverted');
+  refuse(
+    reverted === undefined || (rank(reverted) >= rank(settle) && rank(reverted) <= rank(strict)),
+    'confirmation.reverted must lie between settle and strict',
+  );
   const tagWords = (r: { tag: 'finalized' | 'safe' }) => `the chain's own ${r.tag} block`;
   const strictWords =
     'depth' in strict
@@ -150,7 +196,21 @@ export function parseConfirmation(
       : settle.tag === 'finalized' && 'tag' in strict && strict.tag === 'finalized'
         ? `On ${chainName} this page reads and settles at the chain's own finalized block.`
         : `On ${chainName} this page reads and settles at ${tagWords(settle)}. Where this page says "confirmed" on this network, it means that. A hold that ends without your transaction's own receipt waits for ${strictWords}.`;
-  return { confirmation: { settle, strict }, note, blockSeconds: v.blockSeconds as number };
+  const retryRule = reverted ?? strict;
+  const retryWords =
+    'depth' in retryRule
+      ? `${blocks(retryRule.depth)} are on top of it (${span(retryRule.depth * v.blockSeconds)})`
+      : `it is under ${tagWords(retryRule)}`;
+  // What a user must know before a swap reverts: the page holds the account, for how long, and why.
+  const retry =
+    'depth' in settle || 'depth' in retryRule || settle.tag !== retryRule.tag
+      ? ` If your swap reverts, this page holds this account on ${chainName} until ${retryWords}, and only then lets you swap again: were the reverted block replaced earlier, the first swap and a second one could both execute.`
+      : '';
+  return {
+    confirmation: { settle, strict, ...(reverted ? { reverted } : {}) },
+    note: note + retry,
+    blockSeconds: v.blockSeconds as number,
+  };
 }
 
 export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
@@ -268,7 +328,8 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     confirmation,
     confirmationNote,
     blockSeconds,
-    planned: { caps: [], pairs: tokens.map((t) => [wrapped.symbol, t.symbol]) },
+    tokenNotes: tokens.flatMap((t) => (t.note ? [t.note] : [])),
+    planned: { caps: [], pairs: tokens.map((t) => [wrapped.symbol, shownSymbol(t)]) },
   };
   const state = parseRecord(recordInput, chain, rehearsal);
   return { ...chain, load: () => Promise.resolve(state) };
@@ -369,7 +430,8 @@ export function parseRecord(
     codeHashes,
     tokens: [...listed.values()].map((t) => ({
       address: t.address,
-      symbol: t.symbol,
+      // What the route shows: the label where the network file gives one.
+      symbol: shownSymbol(t),
       cap: caps.get(t.address) ?? 0n,
       wrapped: t.address === chain.wrapped.address,
     })),

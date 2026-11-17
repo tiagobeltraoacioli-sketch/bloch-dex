@@ -13,6 +13,7 @@
   "rpc": {
     "urls": [
       "https://bsc-rpc.publicnode.com",
+      "https://api.zan.top/bsc-mainnet",
       "https://bsc-mainnet.public.blastapi.io",
       "https://bsc-dataseed.bnbchain.org"
     ],
@@ -30,10 +31,12 @@
     {
       "address": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
       "symbol": "USDC",
+      "label": "USDC (Binance-Peg)",
+      "note": "USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.",
       "name": "USD Coin",
       "decimals": 18,
       "codeHash": "0x56069ff2fd59ae482f7984aa894b6d3bc84cb910354dcda9cd6c828d61526914",
-      "kind": "NOT Circle-issued: Binance-Peg USD Coin (a token issued by Binance against USDC it holds), 18 decimals; upgradeable proxy. Circle issues no native USDC on BNB Smart Chain. Listing it is an owner decision"
+      "kind": "NOT Circle-issued: Binance-Peg USD Coin (a token issued by Binance against USDC it holds), 18 decimals; upgradeable proxy. Circle issues no native USDC on BNB Smart Chain. Listed under the label \"USDC (Binance-Peg)\", never as plain USDC (coordinator's decision, 2026-11-17)"
     }
   ],
   "multicall3": {
