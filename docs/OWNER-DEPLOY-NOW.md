@@ -123,6 +123,7 @@ Record the signature (`0xSIGNATURE` is what you copied). The tool checks it offl
 low `s`, `v` 27 or 28, recovered address equal to the fee address) and writes `deployments/fee-address-proof.json`
 only if it is valid:
 
+<!-- run: once fee-proof-record -->
 ```
 node scripts/multichain/fee-proof.mjs record --signature 0xSIGNATURE
 ```
@@ -132,7 +133,7 @@ node scripts/multichain/fee-proof.mjs record --signature 0xSIGNATURE
 node scripts/multichain/fee-proof.mjs verify
 ```
 
-It must say the proof is valid. Commit the file (a signature is public: it proves, it authorizes nothing):
+It must end with `fee address proof: VALID`. Commit the file (a signature is public: it proves, it authorizes nothing):
 
 ```
 git add deployments/fee-address-proof.json
