@@ -249,8 +249,12 @@ try {
   // market.mjs from the chain's two references (a Chainlink feed pair and a v3 pool's time-weighted price), exactly
   // as first-deposit.mjs prepare reads it. Every other figure below is a fraction of that token amount.
   const SEED_NATIVE = 10n * 10n ** 18n;
-  const marketRun = spawnSync("node", ["scripts/multichain/market.mjs", key, "--native", "10", "--json", "--rpc", url, "--rehearsal"], { cwd: ROOT, encoding: "utf8" });
-  writeFileSync(join(opt.out, "market.log"), `${marketRun.stdout}\n${marketRun.stderr}`);
+  const readMarketNow = (name) => {
+    const run = spawnSync("node", ["scripts/multichain/market.mjs", key, "--native", "10", "--json", "--rpc", url, "--rehearsal"], { cwd: ROOT, encoding: "utf8" });
+    writeFileSync(join(opt.out, `${name}.log`), `${run.stdout}\n${run.stderr}`);
+    return run;
+  };
+  const marketRun = readMarketNow("market");
   const marketRead = marketRun.status === 0 ? JSON.parse(marketRun.stdout) : null;
   check("market.mjs reads the chain's market price on the fork: the two references agree", marketRun.status === 0 && marketRead.ok === true && marketRead.references.length === 2 && marketRead.spreadBps <= marketRead.referencesAgreeBps, `${marketRun.stdout}\n${marketRun.stderr}`.slice(-400));
   if (marketRun.status !== 0) throw new Error("no market price on the fork");
@@ -292,7 +296,9 @@ try {
   evidence.depositor = depositor;
   evidence.depositorNativeBefore = await nativeOf(depositor);
   await rpc("anvil_setBalance", [depositor, hex(1000n * 10n ** 18n)]);
-  await fund(depositor, SEED_TOKEN);
+  // A little more than the first read's amount: the fork's market moves while the rehearsal mines blocks (a
+  // pool's 5-minute mean is taken over the fork's own clock), and the deposit is made at the price of its moment.
+  await fund(depositor, (SEED_TOKEN * 101n) / 100n);
   await fund(attacker.address, SEED_TOKEN / 2n);
   const pairName = `${wrapped.symbol}/${token.symbol}`;
   /** scripts/multichain/first-deposit.mjs, as the owner runs it; `name` names the files it leaves in DIR. */
@@ -389,21 +395,27 @@ try {
   if (!opt.hold) {
     // ---- the opening price is the market's (decision of 2026-11-17): amounts 5% away are refused, and so is a
     // deposit below the chain's minimum; nothing is printed in either case.
-    const off = tool("prepare", "opening-price-5-percent-off", { amount: formatUnits((SEED_TOKEN * 105n) / 100n, token.decimals), extra: gateReport });
+    const nowToken = BigInt(JSON.parse(readMarketNow("market-before-price-checks").stdout).amounts.token);
+    const off = tool("prepare", "opening-price-5-percent-off", { amount: formatUnits((nowToken * 105n) / 100n, token.decimals), extra: gateReport });
     check("first-deposit.mjs prepare refuses amounts whose price is 5% from the chain's market, and prints nothing to send", off.status === 1 && /from the chain's market price/.test(off.text) && !/cast send/.test(off.text) && !off.result?.transactions, off.text.slice(-400));
-    const edge = tool("prepare", "opening-price-0.4-percent-off", { amount: formatUnits((SEED_TOKEN * 996n) / 1000n, token.decimals), extra: gateReport });
+    const edge = tool("prepare", "opening-price-0.4-percent-off", { amount: formatUnits((nowToken * 996n) / 1000n, token.decimals), extra: gateReport });
     check("first-deposit.mjs prepare accepts amounts 0.4% from the market (the limit is 0.5%)", edge.status === 0 && edge.result?.amounts.fromMarketBps >= 39 && edge.result.amounts.fromMarketBps <= 41, edge.text.slice(-400));
     const small = tool("prepare", "opening-below-minimum", { native: "0.01", amount: null, extra: gateReport });
     check("first-deposit.mjs prepare refuses a deposit below the chain's minimum", small.status === 1 && /below this chain's minimum/.test(small.text) && !/cast send/.test(small.text), small.text.slice(-400));
   }
   // As the owner runs it: ONE side (10 native); the tool reads the market and computes the token amount.
+  const marketAtOpening = JSON.parse(readMarketNow("market-at-opening").stdout);
   const prepared = tool("prepare", "first-deposit-prepare", { amount: null, extra: gateReport });
-  check(`first-deposit.mjs prepare, given the native amount alone, computes the token amount at the market price and prints the two transactions (the pair is ${opt.hold ? "not created yet" : "empty"})`, prepared.status === 0 && prepared.result?.transactions.length === 2 && prepared.result.pair.state === (opt.hold ? "absent" : "empty") && prepared.result.amounts.computed === "token" && prepared.result.amounts.token === SEED_TOKEN.toString() && prepared.result.market.ok === true, prepared.text.slice(-400));
+  check(`first-deposit.mjs prepare, given the native amount alone, computes the token amount at the market price and prints the two transactions (the pair is ${opt.hold ? "not created yet" : "empty"})`, prepared.status === 0 && prepared.result?.transactions.length === 2 && prepared.result.pair.state === (opt.hold ? "absent" : "empty") && prepared.result.amounts.computed === "token" && prepared.result.amounts.token === marketAtOpening.amounts.token && prepared.result.amounts.fromMarketBps === 0 && prepared.result.market.ok === true, prepared.text.slice(-400));
   if (prepared.status !== 0) throw new Error("first-deposit.mjs prepare failed");
+  // The deposit's token amount: the market's at this moment (the first read's, unless the fork's market moved).
+  const OPEN_TOKEN = BigInt(prepared.result.amounts.token);
+  const openText = formatUnits(OPEN_TOKEN, token.decimals);
+  evidence.opening = { native: SEED_NATIVE, token: OPEN_TOKEN, market: marketAtOpening.market, movedFromFirstReadBps: Number(((OPEN_TOKEN > SEED_TOKEN ? OPEN_TOKEN - SEED_TOKEN : SEED_TOKEN - OPEN_TOKEN) * 10_000n) / SEED_TOKEN) };
   let opening;
-  for (const t of prepared.result.transactions) opening = await send(depositorAccount, { to: t.to, data: t.data, value: BigInt(t.value) }, t.step === "approve" ? `first depositor approves exactly ${seedText} ${token.symbol} to the router` : `first deposit: 10 ${chain.nativeCurrency.symbol} + ${seedText} ${token.symbol} (the market price), minimums equal to the amounts${opt.hold ? "; the same transaction creates the pair" : ""} (addLiquidityBLCH)`);
+  for (const t of prepared.result.transactions) opening = await send(depositorAccount, { to: t.to, data: t.data, value: BigInt(t.value) }, t.step === "approve" ? `first depositor approves exactly ${openText} ${token.symbol} to the router` : `first deposit: 10 ${chain.nativeCurrency.symbol} + ${openText} ${token.symbol} (the market price), minimums equal to the amounts${opt.hold ? "; the same transaction creates the pair" : ""} (addLiquidityBLCH)`);
   let s = await state();
-  check("the first deposit set the reserves to exactly the intended amounts and locked the minimum liquidity", s.reserveNative === SEED_NATIVE && s.reserveToken === SEED_TOKEN && s.totalSupply > 1000n && s.feeToLp === 0n, s);
+  check("the first deposit set the reserves to exactly the intended amounts and locked the minimum liquidity", s.reserveNative === SEED_NATIVE && s.reserveToken === OPEN_TOKEN && s.totalSupply > 1000n && s.feeToLp === 0n, s);
   if (!opt.hold) {
     // The second half of the reviewer's attack: 2% of the token side (600 of 30,000 in the reviewer's test) no
     // longer buys the native side (0.2 native at this price).
@@ -414,8 +426,8 @@ try {
     evidence.attack = { tokenIn: `${formatUnits(SEED_TOKEN / 50n, token.decimals)} ${token.symbol}`, nativeOut: formatUnits(taken, 18), reviewerResultWithOpenFirstDeposits: "more than 9.6 of 10" };
     check("R309-MC-1: the attacker's 2% of the token side buys less than 0.2 native (the reviewer's attack took more than 9.6 of 10)", taken < 2n * 10n ** 17n && taken > 19n * 10n ** 16n, formatUnits(taken, 18));
   }
-  const verified = tool("verify", "first-deposit-verify", { extra: ["--tx", opening.hash] });
-  check(`first-deposit.mjs verify proves the opening from its transaction${opt.hold ? "" : " (after a swap has already moved the reserves)"}: sent by the first depositor to the router, strict minimums, exactly the deposited amounts joined`, verified.status === 0 && verified.result?.opening?.proven === true && verified.result.opening.joined.native === SEED_NATIVE.toString() && verified.result.opening.joined.token === SEED_TOKEN.toString() && verified.result.opening.priceShiftBps === 0, verified.text.slice(-400));
+  const verified = tool("verify", "first-deposit-verify", { amount: openText, extra: ["--tx", opening.hash] });
+  check(`first-deposit.mjs verify proves the opening from its transaction${opt.hold ? "" : " (after a swap has already moved the reserves)"}: sent by the first depositor to the router, strict minimums, exactly the deposited amounts joined`, verified.status === 0 && verified.result?.opening?.proven === true && verified.result.opening.joined.native === SEED_NATIVE.toString() && verified.result.opening.joined.token === OPEN_TOKEN.toString() && verified.result.opening.priceShiftBps === 0, verified.text.slice(-400));
   await rpc("anvil_mine", [hex(FINALIZE)]);
   if (!opt.hold) {
     const unproven = runGate("gate-report-no-opening.json", "gate-no-opening.log");
