@@ -618,7 +618,11 @@ For each chain, with its key in place of `op-mainnet` (`op-mainnet`, `base`, `ar
 `bnb-smart-chain`, `ethereum`):
 
 Step 1. Dry run, with the deploying account. It builds, plans, runs the pre gate (read-only) and simulates the
-deployment. Nothing is sent. The pre gate also looks at the depositing account (no code, no EIP-7702
+deployment. Nothing is sent. Every state answer the gate decides on (code hashes, token facts, the fee address,
+the depositing account, and after deployment the factory, router, lens and pairs) is read at the finalized
+block's hash from every reviewed endpoint and used only when two answered and all that answered agree (review
+R369-1); an opening transaction counts only when a second endpoint serves the same transaction and receipt
+(R369-2). The pre gate also looks at the depositing account (no code, no EIP-7702
 delegation, no transaction on this chain yet) and at the fee address: its signed proof of control must be
 recorded and valid, and a delegation at it must be to the identified delegate (a `WARNING:` line says when the
 delegation on this chain is not the recorded one: read it, it does not stop the run; section 2.3).
@@ -631,7 +635,11 @@ scripts/multichain/deploy.sh op-mainnet dry-run -- --ledger
 ```
 
 Step 2. Deploy. Three transactions to confirm on the signer: factory, router, lens. **No pair is created**, so no
-empty pool of the owner's ever waits on the chain.
+empty pool of the owner's ever waits on the chain. Before anything is signed the script prints the chain id, the
+RPC host, the target of every transaction (the CREATE2 deployer `0x4e59…956C`, value 0) and the three addresses
+with the fee address, the depositing account and the wrapped token, and asks you to type the chain's key
+(`op-mainnet` here); anything else stops it with nothing sent (review R369-7). Compare the three addresses with
+section 3 first: a hardware wallet shows only the target, the value 0 and the network for these calls.
 
 ```
 scripts/multichain/deploy.sh op-mainnet broadcast -- --ledger
@@ -671,14 +679,21 @@ shares when it is not the depositor. On BNB Smart Chain the pair is `WBNB/USDC`.
 node scripts/multichain/first-deposit.mjs op-mainnet prepare --pair WETH/USDC --native 1 --gate-report deployments/op-mainnet/gate-report.json
 ```
 
-The tool reads the chain (both endpoints must show the same block), checks that the contracts are the ones the
+The tool reads the chain (every reviewed endpoint must show the same block; every state answer it decides on is
+read at that block's hash and must be the same on two endpoints: review R369-1), checks that the contracts are the ones the
 gate verified, that the depositing account has no code, that the pool is not open and what sits at the pair's
 address, establishes the market price from the chain's two references (section 2.5; it prints both and the
 mean), and prints two `cast send` commands. If it says there is no market price, or that the deposit is below
 the minimum, nothing is printed: nothing is wrong on the chain; try again later, or with a larger amount.
 Send the two printed commands as they are, adding only your signer option
 (`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` for the keystore of section 2.1) and `--rpc-url`;
-they carry `--chain`, so `cast` refuses another chain's URL. Send them within a few minutes. The first approves
+they carry `--chain`, so each is signed for this chain's id only (EIP-155) and any other chain's node rejects it
+(`cast` itself does not compare the id with the URL's chain: review R369-8). **Send them with `cast send`, one at
+a time, exactly as printed** (review R369-3): never import the depositing key into a browser wallet, never accept
+"switch to smart account", never send the two as one batched transaction. A batching wallet sends the deposit to
+the account itself instead of to the router; the pair accepts it (by transaction origin) and opens, but no tool
+can then prove who opened it, so the page never lists that pair and it is lost for this factory (section 10).
+Send them within a few minutes. The first approves
 exactly the token amount to the router. The second is the router's `addLiquidityBLCH` with **minimums equal to the
 amounts**; the tool has no option for other minimums. In that one transaction the router creates the pair and
 deposits. What this does and does not guarantee:
@@ -946,10 +961,23 @@ made as in section 8, withdrawals as in section 6); see also section 13.
   someone else opened that pool, through a transaction of the depositing account that did not go straight to the
   router (section 2), or with the depositing key itself. Deposit nothing there and do not use `add`. That pair
   of that factory stays open at the other party's price for ever; no tool here can reopen it, and its locked
-  minimum cannot be removed. The loss so far is nothing but the pair. Treat the depositing key as exposed: choose
-  a new depositing account, which is a new factory at a new address on that chain (section 3), deploy again, and
-  open the pool there. Chains already finished are not affected; the page lists only pools whose record was
-  written from a proven opening.
+  minimum cannot be removed. The loss so far is nothing but the pair. Treat the depositing key as exposed.
+  **What a new depositing account costs (review R369-4):** `firstDepositor` is ONE value for all six chains and is
+  part of the factory's init code, so a new account moves the planned factory, router, lens and pairs on EVERY
+  chain, not only on the failed one. The chains already deployed and opened keep working on chain and on the page
+  (the page reads each chain's committed `frontend.record.json`, which names its own addresses), but after the
+  change the committed tools plan the new addresses, so their post gate, `first-deposit.mjs add` and
+  `frontend-files.mjs` no longer describe them. The recovery is therefore: keep the finished chains' committed
+  `gate-report.json` and `frontend.record.json` as they are; record the new account with `check-depositor.mjs`
+  (setting `firstDepositor` back to `TBD-owner` first, as the tool says); deploy and open, with the new plan, only
+  the chains not yet opened; and run later deposits on the finished chains from the commit that holds their old
+  plan (its hash is in their records' history). This package has no per-chain depositor; that would be a tool
+  change, not done. **Prevention, which is cheaper:** the depositing account only ever RECEIVES funds (plain
+  transfers from another account of the owner) and sends only the lines `first-deposit.mjs` prints; on a chain
+  not yet deployed it sends nothing at all, because the pre gate refuses a depositing account with any
+  transaction on that chain while the factory is absent (that chain could then never be deployed with the
+  committed plan). Running the pre gate and the deployment on all six chains before the account is first funded
+  removes that dead end. The page lists only pools whose record was written from a proven opening.
 - If `verify` proves the opening but reports a gift (tokens someone sent to the pair's address before the
   deposit): nothing is wrong and nothing is lost. The gift is in the pool and belongs to the depositor's shares;
   the pool opened at a price that differs from the intended one by the gift's size, and the market trades it

@@ -56,12 +56,29 @@ node scripts/multichain/gate.mjs "$CHAIN" pre $REFERENCE ${GATE_ARGS[@]+"${GATE_
 grep -v '^ok  ' "$GATE_OUT" || true
 [ "$GATE_STATUS" = 0 ] || { echo "the pre gate did not pass; nothing was sent" >&2; exit 1; }
 node scripts/multichain/plan.mjs "$CHAIN" $REFERENCE --env > "$ENV_FILE"
+# Review R369-6: the forge script reads optional MC_* variables (MC_PAIR_TOKENS, MC_CAP_TOKENS, MC_CAPS) with a
+# default; one left in the caller's shell by a rehearsal or a test must not reach a broadcast. Only what the plan
+# prints below is passed (MC_RPC_URL was read above and is not used by the forge script).
+while IFS= read -r name; do unset "$name"; done < <(compgen -e | grep '^MC_' || true)
 set -a
 # shellcheck disable=SC1090
 . "$ENV_FILE"
 set +a
 BROADCAST=()
 [ "$MODE" = dry-run ] || BROADCAST=(--broadcast --slow)
+# Review R369-7: before anything is signed for a public chain, show what will be sent and ask the owner to type
+# the chain's key. A hardware wallet blind-signs these calls (to the CREATE2 deployer, value 0): compare here.
+if [ "$MODE" = broadcast ] && [ -z "$REHEARSAL_RPC" ]; then
+  echo "== about to SIGN AND SEND three transactions on chain id $MC_CHAIN_ID ($CHAIN) through ${RPC_URL%%\?*}"
+  echo "   each one: to 0x4e59b44847b379578588920cA78FbF26c0B4956C (the CREATE2 deployer), value 0, chain id $MC_CHAIN_ID"
+  echo "   factory $MC_EXPECT_FACTORY  (feeTo $MC_FEE_TO, firstDepositor $MC_FIRST_DEPOSITOR, no caps)"
+  echo "   router  $MC_EXPECT_ROUTER  (wrapped native token $MC_WRAPPED)"
+  echo "   lens    $MC_EXPECT_LENS"
+  echo "   These must equal section 3 of docs/MULTICHAIN-DEPLOY.md and the output of: node scripts/multichain/plan.mjs $CHAIN"
+  [ -t 0 ] || { echo "broadcast to a public chain needs a terminal: type the chain's key when asked; nothing was sent" >&2; exit 2; }
+  read -r -p "Type the chain's key ($CHAIN) to sign and send, anything else to stop: " TYPED
+  [ "$TYPED" = "$CHAIN" ] || { echo "stopped; nothing was sent" >&2; exit 1; }
+fi
 echo "== forge script ($MODE) through $RPC_URL"
 forge script script/DeployMultichain.s.sol:DeployMultichain --rpc-url "$RPC_URL" ${BROADCAST[@]+"${BROADCAST[@]}"} ${FORGE_ARGS[@]+"${FORGE_ARGS[@]}"}
 if [ "$MODE" = broadcast ]; then
