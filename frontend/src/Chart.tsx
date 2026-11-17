@@ -56,8 +56,8 @@ export function Chart({
         >
           <defs>
             <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#c8fa72" stopOpacity="0.17" />
-              <stop offset="100%" stopColor="#c8fa72" stopOpacity="0.005" />
+              <stop offset="0%" style={{ stopColor: 'var(--net)' }} stopOpacity="0.14" />
+              <stop offset="100%" style={{ stopColor: 'var(--net)' }} stopOpacity="0.005" />
             </linearGradient>
           </defs>
           {Array.from({ length: 5 }, (_, i) => (
@@ -84,7 +84,7 @@ export function Chart({
           <polyline
             points={points}
             fill="none"
-            stroke="#c8fa72"
+            style={{ stroke: 'var(--net)' }}
             strokeWidth="1.8"
             vectorEffect="non-scaling-stroke"
             strokeLinejoin="round"

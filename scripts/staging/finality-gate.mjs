@@ -36,6 +36,9 @@ const SELECTORS = Object.freeze({
 export const BUCKET_CAPACITY_SELECTOR = SELECTORS.bucketCapacity;
 const BRIDGE_BUCKET_DIVISOR = 10n;
 const EMPTY_CODE_HASH = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+/// Owner decision of 2026-11-17: Bloch Inc on the Bloch L2 DEX is the owner's plain address (the only Bloch Inc
+/// without code). Single source for the tools; mirrored by script/DeployMainnet.s.sol OWNER_FEE_EOA.
+export const OWNER_FEE_EOA = "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544";
 const UINT112_MAX = (1n << 112n) - 1n;
 const CONTRACT_KEYS = Object.freeze(["wrappedNative", "factory", "router", "lens"]);
 const ZERO_ADDRESS = `0x${"0".repeat(40)}`;
@@ -396,11 +399,17 @@ function validateGateConfigV2(config) {
   exactKeys(deployment.roles, ["blochInc"], "deployment.roles");
   const { blochInc } = deployment.roles;
   exactKeys(blochInc, Object.hasOwn(blochInc ?? {}, "safe") ? ["address", "codeHash", "safe"] : ["address", "codeHash"], "deployment.roles.blochInc");
-  refuse(config.chain.id !== MAINNET_CHAIN_ID || blochInc.safe, "deployment.roles.blochInc.safe is required on the mainnet");
+  // Owner decision 2026-11-17: the owner's pinned plain address is the only Bloch Inc without code (no Safe pin).
+  const ownerEoa = blochInc?.address === OWNER_FEE_EOA;
+  refuse(config.chain.id !== MAINNET_CHAIN_ID || ownerEoa || blochInc.safe, "deployment.roles.blochInc.safe is required on the mainnet");
   if (blochInc.safe) validateSafePin(blochInc.safe, "deployment.roles.blochInc.safe");
   lowerAddress(deployment.roles.blochInc.address, "deployment.roles.blochInc.address");
   nonzeroHash(deployment.roles.blochInc.codeHash, "deployment.roles.blochInc.codeHash");
-  refuse(deployment.roles.blochInc.codeHash !== EMPTY_CODE_HASH, "deployment.roles.blochInc must be a multisig contract");
+  if (ownerEoa) {
+    refuse(blochInc.codeHash === EMPTY_CODE_HASH && !blochInc.safe, "deployment.roles.blochInc is the owner's plain fee address: empty-code pin, no Safe pin");
+  } else {
+    refuse(deployment.roles.blochInc.codeHash !== EMPTY_CODE_HASH, "deployment.roles.blochInc must be a multisig contract");
+  }
   lowerAddress(deployment.feeTo, "deployment.feeTo");
   refuse(deployment.feeTo === deployment.roles.blochInc.address, "deployment.feeTo must be Bloch Inc");
   const wrapped = deployment.contracts.wrappedNative.address;
@@ -550,7 +559,7 @@ async function evaluateFinalityGateV2(config, request, bridgeTokens = [], bridge
   };
   const { contracts, roles } = deployment;
   for (const key of CONTRACT_KEYS) await codeAt(contracts[key].address, contracts[key].codeHash, key);
-  await codeAt(roles.blochInc.address, roles.blochInc.codeHash, "Bloch Inc multisig");
+  await codeAt(roles.blochInc.address, roles.blochInc.codeHash, roles.blochInc.address === OWNER_FEE_EOA ? "Bloch Inc (the owner's plain fee address: no code, no EIP-7702 delegation)" : "Bloch Inc multisig");
   const safe = roles.blochInc.safe ? await verifySafe(roles.blochInc.safe, roles.blochInc.address, request, at) : null;
   for (const { token, symbol, codeHash, bridgeBucketCapacity } of deployment.tokens) {
     await codeAt(token, codeHash, `token ${symbol}`);

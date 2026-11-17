@@ -2,7 +2,8 @@
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MultichainApplication } from '../MultichainApp';
-import { ChainError, type Rpc } from '../devnet4/chain';
+import { decodeFunctionData, encodeFunctionResult, parseAbi, type Hex } from 'viem';
+import { ChainError, readSnapshot, type Rpc } from '../devnet4/chain';
 import { addChainParameters, swapClock } from '../mainnet/config';
 import { renderHeadersFile } from '../mainnet/headers';
 import { BLOCH_L2_WORDING, setWording, wording } from '../mainnet/wording';
@@ -148,8 +149,10 @@ describe('multichain configuration', () => {
     expect(chain.planned.pairs).toEqual([['WBNB', 'USDC (Binance-Peg)']]);
     const state = parseRecord(deployedRecord('bnb-smart-chain'), chain);
     if (state.status !== 'live') throw new Error('expected a live state');
-    // The deployment the route renders from: the label is the shown symbol.
-    expect(state.deployment.tokens.map((t) => t.symbol)).toEqual(['WBNB', 'USDC (Binance-Peg)']);
+    // Review R344-UI-16: the deployment keeps the contract's own symbol (what readSnapshot pins against the
+    // chain) and carries the label separately; the label is what the route shows.
+    expect(state.deployment.tokens.map((t) => t.symbol)).toEqual(['WBNB', 'USDC']);
+    expect(state.deployment.tokens.map((t) => t.label)).toEqual([undefined, 'USDC (Binance-Peg)']);
     for (const c of bundledChains().filter((x) => x.key !== 'bnb-smart-chain')) {
       expect(c.tokens[0].label).toBeUndefined();
       expect(c.tokenNotes).toEqual([]);
@@ -162,6 +165,35 @@ describe('multichain configuration', () => {
     bad.network.tokens[0].label = 'USDC (Binance-Peg)';
     delete bad.network.tokens[0].note;
     expect(() => parseChain(bad.network, bad.record)).toThrow(/note/);
+  });
+
+  it("R344-UI-16: BNB Smart Chain's snapshot read passes against the contract's own symbol and the live token shows the label", async () => {
+    const e = entry('bnb-smart-chain');
+    const chain = parseChain(e.network, deployedRecord('bnb-smart-chain'));
+    const state = parseRecord(deployedRecord('bnb-smart-chain'), chain);
+    if (state.status !== 'live') throw new Error('expected a live state');
+    // Only the token pin is under test: no code hashes and no pairs to read.
+    const d = { ...state.deployment, codeHashes: {}, pairs: [] };
+    const erc20 = parseAbi(['function decimals() view returns (uint8)', 'function symbol() view returns (string)']);
+    const onChain = new Map(d.tokens.map((t) => [t.address.toLowerCase(), t.address.toLowerCase() === chain.wrapped.address ? 'WBNB' : 'USDC']));
+    const rpc: Rpc = async (method, params) => {
+      if (method === 'eth_chainId') return `0x${d.chainId.toString(16)}`;
+      if (method === 'eth_getBlockByNumber')
+        return (params as unknown[])[0] === '0x0'
+          ? { hash: d.genesisHash }
+          : { number: `0x${d.gate.finalizedNumber.toString(16)}`, hash: d.gate.finalizedHash, timestamp: '0x1' };
+      if (method === 'eth_call') {
+        const call = (params as [{ to: string; data: Hex }])[0];
+        const fn = decodeFunctionData({ abi: erc20, data: call.data }).functionName;
+        return encodeFunctionResult({ abi: erc20, functionName: fn, result: fn === 'decimals' ? 18 : onChain.get(call.to.toLowerCase())! } as never);
+      }
+      throw new Error(`unexpected ${method}`);
+    };
+    const snapshot = await readSnapshot(rpc, d, 'bnb-smart-chain');
+    const usdc = snapshot.tokens.find((t) => t.address !== chain.wrapped.address)!;
+    expect(usdc.chainSymbol).toBe('USDC');
+    expect(usdc.symbol).toBe('USDC (Binance-Peg)');
+    expect(usdc.decimals).toBe(18);
   });
 
   it('refuses a record for another chain, genesis, fee address or wrapped token, a rehearsal record, and an unlisted pair token', () => {

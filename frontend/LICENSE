@@ -1,5 +1,5 @@
 The files in this directory are licensed under the MIT License (text: ../LICENSES/MIT.txt; the same text is in
-../LICENSE). Copyright (c) 2026 TBD-owner.
+../LICENSE). Copyright (c) 2026 Bloch Inc.
 
 The page built from this directory bundles third-party packages under their own licences. They are listed, with
 their licence texts, in public/THIRD-PARTY-NOTICES.txt, which is copied into every build

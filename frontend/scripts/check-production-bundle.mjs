@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// Release gate for a built site: node scripts/check-production-bundle.mjs <dist>
+// Release gate for a built site: node scripts/check-production-bundle.mjs <dist> [--multichain]
+// --multichain: <dist> is the multichain site (npm run build:multichain); its CSP is checked against the per-chain
+// network files of deployments/multichain.json instead of the Bloch L2's (review R309-UI-6).
 // (ported from the bridge frontend line, e3c9d31, by frontends-sec r10; the DEX tree has no bridge-only build)
 // Fails on dev RPCs, loopback endpoints, test keys, source maps, or a CSP that
 // does not allow the RPCs the committed config publishes.
@@ -10,9 +12,10 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
-const [dist] = process.argv.slice(2);
+const multichain = process.argv.includes('--multichain');
+const [dist] = process.argv.slice(2).filter((a) => a !== '--multichain');
 if (!dist) {
-  console.error('usage: check-production-bundle.mjs <dist>');
+  console.error('usage: check-production-bundle.mjs <dist> [--multichain]');
   process.exit(2);
 }
 
@@ -84,10 +87,27 @@ const committed = (file) =>
   JSON.parse(readFileSync(new URL(`../../deployments/mainnet/${file}`, import.meta.url), 'utf8'));
 const csp = readFileSync(join(dist, '_headers'), 'utf8').match(/connect-src ([^;]*)/)?.[1] ?? '';
 const network = committed('frontend.network.json');
-for (const url of [network.rpc.url, ...network.bridges.map((b) => b.status?.ethRpcUrl)]) {
-  if (url && !csp.split(' ').includes(new URL(url).origin))
-    hits.push(['_headers', 'RPC missing from connect-src', url]);
-}
+const allowed = csp.split(' ').filter(Boolean);
+if (multichain) {
+  // Every reviewed endpoint of every chain, and nothing else that is an RPC: the Bloch L2's endpoint is not part
+  // of this site.
+  const deployments = (file) =>
+    JSON.parse(readFileSync(new URL(`../../deployments/${file}`, import.meta.url), 'utf8'));
+  const wanted = new Set();
+  for (const key of deployments('multichain.json').chains)
+    for (const url of deployments(`${key}/frontend.network.json`).rpc.urls) {
+      wanted.add(new URL(url).origin);
+      if (!allowed.includes(new URL(url).origin))
+        hits.push(['_headers', 'RPC missing from connect-src', url]);
+    }
+  if (allowed.includes(new URL(network.rpc.url).origin))
+    hits.push(['_headers', 'the Bloch L2 RPC is in the multichain connect-src', network.rpc.url]);
+  console.log(`multichain: ${wanted.size} endpoint origin(s) required in connect-src`);
+} else
+  for (const url of [network.rpc.url, ...network.bridges.map((b) => b.status?.ethRpcUrl)]) {
+    if (url && !allowed.includes(new URL(url).origin))
+      hits.push(['_headers', 'RPC missing from connect-src', url]);
+  }
 
 for (const [file, label, context] of hits)
   console.log(`HIT ${file}: ${label}: ${context.replace(/\s+/g, ' ')}`);

@@ -110,7 +110,9 @@ export async function readCall<T>(
   return decodeFunctionResult({ abi, functionName, data: result as Hex } as never) as T;
 }
 
-export type LiveToken = DevnetToken & { decimals: number };
+/** A token as read at the snapshot: `chainSymbol` is the contract's own symbol (pinned against the record);
+ * `symbol` is what the route shows (the record's `label` where it has one, else the same). Review R344-UI-16. */
+export type LiveToken = DevnetToken & { decimals: number; chainSymbol?: string };
 export type LivePool = {
   address: Address;
   token0: LiveToken;
@@ -183,7 +185,7 @@ export async function readSnapshot(
       Number.isInteger(decimals) && decimals >= 0 && decimals <= 36,
       'token decimals out of range',
     );
-    tokens.push({ ...token, decimals });
+    tokens.push({ ...token, decimals, chainSymbol: symbol, symbol: token.label ?? symbol });
   }
   const byAddress = new Map(tokens.map((t) => [t.address, t]));
   const pools: LivePool[] = [];

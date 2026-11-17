@@ -107,6 +107,34 @@ window.__h = {
     const el = [...document.querySelectorAll('[aria-label]')].find((x) => x.getAttribute('aria-label') === name);
     return el ? el.innerText : null;
   },
+  // What a user can read on the page WITHOUT a click (scrolling allowed). document.body.innerText also returns the
+  // text of regions that are rendered but cut to no height or inert (a closed disclosure, the closed side panel):
+  // those are taken out of rendering for the moment of the read and put back at once, in the same task, so the
+  // page never paints or sees the change.
+  offscreen() {
+    const out = new Set(document.querySelectorAll('[inert]'));
+    for (const el of document.querySelectorAll('body *')) {
+      const style = getComputedStyle(el);
+      if (style.display === 'none') continue;
+      const clips = style.overflowX !== 'visible' || style.overflowY !== 'visible';
+      const box = el.getBoundingClientRect();
+      if ((clips && (box.height < 1 || box.width < 1) && el.textContent.trim()) || Number(style.opacity) === 0) out.add(el);
+    }
+    return [...out];
+  },
+  visibleText() {
+    const hidden = this.offscreen().map((el) => [el, el.style.getPropertyValue('display'), el.style.getPropertyPriority('display')]);
+    for (const [el] of hidden) el.style.setProperty('display', 'none', 'important');
+    try {
+      return document.body.innerText.replace(/\s+/g, ' ');
+    } finally {
+      for (const [el, value, priority] of hidden) value ? el.style.setProperty('display', value, priority) : el.style.removeProperty('display');
+    }
+  },
+  // A control the user can reach without another click: rendered, with a box, and not inside an inert or clipped region.
+  reachable(el) {
+    return this.visible(el) && !this.offscreen().some((region) => region.contains(el));
+  },
 };`;
 
 export async function openPage(browser, contextId, { initScript, url, onBinding, log }) {
@@ -163,6 +191,12 @@ export async function openPage(browser, contextId, { initScript, url, onBinding,
       await waitFor('document', 'document.readyState === "complete" && !!window.__h');
     },
     text: () => evaluate('document.body.innerText'),
+    /** The text on screen without a click (see `visibleText` above); `text()` also returns clipped and inert regions. */
+    visibleText: () => evaluate('window.__h.visibleText()'),
+    waitVisibleText: (pattern, timeoutMs) => waitFor(`visible text ${pattern}`, `(${pattern}).test(window.__h.visibleText())`, timeoutMs),
+    /** A button by its visible name that the user can reach without another click. */
+    reachableButton: (name) =>
+      evaluate(`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.replace(/\\s+/g, ' ').trim().startsWith(${JSON.stringify(name)}) && window.__h.reachable(x)); return b ? { disabled: b.disabled } : null; })()`),
     labelled: (name) => evaluate(`window.__h.labelled(${JSON.stringify(name)})`),
     waitText: (pattern, timeoutMs) =>
       waitFor(`text ${pattern}`, `(${pattern}).test(document.body.innerText.replace(/\\s+/g, ' '))`, timeoutMs),

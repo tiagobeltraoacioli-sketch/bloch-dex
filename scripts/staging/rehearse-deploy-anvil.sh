@@ -18,6 +18,13 @@
 # --rehearsal path it is played by a test-only 2-of-3 multisig contract. The
 # two pilot counter-assets (wGSMH, bUSDC) are test-only tokens exposing the
 # bridge's bucketCapacity(); the caps are the committed mainnet values.
+#
+# BLOCH_INC_MODE=owner-eoa (mainnet path only; owner decision of 2026-11-17): Bloch Inc is the owner's
+# pinned plain fee address 0x775a…0544 instead of the Safe (no SAFE_ARTIFACTS needed). The preflight
+# then reads "no code, no EIP-7702 delegation" from two endpoints at one block hash (--rpc2; here the
+# finality shim in front of the same anvil, so it proves the wiring, not operator independence); the
+# rehearsal shows the refusals (no --rpc2; a delegation designator set on the address) and redeems the
+# protocol fee from the address by anvil impersonation (the owner signs it with the real key).
 set -euo pipefail
 
 REVISION=${1:?usage: rehearse-deploy-anvil.sh <40-hex revision> [chain-id] [port]}
@@ -46,15 +53,24 @@ ZERO=0x0000000000000000000000000000000000000000
 EXEC="execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)"
 ISSUER_KEY=0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6
 ISSUER=0x90f79bf6eb2c4f870365e785982e1f101e93b906
+# The factory's first-depositor rule (F1): only this fresh account may make a pair's first deposit
+# (anvil's public development account 9; it sends nothing before the seed, so its nonce is 0 at deployment).
+DEPOSITOR_KEY=0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6
+DEPOSITOR=0xa0ee7a142d267c1f36714e4a8f75612f20a79720
 # Committed mainnet caps and the bridge buckets they imply (cap = bucket / 10).
 WBLCH_CAP=10000000000000000000
 GSMH_CAP=100000000; GSMH_BUCKET=1000000000
 USD_CAP=1000000000; USD_BUCKET=10000000000
 
+MODE=${BLOCH_INC_MODE:-safe}
+OWNER_FEE_EOA=0x775a993f09bd80aecf8f8c2ade0c84158e3a0544
+EMPTY_CODE_HASH=0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
+case "$MODE" in safe|owner-eoa) ;; *) echo "BLOCH_INC_MODE must be safe or owner-eoa" >&2; exit 2 ;; esac
 case "$CHAIN_ID" in
-  700771|31337) FLAG=--rehearsal; NAME=local-rehearsal; REHEARSAL=true ;;
+  700771|31337) FLAG=--rehearsal; NAME=local-rehearsal; REHEARSAL=true
+     [ "$MODE" = safe ] || { echo "BLOCH_INC_MODE=owner-eoa is a mainnet-path rehearsal (chain 700770)" >&2; exit 2; } ;;
   *) FLAG=; NAME=bloch-l2-mainnet; REHEARSAL=false
-     [ -d "${SAFE_ARTIFACTS:-}/contracts" ] || {
+     [ "$MODE" = owner-eoa ] || [ -d "${SAFE_ARTIFACTS:-}/contracts" ] || {
        echo "the mainnet path needs SAFE_ARTIFACTS=<@safe-global/safe-contracts@1.4.1 build/artifacts>: Bloch Inc is the pinned Safe v1.4.1" >&2; exit 1; } ;;
 esac
 
@@ -68,7 +84,10 @@ for _ in $(seq 50); do cast chain-id --rpc-url "$RPC" > /dev/null 2>&1 && break;
 forge build > "$WORK/build.log" 2>&1 || { tail -n 30 "$WORK/build.log"; exit 1; }
 created() { awk '/Deployed to:/ {print tolower($3)}'; }
 codehash() { cast keccak "$(cast code "$1" --rpc-url "$RPC")"; }
-if [ -n "$FLAG" ]; then
+if [ "$MODE" = owner-eoa ]; then
+  BLOCH_INC=$OWNER_FEE_EOA
+  BLOCH_INC_JSON="{ \"address\": \"$BLOCH_INC\", \"codeHash\": \"$EMPTY_CODE_HASH\" }"
+elif [ -n "$FLAG" ]; then
   BLOCH_INC=$(forge create test/mocks/RehearsalMultisig.sol:RehearsalMultisig --rpc-url "$RPC" --private-key "$ISSUER_KEY" \
     --broadcast --constructor-args "[$OWNER_A,$OWNER_B,$OWNER_C]" 2 | created)
   BLOCH_INC_JSON="{ \"address\": \"$BLOCH_INC\", \"codeHash\": \"$(codehash "$BLOCH_INC")\" }"
@@ -102,7 +121,7 @@ cat > "$CONFIG" <<JSON
   "network": { "name": "$NAME", "chainId": $CHAIN_ID, "genesisHash": "$GENESIS", "rehearsal": $REHEARSAL },
   "source": { "revision": "$REVISION", "compiler": { "solc": "0.8.24", "evmVersion": "paris", "optimizer": true, "optimizerRuns": 200, "bytecodeHash": "none" } },
   "deployer": { "address": "$DEPLOYER", "startNonce": 0 },
-  "firstDepositor": "${FIRST_DEPOSITOR:-0x000000000000000000000000000000000000f1d0}",
+  "firstDepositor": "${FIRST_DEPOSITOR:-$DEPOSITOR}",
   "blochInc": $BLOCH_INC_JSON,
   "wrappedNative": { "deploy": true },
   "fees": { "feeTo": "blochInc" },
@@ -111,6 +130,7 @@ cat > "$CONFIG" <<JSON
     { "symbol": "wGSMH", "token": "$GSMH", "codeHash": "$(codehash "$GSMH")", "bridgeBucketCapacity": "$GSMH_BUCKET", "cap": "$GSMH_CAP" },
     { "symbol": "bUSDC", "token": "$ASSET", "codeHash": "$(codehash "$ASSET")", "bridgeBucketCapacity": "$USD_BUCKET", "cap": "$USD_CAP" }
   ],
+  "openingPrice": { "symbol": "bUSDC", "quotePerWrapped": "100000000" },
   "initialPairs": [ { "tokenA": "WBLCH", "tokenB": "wGSMH" }, { "tokenA": "WBLCH", "tokenB": "bUSDC" } ],
   "gate": { "maxWrappedReserveCap": "10000000000000000000" }
 }
@@ -125,17 +145,31 @@ if [ -n "$FLAG" ]; then
   if $D validate --config "$CONFIG" 2> "$WORK/refusal.txt"; then echo "FAIL: accepted without --rehearsal"; exit 1; fi
   cat "$WORK/refusal.txt"
 fi
+RPC2=()
+if [ "$MODE" = owner-eoa ]; then
+  RPC2=(--rpc2 "$SHIM")
+  echo "== owner-eoa: a preflight without a second endpoint is refused"
+  if $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" 2> "$WORK/refusal.txt"; then echo "FAIL: one endpoint accepted"; exit 1; fi
+  cat "$WORK/refusal.txt"
+  echo "== owner-eoa: an EIP-7702 delegation on the fee address is refused"
+  cast rpc anvil_setCode "$BLOCH_INC" 0xef010063c0c19a282a1b52b07dd5a65b58948a07dae32b --rpc-url "$RPC" > /dev/null
+  if $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" "${RPC2[@]}" 2> "$WORK/refusal.txt"; then echo "FAIL: delegated fee address accepted"; exit 1; fi
+  cat "$WORK/refusal.txt"
+  cast rpc anvil_setCode "$BLOCH_INC" 0x --rpc-url "$RPC" > /dev/null
+  echo "== owner-eoa: preflight from two endpoints at one block hash"
+  $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" "${RPC2[@]}" | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!r.ownerFeeEoa||r.ownerFeeEoa.endpoints!==2){console.error("FAIL: no two-endpoint check");process.exit(1)} console.log("owner fee address: no code at block", r.ownerFeeEoa.block.number, r.ownerFeeEoa.block.hash, "on", r.ownerFeeEoa.endpoints, "endpoints")'
+fi
 echo "== broadcast without --confirm is refused"
 if $D run --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" $FLAG --broadcast 2> "$WORK/refusal.txt"; then
   echo "FAIL: broadcast without confirmation"; exit 1
 fi
 cat "$WORK/refusal.txt"
 echo "== dry run"
-$D run --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" $FLAG > "$WORK/dry-run.log"
+$D run --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" ${RPC2[@]+"${RPC2[@]}"} $FLAG > "$WORK/dry-run.log"
 tail -n 4 "$WORK/dry-run.log"
 [ "$(cast nonce "$DEPLOYER" --rpc-url "$RPC")" = 0 ] || { echo "FAIL: dry run changed the chain"; exit 1; }
 echo "== broadcast"
-$D run --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" $FLAG --broadcast --confirm "$SHA" -- --private-key "$DEPLOYER_KEY" > "$WORK/broadcast.log"
+$D run --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" ${RPC2[@]+"${RPC2[@]}"} $FLAG --broadcast --confirm "$SHA" -- --private-key "$DEPLOYER_KEY" > "$WORK/broadcast.log"
 tail -n 4 "$WORK/broadcast.log"
 echo "== record"
 $D record --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" $FLAG \
@@ -165,10 +199,16 @@ PAIR=$(cast call "$FACTORY" "getPair(address,address)(address)" "$WRAPPED" "$ASS
 if cast send "$FACTORY" "setFeeTo(address)" "$DEPLOYER" --gas-limit 100000 --rpc-url "$RPC" --private-key "$DEPLOYER_KEY" > "$WORK/setter.log" 2>&1; then
   grep -q "(failed)" "$WORK/setter.log" || { echo "FAIL: the fee recipient was changed"; exit 1; }
 fi
-echo "== guarded launch: seed 50% of each cap, then an over-cap deposit reverts"
+echo "== guarded launch: a first deposit by anyone but the first depositor reverts; the depositor seeds 50% of each cap; an over-cap deposit reverts"
 cast send "$ASSET" "approve(address,uint256)" "$ROUTER" 1000000000000 --rpc-url "$RPC" --private-key "$ISSUER_KEY" > /dev/null
-cast send "$ROUTER" "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$ASSET" 500000000 0 0 "$ISSUER" 99999999999 \
-  --value 5000000000000000000 --rpc-url "$RPC" --private-key "$ISSUER_KEY" > /dev/null
+if cast send "$ROUTER" "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$ASSET" 500000000 0 0 "$ISSUER" 99999999999 \
+  --value 5000000000000000000 --gas-limit 3000000 --rpc-url "$RPC" --private-key "$ISSUER_KEY" > "$WORK/stranger.log" 2>&1; then
+  grep -q "(failed)" "$WORK/stranger.log" || { echo "FAIL: a stranger made the first deposit"; exit 1; }
+fi
+cast send "$ASSET" "transfer(address,uint256)" "$DEPOSITOR" 500000000 --rpc-url "$RPC" --private-key "$ISSUER_KEY" > /dev/null
+cast send "$ASSET" "approve(address,uint256)" "$ROUTER" 500000000 --rpc-url "$RPC" --private-key "$DEPOSITOR_KEY" > /dev/null
+cast send "$ROUTER" "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$ASSET" 500000000 0 0 "$DEPOSITOR" 99999999999 \
+  --value 5000000000000000000 --rpc-url "$RPC" --private-key "$DEPOSITOR_KEY" > /dev/null
 if cast send "$ROUTER" "addLiquidityBLCH(address,uint256,uint256,uint256,address,uint256)" "$ASSET" 600000000 0 0 "$ISSUER" 99999999999 \
   --value 6000000000000000000 --gas-limit 3000000 --rpc-url "$RPC" --private-key "$ISSUER_KEY" > "$WORK/overcap.log" 2>&1; then
   grep -q "(failed)" "$WORK/overcap.log" || { echo "FAIL: over-cap liquidity accepted"; exit 1; }
@@ -187,7 +227,16 @@ FEE=$(cast call "$PAIR" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$R
 [ "$FEE" != 0 ] || { echo "FAIL: no protocol fee minted to Bloch Inc"; exit 1; }
 TRANSFER=$(cast calldata "transfer(address,uint256)" "$PAIR" "$FEE")
 BURN=$(cast calldata "burn(address)" "$BLOCH_INC")
+if [ "$MODE" = owner-eoa ]; then
+  # The owner's plain address sends the two calls itself (here by anvil impersonation; for real, with the owner's key).
+  cast rpc anvil_impersonateAccount "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
+  cast rpc anvil_setBalance "$BLOCH_INC" 0x16345785d8a0000 --rpc-url "$RPC" > /dev/null
+  cast send "$PAIR" "transfer(address,uint256)" "$PAIR" "$FEE" --unlocked --from "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
+  cast send "$PAIR" "burn(address)" "$BLOCH_INC" --unlocked --from "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
+  cast rpc anvil_stopImpersonatingAccount "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
+fi
 for CALL in "$TRANSFER" "$BURN"; do
+  [ "$MODE" = owner-eoa ] && break
   if [ -n "$FLAG" ]; then
     cast send "$BLOCH_INC" "confirm(address,bytes)" "$PAIR" "$CALL" --rpc-url "$RPC" --private-key "$OWNER_A_KEY" > /dev/null
     cast send "$BLOCH_INC" "confirm(address,bytes)" "$PAIR" "$CALL" --rpc-url "$RPC" --private-key "$OWNER_B_KEY" > /dev/null
@@ -211,6 +260,7 @@ done
 USD_OUT=$(cast call "$ASSET" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')
 W_OUT=$(cast call "$WRAPPED" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')
 [ "$USD_OUT" != 0 ] && [ "$W_OUT" != 0 ] || { echo "FAIL: Bloch Inc could not redeem its fee"; exit 1; }
-[ -n "$FLAG" ] || echo "Bloch Inc Safe v1.4.1 $BLOCH_INC (3 of 5) redeemed with execTransaction; two signatures were refused"
+[ -n "$FLAG" ] || [ "$MODE" = owner-eoa ] || echo "Bloch Inc Safe v1.4.1 $BLOCH_INC (3 of 5) redeemed with execTransaction; two signatures were refused"
+[ "$MODE" != owner-eoa ] || echo "Bloch Inc = the owner's plain fee address $BLOCH_INC (no code at deployment, read from two endpoints); fee redeemed by the address itself"
 echo "Bloch Inc fee: $FEE LP -> $W_OUT WBLCH base units + $USD_OUT bUSDC base units"
 echo "REHEARSAL OK ($WORK)"

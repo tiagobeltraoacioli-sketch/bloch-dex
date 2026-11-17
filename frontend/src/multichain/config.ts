@@ -58,6 +58,8 @@ export type Chain = {
   confirmation: Confirmation;
   /** What the rule means, in words, shown above the route. */
   confirmationNote: string;
+  /** The network file's `confirmation.blockSeconds` (the measured block time), or null without the block. */
+  blockSeconds: number | null;
   /** One line per listed token that carries a note (network file `tokens[].note`), shown with the route. */
   tokenNotes: string[];
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
@@ -153,11 +155,12 @@ const blocks = (n: number): string => (n === 1 ? '1 block' : `${n.toLocaleString
 export function parseConfirmation(
   value: unknown,
   chainName: string,
-): { confirmation: Confirmation; note: string } {
+): { confirmation: Confirmation; note: string; blockSeconds: number | null } {
   if (value === undefined)
     return {
       confirmation: FINALIZED_ONLY,
       note: `On ${chainName} this page reads and settles at the chain's own finalized block.`,
+      blockSeconds: null,
     };
   const v = value as AnyRecord;
   refuse(
@@ -189,10 +192,10 @@ export function parseConfirmation(
       : tagWords(strict);
   const note =
     'depth' in settle
-      ? `On ${chainName} this page treats a block as settled once ${blocks(settle.depth)} ${settle.depth === 1 ? 'is' : 'are'} on top of it (${span(settle.depth * v.blockSeconds)}), not at the chain's own finality. Where this page says "finalized" on this network, it means that. Prices and balances are read at that block and your swap is bound by its minimum and its deadline. A hold that ends without your transaction's own receipt (its deadline passed, or another transaction used its nonce) waits for ${strictWords}.`
+      ? `On ${chainName} this page treats a block as settled once ${blocks(settle.depth)} ${settle.depth === 1 ? 'is' : 'are'} on top of it (${span(settle.depth * v.blockSeconds)}), not at the chain's own finality. Where this page says "confirmed" on this network, it means that. Prices and balances are read at that block and your swap is bound by its minimum and its deadline. A hold that ends without your transaction's own receipt (its deadline passed, or another transaction used its nonce) waits for ${strictWords}.`
       : settle.tag === 'finalized' && 'tag' in strict && strict.tag === 'finalized'
         ? `On ${chainName} this page reads and settles at the chain's own finalized block.`
-        : `On ${chainName} this page reads and settles at ${tagWords(settle)}. Where this page says "finalized" on this network, it means that. A hold that ends without your transaction's own receipt waits for ${strictWords}.`;
+        : `On ${chainName} this page reads and settles at ${tagWords(settle)}. Where this page says "confirmed" on this network, it means that. A hold that ends without your transaction's own receipt waits for ${strictWords}.`;
   const retryRule = reverted ?? strict;
   const retryWords =
     'depth' in retryRule
@@ -206,6 +209,7 @@ export function parseConfirmation(
   return {
     confirmation: { settle, strict, ...(reverted ? { reverted } : {}) },
     note: note + retry,
+    blockSeconds: v.blockSeconds as number,
   };
 }
 
@@ -254,7 +258,13 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     'multicall3',
   );
   refuse(ADDRESS.test(n.feeTo ?? ''), 'feeTo');
-  const { confirmation, note: confirmationNote } = parseConfirmation(n.confirmation, n.chainName);
+  const {
+    confirmation,
+    note: confirmationNote,
+    blockSeconds,
+  } = parseConfirmation(n.confirmation, n.chainName);
+  // The page's word for its settlement block: the chain's own finality, or this file's confirmation rule.
+  const byFinality = 'tag' in confirmation.settle && confirmation.settle.tag === 'finalized';
   // Optional (review R309-MC-6): the default swap deadline of this chain; absent: the route's own default.
   const deadlineMinutes = n.swap?.deadlineMinutes;
   refuse(
@@ -291,13 +301,16 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     title: `PosternDEX on ${n.chainName}`,
     where: n.chainName,
     block: 'block',
-    finality: 'Finality',
+    finality: byFinality ? 'Finality' : 'Confirmation',
     genesis: 'Genesis',
     native: c.symbol,
-    launch: 'The protocol fee of each pool goes to the address shown below.',
+    launch:
+      'The protocol fee of each pool goes to the address shown in the deployment record (Pools and verification).',
     feeSuggestion: 'Your wallet sets the fee.',
     chain: n.chainName,
     quiet: 'stale-rpc',
+    settled: byFinality ? 'finalized' : 'confirmed',
+    reads: `${n.chainName} reads`,
   };
   const multicall3 = {
     address: n.multicall3.address as Address,
@@ -314,6 +327,7 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     wording,
     confirmation,
     confirmationNote,
+    blockSeconds,
     tokenNotes: tokens.flatMap((t) => (t.note ? [t.note] : [])),
     planned: { caps: [], pairs: tokens.map((t) => [wrapped.symbol, shownSymbol(t)]) },
   };
@@ -416,8 +430,10 @@ export function parseRecord(
     codeHashes,
     tokens: [...listed.values()].map((t) => ({
       address: t.address,
-      // What the route shows: the label where the network file gives one.
-      symbol: shownSymbol(t),
+      // Review R344-UI-16: `symbol` stays the contract's own (readSnapshot pins it against the chain); the label,
+      // where the network file gives one, travels separately and is what the route shows.
+      symbol: t.symbol,
+      ...(t.label ? { label: t.label } : {}),
       cap: caps.get(t.address) ?? 0n,
       wrapped: t.address === chain.wrapped.address,
     })),

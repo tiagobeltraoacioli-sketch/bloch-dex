@@ -88,6 +88,11 @@ contract DeployMainnetTest is TestBase {
     /// Learn the runtime hashes by deploying once, then roll back so the
     /// script deploys from the same nonces.
     function _expected() internal returns (Expected memory e) {
+        return _expectedFor(BLOCH_INC);
+    }
+
+    /// The same, for a given fee recipient (the factory's runtime code depends on it).
+    function _expectedFor(address feeRecipient) internal returns (Expected memory e) {
         uint256 nonce = hevm.getNonce(DEPLOYER);
         e.wrapped = hevm.computeCreateAddress(DEPLOYER, nonce);
         e.factory = hevm.computeCreateAddress(DEPLOYER, nonce + 1);
@@ -98,7 +103,7 @@ contract DeployMainnetTest is TestBase {
         hevm.prank(DEPLOYER);
         WBLCH w = new WBLCH();
         hevm.prank(DEPLOYER);
-        UniswapV2Factory f = new UniswapV2Factory(BLOCH_INC, address(0xF1D), capTokens, caps);
+        UniswapV2Factory f = new UniswapV2Factory(feeRecipient, address(0xF1D), capTokens, caps);
         hevm.prank(DEPLOYER);
         BDexRouter r = new BDexRouter(address(f), address(w));
         hevm.prank(DEPLOYER);
@@ -283,6 +288,46 @@ contract DeployMainnetTest is TestBase {
         script.execute(MAINNET_LIKE_CHAIN, false, s, p);
         s.blochInc = BLOCH_INC;
         s.blochIncCodeHash = keccak256("another multisig");
+        hevm.expectRevert(bytes("MAINNET: BLOCH_INC_CODE"));
+        script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+    }
+
+    /// Owner decision of 2026-11-17: Bloch Inc on the Bloch L2 DEX is the owner's plain address
+    /// 0x775a…0544, pinned in the script. Exactly that address is accepted without code, and only
+    /// with the empty-code pin; it is refused with any code, including an EIP-7702 delegation
+    /// designator (0xef0100 || delegate). Every other address keeps the multisig rule.
+    address internal constant OWNER_FEE_EOA = 0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544;
+
+    function testAcceptsTheOwnersPinnedFeeAddressWithoutCode() public {
+        hevm.chainId(MAINNET_LIKE_CHAIN);
+        Expected memory e = _expectedFor(OWNER_FEE_EOA);
+        (DeployMainnet.Settings memory s, DeployMainnet.Planned memory p) = _inputs(e);
+        (s.blochInc, s.blochIncCodeHash) = (OWNER_FEE_EOA, EMPTY);
+        script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+        assertEq(UniswapV2Factory(e.factory).feeTo(), OWNER_FEE_EOA);
+        assertEq(script.OWNER_FEE_EOA(), OWNER_FEE_EOA);
+    }
+
+    function testRefusesTheOwnersFeeAddressWithCodeOrAnotherPin() public {
+        hevm.chainId(MAINNET_LIKE_CHAIN);
+        (DeployMainnet.Settings memory s, DeployMainnet.Planned memory p) = _inputs(_expectedFor(OWNER_FEE_EOA));
+        // The pin must say "no code".
+        (s.blochInc, s.blochIncCodeHash) = (OWNER_FEE_EOA, keccak256(BLOCH_INC_CODE));
+        hevm.expectRevert(bytes("MAINNET: BLOCH_INC_CODE"));
+        script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+        // An EIP-7702 delegation is code at the address: refused even with the empty pin.
+        s.blochIncCodeHash = EMPTY;
+        hevm.etch(OWNER_FEE_EOA, abi.encodePacked(hex"ef0100", address(0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B)));
+        hevm.expectRevert(bytes("MAINNET: BLOCH_INC_CODE"));
+        script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+        // Any contract code at that address, even pinned exactly, is refused: only the plain account is pinned.
+        hevm.etch(OWNER_FEE_EOA, BLOCH_INC_CODE);
+        s.blochIncCodeHash = keccak256(BLOCH_INC_CODE);
+        hevm.expectRevert(bytes("MAINNET: BLOCH_INC_CODE"));
+        script.execute(MAINNET_LIKE_CHAIN, false, s, p);
+        // Another address without code is still refused (the multisig rule is unchanged for it).
+        hevm.etch(OWNER_FEE_EOA, "");
+        (s.blochInc, s.blochIncCodeHash) = (address(uint160(OWNER_FEE_EOA) + 1), EMPTY);
         hevm.expectRevert(bytes("MAINNET: BLOCH_INC_CODE"));
         script.execute(MAINNET_LIKE_CHAIN, false, s, p);
     }

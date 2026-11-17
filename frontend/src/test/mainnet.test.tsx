@@ -1,6 +1,6 @@
-import { act, render, renderHook, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -48,6 +48,10 @@ import { HOLD_TOKEN_ABI, HOLD_VAULT_ABI, readBridgeHold } from '../mainnet/bridg
 import { contentSecurityPolicy } from '../mainnet/headers';
 import feeRefusal from './fixtures/sequencer-fee-error.json';
 import networkJson from '../../../deployments/mainnet/frontend.network.json';
+import { UNCONFIRMED } from '../multichain/rpc';
+import { renewalClock } from '../ui/snapshot-renewal';
+
+const realClock = { ...renewalClock };
 import type { Provider } from '../wallet';
 
 const BUSDC = '0x1b7c0fb59f34683cd9214566636e63a0f7e092f6' as Address;
@@ -152,6 +156,8 @@ type ChainState = {
   accessList?: (call: Record<string, unknown>) => unknown;
   /** eth_getStorageAt reply for a touched key. */
   storageAt?: (address: string, key: string) => string;
+  /** This many lens quotes pinned to a block are refused as a second endpoint would (UNCONFIRMED). */
+  quoteRefusals?: number;
 };
 
 const fakeState: { current: ChainState | null } = { current: null };
@@ -268,6 +274,10 @@ function fakeChain(change: Partial<ChainState> = {}): { rpc: Rpc; state: ChainSt
           if (name === 'bestExactInput') {
             const [amountIn, routes, slippageBps] = call.args as [bigint, Address[][], bigint];
             const latest = params[1] === 'latest';
+            if (!latest && state.quoteRefusals) {
+              state.quoteRefusals--;
+              throw new Error(UNCONFIRMED);
+            }
             const active = (latest && state.latestQuote) || state.quote;
             // Like BDexLens.sol: the minimum follows the requested tolerance. The page refuses a
             // quote whose minimum is not amountOut * (10000 - bps) / 10000 (agent 176, M2), so a
@@ -755,6 +765,107 @@ describe('mainnet route', () => {
     expect(requests).toHaveLength(0);
   });
 
+  // Review 318: the token sheet of the swap card must be the select by another face.
+  describe('token sheet of the swap card', () => {
+    const flow = async (choose: 'select' | 'sheet') => {
+      const user = userEvent.setup();
+      const { rpc, state } = fakeChain();
+      const calls: string[] = [];
+      const logged: Rpc = (method, params) => {
+        calls.push(stableJson([method, params]));
+        return rpc(method, params);
+      };
+      const { wallet, requests } = fakeWallet(state);
+      const view = render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={logged}
+          wallet={wallet}
+          planned={PLANNED}
+        />,
+      );
+      await screen.findByLabelText('Finalized balances');
+      const before = calls.length;
+      if (choose === 'select') {
+        await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+        await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+      } else {
+        await user.click(screen.getByTestId('token-chip-pay'));
+        await user.click(await screen.findByRole('button', { name: 'Choose bUSDC' }));
+        await user.click(screen.getByTestId('token-chip-receive'));
+        await user.click(await screen.findByRole('button', { name: 'Choose BLCH' }));
+      }
+      const selected = {
+        pay: (screen.getByLabelText('You pay') as HTMLSelectElement).value,
+        receive: (screen.getByLabelText('You receive') as HTMLSelectElement).value,
+      };
+      await user.type(screen.getByLabelText('Amount'), '10');
+      await user.click(screen.getByRole('button', { name: 'Get quote' }));
+      const quote = (await screen.findByLabelText('Quote')).textContent;
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Get quote' }).getAttribute('aria-busy'),
+        ).toBeNull(),
+      );
+      const approve = await screen.findByRole('button', { name: /^Approve 10 bUSDC/ });
+      await user.click(approve);
+      await waitFor(() => expect(requests.length).toBeGreaterThan(0));
+      const result = {
+        selected,
+        quote,
+        rpc: calls.slice(before),
+        wallet: stableJson(requests),
+      };
+      view.unmount();
+      localStorage.clear();
+      return result;
+    };
+
+    it('passes the same token keys and causes the same RPC and wallet calls as the select', async () => {
+      const bySelect = await flow('select');
+      const bySheet = await flow('sheet');
+      expect(bySheet.selected).toEqual(bySelect.selected);
+      expect(bySheet.selected.pay.toLowerCase()).toBe(BUSDC);
+      expect(bySheet.quote).toBe(bySelect.quote);
+      expect(bySheet.rpc).toEqual(bySelect.rpc);
+      expect(bySheet.wallet).toBe(bySelect.wallet);
+      expect(bySelect.rpc.length).toBeGreaterThan(0);
+    });
+
+    it('lists exactly the options of the select and marks a read in progress on Get quote', async () => {
+      const user = userEvent.setup();
+      const { rpc, state } = fakeChain();
+      const { wallet } = fakeWallet(state);
+      render(
+        <MainnetLive
+          network={network}
+          load={async () => ({ status: 'live', deployment })}
+          rpc={rpc}
+          wallet={wallet}
+          planned={PLANNED}
+        />,
+      );
+      await screen.findByLabelText('Finalized balances');
+      const options = [...(screen.getByLabelText('You pay') as HTMLSelectElement).options].map(
+        (o) => o.textContent,
+      );
+      await user.click(screen.getByTestId('token-chip-pay'));
+      const dialog = await screen.findByRole('dialog');
+      expect(
+        within(dialog)
+          .getAllByRole('button', { name: /^Choose / })
+          .map((b) => b.getAttribute('aria-label')),
+      ).toEqual(options.map((o) => `Choose ${o}`));
+      await user.click(within(dialog).getByRole('button', { name: 'Close dialog' }));
+      await user.type(screen.getByLabelText('Amount'), '1');
+      const button = screen.getByRole('button', { name: 'Get quote' });
+      await user.click(button);
+      await waitFor(() => expect(button.getAttribute('aria-busy')).toBeNull());
+      expect(button.textContent).toBe('Get quote');
+    });
+  });
+
   it('blocks a swap above the finalized balance and refuses out-of-range settings', async () => {
     const user = userEvent.setup();
     const { rpc, state } = fakeChain();
@@ -852,6 +963,11 @@ describe('mainnet route', () => {
       expect(screen.getByLabelText('Quote').textContent).toContain(
         'Latest block 500, not finalized',
       );
+      // Review R309-UI-2: once reconfirmed, "Quoted at" is one of the rows shown without a click.
+      const quotedAt = within(screen.getByLabelText('Quote')).getByText('Quoted at');
+      expect(quotedAt.className).toBe('glance');
+      expect((quotedAt.nextElementSibling as HTMLElement).className).toBe('glance');
+      expect(quotedAt.nextElementSibling!.textContent).toContain('you reconfirmed this price');
       expect(screen.queryByLabelText('Stale quote')).toBeNull();
       expect(swap.disabled).toBe(false);
       await user.click(swap);
@@ -2245,6 +2361,48 @@ describe('swap panel safety fixes', () => {
       first.view.unmount();
       const again = await mount(chain, state);
       const recovery = await screen.findByLabelText('Recover transaction tracking');
+      // Review R309-UI-1 and the hold ruling: in the document (and so in focus order) the tracked transaction and
+      // the recovery controls come before the old quote and the disabled Swap; what must be read is outside the
+      // disclosures, the explanations are inside them, and no sentence is lost.
+      const before = (a: Element, b: Element) =>
+        !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      const tracked = screen.getByLabelText('Transactions');
+      expect(before(tracked, recovery)).toBe(true);
+      expect(before(recovery, screen.getByRole('button', { name: 'Swap' }))).toBe(true);
+      const hidden = (root: HTMLElement) =>
+        [...root.querySelectorAll('.disclosure-clip .disclosure-region')]
+          .map((r) => r.textContent)
+          .join(' ');
+      const shown = (root: HTMLElement) => {
+        const copy = root.cloneNode(true) as HTMLElement;
+        copy.querySelectorAll('.disclosure-clip .disclosure-region').forEach((r) => r.remove());
+        return copy.textContent ?? '';
+      };
+      for (const text of [
+        'Do not resend with a new nonce; Swap stays disabled until the outcome is known.',
+        'The hold ends by itself once the swap deadline has passed in a finalized block.',
+        'Saved deadline',
+      ])
+        expect(shown(tracked)).toContain(text);
+      expect(hidden(tracked)).toContain('makes a block only when it has work');
+      expect(shown(tracked)).not.toContain('makes a block only when it has work');
+      for (const text of [
+        'Time passing or an empty explorer result cannot clear the hold.',
+        'Nothing else on this page clears a hold.',
+        'its deadline passing in a finalized block',
+        'Check transaction hash',
+        'Check cancellation or replacement',
+      ])
+        expect(shown(recovery)).toContain(text);
+      for (const text of [
+        'This check only restores tracking after matching the saved sender, destination, call, value and nonce. It never sends or replaces a transaction.',
+        'Another transaction at the same nonce does not release it, because an open wallet request could still be signed at another nonce.',
+        'For an approval or a skim your wallet never signed, send any other transaction from this account, paste its hash and use the replacement check.',
+        'Only a canonical finalized receipt at the original sender and nonce can establish that the original request cannot execute. This check makes no wallet request.',
+      ])
+        expect(hidden(recovery).replace(/\s+/g, ' ')).toContain(text);
+      expect(within(recovery).getByRole('button', { name: 'What can I do?' })).toBeTruthy();
+      expect(within(tracked).getByRole('button', { name: 'Why is this waiting?' })).toBeTruthy();
       const input = within(recovery).getByLabelText('Transaction hash from wallet activity');
       const check = within(recovery).getByRole('button', { name: 'Check transaction hash' });
       state.transactions.set(HASH, {
@@ -3138,5 +3296,309 @@ describe('new-slot priority fee on the page (round-12 task 259)', () => {
     expect(attempted[1]).toEqual(attempted[0]);
     expect(BigInt(attempted[1].maxPriorityFeePerGas as string)).toBe(5_275_779_377n);
     expect(attempted[1]).toHaveProperty('nonce', '0x0');
+  });
+});
+
+// Agent 327: the timed renewal of the snapshot block (326's answer to review R328-5) remounts the swap card. On a
+// network that passes `snapshotMaxAgeMs` the card keeps what the user typed, where the cursor was and what was
+// open, and reads its quote again at the new block by the unchanged getQuote(); a held swap pauses the renewal.
+describe('renewed snapshot block and the swap form', () => {
+  const page = (rpc: Rpc, wallet: Devnet4Wallet, snapshotMaxAgeMs?: number) =>
+    render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => NOW_MS}
+        snapshotMaxAgeMs={snapshotMaxAgeMs}
+      />,
+    );
+  // The snapshot's age and the time since the last edit are read from `renewalClock`, which these cases move by
+  // hand (`age`), so a loaded machine cannot renew a card in the middle of a step; the checks run every 50 ms.
+  const BOUND = 400;
+  let clock = 0;
+  let wall = 0;
+  const age = (ms: number) => {
+    clock += ms;
+    wall += ms;
+  };
+  beforeEach(() => {
+    clock = 0;
+    wall = 0;
+    renewalClock.now = () => clock;
+    renewalClock.wall = () => wall;
+  });
+  afterEach(() => {
+    Object.assign(renewalClock, realClock);
+  });
+  const fill = async (user: ReturnType<typeof userEvent.setup>) => {
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'wGSMH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    expect((await screen.findByLabelText('Quote')).textContent).toContain('Finalized block 440');
+  };
+
+  // Round 18 (agent 361, R328-3P-2): the case 327 wrote here ("keeps the inputs, the cursor and the open details,
+  // and quotes again at the new block") let the timed renewal replace a quote on screen under the user. The rule
+  // now (326's R328-3P-2 text, R344-UI-5 (1)) is that a quote on screen is never renewed under the user; a quote
+  // past the age bound is renewed by the Swap or Get quote press instead. The old properties stay covered, each in
+  // the case named: inputs, cursor and open section across a background renewal (first case); inputs, open quote
+  // details, a quote read again at the NEW block through the same reads as a click, nothing sent (second case).
+  const pinnedQuotes = (state: ChainState, hash: string) =>
+    state.sent.filter(
+      (s) =>
+        s.method === 'eth_call' &&
+        JSON.stringify(s.params[1]) === JSON.stringify({ blockHash: hash }) &&
+        (() => {
+          try {
+            return (
+              decodeFunctionData({
+                abi: LENS_ABI,
+                data: (s.params[0] as { data: Hex }).data,
+              }).functionName === 'bestExactInput'
+            );
+          } catch {
+            return false;
+          }
+        })(),
+    ).length;
+  const sends = (requests: { method: string }[]) =>
+    requests.filter((r) => r.method === 'eth_sendTransaction');
+
+  it('background renewal past the bound keeps the inputs, the cursor and the open settings (no quote on screen)', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain();
+    const { wallet, requests } = fakeWallet(state);
+    page(rpc, wallet, BOUND);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'wGSMH');
+    await user.click(screen.getByRole('button', { name: /^Settings/ }));
+    await user.type(screen.getByLabelText('Amount'), '1');
+    const amount = screen.getByLabelText('Amount') as HTMLInputElement;
+    expect(document.activeElement).toBe(amount);
+    // The chain moves on; the next renewal reads the new block once the user has stopped typing.
+    state.finalizedBlock = INCLUDED;
+    age(BOUND / 2);
+    await new Promise((r) => setTimeout(r, 500));
+    // Not yet past the bound: no renewal.
+    expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 440');
+    expect(screen.getByLabelText('Amount')).toBe(amount);
+    age(BOUND);
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    const again = screen.getByLabelText('Amount') as HTMLInputElement;
+    expect(again).not.toBe(amount); // a new card
+    expect(again.value).toBe('1');
+    expect(document.activeElement).toBe(again);
+    expect((screen.getByLabelText('You pay') as HTMLSelectElement).selectedOptions[0].text).toBe(
+      'bUSDC',
+    );
+    expect(
+      (screen.getByLabelText('You receive') as HTMLSelectElement).selectedOptions[0].text,
+    ).toBe('wGSMH');
+    expect(
+      screen.getByRole('button', { name: /^Settings/ }).getAttribute('aria-expanded'),
+    ).toBe('true');
+    // No quote was on screen, none is asked by itself; nothing reached the wallet.
+    expect(screen.queryByLabelText('Quote')).toBeNull();
+    expect(pinnedQuotes(state, INCLUDED.hash)).toBe(0);
+    expect(sends(requests)).toHaveLength(0);
+  });
+
+  it('never renews under a user who is typing: the pause ends 10 s (here half the bound) after the last edit (R364-9)', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet, BOUND);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    state.finalizedBlock = INCLUDED;
+    // The user types while the snapshot is not yet due (age 300 of 400; the clock moves only by hand) ...
+    age(300);
+    await user.type(screen.getByLabelText('Amount'), '1');
+    const amount = screen.getByLabelText('Amount');
+    // ... then the snapshot passes the bound 120 ms after that edit (the pause is 200 ms): the renewal waits.
+    age(120);
+    await new Promise((r) => setTimeout(r, 600));
+    expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 440');
+    expect(screen.getByLabelText('Amount')).toBe(amount);
+    // Still typing (100 ms after the next edit): still no renewal.
+    await user.type(screen.getByLabelText('Amount'), '2');
+    age(100);
+    await new Promise((r) => setTimeout(r, 600));
+    expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 440');
+    expect(screen.getByLabelText('Amount')).toBe(amount);
+    // The user stops: once the pause has passed since the last edit, it renews; the typed amount survives.
+    age(150);
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('12');
+  });
+
+  it('counts the age by the wall clock too: a device that slept renews when shown again (R364-7)', async () => {
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet, 60_000);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    state.finalizedBlock = INCLUDED;
+    // The monotonic clock stood still through a sleep of ten minutes; the wall clock did not.
+    wall += 600_000;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    // And the wall clock set back does not make the snapshot look new: the monotonic age still counts.
+    cleanup();
+    const second = fakeChain();
+    page(second.rpc, fakeWallet(second.state).wallet, 60_000);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    second.state.finalizedBlock = INCLUDED;
+    clock += 600_000;
+    wall -= 3_600_000;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+  });
+
+  it('never renews a quote on screen by itself; Swap on a quote past the bound renews, quotes again and sends nothing', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain({ allowance: 10n ** 30n });
+    const { wallet, requests } = fakeWallet(state);
+    page(rpc, wallet, BOUND);
+    await fill(user);
+    await user.click(screen.getByRole('button', { name: 'All quote details' }));
+    state.finalizedBlock = INCLUDED;
+    // Several bounds pass with the quote on screen: no renewal, no read at the new block.
+    age(10 * BOUND);
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 440');
+    expect(screen.getByLabelText('Quote')).toBeTruthy();
+    expect(pinnedQuotes(state, INCLUDED.hash)).toBe(0);
+    // The press on Swap renews first (the snapshot is past the bound): nothing reaches the wallet.
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    expect((await screen.findByLabelText('Quote')).textContent).toContain('bUSDC → BLCH → wGSMH');
+    await waitFor(() => expect(pinnedQuotes(state, INCLUDED.hash)).toBeGreaterThan(0));
+    expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('1');
+    expect(screen.getByRole('button', { name: 'Fewer quote details' })).toBeTruthy();
+    expect(screen.getByTestId('renewal-note').textContent).toContain('Nothing was sent');
+    expect(sends(requests)).toHaveLength(0);
+  });
+
+  it('Get quote on a snapshot past the bound reads a newer block first and quotes only there', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet, BOUND);
+    await fill(user); // a quote on screen: the background renewal waits
+    state.finalizedBlock = INCLUDED;
+    age(2 * BOUND);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 440');
+    const atOld = pinnedQuotes(state, FINALIZED.hash);
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    await waitFor(() => expect(pinnedQuotes(state, INCLUDED.hash)).toBeGreaterThan(0));
+    // Not one more quote at the old block after the press.
+    expect(pinnedQuotes(state, FINALIZED.hash)).toBe(atOld);
+    expect(screen.getByTestId('renewal-note').textContent).toContain(
+      'read a newer block before quoting',
+    );
+  });
+
+  it('a quote refused as UNCONFIRMED is asked again once at a newer block, and a second refusal is shown', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain({ quoteRefusals: 1 });
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet, 60_000);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'wGSMH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    state.finalizedBlock = INCLUDED;
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    expect((await screen.findByLabelText('Quote')).textContent).toContain('bUSDC → BLCH → wGSMH');
+    expect(state.quoteRefusals).toBe(0);
+    expect(screen.getByTestId('renewal-note').textContent).toContain('could not confirm');
+
+    // Twice refused: one renewal, then the refusal stays on screen (no loop).
+    cleanup();
+    const second = fakeChain({ quoteRefusals: 2 });
+    page(second.rpc, fakeWallet(second.state).wallet, 60_000);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'wGSMH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    second.state.finalizedBlock = INCLUDED;
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await waitFor(() => expect(second.state.quoteRefusals).toBe(0), { timeout: 15000 });
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    expect(await screen.findByText(/could not confirm this read/, {}, { timeout: 15000 })).toBeTruthy();
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(
+      pinnedQuotes(second.state, FINALIZED.hash) + pinnedQuotes(second.state, INCLUDED.hash),
+    ).toBe(2);
+    expect(screen.queryByLabelText('Quote')).toBeNull();
+  });
+
+  it('after a mined swap the form starts empty (R344-UI-6), with the renewal on', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain({ allowance: 10n ** 30n });
+    const { wallet, requests } = fakeWallet(state);
+    page(rpc, wallet, 60_000);
+    await fill(user);
+    await user.click(screen.getByRole('button', { name: 'Swap' }));
+    await waitFor(() => expect(sends(requests)).toHaveLength(1));
+    // The fake receipt is mined at block 442; the end of the hold renews the snapshot.
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('');
+    expect(screen.queryByLabelText('Quote')).toBeNull();
+    // Swap is not offered on an empty form (absent or disabled).
+    const again = screen.queryByRole('button', { name: 'Swap' });
+    expect(again === null || again.hasAttribute('disabled')).toBe(true);
+    expect(sends(requests)).toHaveLength(1);
+  }, 30_000);
+
+  it('without the timer (the Bloch L2) a new block empties the form, as before', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet);
+    await fill(user);
+    state.finalizedBlock = INCLUDED;
+    await user.click(screen.getAllByRole('button', { name: 'Refresh' })[0]);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+    );
+    expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('');
+    expect(screen.queryByLabelText('Quote')).toBeNull();
   });
 });

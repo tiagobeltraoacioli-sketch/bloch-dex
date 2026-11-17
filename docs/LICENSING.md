@@ -95,17 +95,14 @@ integrated.
 
 This is an owner matter (cost and terms), listed in the round's report.
 
-## 5. The one value to fill
+## 5. The copyright holder (filled)
 
-The copyright holder's name is written as `TBD-owner` in seven files. Replace it by the legal name of the person
-or company that owns the code (one command, from the repository's root; put the name in place of `LEGAL NAME`):
-
-```
-grep -rl "TBD-owner" LICENSE NOTICE LICENSES/MIT.txt frontend/LICENSE scripts/LICENSE script/LICENSE test/LICENSE | xargs sed -i '' 's/TBD-owner/LEGAL NAME/'
-```
-
-The lines it changes read `Copyright (c) 2026 TBD-owner` (MIT) and `Copyright (C) 2026 TBD-owner` (GPL notice
-and NOTICE). The year 2026 is the year of the first commit (2026-09-08) and of every later one.
+Owner decision of 2026-11-17: the copyright holder is **Bloch Inc.** Every file that names the holder carries the
+exact line `Copyright (c) 2026 Bloch Inc.`: `LICENSE` (the GPL notice of the changes and the MIT text), `NOTICE`,
+`LICENSES/MIT.txt`, `frontend/LICENSE`, `scripts/LICENSE`, `script/LICENSE`, `test/LICENSE` (the placeholder
+`TBD-owner` is gone from all seven; the kit test "licensing: ..." in `scripts/multichain/multichain.test.mjs` checks
+both). The licences themselves are unchanged. The year 2026 is the year of the first commit (2026-09-08) and of every
+later one.
 
 ## 6. For a lawyer to confirm
 

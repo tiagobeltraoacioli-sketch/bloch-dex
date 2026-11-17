@@ -228,3 +228,27 @@ test("Safe preflight pins chain, genesis, bootstrap nonce and empty planned addr
   assert.throws(() => parseSafeArgs(["plan"]), /--config is required/);
   assert.throws(() => parseSafeArgs(["plan", "--config", "a", "--config", "b"]), /given twice/);
 });
+
+test("the mainnet gate accepts the owner's plain fee address as Bloch Inc only exactly, and without a Safe plan", () => {
+  const OWNER = "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544";
+  const EMPTY = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+  const gate = {
+    schemaVersion: 2,
+    chain: { id: 700770, genesisHash: PINS.l2.genesisHash },
+    deployment: { feeTo: OWNER, roles: { blochInc: { address: OWNER, codeHash: EMPTY } } },
+  };
+  assert.equal(checkPinned(gate, null), true);
+  for (const [change, safePlan, pattern] of [
+    [() => {}, safePlanFixture(), /do not pass a Safe plan/],
+    [(g) => { g.deployment.feeTo = addr("a"); }, null, /fee recipient is not the owner's plain fee address/],
+    [(g) => { g.deployment.roles.blochInc.codeHash = hash("7"); }, null, /not exactly the owner's plain fee address with no code/],
+    [(g) => { g.deployment.roles.blochInc.safe = {}; }, null, /not exactly the owner's plain fee address/],
+    [(g) => { g.chain.genesisHash = hash("9"); }, null, /not the pinned/],
+    // Any other plain address is still checked against a Safe plan, and there is none.
+    [(g) => { g.deployment.roles.blochInc.address = addr("e"); g.deployment.feeTo = addr("e"); }, null, /not for the pinned mainnet/],
+  ]) {
+    const copy = structuredClone(gate);
+    change(copy);
+    assert.throws(() => checkPinned(copy, safePlan), pattern);
+  }
+});

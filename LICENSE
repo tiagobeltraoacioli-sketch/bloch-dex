@@ -18,7 +18,7 @@ this statement and does not change it: where that line and this file differ, thi
 sources are frozen byte for byte for the deployments in progress; the header lines are corrected at the next
 revision of the contracts.) Copyright in the changes and additions made in this repository:
 
-  Copyright (C) 2026 TBD-owner
+  Copyright (c) 2026 Bloch Inc.
 
   This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
   Public License as published by the Free Software Foundation, either version 3 of the License, or (at your
@@ -34,7 +34,7 @@ Everything else in this repository:
 
 MIT License
 
-Copyright (c) 2026 TBD-owner
+Copyright (c) 2026 Bloch Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 associated documentation files (the "Software"), to deal in the Software without restriction, including

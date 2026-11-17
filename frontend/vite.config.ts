@@ -1,6 +1,7 @@
 import { loadEnv } from 'vite';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { siteMeta } from './site-meta';
 
 const env =
   (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
@@ -14,6 +15,10 @@ const mainnetNetwork =
   env.POSTERN_MAINNET_NETWORK ?? committed('../deployments/mainnet/frontend.network.json');
 const mainnetRecord =
   env.POSTERN_MAINNET_RECORD ?? committed('../deployments/mainnet/dex-mainnet.record.json');
+
+// Bridge page inputs (src/bridge/bundle.ts): the committed interface files by default; POSTERN_BRIDGE_BUNDLE points
+// a local render check at one JSON file of the same shape with `rehearsal: true` (loopback stand-ins).
+const bridgeBundle = env.POSTERN_BRIDGE_BUNDLE ?? committed('./src/bridge/bundle.ts');
 
 // Devnet4 live route: the Bloch L2 settled RPC sends no CORS headers, so the
 // dev and preview servers forward /devnet4-rpc to it (normally an SSH tunnel
@@ -45,10 +50,12 @@ const RENDER_OVERRIDES = [
   'POSTERN_MAINNET_RECORD',
   'VITE_MAINNET_RPC_URL',
   'VITE_BRIDGE_ETH_RPC_URL',
+  'POSTERN_BRIDGE_BUNDLE',
 ];
 
 export default defineConfig(({ command, mode }) => ({
-  plugins: [react()],
+  // POSTERN_SITE_URL: the https URL the build is published at (social-preview tags; see site-meta.ts).
+  plugins: [react(), siteMeta(env.POSTERN_SITE_URL)],
   define: {
     __POSTERN_LOCAL_RENDER__: JSON.stringify(
       command === 'serve' ||
@@ -62,6 +69,7 @@ export default defineConfig(({ command, mode }) => ({
       '@postern/mainnet-record': mainnetRecord,
       // Only src/multichain imports it (the multichain site and its tests; not part of this site's bundle).
       '@postern/multichain-bundle': committed('./src/multichain/bundle.ts'),
+      '@postern/bridge-bundle': bridgeBundle,
     },
   },
   server: {
@@ -73,8 +81,11 @@ export default defineConfig(({ command, mode }) => ({
         '../deployments/networks.json',
         '../deployments/devnet4/mainnet-procedure-2pairs-20261016',
         '../deployments/mainnet',
+        // Per-chain files, read by name for the network switcher (src/shell/chain-index.ts).
+        '../deployments',
         mainnetNetwork,
         mainnetRecord,
+        bridgeBundle,
       ],
     },
     proxy: devnet4Proxy,

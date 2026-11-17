@@ -1,0 +1,755 @@
+/* The bridge route. Tokens only (tokens.css): no colour, radius, shadow, type size or spacing of its own.
+   Phone first; the two-column reading layout starts at 1000px. */
+.bridge-page {
+  display: grid;
+  gap: var(--s-5);
+  justify-items: center;
+}
+.bridge-page > * {
+  width: 100%;
+  min-width: 0;
+}
+.bridge-heading {
+  max-width: 640px;
+  text-align: center;
+  display: grid;
+  gap: var(--s-2);
+  justify-items: center;
+}
+.bridge-heading h1 {
+  font-family: var(--font-display);
+  font-size: var(--text-display);
+  font-weight: 450;
+}
+.bridge-hero {
+  max-width: 560px;
+}
+.bridge-card {
+  display: grid;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border-radius: var(--r-4);
+}
+.bridge-direction {
+  justify-self: center;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Network picker: every network on screen with its state; none is hidden behind a menu. */
+.bridge-networks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: var(--s-2);
+}
+.bridge-network {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: 'tile name' 'tile asset' 'state state';
+  align-items: center;
+  gap: 0 var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-2);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.bridge-network:hover {
+  border-color: var(--control-border);
+}
+.bridge-network[aria-checked='true'] {
+  border-color: var(--net);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--net);
+}
+.bridge-network:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.bridge-network .network-tile {
+  grid-area: tile;
+}
+.bridge-network-name {
+  grid-area: name;
+  font-size: var(--text-ui);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bridge-network-asset {
+  grid-area: asset;
+  color: var(--text-2);
+  font-size: var(--text-micro);
+}
+.bridge-network-state {
+  grid-area: state;
+  margin-top: var(--s-1);
+  color: var(--text-2);
+  font-size: var(--text-micro);
+  font-weight: 600;
+}
+.bridge-network-state[data-state='live'] {
+  color: var(--ok);
+}
+.bridge-network-state[data-state='not-available-yet'],
+.bridge-network-state[data-state='unreadable'] {
+  color: var(--warn);
+}
+
+/* The two legs and the gate between them. */
+.bridge-legs {
+  display: grid;
+}
+.bridge-leg {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'caption caption' 'amount token';
+  align-items: center;
+  gap: 0 var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  background: var(--surface-2);
+  transition: border-color var(--t-fast) var(--ease);
+}
+.bridge-leg:focus-within {
+  border-color: var(--control-border);
+}
+.bridge-leg-caption {
+  grid-area: caption;
+  color: var(--text-2);
+  font-size: var(--text-small);
+}
+.bridge-leg-amount {
+  grid-area: amount;
+  min-width: 0;
+  font-size: var(--text-numeral);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bridge-leg-amount .amount-input {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+}
+.bridge-leg-amount .amount-input:focus-visible {
+  outline: none;
+}
+.bridge-leg-amount[data-empty] {
+  color: var(--text-3);
+}
+.bridge-leg-token {
+  grid-area: token;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 40px;
+  padding: 0 var(--s-3) 0 var(--s-1);
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-arch);
+  background: var(--surface);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.bridge-gate {
+  display: grid;
+  place-items: center;
+  justify-self: center;
+  border: 1px solid var(--line-strong);
+  color: var(--net);
+  z-index: 1;
+}
+.bridge-card[data-direction='exit'] .bridge-gate .gate-glyph {
+  transform: rotate(180deg);
+}
+.bridge-asset-mark {
+  position: relative;
+  display: inline-grid;
+}
+.bridge-asset-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  display: grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 2px;
+  border-radius: var(--r-1);
+  background: var(--tile);
+  box-shadow: 0 0 0 1px var(--surface);
+  color: var(--net-bright);
+  font-size: var(--text-micro);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.bridge-field {
+  display: grid;
+  gap: var(--s-1);
+  margin: 0;
+}
+.bridge-address {
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+}
+.bridge-flow,
+.bridge-action,
+.bridge-instruction {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.bridge-primary {
+  width: 100%;
+  min-height: 56px;
+  border-radius: var(--r-3);
+  font-size: var(--text-body);
+}
+.bridge-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.bridge-signers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+/* Panels: required text, with a tone rail, an icon and a title. Never collapsed. */
+.bridge-panel {
+  --tone: var(--info);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid color-mix(in srgb, var(--tone) 36%, var(--line));
+  border-left: 3px solid var(--tone);
+  border-radius: var(--r-1) var(--r-2) var(--r-2) var(--r-1);
+  background: color-mix(in srgb, var(--tone) 7%, var(--surface));
+  color: var(--text);
+  font-size: var(--text-ui);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.bridge-panel[data-tone='warn'],
+.bridge-panel[data-tone='action'] {
+  --tone: var(--warn);
+}
+.bridge-panel[data-tone='danger'] {
+  --tone: var(--danger);
+}
+.bridge-panel[data-tone='ok'] {
+  --tone: var(--ok);
+}
+.bridge-panel-title {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  margin: 0 0 var(--s-1);
+  font-weight: 600;
+}
+.bridge-panel-title svg {
+  flex: none;
+  margin-top: 3px;
+  color: var(--tone);
+}
+.bridge-panel-body {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.bridge-panel-body p {
+  margin: 0;
+}
+.bridge-panel-body .button {
+  justify-self: start;
+}
+.bridge-reasons,
+.bridge-steps {
+  margin: 0;
+  padding-left: var(--s-5);
+  display: grid;
+  gap: var(--s-1);
+}
+.bridge-steps li[data-done] {
+  color: var(--text-2);
+}
+.bridge-break {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+}
+.bridge-prose {
+  text-align: left;
+}
+/* Required text of every exit (visible by default): where an exit may go. */
+.bridge-own-wallet {
+  margin: 0;
+  padding: var(--s-1) var(--s-2);
+  border-left: 3px solid var(--line-strong);
+  color: var(--text);
+  font-size: var(--text-small);
+}
+
+/* The reading column under the card. */
+.bridge-details {
+  display: grid;
+  gap: var(--s-4);
+  max-width: 640px;
+}
+.bridge-details > *,
+.bridge-activity,
+.bridge-tokens {
+  min-width: 0;
+}
+.bridge-page > .bridge-panel {
+  max-width: 640px;
+}
+.bridge-block {
+  padding: var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  background: var(--surface);
+}
+.bridge-block h3,
+.bridge-risks h3 {
+  margin: 0 0 var(--s-3);
+  font-size: var(--text-lead);
+  font-weight: 600;
+}
+.bridge-lines {
+  margin: 0;
+  display: grid;
+}
+.bridge-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--s-1) var(--s-4);
+  padding: var(--s-2) 0;
+  border-top: 1px solid var(--line);
+  align-items: baseline;
+}
+.bridge-line:first-child {
+  border-top: 0;
+}
+.bridge-line dt {
+  color: var(--text-2);
+  font-size: var(--text-ui);
+}
+.bridge-line dd {
+  margin: 0;
+  max-width: 100%;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.bridge-line[data-kind='receive'] dd {
+  font-size: var(--text-lead);
+  font-weight: 600;
+}
+.bridge-line[data-kind='receive'] dt {
+  color: var(--text);
+  font-weight: 600;
+}
+.bridge-line-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-small);
+  line-height: 1.5;
+}
+.bridge-total {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0 0 var(--s-3);
+}
+.bridge-waits {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+}
+.bridge-waits li {
+  position: relative;
+  display: grid;
+  gap: var(--s-1);
+  padding: 0 0 var(--s-4) var(--s-5);
+}
+.bridge-waits li::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-arch);
+  background: var(--net);
+}
+.bridge-waits li::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  top: 18px;
+  bottom: 0;
+  width: 2px;
+  background: var(--line-strong);
+}
+.bridge-waits li:last-child {
+  padding-bottom: 0;
+}
+.bridge-waits li:last-child::after {
+  display: none;
+}
+.bridge-wait-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--s-1) var(--s-3);
+  font-weight: 600;
+}
+.bridge-wait-time {
+  font-variant-numeric: tabular-nums;
+}
+.bridge-wait-detail {
+  color: var(--text-2);
+  font-size: var(--text-small);
+  line-height: 1.5;
+}
+.bridge-risks {
+  display: grid;
+  gap: var(--s-2);
+}
+.bridge-risks h3 {
+  margin-bottom: var(--s-1);
+}
+
+/* Status cards. */
+.bridge-activity {
+  display: grid;
+  gap: var(--s-3);
+  max-width: 640px;
+}
+.bridge-activity-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.bridge-activity-head h2,
+.bridge-activity-head h3,
+.bridge-tokens h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  font-weight: 450;
+}
+.bridge-status {
+  --tone: var(--info);
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-3);
+  background: var(--surface);
+  min-width: 0;
+}
+.bridge-status[data-tone='ok'] {
+  --tone: var(--ok);
+}
+.bridge-status[data-tone='warn'],
+.bridge-status[data-tone='action'] {
+  --tone: var(--warn);
+}
+.bridge-status[data-tone='danger'] {
+  --tone: var(--danger);
+}
+.bridge-status-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.bridge-status-head h4 {
+  margin: 0;
+  font-size: var(--text-ui);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.bridge-status .state-pill {
+  border-color: var(--tone);
+  color: var(--tone);
+}
+.bridge-status-title {
+  margin: 0;
+  font-size: var(--text-lead);
+  font-weight: 600;
+}
+.bridge-status-body {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-ui);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.bridge-status-actions {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border-left: 3px solid var(--tone);
+  border-radius: var(--r-1);
+  background: color-mix(in srgb, var(--tone) 7%, var(--surface));
+}
+.bridge-status-action {
+  display: grid;
+  gap: var(--s-1);
+  justify-items: start;
+}
+.bridge-status-nothing {
+  margin: 0;
+}
+.bridge-timeline {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  margin: var(--s-1) 0;
+  padding: 0;
+  list-style: none;
+}
+.bridge-timeline li {
+  position: relative;
+  display: grid;
+  gap: var(--s-1);
+  justify-items: center;
+  text-align: center;
+  color: var(--text-3);
+  font-size: var(--text-micro);
+}
+.bridge-timeline li::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  left: -50%;
+  right: 50%;
+  height: 2px;
+  background: var(--line-strong);
+}
+.bridge-timeline li:first-child::before {
+  display: none;
+}
+.bridge-timeline li[data-step='done']::before,
+.bridge-timeline li[data-step='current']::before {
+  background: var(--ok);
+}
+.bridge-timeline-dot {
+  position: relative;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line-strong);
+  border-radius: var(--r-arch);
+  background: var(--surface);
+}
+.bridge-timeline li[data-step='done'] {
+  color: var(--text-2);
+}
+.bridge-timeline li[data-step='done'] .bridge-timeline-dot {
+  border-color: var(--ok);
+  background: var(--ok);
+}
+.bridge-timeline li[data-step='current'] {
+  color: var(--text);
+  font-weight: 600;
+}
+.bridge-timeline li[data-step='current'] .bridge-timeline-dot {
+  border-color: var(--tone);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tone) 22%, transparent);
+}
+.bridge-timeline li[data-step='current'][data-tone='wait'] .bridge-timeline-dot {
+  animation: bridge-wait 1.6s var(--ease) infinite;
+}
+@keyframes bridge-wait {
+  50% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--tone) 8%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bridge-timeline li[data-step='current'][data-tone='wait'] .bridge-timeline-dot {
+    animation: none;
+  }
+}
+
+/* Exact values. */
+.bridge-exact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'label label' 'value copy';
+  gap: var(--s-1) var(--s-2);
+  align-items: start;
+  padding: var(--s-2) var(--s-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-2);
+  background: var(--field);
+  min-width: 0;
+}
+.bridge-exact-label {
+  grid-area: label;
+  color: var(--text-2);
+  font-size: var(--text-micro);
+  font-weight: 600;
+}
+.bridge-exact code {
+  grid-area: value;
+  font-family: var(--font-mono);
+  font-size: var(--text-small);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  user-select: all;
+}
+.bridge-exact .copy-button {
+  grid-area: copy;
+}
+.bridge-verify summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.bridge-call {
+  display: grid;
+  gap: var(--s-2);
+}
+.bridge-call p {
+  margin: 0;
+}
+.bridge-accounts {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-small);
+}
+.bridge-accounts th,
+.bridge-accounts td {
+  padding: var(--s-1) var(--s-2);
+  border-top: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.bridge-accounts code {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+/* Wrapped tokens. */
+.bridge-tokens {
+  display: grid;
+  gap: var(--s-3);
+  max-width: 880px;
+}
+.bridge-token-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  background: var(--surface);
+}
+.bridge-token {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: 'mark names' 'mark what' 'mark address';
+  gap: var(--s-1) var(--s-3);
+  align-items: center;
+  padding: var(--s-3) var(--s-4);
+  border-top: 1px solid var(--line);
+}
+.bridge-token:first-child {
+  border-top: 0;
+}
+.bridge-token .bridge-asset-mark {
+  grid-area: mark;
+}
+.bridge-token-names {
+  grid-area: names;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-2);
+}
+.bridge-token-what {
+  grid-area: what;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-2);
+  font-size: var(--text-small);
+}
+.bridge-token-address {
+  grid-area: address;
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--text-small);
+  min-width: 0;
+}
+.bridge-token-address code {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 1000px) {
+  .bridge-details {
+    max-width: 1080px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  .bridge-risks {
+    grid-row: span 3;
+  }
+  .bridge-token {
+    grid-template-columns: auto minmax(160px, 1.2fr) minmax(0, 1fr) minmax(0, 1.6fr);
+    grid-template-areas: 'mark names what address';
+  }
+}
+@media (max-width: 640px) {
+  .bridge-card {
+    padding: var(--s-3);
+  }
+  .bridge-networks {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .bridge-leg {
+    padding: var(--s-3);
+  }
+  .bridge-timeline li {
+    font-size: var(--text-micro);
+  }
+}

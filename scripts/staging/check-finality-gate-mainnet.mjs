@@ -18,9 +18,9 @@
 //        --bridge-record <busdc.record.json> --rpc <own-node-url>
 
 import { readFile } from "node:fs/promises";
-import { createJsonRpcRequest, evaluateFinalityGate } from "./finality-gate.mjs";
+import { createJsonRpcRequest, evaluateFinalityGate, OWNER_FEE_EOA } from "./finality-gate.mjs";
 import { checkBridgeRecord, checkMainnetPolicy } from "./bridge-token-identity.mjs";
-import { SAFE_V141, stableJson } from "./dex-deploy-config.mjs";
+import { EMPTY_CODE_HASH, SAFE_V141, stableJson } from "./dex-deploy-config.mjs";
 import { isMain } from "./is-main.mjs";
 
 export const PINS = Object.freeze(
@@ -36,9 +36,18 @@ export function checkPinned(gate, safePlan, pins = PINS) {
   refuse(gate?.schemaVersion === 2, "the mainnet gate is schema 2");
   refuse(gate.chain?.id === pins.l2.chainId, `gate chain ${gate.chain?.id} is not ${pins.l2.chainId}`);
   refuse(gate.chain.genesisHash === pins.l2.genesisHash, `gate genesis ${gate.chain.genesisHash} is not the pinned ${pins.l2.genesisHash}`);
+  const pin = gate.deployment?.roles?.blochInc;
+  // Owner decision 2026-11-17: Bloch Inc may be the owner's pinned plain fee address instead of the Safe.
+  // Then there is no Safe plan: the pin must be exactly that address with the empty-code hash, and the fee
+  // recipient that address; a Safe plan given with it is refused (one Bloch Inc, never two).
+  if (pin?.address === OWNER_FEE_EOA) {
+    refuse(safePlan == null, "Bloch Inc is the owner's plain fee address: do not pass a Safe plan");
+    refuse(stableJson(pin) === stableJson({ address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH }), "the gate's Bloch Inc pin is not exactly the owner's plain fee address with no code");
+    refuse(gate.deployment.feeTo === OWNER_FEE_EOA, "the gate's fee recipient is not the owner's plain fee address");
+    return true;
+  }
   refuse(safePlan?.chain?.id === pins.l2.chainId && safePlan.chain.genesisHash === pins.l2.genesisHash && safePlan.chain.rehearsal === false,
     "the Safe plan is not for the pinned mainnet chain and genesis");
-  const pin = gate.deployment?.roles?.blochInc;
   refuse(pin && stableJson(pin) === stableJson(safePlan.blochInc), "the gate's Bloch Inc pin differs from the reviewed Safe plan");
   refuse(gate.deployment.feeTo === safePlan.contracts.proxy.address, "the gate's fee recipient is not the planned Safe");
   refuse(pin.codeHash === SAFE_V141.proxy && pin.codeHash === pins.safe.runtimeCodeHashes.SafeProxy, "the Safe proxy code is not the official v1.4.1 proxy");
@@ -68,7 +77,8 @@ export async function evaluateMainnetGate(gate, safePlan, request, bridgeTokens,
   const report = await evaluateFinalityGate(gate, request, { bridgeTokens });
   refuse(report.chainId === pins.l2.chainId && report.genesisHash === pins.l2.genesisHash, "the RPC is not the pinned chain");
   refuse(report.bridgeTokens?.length === gate.deployment.tokens.length, "a bridge token was not checked on chain");
-  return { ...report, pinned: { chainId: pins.l2.chainId, genesisHash: pins.l2.genesisHash, safe: safePlan.contracts.proxy.address } };
+  const blochInc = safePlan ? { safe: safePlan.contracts.proxy.address } : { ownerFeeAddress: OWNER_FEE_EOA };
+  return { ...report, pinned: { chainId: pins.l2.chainId, genesisHash: pins.l2.genesisHash, ...blochInc } };
 }
 
 /// `--bridge-plan P --bridge-record R`, once per bridged token, in pairs.
@@ -82,7 +92,7 @@ export async function readBridgeArgs(pairs) {
 
 if (isMain(import.meta.url)) {
   const args = process.argv.slice(2);
-  const usage = "Usage: node scripts/staging/check-finality-gate-mainnet.mjs --config <gate.json> --safe-plan <safe.plan.json> --bridge-plan <plan.json> --bridge-record <record.json> [--bridge-plan … --bridge-record …] --rpc <url>";
+  const usage = "Usage: node scripts/staging/check-finality-gate-mainnet.mjs --config <gate.json> [--safe-plan <safe.plan.json> (required unless Bloch Inc is the owner's plain fee address)] --bridge-plan <plan.json> --bridge-record <record.json> [--bridge-plan … --bridge-record …] --rpc <url>";
   const named = { config: [], "safe-plan": [], "bridge-plan": [], "bridge-record": [], rpc: [] };
   let ok = args.length % 2 === 0;
   for (let i = 0; ok && i < args.length; i += 2) {
@@ -90,14 +100,15 @@ if (isMain(import.meta.url)) {
     if (!Object.hasOwn(named, k) || args[i + 1] === undefined || args[i + 1].startsWith("--")) ok = false;
     else named[k].push(args[i + 1]);
   }
-  if (!ok || named.config.length !== 1 || named["safe-plan"].length !== 1 || named.rpc.length !== 1 ||
+  // --safe-plan is required unless Bloch Inc is the owner's plain fee address (checkPinned decides which).
+  if (!ok || named.config.length !== 1 || named["safe-plan"].length > 1 || named.rpc.length !== 1 ||
       named["bridge-plan"].length === 0 || named["bridge-plan"].length !== named["bridge-record"].length) {
     console.error(usage);
     process.exit(2);
   }
   try {
     const gate = JSON.parse(await readFile(named.config[0], "utf8"));
-    const safePlan = JSON.parse(await readFile(named["safe-plan"][0], "utf8"));
+    const safePlan = named["safe-plan"].length ? JSON.parse(await readFile(named["safe-plan"][0], "utf8")) : null;
     const bridgeTokens = await readBridgeArgs(named["bridge-plan"].map((p, i) => [p, named["bridge-record"][i]]));
     console.log(JSON.stringify(await evaluateMainnetGate(gate, safePlan, createJsonRpcRequest(named.rpc[0]), bridgeTokens), null, 2));
   } catch (error) {

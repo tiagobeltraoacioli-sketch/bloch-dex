@@ -1,17 +1,17 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
-import { ArrowUpRight, X } from 'lucide-react';
-import { TOKENS } from './data';
+import type { ReactNode } from 'react';
+import { ArrowUpRight } from 'lucide-react';
+import { TokenMark } from './marks/TokenMark';
 import type { Symbol } from './model';
+
+export { Modal } from './ui/Modal';
 
 export function TokenIcon({ symbol, small = false }: { symbol: Symbol; small?: boolean }) {
   return (
-    <span
-      aria-hidden="true"
+    <TokenMark
+      symbol={symbol}
+      size={0}
       className={`token-icon token-${symbol.toLowerCase()} ${small ? 'small' : ''}`}
-    >
-      {TOKENS[symbol].glyph}
-    </span>
+    />
   );
 }
 
@@ -21,63 +21,6 @@ export function PairIcons({ a, b }: { a: Symbol; b: Symbol }) {
       <TokenIcon symbol={a} />
       <TokenIcon symbol={b} />
     </span>
-  );
-}
-
-export function Modal({
-  title,
-  children,
-  onClose,
-  wide = false,
-}: {
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-  wide?: boolean;
-}) {
-  const ref = useRef<HTMLDialogElement>(null);
-  // Capture before React applies autoFocus to any field inside the portal.
-  const returnFocus = useRef(document.activeElement as HTMLElement | null);
-  const titleId = useId();
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    const dialog = ref.current!;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    dialog.showModal();
-    return () => {
-      dialog.close();
-      document.body.style.overflow = previousOverflow;
-      const previous = returnFocus.current;
-      if (previous?.isConnected) previous.focus();
-      else document.getElementById('main-content')?.focus();
-    };
-  }, []);
-  return createPortal(
-    <dialog
-      ref={ref}
-      className={`modal ${wide ? 'modal-wide' : ''}`}
-      aria-labelledby={titleId}
-      onCancel={(e) => {
-        e.preventDefault();
-        closeRef.current();
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) closeRef.current();
-      }}
-    >
-      <div className="modal-content">
-        <div className="modal-header">
-          <h2 id={titleId}>{title}</h2>
-          <button className="icon-button" aria-label="Close dialog" onClick={onClose}>
-            <X size={20} />
-          </button>
-        </div>
-        {children}
-      </div>
-    </dialog>,
-    document.body,
   );
 }
 

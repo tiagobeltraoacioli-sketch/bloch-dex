@@ -124,7 +124,10 @@
     { "path": "scripts/multichain/", "why": "the multichain line (the same contracts on six public EVM chains, docs/MULTICHAIN-DEPLOY.md): an additional product, not on the Bloch L2 path and not in this audit" },
     { "path": "script/DeployMultichain.s.sol", "why": "multichain line; refuses the Bloch L2 chain ids" },
     { "path": "frontend/src/multichain/", "why": "multichain site (its own entry and bundle); not part of the Bloch L2 site" },
-    { "path": "frontend/src/MultichainApp.tsx", "why": "multichain site (its own entry and bundle); not part of the Bloch L2 site" }
+    { "path": "frontend/src/MultichainApp.tsx", "why": "multichain site (its own entry and bundle); not part of the Bloch L2 site" },
+    { "path": "script/LICENSE", "why": "licence notice of the folder (text only; docs/LICENSING.md)" },
+    { "path": "scripts/LICENSE", "why": "licence notice of the folder (text only; docs/LICENSING.md)" },
+    { "path": "scripts/bridge/", "why": "bridge page tooling: imports the bridges' published interface files and vectors into the bridge page's bundle (read only, git show of the bridge repository) and generates the wrapped-token list; sends nothing and builds no transaction; the bridges are audited in their own repository and the bridge page is part of frontend/ outside tier D" }
   ],
   "contracts": ["UniswapV2Pair", "UniswapV2Factory", "BDexRouter", "BDexLens", "WBLCH"]
 }

@@ -1,0 +1,69 @@
+{
+  "domain": "postern.dex.bridge-page.v1",
+  "note": "Values the page needs and schema v1 of bridge.network.json does not carry as fields (each is an interface gap, written in the cross-area log). Numbers copied from a bridge file's free text name the text they come from; src/test/bridge-config.test.ts fails when that text no longer holds the number. Addresses are TBD-deploy, read endpoints TBD-owner; a route with either is not live.",
+  "l2": { "explorer": "TBD-owner" },
+  "networks": {
+    "ethereum": { "read": "TBD-owner" },
+    "arbitrum-one": { "read": "TBD-owner" },
+    "op-mainnet": { "read": "TBD-owner" },
+    "linea": { "read": "TBD-owner" },
+    "base": { "read": "TBD-owner" },
+    "bitcoin": {
+      "router": "TBD-deploy",
+      "routerCodeHash": "TBD-deploy",
+      "read": "TBD-owner",
+      "script": "TBD-deploy",
+      "policy": {
+        "source": "fee.networkFee and release.notes of deployments/bitcoin/bridge.network.json",
+        "depositVbytes": 574,
+        "releaseVbytes": 402,
+        "refundVbytes": 605,
+        "depositMaxChargeBps": 1000,
+        "feeRateCeiling": 200,
+        "dustSats": 546,
+        "sweepConfirmations": 2,
+        "largeBurnThreshold": "50000",
+        "largeBurnDelaySeconds": 43200
+      }
+    },
+    "solana": {
+      "router": "TBD-deploy",
+      "routerCodeHash": "TBD-deploy",
+      "read": "TBD-owner",
+      "exitProof": {
+        "source": "contracts/solana/SolanaBurnRouter.sol exitMessage() and redirectMessage() on codex/bridge-solana-r17-20261117 (b2fa301, work in progress of agents 336/371; vectors deployments/solana/exit-proof-vectors.json, imported as solana/exit-proof-vectors.json). PROVISIONAL until agent 371 posts the final format in the cross-area log; the page also reads the router's own exitMessage / redirectMessage and refuses to continue unless it is this line.",
+        "template": "Bloch bridge exit v1: pay {amount} units burned by {burner} to my Solana wallet {wallet}. Nonce {nonce}. Router {router}. Chain {chainId}. Route {route}.",
+        "carriedBy": "router",
+        "redirectTemplate": "Bloch bridge redirect v1: pay burn {burnId} made by {burner} to my Solana wallet {wallet}. Nonce {nonce}. Router {router}. Chain {chainId}. Route {route}."
+      },
+      "policy": {
+        "source": "notes and fee.networkFee of deployments/solana/bridge.network.json",
+        "largeReleaseThreshold": "1000000000",
+        "releaseDelaySeconds": 1800,
+        "depositRentLamports": "2400000",
+        "recordRetentionSeconds": 604800,
+        "proofMaxAgeSeconds": 600
+      }
+    },
+    "tron": {
+      "read": "TBD-owner",
+      "policy": {
+        "source": "fee.collection and fee.networkFee of deployments/tron/bridge.network.json",
+        "releaseFlat": "13000000",
+        "depositTrxEstimate": "25",
+        "issuerFeeMaxBps": 20,
+        "issuerFeeMaxUnits": "50000000"
+      }
+    },
+    "stellar": {
+      "router": "TBD-deploy",
+      "routerCodeHash": "TBD-deploy",
+      "read": "TBD-owner",
+      "policy": {
+        "source": "notes of deployments/stellar/bridge.network.json (direct-burn claim: the note on StellarBurnRouter.claimDirectBurn at 3ce640f, revision 4 of agent 338/373)",
+        "worstCaseGuardianDelaySeconds": 806400,
+        "directBurnClaim": "router"
+      }
+    }
+  }
+}

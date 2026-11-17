@@ -374,10 +374,10 @@ describe('the network file states the rule, the deadline, and the page says both
     });
     for (const chain of bundledChains()) expect(chain.network.defaultDeadlineMinutes).toBe(20);
   });
-  it('says in words what "finalized" means on the chain', () => {
+  it('says in words what "confirmed" (or, on a finalized rule, "finalized") means on the chain', () => {
     const notes = Object.fromEntries(bundledChains().map((c) => [c.key, c.confirmationNote]));
     expect(notes.ethereum).toBe(
-      "On Ethereum this page treats a block as settled once 2 blocks are on top of it (about 24 seconds), not at the chain's own finality. Where this page says \"finalized\" on this network, it means that. Prices and balances are read at that block and your swap is bound by its minimum and its deadline. A hold that ends without your transaction's own receipt (its deadline passed, or another transaction used its nonce) waits for the chain's own finalized block. If your swap reverts, this page holds this account on Ethereum until it is under the chain's own safe block, and only then lets you swap again: were the reverted block replaced earlier, the first swap and a second one could both execute.",
+      "On Ethereum this page treats a block as settled once 2 blocks are on top of it (about 24 seconds), not at the chain's own finality. Where this page says \"confirmed\" on this network, it means that. Prices and balances are read at that block and your swap is bound by its minimum and its deadline. A hold that ends without your transaction's own receipt (its deadline passed, or another transaction used its nonce) waits for the chain's own finalized block. If your swap reverts, this page holds this account on Ethereum until it is under the chain's own safe block, and only then lets you swap again: were the reverted block replaced earlier, the first swap and a second one could both execute.",
     );
     expect(notes.linea).toMatch(
       /once 1 block is on top of it \(about 12 seconds\).*waits for 300 blocks on top \(about 58 minutes; this is not the chain's own finality\)\. If your swap reverts, this page holds this account on Linea until 30 blocks are on top of it \(about 6 minutes\), and only then lets you swap again: .*could both execute\.$/,

@@ -9,8 +9,66 @@
 // tightens the signed minimum after a better one (mainnet/quotecheck.ts); a
 // worse price needs an explicit reconfirmation. A sent swap holds the Swap button
 // until its outcome is known (mainnet/pendingswap.ts).
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, LoaderCircle, RefreshCw, ShieldCheck, Wallet } from 'lucide-react';
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react';
+import { createPortal } from 'react-dom';
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowDownUp,
+  ArrowUpRight,
+  CircleCheck,
+  Layers,
+  PanelRightOpen,
+  LoaderCircle,
+  RefreshCw,
+  ShieldCheck,
+  TimerOff,
+  TrendingDown,
+  Wallet,
+} from 'lucide-react';
+import { GateGlyph } from './shell/BrandMark';
+import { GateArch } from './gate/GateArch';
+import { lampState } from './gate/lamp';
+import { Passage, passageStage } from './gate/Passage';
+import { PoolDepth } from './gate/PoolDepth';
+import { poolDepth } from './gate/pool-depth';
+import { Figure } from './ui/Figure';
+import { useWide } from './ui/use-wide';
+import { CopyButton } from './ui/CopyButton';
+import { nextStep } from './ui/next-step';
+import { TokenSheet } from './ui/TokenSheet';
+import { Disclosure } from './ui/Disclosure';
+import { Expander } from './ui/Expander';
+import { ReferencePanel } from './ui/ReferencePanel';
+import { DeadlineClock } from './ui/DeadlineClock';
+import { ConfirmationProgress } from './ui/ConfirmationProgress';
+import { ReadFailureBlock } from './ui/ReadFailure';
+import { classifyReadFailure, readRetrySeconds } from './ui/read-failure';
+import {
+  backgroundRenewal,
+  cannotRenewText,
+  entryQuietMs,
+  monotonicMs,
+  ageSince,
+  stampNow,
+  NEVER,
+  renewalCheckMs,
+  renewalText,
+  staleAt,
+  type RenewalReason,
+} from './ui/snapshot-renewal';
+import type { ProgressRule } from './ui/confirmation-progress';
+import { quoteRate } from './ui/rate';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
 import { approveTransaction, ensureChain, sendTransaction, swapTransaction } from './devnet4/swap';
@@ -57,8 +115,8 @@ import {
   submissionContext,
   type ReplacementProof,
 } from './mainnet/submission-outcome';
-import { usePendingSwap, walletOnChain } from './mainnet/pendingswap';
-import { wording } from './mainnet/wording';
+import { idleWaitNote, usePendingSwap, walletOnChain } from './mainnet/pendingswap';
+import { settledCapital, worded, wording } from './mainnet/wording';
 import { exitsBlocked, readBridgeHold, type BridgeHold } from './mainnet/bridgehold';
 import { httpRpc } from './devnet4/chain';
 import { explainSwapRevert, retryOffer, revertText, type SwapRetryInfo } from './mainnet/retry';
@@ -84,8 +142,52 @@ type Step = {
 const short = (value: string) => `${value.slice(0, 8)}…${value.slice(-6)}`;
 const percent = (part: bigint, whole: bigint) =>
   whole === 0n ? '0.00' : (Number((part * 10_000n) / whole) / 100).toFixed(2);
+// Every sentence that comes from an error of the route's logic passes through `worded` (mainnet/wording.ts): the
+// Bloch L2's words are returned as they are.
 const message = (error: unknown, fallback: string) =>
-  error instanceof Error ? error.message : fallback;
+  worded(error instanceof Error ? error.message : fallback);
+
+/**
+ * How a public network settles, for the page: the note that says what "confirmed" means there (always visible),
+ * and the rule a tracked transaction is counted against. Absent on the Bloch L2.
+ */
+/**
+ * What the swap form holds when the card is remounted for a renewed snapshot block (public networks only): the
+ * user's own inputs, and whether a quote was on screen. Never a quote itself: that is read again at the new block.
+ */
+type FormMemory = {
+  inKey: string;
+  outKey: string;
+  amount: string;
+  slippage: string;
+  deadline: string;
+  quoted: boolean;
+  /** Presentation the remount would otherwise undo: the focused field, the open settings, the open quote details. */
+  focus: string | null;
+  settingsOpen: boolean;
+  detailsOpen: boolean;
+  /** Set when the card asked for the renewal itself (ui/snapshot-renewal.ts): the new card says why, once. */
+  renewal?: RenewalReason;
+};
+
+/** What the background renewal needs to know of the card (ui/snapshot-renewal.ts `backgroundRenewal`). */
+type CardActivity = { editedAt: number; quoteOnScreen: boolean };
+
+/** The snapshot's age bound, for the card (public networks only): its age now, and the route's renewal. */
+type Freshness = {
+  maxAgeMs: number;
+  ageMs: () => number;
+  activity: MutableRefObject<CardActivity>;
+  renew: () => void;
+};
+
+export type ConfirmationView = {
+  note: string;
+  rule: ProgressRule;
+  blockSeconds: number | null;
+  /** The rule that settles a REVERTED swap (`confirmation.reverted`, else the strict rule; R328-3P-3). */
+  reverted?: ProgressRule;
+};
 
 function ExplorerLink({
   network,
@@ -96,16 +198,28 @@ function ExplorerLink({
   kind: 'tx' | 'address';
   value: string;
 }) {
-  if (!network.explorerUrl) return <code>{value}</code>;
+  const what = kind === 'tx' ? 'transaction hash' : 'address';
+  if (!network.explorerUrl)
+    return (
+      <span className="hashline">
+        <code>{value}</code>
+        <CopyButton value={value} what={what} />
+      </span>
+    );
   return (
-    <a
-      href={`${network.explorerUrl.replace(/\/$/, '')}/${kind}/${value}`}
-      target="_blank"
-      rel="noopener noreferrer"
-      referrerPolicy="no-referrer"
-    >
-      <code>{value}</code>
-    </a>
+    <span className="hashline">
+      <a
+        href={`${network.explorerUrl.replace(/\/$/, '')}/${kind}/${value}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        referrerPolicy="no-referrer"
+        title="Open in the explorer"
+      >
+        <code>{value}</code>
+        <ArrowUpRight size={14} aria-hidden="true" />
+      </a>
+      <CopyButton value={value} what={what} />
+    </span>
   );
 }
 
@@ -119,6 +233,7 @@ export default function MainnetLive({
   receiptPollMs,
   snapshotMaxAgeMs,
   ethRpc,
+  confirmation,
 }: {
   network: MainnetNetwork;
   load: () => Promise<MainnetState>;
@@ -131,6 +246,8 @@ export default function MainnetLive({
   snapshotMaxAgeMs?: number;
   /** Ethereum RPC for the bUSDC hold status; defaults to the network file's status.ethRpcUrl. */
   ethRpc?: Rpc;
+  /** A public network's confirmation rule in words and numbers (the multichain site); none on the Bloch L2. */
+  confirmation?: ConfirmationView;
 }) {
   const [state, setState] = useState<MainnetState | null>(null);
   const [hold, setHold] = useState<BridgeHold | null>(null);
@@ -144,10 +261,19 @@ export default function MainnetLive({
   >(null);
   const [failure, setFailure] = useState('');
   const [generation, setGeneration] = useState(0);
+  // Presentation of a failed read (ui/read-failure.ts): two kinds are read again by the page itself, later each
+  // time; the count of failed reads in a row restarts with the first read that succeeds.
+  const failedReads = useRef(0);
+  const [retryAt, setRetryAt] = useState<number | null>(null);
 
+  // When the snapshot on screen was read (monotonic clock), and whether a read is in flight: the age bound of a
+  // public network's snapshot (ui/snapshot-renewal.ts). Read by the renewal only.
+  const takenAt = useRef(NEVER);
+  const reading = useRef(false);
   useEffect(() => {
     let current = true;
     setFailure('');
+    reading.current = true;
     void (async () => {
       try {
         const s = await load();
@@ -156,6 +282,7 @@ export default function MainnetLive({
         if (s.status !== 'live') return;
         const snap = await readSnapshot(rpc, s.deployment, 'mainnet');
         const pools = await readExcess(rpc, snap.finalized.hash, s.deployment.lens, snap.pools);
+        if (current) takenAt.current = stampNow();
         if (current)
           setSnapshot({
             ...snap,
@@ -174,8 +301,11 @@ export default function MainnetLive({
               } as const)
             : await readBridgeHold(eth!, rpc, holdSource, snap.finalized.hash);
         if (current) setHold(h);
+        if (current) failedReads.current = 0;
       } catch (error) {
         if (current) setFailure(message(error, 'Unavailable.'));
+      } finally {
+        if (current) reading.current = false;
       }
     })();
     return () => {
@@ -184,16 +314,76 @@ export default function MainnetLive({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, rpc, generation]);
 
+  const readFailure = failure ? classifyReadFailure(failure) : null;
+  const autoRetry = readFailure?.retry === 'auto';
+  useEffect(() => {
+    if (!autoRetry) return setRetryAt(null);
+    const seconds = readRetrySeconds(failedReads.current++);
+    setRetryAt(now() + seconds * 1000);
+    const timer = setTimeout(() => setGeneration((g) => g + 1), seconds * 1000);
+    return () => clearTimeout(timer);
+    // One timer per failed read: `failure` is cleared when the next read starts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRetry, failure]);
   // Review R328-5: every read is pinned to the snapshot block's hash and must be answered by two endpoints; public
   // endpoints stop serving a block's state after about a minute. The pin is renewed while the page is visible.
+  // Shaped for the redesigned card (agent 327; 326's rule stands: on these chains a snapshot does not get older
+  // than about a minute). A renewal remounts the swap card, so: it waits while the card has a wallet request in
+  // flight or a hold is open (nothing can be quoted or sent then, and the hold's own reads are not pinned to the
+  // snapshot; the end of a hold renews it), it leaves a failed read to that state's own counted retry, and the
+  // card keeps what the user typed, where the cursor was and what was open, and reads its quote again at the new
+  // block (`formMemory`, used only with this prop).
+  // Round 18 (R328-3P-2): the timer no longer renews blindly every `snapshotMaxAgeMs`; it looks every few seconds
+  // whether the snapshot is past the bound and renews only when nobody is typing in the card or reading a quote
+  // (ui/snapshot-renewal.ts `backgroundRenewal`, every pause named there); the card renews on demand before a quote
+  // or a swap on a snapshot past the bound, and once after an UNCONFIRMED quote read (`freshness` below).
+  const cardBusy = useRef(false);
+  const formMemory = useRef<FormMemory | null>(null);
+  const cardActivity = useRef<CardActivity>({ editedAt: -Infinity, quoteOnScreen: false });
+  const failed = useRef(false);
+  failed.current = failure !== '';
   useEffect(() => {
     if (!snapshotMaxAgeMs) return;
-    const timer = setInterval(() => {
-      if (typeof document === 'undefined' || !document.hidden) setGeneration((g) => g + 1);
-    }, snapshotMaxAgeMs);
-    return () => clearInterval(timer);
+    const look = () => {
+      const at = monotonicMs();
+      const due = backgroundRenewal({
+        ageMs: ageSince(takenAt.current),
+        maxAgeMs: snapshotMaxAgeMs,
+        sinceEditMs: at - cardActivity.current.editedAt,
+        quoteOnScreen: cardActivity.current.quoteOnScreen,
+        walletRequest: cardBusy.current,
+        holdOpen: holdOpen.current,
+        failure: failed.current,
+        reading: reading.current,
+        hidden: typeof document !== 'undefined' && document.hidden,
+      });
+      if (due === 'renew') setGeneration((g) => g + 1);
+    };
+    const timer = setInterval(look, renewalCheckMs(snapshotMaxAgeMs));
+    // A tab shown again (or a device woken: browsers throttle or stop timers meanwhile) looks at once (R364-7).
+    const shown = () => {
+      if (!document.hidden) look();
+    };
+    document.addEventListener('visibilitychange', shown);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', shown);
+    };
   }, [snapshotMaxAgeMs]);
+  const freshness = useMemo<Freshness | undefined>(
+    () =>
+      snapshotMaxAgeMs
+        ? {
+            maxAgeMs: snapshotMaxAgeMs,
+            ageMs: () => ageSince(takenAt.current),
+            activity: cardActivity,
+            renew: () => setGeneration((g) => g + 1),
+          }
+        : undefined,
+    [snapshotMaxAgeMs],
+  );
 
+  const holdOpen = useRef(false);
   const live = state?.status === 'live';
   const snapshot = useMemo(
     () =>
@@ -228,8 +418,35 @@ export default function MainnetLive({
         : Promise.resolve('unknown'),
     intervalMs: receiptPollMs,
   });
+  holdOpen.current = pendingSwap.open;
+  // The same conditions as the status block below, named for the layout.
+  const ready = !failure && state?.status === 'live' && !!snapshot;
+  const loading = !failure && (!state || (state.status === 'live' && !snapshot));
+  // Presentation: the reference layer is a side panel unless a pool carries a notice the user must see
+  // (excess above the reserves, a side at its cap, the k ceiling, held bUSDC exits) or the wallet is on
+  // another chain; then it stays on the page.
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  // Presentation: where the gate sets a hold's recovery controls on a wide screen (beside it, in the rail), and
+  // the outcome of the last transaction tracked in this visit, which the lamp shows once the form is at rest.
+  const [railSlot, setRailSlot] = useState<HTMLDivElement | null>(null);
+  const lastOutcome = useRef<string | null>(null);
+  const attention =
+    exitsBlocked(hold) ||
+    // A wallet on another chain: the network block with its switch button stays on the page.
+    (wallet.account !== null && BigInt(wallet.account.chainId) !== BigInt(network.chainId)) ||
+    (snapshot?.pools ?? []).some(
+      (p) =>
+        (p.excess && (p.excess.excess0 > 0n || p.excess.excess1 > 0n)) ||
+        atKCeiling(p) ||
+        headroom(p.reserve0 + (p.excess?.excess0 ?? 0n), p.cap0) === 0n ||
+        headroom(p.reserve1 + (p.excess?.excess1 ?? 0n), p.cap1) === 0n,
+    );
   return (
-    <section className="page devnet4-page mainnet-page" aria-labelledby="mainnet-title">
+    <section
+      className="page devnet4-page mainnet-page"
+      aria-labelledby="mainnet-title"
+      data-layout={ready ? 'gate' : 'column'}
+    >
       <div className="section-heading">
         <div>
           <span className="badge">
@@ -238,48 +455,65 @@ export default function MainnetLive({
           </span>
           <h1 id="mainnet-title">{wording.title}</h1>
           <p className="muted">
-            Pools, balances and quotes are read at the finalized {wording.block}, from a reviewed
-            deployment record; a quote is also compared with the latest block to warn when it has
-            gone stale. Swaps are sent only from your wallet, one explicit step at a time.{' '}
+            Pools, balances and quotes are read at the {wording.settled} {wording.block}, from a
+            reviewed deployment record; a quote is also compared with the latest block to warn when
+            it has gone stale. Swaps are sent only from your wallet, one explicit step at a time.{' '}
             {wording.launch}
           </p>
         </div>
+      </div>
+      {/* The page's status: what block it reads, the Refresh, and every page-wide alert, above the gate. */}
+      <div className="page-status">
         {live && (
-          <button className="button secondary" onClick={() => setGeneration((g) => g + 1)}>
+          <button
+            className="button secondary page-refresh"
+            onClick={() => setGeneration((g) => g + 1)}
+          >
             <RefreshCw size={16} /> Refresh
           </button>
         )}
-      </div>
-      <NetworkPanel network={network} wallet={wallet} />
-      {failure ? (
-        <p className="form-error" role="alert">
-          Mainnet reads are unavailable: {failure}. No transaction can be sent from this page.
-        </p>
-      ) : !state ? (
-        <p className="muted" role="status">
-          <LoaderCircle size={16} className="spin" /> Checking the bundled deployment record…
-        </p>
-      ) : state.status === 'not-live' ? (
-        <NotLive reasons={state.reasons} planned={planned} />
-      ) : !snapshot ? (
-        <p className="muted" role="status">
-          <LoaderCircle size={16} className="spin" /> Verifying the deployment at the finalized
-          block…
-        </p>
-      ) : (
-        <>
-          <FinalityAge finalizedAt={snapshot.finalized} now={now} />
-          <BridgeHoldBanner hold={hold} network={network} />
-          <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
-          <PoolsTable
-            snapshot={snapshot}
-            network={network}
-            rpc={rpc}
-            wallet={wallet}
-            pendingSwap={pendingSwap}
+        {failure && readFailure ? (
+          <ReadFailureBlock
+            failure={readFailure}
+            retryAt={retryAt}
             now={now}
-            heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
-          />
+            onRetry={() => setGeneration((g) => g + 1)}
+          >
+            {wording.reads} are unavailable: {failure.replace(/\.$/, '')}. No transaction can be
+            sent from this page.
+          </ReadFailureBlock>
+        ) : !state ? (
+          <p className="muted" role="status">
+            <LoaderCircle size={16} className="spin" /> Checking the bundled deployment record…
+          </p>
+        ) : state.status === 'not-live' ? (
+          <NotLive reasons={state.reasons} planned={planned} />
+        ) : !snapshot ? (
+          <p className="muted" role="status">
+            <LoaderCircle size={16} className="spin" /> Verifying the deployment at the{' '}
+            {wording.settled} block…
+          </p>
+        ) : (
+          <>
+            <FinalityAge finalizedAt={snapshot.finalized} now={now} />
+            <BridgeHoldBanner hold={hold} network={network} />
+          </>
+        )}
+        {confirmation && ready && (
+          <button
+            type="button"
+            className="settle-jump"
+            onClick={() =>
+              document.querySelector('.confirmation-rule')?.scrollIntoView({ block: 'start' })
+            }
+          >
+            <ArrowDown size={14} aria-hidden="true" /> Settlement rule of this network
+          </button>
+        )}
+      </div>
+      {/* The swap card is the page; verification and reference sit in the layer after it. */}
+      {ready && state.status === 'live' && snapshot ? (
+        <div className="live-hero">
           <SwapPanel
             key={`${snapshot.finalized.hash}:${pendingSwap.contextKey}`}
             network={network}
@@ -292,11 +526,170 @@ export default function MainnetLive({
             pendingSwap={pendingSwap}
             hold={hold}
             holdToken={holdSource?.token}
+            confirmation={confirmation}
+            receiptPollMs={receiptPollMs}
+            onRefresh={() => setGeneration((g) => g + 1)}
+            memory={snapshotMaxAgeMs ? formMemory : undefined}
+            freshness={freshness}
+            busyRef={cardBusy}
+            railSlot={railSlot}
+            lastOutcome={lastOutcome}
           />
-        </>
+        </div>
+      ) : (
+        loading && <LoadingBlocks />
       )}
-      {network.bridges.length > 0 && <BridgePanel network={network} />}
+      {ready && <div className="rail-slot" ref={setRailSlot} />}
+      {/* The verification rail: beside the gate on a wide screen, after it on a narrow one. */}
+      {ready && state.status === 'live' && snapshot && (
+        <TrustStrip
+          snapshot={snapshot}
+          attention={attention}
+          onDetails={() => setDetailsOpen(true)}
+        />
+      )}
+      {confirmation && <ConfirmationRule note={confirmation.note} />}
+      {/* Docked (part of the page) until the route is live, and whenever a pool carries a notice. */}
+      <ReferencePanel
+        docked={!ready || attention}
+        open={detailsOpen}
+        onClose={() => setDetailsOpen(false)}
+        title="Pools and verification"
+      >
+        {ready && state.status === 'live' && snapshot && (
+          <PoolsTable
+            snapshot={snapshot}
+            network={network}
+            rpc={rpc}
+            wallet={wallet}
+            pendingSwap={pendingSwap}
+            now={now}
+            heldToken={exitsBlocked(hold) ? holdSource?.token : undefined}
+          />
+        )}
+        <NetworkPanel network={network} wallet={wallet} />
+        {ready && state.status === 'live' && snapshot && (
+          <DeploymentPanel network={network} deployment={state.deployment} snapshot={snapshot} />
+        )}
+        {network.bridges.length > 0 && <BridgePanel network={network} />}
+      </ReferencePanel>
     </section>
+  );
+}
+
+/**
+ * A text of the logic modules set one sentence to a line, word for word (nothing is edited or dropped); the
+ * sentence that tells the user what not to do is marked for the stylesheet.
+ */
+function Lines({ text }: { text: string }) {
+  return (
+    <>
+      {text
+        .trim()
+        .split(/(?<=[.!?])\s+(?=[A-Z])/)
+        .map((sentence, i) => (
+          <Fragment key={i}>
+            {i > 0 && ' '}
+            <span className="hold-line" data-warn={/^Do not /.test(sentence) || undefined}>
+              {sentence}
+            </span>
+          </Fragment>
+        ))}
+    </>
+  );
+}
+
+/**
+ * What "confirmed" means on this network, always on the page (review R309-MC-2). One paragraph with the note's
+ * full text; its first sentence, the rule itself, is set in the reading colour.
+ */
+function ConfirmationRule({ note }: { note: string }) {
+  const cut = note.indexOf('. ');
+  const [rule, rest] = cut < 0 ? [note, ''] : [note.slice(0, cut + 1), note.slice(cut + 1)];
+  return (
+    <div className="confirmation-rule">
+      <span className="confirmation-rule-label">
+        <Layers size={14} aria-hidden="true" /> How this network settles here
+      </span>
+      <p data-testid="confirmation-rule">
+        <strong>{rule}</strong>
+        {rest}
+      </p>
+    </div>
+  );
+}
+
+/** Placeholders with the height of the swap card while the record and the finalized block are checked. */
+function LoadingBlocks() {
+  return (
+    <div className="live-hero" aria-hidden="true">
+      <div className="card skeleton-card swap-card" data-lamp="idle">
+        <GateArch />
+        <span className="skeleton skeleton-title" />
+        <span className="skeleton skeleton-leg" />
+        <span className="skeleton skeleton-leg" />
+        <span className="skeleton skeleton-line" />
+        <span className="skeleton skeleton-button" />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One line of what stands behind the page (verified record, caps in use) and the button that opens the full
+ * reference layer. A summary of figures shown in full there; it replaces nothing.
+ */
+function TrustStrip({
+  snapshot,
+  attention,
+  onDetails,
+}: {
+  snapshot: Snapshot;
+  attention: boolean;
+  onDetails: () => void;
+}) {
+  return (
+    <div className="trust-strip" data-testid="trust-strip">
+      <span className="trust-item">
+        <ShieldCheck size={16} aria-hidden="true" /> Record verified
+      </span>
+      {snapshot.pools.map((p) => (
+        <span className="trust-item trust-pool" key={p.address}>
+          {p.token0.symbol}/{p.token1.symbol} caps in use: {percent(p.reserve0, p.cap0)}% ·{' '}
+          {percent(p.reserve1, p.cap1)}%
+          <span className="trust-meters" aria-hidden="true">
+            {(
+              [
+                [p.reserve0, p.cap0],
+                [p.reserve1, p.cap1],
+              ] as const
+            ).map(([reserve, cap], i) => (
+              <span
+                key={i}
+                className="cap-meter"
+                style={
+                  { '--used': `${Math.min(100, Number(percent(reserve, cap)))}%` } as CSSProperties
+                }
+              />
+            ))}
+          </span>
+        </span>
+      ))}
+      {attention ? (
+        <button
+          type="button"
+          className="trust-details"
+          data-attention
+          onClick={() => document.querySelector('.reference')?.scrollIntoView({ block: 'start' })}
+        >
+          <AlertTriangle size={16} aria-hidden="true" /> Notices and network below
+        </button>
+      ) : (
+        <button type="button" className="trust-details" onClick={onDetails}>
+          <PanelRightOpen size={16} aria-hidden="true" /> Pools and verification
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -438,16 +831,17 @@ function FinalityAge({
       : `${Math.floor(seconds / 3600)} h ${Math.floor((seconds % 3600) / 60)} min`;
   if (seconds < FINALIZED_AGE_WARN_SECONDS)
     return (
-      <p className="microcopy" aria-label="Finality age">
-        Finalized block {finalizedAt.number.toString()} is {age} old.
+      <p className="microcopy finality-line" aria-label="Finality age">
+        <CircleCheck size={16} aria-hidden="true" /> {settledCapital()} block{' '}
+        {finalizedAt.number.toString()} is {age} old.
       </p>
     );
   return (
-    <p className="form-error" role="alert" aria-label="Finality age">
-      <AlertTriangle size={16} /> {wording.finality} looks stalled: finalized block{' '}
+    <p className="form-error finality-line" role="alert" aria-label="Finality age">
+      <AlertTriangle size={16} /> {wording.finality} looks stalled: {wording.settled} block{' '}
       {finalizedAt.number.toString()} is {age} old. Pools, balances, caps and quotes on this page
       are from that block. A swap executes on the latest state, and anything mined now stays out of
-      these figures until finality resumes.
+      these figures until {wording.settled === 'finalized' ? 'finality' : 'confirmation'} resumes.
     </p>
   );
 }
@@ -473,9 +867,9 @@ function DeploymentPanel({
         </dd>
         <dt>Finality gate</dt>
         <dd>
-          {d.gate.decision} at finalized block {d.gate.finalizedNumber.toString()}
+          {d.gate.decision} at {wording.settled} block {d.gate.finalizedNumber.toString()}
         </dd>
-        <dt>Finalized now</dt>
+        <dt>{settledCapital()} now</dt>
         <dd>
           Block {s.finalized.number.toString()}; chain, genesis and every runtime code hash match
           the record
@@ -663,6 +1057,16 @@ function PoolsTable({
     return (
       <>
         {formatAmount(cap, t.decimals)} {t.symbol} ({percent(reserve, cap)}% used)
+        {cap > 0n && (
+          <span
+            className="cap-meter"
+            aria-hidden="true"
+            data-full={room === 0n || closed || undefined}
+            style={
+              { '--used': `${Math.min(100, Number(percent(reserve, cap)))}%` } as CSSProperties
+            }
+          />
+        )}
         <br />
         <span className={room === 0n || closed ? 'form-error' : 'muted'}>
           {room === null
@@ -677,9 +1081,11 @@ function PoolsTable({
     );
   };
   return (
-    <div className="card">
-      <h2>Pools at finalized block {snapshot.finalized.number.toString()}</h2>
-      <table className="devnet4-pools">
+    <div className="card pools-card">
+      <h2>
+        Pools at {wording.settled} block {snapshot.finalized.number.toString()}
+      </h2>
+      <table className="devnet4-pools pool-cards">
         <thead>
           <tr>
             <th scope="col">Pool</th>
@@ -695,7 +1101,7 @@ function PoolsTable({
                 <br />
                 <code>{short(p.address)}</code>
               </th>
-              <td>
+              <td data-label="Reserves">
                 {formatAmount(p.reserve0, p.token0.decimals)} {p.token0.symbol}
                 <br />
                 {formatAmount(p.reserve1, p.token1.decimals)} {p.token1.symbol}
@@ -725,7 +1131,7 @@ function PoolsTable({
                   </div>
                 )}
               </td>
-              <td>
+              <td data-label="Reserve caps">
                 {side(p.reserve0, p.excess?.excess0 ?? 0n, p.cap0, p.token0, closedByExcess(p))}
                 <br />
                 {side(p.reserve1, p.excess?.excess1 ?? 0n, p.cap1, p.token1, closedByExcess(p))}
@@ -749,6 +1155,14 @@ function SwapPanel({
   pendingSwap,
   hold = null,
   holdToken,
+  confirmation,
+  receiptPollMs,
+  onRefresh,
+  memory,
+  freshness,
+  busyRef,
+  railSlot,
+  lastOutcome,
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
@@ -760,8 +1174,23 @@ function SwapPanel({
   pendingSwap: ReturnType<typeof usePendingSwap>;
   hold?: BridgeHold | null;
   holdToken?: Address;
+  confirmation?: ConfirmationView;
+  receiptPollMs?: number;
+  /** The page's own Refresh (a new snapshot block); offered inside an alert that a newer block can clear. */
+  onRefresh?: () => void;
+  /** Set on a network whose snapshot block is renewed by a timer: the form's inputs survive the remount. */
+  memory?: MutableRefObject<FormMemory | null>;
+  /** Set on the same networks: the snapshot's age bound, renewed on demand before a quote or a swap. */
+  freshness?: Freshness;
+  /** Told while a wallet request of this card is in flight, so a timed renewal waits. */
+  busyRef?: MutableRefObject<boolean>;
+  /** Layout: on a wide screen a hold's recovery controls are drawn here, beside the gate. */
+  railSlot?: HTMLElement | null;
+  /** Layout: the state of the last transaction tracked in this visit, for the lamp. */
+  lastOutcome?: MutableRefObject<string | null>;
 }) {
   const [holdAccepted, setHoldAccepted] = useState(false);
+  const [quoting, setQuoting] = useState(false);
   const options = useMemo<Option[]>(
     () =>
       snapshot.tokens.map((token) =>
@@ -771,14 +1200,23 @@ function SwapPanel({
       ),
     [snapshot],
   );
-  const [inKey, setInKey] = useState(options[0]?.key ?? '');
-  const [outKey, setOutKey] = useState(options[1]?.key ?? '');
-  const [amount, setAmount] = useState('');
-  const [slippage, setSlippage] = useState((DEFAULT_SLIPPAGE_BPS / 100).toFixed(2));
+  // Read once, at mount: the inputs of the card this one replaces after a renewed snapshot (public networks).
+  const [kept] = useState(() => {
+    const m = memory?.current ?? null;
+    return m && options.some((o) => o.key === m.inKey) && options.some((o) => o.key === m.outKey)
+      ? m
+      : null;
+  });
+  const [inKey, setInKey] = useState(kept?.inKey ?? options[0]?.key ?? '');
+  const [outKey, setOutKey] = useState(kept?.outKey ?? options[1]?.key ?? '');
+  const [amount, setAmount] = useState(kept?.amount ?? '');
+  const [slippage, setSlippage] = useState(
+    kept?.slippage ?? (DEFAULT_SLIPPAGE_BPS / 100).toFixed(2),
+  );
   // 2 once the user took the page's one retry after a revert on the minimum (DEX-5).
   const [attempt, setAttempt] = useState<1 | 2>(1);
   const [deadline, setDeadline] = useState(
-    String(network.defaultDeadlineMinutes ?? DEFAULT_DEADLINE_MINUTES),
+    kept?.deadline ?? String(network.defaultDeadlineMinutes ?? DEFAULT_DEADLINE_MINUTES),
   );
   const [quote, setQuote] = useState<LensQuote | null>(null);
   const [blocked, setBlocked] = useState<RouteCheck[]>([]);
@@ -790,6 +1228,82 @@ function SwapPanel({
   const [allowance, setAllowance] = useState<bigint | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [busy, setBusy] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!busyRef) return;
+    busyRef.current = busy;
+    return () => {
+      busyRef.current = false;
+    };
+  }, [busy, busyRef]);
+  // Presentation the remount would undo, noted as it happens (a remounted card reads the memory while it renders,
+  // before the old card is gone): the focused field, the open settings, the open quote details.
+  const shown = useRef({
+    focus: kept?.focus ?? null,
+    settingsOpen: kept?.settingsOpen ?? false,
+    detailsOpen: kept?.detailsOpen ?? false,
+  });
+  const note = (patch: Partial<(typeof shown)['current']>) => {
+    shown.current = { ...shown.current, ...patch };
+    if (memory?.current) memory.current = { ...memory.current, ...shown.current };
+  };
+  // After a transaction of this card the form starts empty, as before: nothing is kept while a hold is open or
+  // a wallet request is in flight, nor after a transaction of this card got a hash until the user edits the form
+  // again (R344-UI-6: else the card came back after a mined swap with the same amount and a fresh quote).
+  const sentSinceEdit = useRef(false);
+  const hashedSeen = useRef(0);
+  const hashed = steps.filter((s) => s.hash).length;
+  if (pendingSwap.open || hashed > hashedSeen.current) {
+    sentSinceEdit.current = true;
+    hashedSeen.current = hashed;
+  }
+  // Set when this card asks for a renewal itself; the new card reads it from the memory and says why.
+  const renewing = useRef<RenewalReason | null>(null);
+  useEffect(() => {
+    if (!memory) return;
+    memory.current =
+      pendingSwap.open || busy || sentSinceEdit.current
+        ? null
+        : {
+            inKey,
+            outKey,
+            amount,
+            slippage,
+            deadline,
+            quoted: !!quote || quoting,
+            ...shown.current,
+            ...(renewing.current ? { renewal: renewing.current } : {}),
+          };
+  });
+  // What the background renewal reads of this card: when the user last typed or chose, and whether a quote is on
+  // screen (it is then left alone; a quote past the bound is renewed by the Swap button instead).
+  const edited = () => {
+    // Refs only: a state update here would re-render a controlled <select> between its input and change events
+    // and put its old value back.
+    sentSinceEdit.current = false;
+    if (freshness) freshness.activity.current.editedAt = monotonicMs();
+  };
+  useEffect(() => {
+    if (!freshness) return;
+    const activity = freshness.activity;
+    activity.current.quoteOnScreen = !!quote;
+    return () => {
+      activity.current.quoteOnScreen = false;
+    };
+  }, [quote, freshness]);
+  const renewedBy = kept?.renewal ?? null;
+  useLayoutEffect(() => {
+    const field = kept?.focus
+      ? cardRef.current?.querySelector<HTMLInputElement>(`input[data-field="${kept.focus}"]`)
+      : null;
+    if (field) {
+      field.focus();
+      // The cursor goes back to the end of what was typed.
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
+    // At mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const tracked = pendingSwap.tracked;
   const historyAccount = wallet.account?.address as Address | undefined;
   const [history, setHistory] = useState<FinishedTx[]>(() =>
@@ -823,7 +1337,8 @@ function SwapPanel({
     [],
   );
   const lastQuoteRequest = useRef(0);
-  const [requote, setRequote] = useState(0);
+  // A quote that was on screen when the snapshot was renewed is asked again, once, by the unchanged getQuote().
+  const [requote, setRequote] = useState(kept?.quoted ? 1 : 0);
   const input = options.find((o) => o.key === inKey);
   const output = options.find((o) => o.key === outKey);
   const amountIn = input ? parseAmount(amount, input.token.decimals) : null;
@@ -950,7 +1465,7 @@ function SwapPanel({
         );
         setBlocked(checks.filter((c) => c.block));
         return setQuoteNote(
-          'No route can fill this amount at the finalized block; the swap would revert.',
+          `No route can fill this amount at the ${wording.settled} block; the swap would revert.`,
         );
       }
       setQuote(q);
@@ -961,11 +1476,61 @@ function SwapPanel({
     }
   }
 
+  // R328-3P-2: a quote is never built on a snapshot past the age bound (public networks): the card asks the route
+  // for a newer block first, keeps its inputs across the remount (memory, with `quoted` so the new card quotes at
+  // the new block through the unchanged getQuote()), and the new card says why. While a hold is open or a wallet
+  // request is in flight the remount would clear what the card holds, so no quote is read and the card says so.
+  const stale = () => !!freshness && staleAt(freshness.ageMs(), freshness.maxAgeMs);
+  // A renewal that read the same block again does not remount the card (its key is the block hash): the card then
+  // quotes itself, on the renewed (fresh) snapshot.
+  const firstSnapshot = useRef(snapshot);
   useEffect(() => {
-    if (requote > 0) void getQuote();
+    if (snapshot === firstSnapshot.current || !renewing.current) return;
+    renewing.current = null;
+    void getQuote().finally(() => setQuoting(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot]);
+  function renewFirst(reason: RenewalReason, now = true) {
+    if (!freshness) return;
+    if (pendingSwap.open || busy)
+      return setQuoteNote(
+        cannotRenewText(pendingSwap.open ? 'hold' : 'wallet-request', freshness.maxAgeMs),
+      );
+    renewing.current = reason;
+    setQuoting(true);
+    // `now` false: the user is typing (a reply superseded by an edit); the background renewal takes it once the
+    // user pauses, and the remounted card quotes then.
+    if (now) freshness.renew();
+  }
+  function quoteOrRenew() {
+    // A press of Get quote ends the entry: an UNCONFIRMED refusal of this quote may renew at once.
+    if (freshness) freshness.activity.current.editedAt = -Infinity;
+    if (stale()) return renewFirst('quote');
+    setQuoting(true);
+    void getQuote().finally(() => setQuoting(false));
+  }
+  useEffect(() => {
+    if (requote > 0) {
+      if (stale()) {
+        const since = monotonicMs() - (freshness?.activity.current.editedAt ?? -Infinity);
+        return renewFirst('quote', since >= entryQuietMs(freshness!.maxAgeMs));
+      }
+      void getQuote();
+    }
     // Runs only when a reply was dropped, with the form of this render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requote]);
+  // Once per card that was not itself made for this reason: a pinned quote read refused as UNCONFIRMED (one endpoint
+  // no longer serves the block) is asked again at a newer block. Never while the user is typing.
+  const refusedUnconfirmed =
+    !!freshness && !!quoteNote && classifyReadFailure(quoteNote).kind === 'unconfirmed';
+  useEffect(() => {
+    if (!refusedUnconfirmed || renewedBy === 'unconfirmed' || renewing.current) return;
+    const since = monotonicMs() - freshness!.activity.current.editedAt;
+    if (since < entryQuietMs(freshness!.maxAgeMs)) return;
+    renewFirst('unconfirmed');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refusedUnconfirmed]);
 
   /**
    * Persist the intent before calling the wallet. A missing hash after that
@@ -1132,6 +1697,7 @@ function SwapPanel({
     const from = options.find((o) => o.token.address === info.tokenIn);
     const to = options.find((o) => o.token.address === info.tokenOut);
     if (!from || !to || !isAllowedSlippageBps(bps)) return;
+    edited();
     clear();
     setInKey(from.key);
     setOutKey(to.key);
@@ -1161,76 +1727,406 @@ function SwapPanel({
   const holdBlocksSend = buysHeld && exitsBlocked(hold) && !holdAccepted;
   const uses = signed ? headroomUse(snapshot.pools, signed.path, signed.amounts) : [];
   const symbolOf = (a: Address) => options.find((o) => o.token.address === a)?.label ?? short(a);
+  // The token of a leg changes through one handler, whether the select or the token sheet asks.
+  const choosePay = (key: string) => (edited(), setInKey(key), setAttempt(1), clear());
+  const chooseReceive = (key: string) => (edited(), setOutKey(key), setAttempt(1), clear());
+  const choices = options.map((o) => ({
+    key: o.key,
+    label: o.label,
+    detail: balances
+      ? o.native
+        ? formatAmount(balances.native, 18, 6)
+        : formatAmount(balances.tokens.get(o.token.address) ?? 0n, o.token.decimals)
+      : undefined,
+  }));
+  const rate =
+    quote && signed && input
+      ? quoteRate(quote.amountIn, input.token.decimals, signed.amountOut)
+      : null;
+  // Presentation only: the line that says what the buttons below will do next.
+  const next = nextStep({
+    connected: !!wallet.account,
+    walletPending: wallet.pending,
+    onChain,
+    chainId: d.chainId,
+    storageBlocked: !!pendingSwap.storageProblem || !!pendingSwap.unreadable,
+    busy,
+    holdOpen: pendingSwap.open,
+    hasQuote: !!quote,
+    staleForm,
+    shortBalance,
+    quoteBlocked: blocksSwap(check),
+    approval:
+      needsApproval && quote && input
+        ? `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`
+        : null,
+    acknowledgementMissing: holdBlocksSend,
+  });
+  // Presentation: a quote refused because the endpoints disagree, did not confirm or limit requests is named
+  // (ui/read-failure.ts); every other note is shown as before.
+  // The same naming for an endpoint problem the tracker states in a held transaction's own sentence.
+  const holdKind =
+    tracked && (tracked.state === 'pending' || tracked.state === 'unknown')
+      ? classifyReadFailure(tracked.detail)
+      : null;
+  // Only the two refusals the page itself writes (multichain/rpc.ts); a wallet's own error text is not renamed.
+  const holdTrouble =
+    holdKind &&
+    (holdKind.kind === 'unconfirmed' ||
+      holdKind.kind === 'behind' ||
+      holdKind.kind === 'disagreement')
+      ? holdKind
+      : null;
+  const quoteKind = quoteNote ? classifyReadFailure(quoteNote) : null;
+  const quoteFailure = quoteKind && quoteKind.kind !== 'other' ? quoteKind : null;
+  const earlier = history.filter(
+    (h) => !steps.some((x) => x.hash === h.hash) && tracked?.hash !== h.hash,
+  );
+  // Presentation only: the lamp over the gate (gate/lamp.ts) and the pool-depth picture of the quote
+  // (gate/pool-depth.ts), both from values this card already holds. Nothing reads them back.
+  const wide = useWide();
+  const beside = (node: ReactNode) => (wide && railSlot ? createPortal(node, railSlot) : node);
+  if (lastOutcome && tracked) lastOutcome.current = tracked.state;
+  const lamp = lampState({
+    quoting,
+    hasQuote: !!quote,
+    busy,
+    holdOpen: pendingSwap.open,
+    tracked: tracked?.state ?? lastOutcome?.current ?? undefined,
+    lastStep: steps[steps.length - 1]?.state,
+    refused:
+      !!quoteNote ||
+      blocked.length > 0 ||
+      blocksSwap(check) ||
+      shortBalance ||
+      !!pendingSwap.storageProblem,
+    caution: holdBlocksSend || !!pendingSwap.unreadable || (!!wallet.account && !onChain),
+  });
+  const depth = signed ? poolDepth(snapshot.pools, signed.path, signed.amounts) : null;
 
-  return (
-    <div className="card devnet4-swap">
-      <h2>Swap</h2>
-      <div className="devnet4-form">
-        <label className="field-label">
-          You pay
-          <select
-            value={inKey}
-            onChange={(e) => (setInKey(e.target.value), setAttempt(1), clear())}
-          >
-            {options.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field-label">
-          Amount
-          <input
-            className="text-input"
-            inputMode="decimal"
-            value={amount}
-            onChange={(e) => (setAmount(e.target.value), setAttempt(1), clear())}
-          />
-        </label>
-        <label className="field-label">
-          You receive
-          <select
-            value={outKey}
-            onChange={(e) => (setOutKey(e.target.value), setAttempt(1), clear())}
-          >
-            {options.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field-label">
-          Slippage tolerance (%)
-          <input
-            className="text-input"
-            inputMode="decimal"
-            value={slippage}
-            onChange={(e) => (setSlippage(e.target.value), clear())}
-          />
-        </label>
-        <p className="microcopy" aria-label="Slippage note">
-          Plan to lose up to this share of your output. Block order follows the tip paid, so someone
-          can trade just before and after you and keep the difference, up to your minimum. Keep it
-          low, and split large swaps.
+  // The tracked transaction's text, with the idle-chain explanation (the exact sentence pendingswap.ts appended)
+  // set apart so it can sit behind "Why is this waiting?". No word is changed or dropped.
+  const idleNote = tracked
+    ? idleWaitNote(tracked, network.noIdleHeartbeat ? 0 : longestQuiet(network.idle))
+    : '';
+  const held =
+    tracked && idleNote && tracked.detail.includes(idleNote)
+      ? { visible: tracked.detail.replace(idleNote, ''), why: idleNote.trim() }
+      : { visible: tracked?.detail ?? '', why: '' };
+  // Blocks of the card that change place while a hold is open (alerts, then the tracked transaction and its
+  // recovery controls, come directly under the form). The same elements in either place; nothing is duplicated.
+  const staleAlerts = quote && signed && input && output && (
+    <>
+      {check?.status === 'worse' && (
+        <div className="form-error" role="alert" aria-label="Stale quote">
+          <AlertTriangle size={16} /> The price moved after the {wording.settled} block. At the
+          latest block this swap returns{' '}
+          {formatAmount(check.latest.amountOut, output.token.decimals)} {output.label},{' '}
+          {percent(check.worseBps, 10_000n)}% worse than this quote and below your minimum received,
+          so it would revert. Reconfirm to use the latest price, or change the amount.{' '}
+          <button className="button secondary" onClick={reconfirm}>
+            Reconfirm at the latest price
+          </button>
+        </div>
+      )}
+      {check?.status === 'unavailable' && (
+        <p className="form-error" role="alert" aria-label="Stale quote">
+          At the latest block no route can fill this amount, so the swap would revert. Lower the
+          amount or get a new quote.
         </p>
-        <label className="field-label">
-          Deadline (minutes)
-          <input
-            className="text-input"
-            inputMode="numeric"
-            value={deadline}
-            onChange={(e) => (setDeadline(e.target.value), clear())}
+      )}
+    </>
+  );
+  const nextLine = (
+    <p className="next-step" data-tone={next.tone} data-testid="next-step">
+      {next.text}
+    </p>
+  );
+  const recoveryBlock = (
+    <>
+      {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
+        <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
+      )}
+    </>
+  );
+  const activityBlock = (
+    <>
+      <h3 className="activity-title">Activity</h3>
+      {wallet.account && earlier.length === 0 && steps.length === 0 && !tracked && (
+        <p className="activity-empty">No transactions from this page yet.</p>
+      )}
+      {!wallet.account && (
+        <p className="activity-empty">Transactions you send from this page are listed here.</p>
+      )}
+      {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
+        <ol className="devnet4-steps" aria-label="Earlier transactions">
+          {history
+            .filter((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash)
+            .map((h) => (
+              <li key={h.hash} data-state={h.state}>
+                <strong>{h.label}</strong>: {h.state}{' '}
+                <ExplorerLink network={network} kind="tx" value={h.hash} />
+                {h.detail && <span className="muted"> {worded(h.detail)}</span>}
+              </li>
+            ))}
+        </ol>
+      )}
+      {(steps.length > 0 || tracked) && (
+        <ol className="devnet4-steps" aria-label="Transactions">
+          {steps.map((s, i) => (
+            <li key={i} data-state={s.state}>
+              <strong>{s.label}</strong>: {s.state}
+              {s.hash && (
+                <>
+                  {' '}
+                  <ExplorerLink network={network} kind="tx" value={s.hash} />
+                </>
+              )}
+              {s.state === 'waiting' && <Passage stage="wallet" settled={wording.settled} />}
+              {s.detail && <span className="muted"> {worded(s.detail)}</span>}
+            </li>
+          ))}
+          {tracked && (
+            <li data-state={tracked.state}>
+              <strong>{tracked.label}</strong>: <span className="state-pill">{tracked.state}</span>{' '}
+              {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
+              <Passage
+                stage={passageStage(tracked.state, !!tracked.hash)}
+                settled={wording.settled}
+              />
+              <span className="muted">
+                {' '}
+                <Lines text={worded(held.visible)} />
+              </span>
+              {holdTrouble && (
+                <span className="confirm-trouble hold-trouble" role="status">
+                  <strong>{holdTrouble.title}.</strong> The page keeps trying by itself; the hold
+                  stays until the outcome is verified. Your transaction is not affected.
+                </span>
+              )}
+              {confirmation &&
+                tracked.hash &&
+                (tracked.state === 'pending' || tracked.state === 'unknown') && (
+                  <ConfirmationProgress
+                    rpc={rpc}
+                    hash={tracked.hash}
+                    rule={confirmation.rule}
+                    blockSeconds={confirmation.blockSeconds}
+                    pollMs={receiptPollMs}
+                    reverted={tracked.intent?.kind === 'swap' ? confirmation.reverted : undefined}
+                    now={now}
+                  />
+                )}
+              {tracked.deadline > 0n &&
+                (tracked.state === 'pending' || tracked.state === 'unknown') && (
+                  <DeadlineClock
+                    deadline={tracked.deadline}
+                    sentAtMs={tracked.sentAtMs}
+                    now={now}
+                    settled={wording.settled}
+                  />
+                )}
+              {held.why && (
+                <Disclosure clip className="hold-why" summary={() => 'Why is this waiting?'}>
+                  <p>{held.why}</p>
+                </Disclosure>
+              )}
+              {tracked.state === 'failed' && tracked.retry && tracked.cause && (
+                <p className="notice" role="status" aria-label="Why the swap reverted">
+                  {worded(revertText(tracked.retry, tracked.cause))}
+                  {offer?.kind === 'retry' && (
+                    <>
+                      {' '}
+                      <button
+                        className="button secondary"
+                        disabled={busy || pendingSwap.open || attempt === 2}
+                        onClick={() => retryAt(tracked.retry!, offer.slippageBps)}
+                      >
+                        Retry once at {(offer.slippageBps / 100).toFixed(2)}%
+                      </button>
+                    </>
+                  )}
+                </p>
+              )}
+            </li>
+          )}
+        </ol>
+      )}
+    </>
+  );
+  return (
+    <div
+      ref={cardRef}
+      onFocusCapture={(e) => note({ focus: (e.target as HTMLElement).dataset?.field ?? null })}
+      onInputCapture={edited}
+      onBlurCapture={() => note({ focus: null })}
+      className="card devnet4-swap swap-card"
+      data-phase={quote ? 'quoted' : 'form'}
+      data-quoting={quoting || undefined}
+      data-hold={pendingSwap.open || undefined}
+      data-lamp={lamp}
+    >
+      <GateArch anchor />
+      <h2>Swap</h2>
+      <div className="devnet4-form swap-form">
+        <div className="swap-leg" data-leg="pay">
+          <label className="field-label token-field">
+            You pay
+            <select
+              className="token-native-select"
+              tabIndex={-1}
+              aria-hidden="true"
+              value={inKey}
+              onChange={(e) => choosePay(e.target.value)}
+            >
+              {options.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TokenSheet caption="You pay" value={inKey} options={choices} onChoose={choosePay} />
+          <label
+            className="field-label amount-field"
+            style={{ '--chars': Math.max(1, amount.length) } as CSSProperties}
+          >
+            Amount
+            <input
+              className="text-input amount-input"
+              data-field="amount"
+              inputMode="decimal"
+              placeholder="0"
+              autoComplete="off"
+              spellCheck={false}
+              value={amount}
+              onChange={(e) => (setAmount(e.target.value), setAttempt(1), clear())}
+            />
+          </label>
+        </div>
+        {/* The same two handlers the token sheets call, with the two tokens exchanged. */}
+        <button
+          type="button"
+          className="swap-gate"
+          aria-label="Exchange the pay and receive tokens"
+          title="Exchange the pay and receive tokens"
+          onClick={() => {
+            const [pay, receive] = [inKey, outKey];
+            choosePay(receive);
+            chooseReceive(pay);
+          }}
+        >
+          <GateGlyph />
+          <ArrowDownUp size={12} aria-hidden="true" className="swap-gate-arrows" />
+        </button>
+        <div className="swap-leg" data-leg="receive">
+          <label className="field-label token-field">
+            You receive
+            <select
+              className="token-native-select"
+              tabIndex={-1}
+              aria-hidden="true"
+              value={outKey}
+              onChange={(e) => chooseReceive(e.target.value)}
+            >
+              {options.map((o) => (
+                <option key={o.key} value={o.key}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <TokenSheet
+            caption="You receive"
+            value={outKey}
+            options={choices}
+            onChoose={chooseReceive}
           />
-        </label>
-        <button className="button secondary" onClick={() => void getQuote()}>
+          {/* Mirror of "Expected output" in the quote below, which is the accessible figure. */}
+          <div className="amount-field amount-mirror" aria-hidden="true">
+            <Figure
+              className="amount-output"
+              empty={!(quote && signed && output)}
+              text={
+                quote && signed && output
+                  ? formatAmount(signed.amountOut, output.token.decimals)
+                  : '\u2014'
+              }
+            />
+          </div>
+        </div>
+        <Disclosure
+          className="swap-settings"
+          defaultOpen={kept?.settingsOpen}
+          onToggle={(open) => note({ settingsOpen: open })}
+          summary={() => (
+            <>
+              <span className="settings-label">Settings</span>
+              <span className="chip">Slippage {slippage}%</span>
+              <span className="chip">Deadline {deadline} min</span>
+            </>
+          )}
+        >
+          <div className="swap-terms">
+            <label className="field-label">
+              Slippage tolerance (%)
+              <input
+                className="text-input"
+                data-field="slippage"
+                inputMode="decimal"
+                value={slippage}
+                onChange={(e) => (setSlippage(e.target.value), clear())}
+              />
+            </label>
+            <label className="field-label">
+              Deadline (minutes)
+              <input
+                className="text-input"
+                data-field="deadline"
+                inputMode="numeric"
+                value={deadline}
+                onChange={(e) => (setDeadline(e.target.value), clear())}
+              />
+            </label>
+            <p className="microcopy" aria-label="Slippage note">
+              Plan to lose up to this share of your output. Block order follows the tip paid, so
+              someone can trade just before and after you and keep the difference, up to your
+              minimum. Keep it low, and split large swaps.
+            </p>
+          </div>
+        </Disclosure>
+        <button
+          className="button secondary get-quote"
+          aria-busy={quoting || undefined}
+          onClick={() => {
+            // Presentation: the card shows that a quote is being read. getQuote itself is unchanged; on a snapshot
+            // past the age bound the card first asks for a newer block (R328-3P-2).
+            quoteOrRenew();
+          }}
+        >
+          {quoting ? (
+            <LoaderCircle size={16} className="spin" aria-hidden="true" />
+          ) : (
+            quote && <RefreshCw size={14} aria-hidden="true" className="requote-icon" />
+          )}
           Get quote
         </button>
+        {renewedBy &&
+          freshness &&
+          // Until the user changes the form the renewal was made for.
+          kept?.inKey === inKey &&
+          kept.outKey === outKey &&
+          kept.amount === amount &&
+          kept.slippage === slippage &&
+          kept.deadline === deadline && (
+          <p className="microcopy renewal-note" role="status" data-testid="renewal-note">
+            {renewalText(renewedBy, freshness.maxAgeMs)}
+          </p>
+        )}
       </div>
       {balances && (
-        <p className="microcopy" aria-label="Finalized balances">
-          Your balances at finalized block {snapshot.finalized.number.toString()}:{' '}
+        <p className="microcopy balances-line" aria-label={`${settledCapital()} balances`}>
+          Your balances at {wording.settled} block {snapshot.finalized.number.toString()}:{' '}
           {options
             .map((o) =>
               o.native
@@ -1241,8 +2137,15 @@ function SwapPanel({
         </p>
       )}
       {quoteNote && (
-        <p className="form-error" role="alert">
-          {quoteNote}
+        <p className="form-error" role="alert" data-kind={quoteFailure?.kind}>
+          {quoteFailure && <strong className="alert-title">{quoteFailure.title}. </strong>}
+          {worded(quoteNote)}
+          {quoteFailure && <span className="alert-advice"> {quoteFailure.quoteAdvice}</span>}
+          {quoteFailure?.refresh && onRefresh && (
+            <button type="button" className="button secondary" onClick={onRefresh}>
+              <RefreshCw size={16} aria-hidden="true" /> Refresh
+            </button>
+          )}
         </p>
       )}
       {blocked.length > 0 && (
@@ -1254,92 +2157,123 @@ function SwapPanel({
           ))}
         </ul>
       )}
+      {pendingSwap.storageProblem && (
+        <p role="alert" className="form-error">
+          {worded(pendingSwap.storageProblem)} No new transaction can be sent.
+        </p>
+      )}
+      {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
+      {pendingSwap.open && (
+        <>
+          {staleAlerts}
+          {nextLine}
+          {activityBlock}
+          {beside(recoveryBlock)}
+        </>
+      )}
       {quote && signed && input && output && (
         <>
-          <dl className="detail-list" aria-label="Quote">
-            <dt>Route</dt>
-            <dd>{signed.path.map(symbolOf).join(' → ')}</dd>
-            <dt>Amount in</dt>
-            <dd>
-              {formatAmount(quote.amountIn, input.token.decimals)} {input.label}
-            </dd>
-            <dt>Expected output</dt>
-            <dd>
-              {formatAmount(signed.amountOut, output.token.decimals)} {output.label}
-            </dd>
-            <dt>Minimum received</dt>
-            <dd>
-              {formatAmount(signed.minimumOut, output.token.decimals)} {output.label} ({slippage}%
-              slippage{tightened && ' from the better price at the latest block'})
-            </dd>
-            <dt>Quoted at</dt>
-            <dd>
-              {reconfirmed
-                ? `Latest block ${quote.blockNumber.toString()}, not finalized; you reconfirmed this price`
-                : `Finalized block ${quote.blockNumber.toString()}`}{' '}
-              (by the deployed lens, within the reserve caps)
-              {tightened &&
-                `. The latest block returns more than block ${quote.blockNumber.toString()}, so the expected output and minimum use the latest price`}
-            </dd>
-            <dt>Reserve cap headroom used</dt>
-            <dd>
-              {uses.length === 0
-                ? 'No capped reserve on this route'
-                : uses
-                    .map(
-                      (u) =>
-                        `${u.pool.token0.symbol}/${u.pool.token1.symbol}: ${percent(u.bps, 10_000n)}% of the ${u.token.symbol} headroom`,
-                    )
-                    .join('; ')}
-            </dd>
-            <dt>Deadline</dt>
-            <dd>{deadlineMinutes} minutes after you confirm (wall-clock seconds)</dd>
-          </dl>
-          {check?.status === 'worse' && (
-            <div className="form-error" role="alert" aria-label="Stale quote">
-              <AlertTriangle size={16} /> The price moved after the finalized block. At the latest
-              block this swap returns {formatAmount(check.latest.amountOut, output.token.decimals)}{' '}
-              {output.label}, {percent(check.worseBps, 10_000n)}% worse than this quote and below
-              your minimum received, so it would revert. Reconfirm to use the latest price, or
-              change the amount.{' '}
-              <button className="button secondary" onClick={reconfirm}>
-                Reconfirm at the latest price
-              </button>
-            </div>
-          )}
-          {check?.status === 'unavailable' && (
-            <p className="form-error" role="alert" aria-label="Stale quote">
-              At the latest block no route can fill this amount, so the swap would revert. Lower the
-              amount or get a new quote.
-            </p>
-          )}
+          <Expander
+            className="quote-box"
+            more="All quote details"
+            less="Fewer quote details"
+            defaultExpanded={kept?.detailsOpen}
+            onToggle={(open) => note({ detailsOpen: open })}
+          >
+            <dl className="detail-list quote-list" aria-label="Quote">
+              {rate !== null && (
+                <>
+                  <dt className="glance">Rate</dt>
+                  <dd className="glance">
+                    1 {input.label} = {formatAmount(rate, output.token.decimals)} {output.label}
+                  </dd>
+                </>
+              )}
+              <dt>Route</dt>
+              <dd>{signed.path.map(symbolOf).join(' → ')}</dd>
+              <dt>Amount in</dt>
+              <dd>
+                {formatAmount(quote.amountIn, input.token.decimals)} {input.label}
+              </dd>
+              <dt>Expected output</dt>
+              <dd>
+                {formatAmount(signed.amountOut, output.token.decimals)} {output.label}
+              </dd>
+              <dt className="glance">Minimum received</dt>
+              <dd className="glance">
+                {formatAmount(signed.minimumOut, output.token.decimals)} {output.label} ({slippage}%
+                slippage{tightened && ' from the better price at the latest block'})
+              </dd>
+              <dt className={reconfirmed || tightened ? 'glance' : undefined}>Quoted at</dt>
+              <dd className={reconfirmed || tightened ? 'glance' : undefined}>
+                {reconfirmed
+                  ? `Latest block ${quote.blockNumber.toString()}, not ${wording.settled}; you reconfirmed this price`
+                  : `${settledCapital()} block ${quote.blockNumber.toString()}`}{' '}
+                (by the deployed lens, within the reserve caps)
+                {tightened &&
+                  `. The latest block returns more than block ${quote.blockNumber.toString()}, so the expected output and minimum use the latest price`}
+              </dd>
+              <dt>Reserve cap headroom used</dt>
+              <dd>
+                {uses.length === 0
+                  ? 'No capped reserve on this route'
+                  : uses
+                      .map(
+                        (u) =>
+                          `${u.pool.token0.symbol}/${u.pool.token1.symbol}: ${percent(u.bps, 10_000n)}% of the ${u.token.symbol} headroom`,
+                      )
+                      .join('; ')}
+              </dd>
+              <dt>Deadline</dt>
+              <dd>{deadlineMinutes} minutes after you confirm (wall-clock seconds)</dd>
+            </dl>
+            {depth && <PoolDepth depth={depth} />}
+          </Expander>
+          {!pendingSwap.open && staleAlerts}
           {check?.status === 'unknown' && (
             <p className="microcopy" role="status" aria-label="Stale quote">
-              The latest block could not be read, so this finalized quote was not cross-checked.
-              Your minimum received still applies on chain.
+              The latest block could not be read, so this {wording.settled} quote was not
+              cross-checked. Your minimum received still applies on chain.
             </p>
           )}
-          <div className="notice" aria-label="Revert conditions">
-            The swap can still revert, and then only the gas is spent, if before it executes: other
-            swaps or deposits fill a pool past its reserve cap (BDEX: RESERVE_CAP); the price moves
-            more than your slippage tolerance (BDEX: INSUFFICIENT_OUTPUT_AMOUNT); or the deadline
-            passes (BDEX: EXPIRED).
-            {uses.some((u) => u.bps >= 8_000n) &&
-              ' This swap uses most of the remaining cap headroom, so a revert is more likely.'}
+          {/* The same sentence, word for word, set as a lead and its three conditions. */}
+          <div className="notice revert-panel" aria-label="Revert conditions">
+            <span className="revert-lead">
+              The swap can still revert, and then only the gas is spent, if before it executes:
+            </span>{' '}
+            <span className="revert-item">
+              <Layers size={15} aria-hidden="true" />
+              other swaps or deposits fill a pool past its reserve cap (BDEX: RESERVE_CAP);
+            </span>{' '}
+            <span className="revert-item">
+              <TrendingDown size={15} aria-hidden="true" />
+              the price moves more than your slippage tolerance (BDEX: INSUFFICIENT_OUTPUT_AMOUNT);
+            </span>{' '}
+            <span className="revert-item">
+              <TimerOff size={15} aria-hidden="true" />
+              or the deadline passes (BDEX: EXPIRED).
+            </span>
+            {uses.some((u) => u.bps >= 8_000n) && (
+              <span className="revert-more">
+                {' '}
+                This swap uses most of the remaining cap headroom, so a revert is more likely.
+              </span>
+            )}
           </div>
           {buysHeld && (
             <HoldSwapNotice hold={hold} accepted={holdAccepted} onAccept={setHoldAccepted} />
           )}
           {shortBalance && (
             <p className="form-error" role="alert">
-              Your finalized {input.label} balance ({formatAmount(balanceIn!, input.token.decimals)}
-              ) is below the amount; the swap would revert.
+              Your {wording.settled} {input.label} balance (
+              {formatAmount(balanceIn!, input.token.decimals)}) is below the amount; the swap would
+              revert.
             </p>
           )}
         </>
       )}
       {!wallet.account ? (
-        <div className="wallet-options">
+        <div className="wallet-options" data-wallet-connect tabIndex={-1}>
           {wallet.wallets.length === 0 && <p className="muted">No browser wallet found.</p>}
           {wallet.wallets.map((w) => (
             <button
@@ -1354,8 +2288,8 @@ function SwapPanel({
           {wallet.error && <p className="form-error">{wallet.error}</p>}
         </div>
       ) : (
-        <div className="devnet4-actions">
-          <p className="muted">
+        <div className="devnet4-actions swap-actions">
+          <p className="muted wallet-line">
             Wallet <code>{wallet.account.address}</code> on chain{' '}
             {BigInt(wallet.account.chainId).toString()}
             {!onChain && ` (it will be asked to switch to chain ${d.chainId})`}
@@ -1388,73 +2322,18 @@ function SwapPanel({
               holdBlocksSend ||
               pendingSwap.open
             }
-            onClick={() => void swap(quote!)}
+            onClick={() => (stale() ? renewFirst('swap') : void swap(quote!))}
           >
             Swap
           </button>
         </div>
       )}
-      {pendingSwap.storageProblem && (
-        <p role="alert" className="form-error">
-          {pendingSwap.storageProblem} No new transaction can be sent.
-        </p>
-      )}
-      {pendingSwap.unreadable && <DiscardUnreadable pendingSwap={pendingSwap} />}
-      {tracked?.intent && (tracked.state === 'pending' || tracked.state === 'unknown') && (
-        <SubmissionRecovery key={tracked.intent.id} pendingSwap={pendingSwap} />
-      )}
-      {history.some((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash) && (
-        <ol className="devnet4-steps" aria-label="Earlier transactions">
-          {history
-            .filter((h) => !steps.some((s) => s.hash === h.hash) && tracked?.hash !== h.hash)
-            .map((h) => (
-              <li key={h.hash} data-state={h.state}>
-                <strong>{h.label}</strong>: {h.state}{' '}
-                <ExplorerLink network={network} kind="tx" value={h.hash} />
-                {h.detail && <span className="muted"> {h.detail}</span>}
-              </li>
-            ))}
-        </ol>
-      )}
-      {(steps.length > 0 || tracked) && (
-        <ol className="devnet4-steps" aria-label="Transactions">
-          {steps.map((s, i) => (
-            <li key={i} data-state={s.state}>
-              <strong>{s.label}</strong>: {s.state}
-              {s.hash && (
-                <>
-                  {' '}
-                  <ExplorerLink network={network} kind="tx" value={s.hash} />
-                </>
-              )}
-              {s.detail && <span className="muted"> {s.detail}</span>}
-            </li>
-          ))}
-          {tracked && (
-            <li data-state={tracked.state}>
-              <strong>{tracked.label}</strong>: {tracked.state}{' '}
-              {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
-              <span className="muted"> {tracked.detail}</span>
-              {tracked.state === 'failed' && tracked.retry && tracked.cause && (
-                <p className="notice" role="status" aria-label="Why the swap reverted">
-                  {revertText(tracked.retry, tracked.cause)}
-                  {offer?.kind === 'retry' && (
-                    <>
-                      {' '}
-                      <button
-                        className="button secondary"
-                        disabled={busy || pendingSwap.open || attempt === 2}
-                        onClick={() => retryAt(tracked.retry!, offer.slippageBps)}
-                      >
-                        Retry once at {(offer.slippageBps / 100).toFixed(2)}%
-                      </button>
-                    </>
-                  )}
-                </p>
-              )}
-            </li>
-          )}
-        </ol>
+      {!pendingSwap.open && (
+        <>
+          {nextLine}
+          {recoveryBlock}
+          {activityBlock}
+        </>
       )}
     </div>
   );
@@ -1479,8 +2358,8 @@ function DiscardUnreadable({ pendingSwap }: { pendingSwap: ReturnType<typeof use
         swap again, both swaps execute. Before you discard: open your wallet&apos;s activity, reject
         every open request from this site, and make sure no transaction of this account is pending.
         The safe alternative is to wait: the longest swap deadline this page allows is 180 minutes,
-        and once a finalized {wording.block} is later than that after your last request, no swap
-        from it can execute. This makes no wallet request and sends nothing.
+        and once a {wording.settled} {wording.block} is later than that after your last request, no
+        swap from it can execute. This makes no wallet request and sends nothing.
       </p>
       <label>
         <input
@@ -1525,7 +2404,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     try {
       await pendingSwap.recover(hash);
       setNote(
-        'The transaction matches the saved intent. Waiting for its canonical finalized receipt.',
+        worded(
+          'The transaction matches the saved intent. Waiting for its canonical finalized receipt.',
+        ),
       );
     } catch (error) {
       setNote(
@@ -1542,7 +2423,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     try {
       const candidate = await pendingSwap.reviewInWallet();
       setNote(
-        `Wallet returned ${candidate}. All known candidates remain tracked until one is canonically finalized.`,
+        worded(
+          `Wallet returned ${candidate}. All known candidates remain tracked until one is canonically finalized.`,
+        ),
       );
     } catch (error) {
       setNote(
@@ -1557,7 +2440,9 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     setBusy(true);
     setReplacement(null);
     setNote(
-      'Checking whether this different transaction canonically finalized at the original nonce…',
+      worded(
+        'Checking whether this different transaction canonically finalized at the original nonce…',
+      ),
     );
     try {
       setReplacement(await pendingSwap.checkReplacement(hash));
@@ -1584,22 +2469,35 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
     }
   };
   return (
-    <div className="notice" aria-label="Recover transaction tracking">
+    <div className="notice hold-recovery" aria-label="Recover transaction tracking">
       <p>
-        Check your wallet activity on this chain and copy the transaction hash. This check only
-        restores tracking after matching the saved sender, destination, call, value and nonce. It
-        never sends or replaces a transaction. Time passing or an empty explorer result cannot clear
-        the hold.
+        Check your wallet activity on this chain and copy the transaction hash. Time passing or an
+        empty explorer result cannot clear the hold.
       </p>
       <p>
         A swap for which your wallet returned no hash ends in one of two ways only: its hash, found
-        in your wallet activity and checked here, or its deadline passing in a finalized block
-        (nothing to do: the page then releases the hold by itself). Another transaction at the same
-        nonce does not release it, because an open wallet request could still be signed at another
-        nonce. For an approval or a skim your wallet never signed, send any other transaction from
-        this account, paste its hash and use the replacement check. Nothing else on this page clears
-        a hold.
+        in your wallet activity and checked here, or its deadline passing in a {wording.settled}{' '}
+        block (nothing to do: the page then releases the hold by itself). Nothing else on this page
+        clears a hold.
       </p>
+      <Disclosure clip className="hold-help" summary={() => 'What can I do?'}>
+        <p>
+          This check only restores tracking after matching the saved sender, destination, call,
+          value and nonce. It never sends or replaces a transaction.
+        </p>
+        <p>
+          Another transaction at the same nonce does not release it, because an open wallet request
+          could still be signed at another nonce. For an approval or a skim your wallet never
+          signed, send any other transaction from this account, paste its hash and use the
+          replacement check.
+        </p>
+        <p>
+          If you cancelled or replaced the request in your wallet with a different call, check that
+          transaction separately. Only a canonical {wording.settled} receipt at the original sender
+          and nonce can establish that the original request cannot execute. This check makes no
+          wallet request.
+        </p>
+      </Disclosure>
       <label>
         Transaction hash from wallet activity
         <input
@@ -1622,11 +2520,6 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       >
         Check transaction hash
       </button>
-      <p>
-        If you cancelled or replaced the request in your wallet with a different call, check that
-        transaction separately. Only a canonical finalized receipt at the original sender and nonce
-        can establish that the original request cannot execute. This check makes no wallet request.
-      </p>
       <button
         className="button secondary"
         disabled={busy || !hash.trim() || !!pendingSwap.storageProblem}
@@ -1637,10 +2530,10 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
       {replacement && (
         <div className="notice" aria-label="Verified replacement">
           <p>
-            A different transaction finalized at nonce {replacement.nonce}. The original request
-            cannot execute on this canonical chain. This is evidence of replacement, not successful
-            execution of the original request. Closing this hold only updates this browser; it sends
-            nothing.
+            A different transaction {wording.settled} at nonce {replacement.nonce}. The original
+            request cannot execute on this canonical chain. This is evidence of replacement, not
+            successful execution of the original request. Closing this hold only updates this
+            browser; it sends nothing.
           </p>
           <dl>
             <dt>Replacement hash</dt>
@@ -1653,7 +2546,7 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
             <dd>{replacement.value}</dd>
             <dt>Calldata</dt>
             <dd style={{ overflowWrap: 'anywhere' }}>{replacement.data}</dd>
-            <dt>Canonical finalized inclusion</dt>
+            <dt>Canonical {wording.settled} inclusion</dt>
             <dd>Block {replacement.blockNumber}</dd>
             <dt>Replacement receipt status</dt>
             <dd>{replacement.receiptStatus}</dd>
@@ -1696,7 +2589,7 @@ function SubmissionRecovery({ pendingSwap }: { pendingSwap: ReturnType<typeof us
           </button>
         </details>
       )}
-      {pendingSwap.review?.problem && <p>{pendingSwap.review.problem}</p>}
+      {pendingSwap.review?.problem && <p>{worded(pendingSwap.review.problem)}</p>}
       {note && <p role="status">{note}</p>}
     </div>
   );

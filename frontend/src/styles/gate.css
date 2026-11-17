@@ -1,0 +1,1911 @@
+/*
+ * The gate (see ../../DESIGN.md, "Art direction"). Loaded after postern.css; presentation only.
+ *
+ * The swap card is the gate: an arch of dressed stones with the lamp on its keystone. The lamp is the page's
+ * state light (gate/lamp.ts names the state, this file turns it into light) and the wall around the gate is lit
+ * from it. Dark is the wall at night; light is the same wall by day. No text-transform anywhere. Everything that
+ * moves stops under prefers-reduced-motion (the block at the end), and no state is shown by motion alone.
+ */
+
+/* The lamp's level (0 unlit to 1 lit) and colour are typed, so light can ease between states. */
+@property --lamp-level {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0.22;
+}
+@property --lamp-color {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: #c8fa72;
+}
+
+/* ---------- The lamp's states ---------- */
+/* Set where light is drawn (the arch, the wall) so a pulse restyles those two small subtrees only. */
+.gate-arch,
+.wall-light {
+  --lamp-level: 0.22;
+  --lamp-color: var(--net);
+  transition:
+    --lamp-level var(--t-lamp) var(--ease),
+    --lamp-color var(--t-lamp) var(--ease);
+}
+[data-lamp='kindling'] > .gate-arch,
+.app-shell:has([data-lamp='kindling']) > .wall-light {
+  --lamp-level: 0.6;
+  animation: lamp-kindle 1.3s ease-in-out infinite;
+}
+[data-lamp='lit'] > .gate-arch,
+.app-shell:has([data-lamp='lit']) > .wall-light {
+  --lamp-level: 1;
+}
+[data-lamp='pending'] > .gate-arch,
+.app-shell:has([data-lamp='pending']) > .wall-light {
+  --lamp-level: 0.85;
+  animation: lamp-breathe 3.4s ease-in-out infinite;
+}
+[data-lamp='settled'] > .gate-arch,
+.app-shell:has([data-lamp='settled']) > .wall-light {
+  --lamp-level: 1;
+  animation: lamp-settle 1.6s var(--ease) 1;
+}
+[data-lamp='warn'] > .gate-arch,
+.app-shell:has([data-lamp='warn']) > .wall-light {
+  --lamp-level: 0.8;
+  --lamp-color: var(--warn);
+}
+[data-lamp='danger'] > .gate-arch,
+.app-shell:has([data-lamp='danger']) > .wall-light {
+  --lamp-level: 0.8;
+  --lamp-color: var(--danger);
+}
+@keyframes lamp-kindle {
+  0% {
+    --lamp-level: 0.3;
+  }
+  22% {
+    --lamp-level: 0.66;
+  }
+  36% {
+    --lamp-level: 0.46;
+  }
+  62% {
+    --lamp-level: 0.86;
+  }
+  78% {
+    --lamp-level: 0.6;
+  }
+  100% {
+    --lamp-level: 0.3;
+  }
+}
+@keyframes lamp-breathe {
+  0%,
+  100% {
+    --lamp-level: 1;
+  }
+  50% {
+    --lamp-level: 0.5;
+  }
+}
+@keyframes lamp-settle {
+  0% {
+    --lamp-level: 0.6;
+  }
+  30% {
+    --lamp-level: 1.5;
+  }
+  100% {
+    --lamp-level: 1;
+  }
+}
+
+/* ---------- The wall ---------- */
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  background-image:
+    var(--grain), linear-gradient(to bottom, transparent 0, var(--bg) 760px), var(--masonry);
+  background-repeat: repeat, no-repeat, repeat;
+  background-size:
+    180px 180px,
+    100% 100%,
+    176px 96px;
+  background-position:
+    0 0,
+    0 0,
+    50% 66px;
+}
+/* Courses of the wall that catch the lamp, and the pool of light itself, placed by the gate (--lamp-x/y). */
+.wall-light {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  display: none;
+  overflow: hidden;
+  pointer-events: none;
+}
+.app-shell:has(.gate-arch) > .wall-light {
+  display: block;
+}
+.wall-light::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--masonry-lit) 50% 66px / 176px 96px;
+  -webkit-mask-image: radial-gradient(
+    circle 680px at var(--lamp-x, 50%) var(--lamp-y, 300px),
+    #000 0,
+    rgb(0 0 0 / 0.45) 38%,
+    transparent 100%
+  );
+  mask-image: radial-gradient(
+    circle 680px at var(--lamp-x, 50%) var(--lamp-y, 300px),
+    #000 0,
+    rgb(0 0 0 / 0.45) 38%,
+    transparent 100%
+  );
+  opacity: calc(0.18 + var(--lamp-level) * 0.82);
+}
+.wall-light::after {
+  content: '';
+  position: absolute;
+  left: calc(var(--lamp-x, 50%) - 640px);
+  top: calc(var(--lamp-y, 300px) - 400px);
+  width: 1280px;
+  height: 1040px;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--lamp-color) 82%, transparent) 0,
+    color-mix(in srgb, var(--lamp-color) 30%, transparent) 20%,
+    color-mix(in srgb, var(--lamp-color) 9%, transparent) 52%,
+    transparent 100%
+  );
+  opacity: calc(var(--lamp-level) * var(--glow-wall));
+  mix-blend-mode: var(--glow-blend);
+}
+
+/* ---------- Header ---------- */
+.topbar {
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  backdrop-filter: blur(14px) saturate(1.2);
+}
+.lintel {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    var(--line) 0,
+    color-mix(in srgb, var(--net) 70%, var(--line)) 30%,
+    var(--net) 50%,
+    color-mix(in srgb, var(--net) 70%, var(--line)) 70%,
+    var(--line) 100%
+  );
+  box-shadow: 0 0 18px 0 color-mix(in srgb, var(--net) 30%, transparent);
+}
+.brand {
+  transition: opacity var(--t-fast) var(--ease);
+}
+.brand:hover .brand-lamp {
+  filter: drop-shadow(0 0 3px var(--net-bright));
+}
+.brand-lamp {
+  transition: filter var(--t-base) var(--ease);
+}
+.main-nav a {
+  display: inline-flex;
+  gap: var(--s-2);
+}
+.main-nav a[aria-current]::after {
+  background: var(--net);
+  box-shadow: 0 0 10px 0 color-mix(in srgb, var(--net) 60%, transparent);
+}
+.main-nav a .network-glyph {
+  opacity: 0.55;
+  filter: saturate(0.6);
+  transition:
+    opacity var(--t-fast) var(--ease),
+    filter var(--t-fast) var(--ease);
+}
+.main-nav a:hover .network-glyph,
+.main-nav a[aria-current] .network-glyph {
+  opacity: 1;
+  filter: none;
+}
+.network-button,
+.header-actions .wallet-button,
+.header-actions .button.connect-button {
+  border-color: var(--line-strong);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent);
+}
+.network-button:active,
+.header-actions .wallet-button:active,
+.icon-button:active {
+  transform: translateY(1px);
+}
+.network-tile,
+.network-row .network-tile {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.network-row .network-glyph {
+  width: 30px;
+  height: 30px;
+}
+.token-mark > .token-mark-badge.network-glyph {
+  position: absolute;
+  width: 46%;
+  height: 46%;
+}
+.network-row[aria-disabled] .network-tile {
+  background: none;
+}
+.network-row[aria-disabled] .network-glyph {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+.wallet-dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+}
+.theme-toggle svg {
+  transition: transform var(--t-slow) var(--ease-spring);
+}
+.theme-toggle:hover svg {
+  transform: rotate(28deg);
+}
+.theme-toggle:active svg {
+  transform: rotate(90deg) scale(0.86);
+}
+
+/* ---------- Marks ---------- */
+.token-mark {
+  --coin-hi: #4a5659;
+  --coin-lo: #232b2d;
+  --coin-ink: #f3f1ea;
+  position: relative;
+  display: inline-block;
+  flex: none;
+  line-height: 0;
+  filter: drop-shadow(0 1px 1.5px rgb(0 0 0 / 0.35));
+}
+.token-mark > svg:first-child {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.token-mark[data-asset='blch'] {
+  --coin-hi: #2f393c;
+  --coin-lo: #0e1213;
+}
+.token-mark[data-asset='usdc'] {
+  --coin-hi: #5b8be0;
+  --coin-lo: #244a94;
+}
+.token-mark[data-asset='usdt'] {
+  --coin-hi: #45b094;
+  --coin-lo: #1a6652;
+}
+.token-mark[data-asset='btc'] {
+  --coin-hi: #f6bb58;
+  --coin-lo: #bf7716;
+  --coin-ink: #1c1304;
+}
+.token-mark[data-asset='eth'] {
+  --coin-hi: #97a0d2;
+  --coin-lo: #4b5385;
+}
+.token-mark[data-asset='bnb'] {
+  --coin-hi: #f6d75c;
+  --coin-lo: #b98c0c;
+  --coin-ink: #1c1503;
+}
+.token-mark[data-asset='sol'] {
+  --coin-hi: #b196f5;
+  --coin-lo: #5a3fb3;
+}
+.token-mark[data-asset='xlm'] {
+  --coin-hi: #c3ccd3;
+  --coin-lo: #6a7780;
+  --coin-ink: #0b0e0f;
+}
+.token-mark[data-asset='trx'] {
+  --coin-hi: #f59488;
+  --coin-lo: #b0372d;
+}
+.coin-hi {
+  stop-color: var(--coin-hi);
+}
+.coin-lo {
+  stop-color: var(--coin-lo);
+}
+.coin-reeding {
+  fill: none;
+  stroke: rgb(255 255 255 / 0.3);
+  stroke-width: 1.1;
+  stroke-dasharray: 0.45 1.15;
+}
+.coin-rim {
+  fill: none;
+  stroke: rgb(255 255 255 / 0.2);
+  stroke-width: 0.6;
+}
+.coin-sheen {
+  fill: none;
+  stroke: rgb(255 255 255 / 0.55);
+  stroke-width: 1;
+  stroke-linecap: round;
+}
+.coin-ink {
+  fill: var(--coin-ink);
+}
+.coin-sill {
+  opacity: 0.6;
+}
+.coin-lamp {
+  fill: var(--net-bright);
+}
+.token-mark,
+.network-glyph {
+  container-type: size;
+}
+.mark-letter {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-weight: 650;
+  font-variation-settings: 'opsz' 18;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.mark-letter::after {
+  content: attr(data-glyph);
+}
+.coin-letter {
+  color: var(--coin-ink);
+  font-size: 52cqi;
+}
+.coin-letter[data-long] {
+  font-size: 39cqi;
+}
+.network-glyph-letter {
+  top: 16%;
+  color: #0b0e0f;
+  font-size: 54cqi;
+}
+.network-glyph-letter[data-long] {
+  font-size: 41cqi;
+}
+.token-mark-badge {
+  position: absolute;
+  left: 55%;
+  top: 55%;
+  width: 46%;
+  height: 46%;
+}
+.network-glyph {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  line-height: 0;
+}
+.network-glyph > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.network-glyph-body {
+  fill: var(--net-bright);
+  stroke: rgb(11 14 15 / 0.5);
+  stroke-width: 1;
+}
+.network-glyph-sheen {
+  fill: none;
+  stroke: rgb(255 255 255 / 0.6);
+  stroke-width: 1.1;
+  stroke-linecap: round;
+}
+.network-glyph-ink {
+  fill: #0b0e0f;
+}
+/* A token changing place (the chip's mark is redrawn): it turns like a coin. */
+.token-chip .token-mark {
+  animation: mark-turn 420ms var(--ease-spring);
+}
+@keyframes mark-turn {
+  from {
+    transform: rotateY(90deg) scale(0.8);
+  }
+}
+/* Preview screens: the same marks at the sizes those screens use. */
+.token-mark.token-icon,
+.token-mark.token-usdc,
+.token-mark.token-weth,
+.token-mark.token-ustav {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: none;
+}
+.token-mark.token-icon.small {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+}
+.pair-icons .token-mark.token-icon,
+.position-token > .token-mark.token-icon {
+  width: 37px;
+  height: 37px;
+}
+.pair-icons .token-icon + .token-icon {
+  box-shadow: none;
+}
+.portfolio-title .token-mark.token-icon {
+  width: 46px;
+  height: 46px;
+}
+
+/* ---------- Page layout: the gate and the verification rail ---------- */
+.mainnet-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-4);
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.mainnet-page > * {
+  min-width: 0;
+}
+.mainnet-page[data-layout='gate'] {
+  max-width: 520px;
+}
+/* Narrow: status, the gate, then what stands behind it. */
+.mainnet-page[data-layout='gate'] > .page-status {
+  order: -2;
+}
+.mainnet-page[data-layout='gate'] > .live-hero {
+  order: -1;
+}
+.mainnet-page[data-layout='column'] > .live-hero {
+  order: 1;
+}
+.mainnet-page[data-layout='column'] > .reference {
+  order: 2;
+}
+.mainnet-page[data-layout='column'] > .read-failure,
+.mainnet-page[data-layout='column'] > .confirmation-rule {
+  justify-self: start;
+  max-width: 720px;
+}
+.page-status {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s-3);
+}
+.page-status:empty {
+  display: none;
+}
+.page-status > * {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.page-status > p.finality-line.microcopy {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 36px;
+  padding: 0 var(--s-3) 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-arch);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  color: var(--text-2);
+  font-size: var(--text-small);
+  font-variant-numeric: tabular-nums;
+}
+.page-status > p.finality-line.microcopy svg {
+  color: var(--ok);
+}
+.page-status > .page-refresh {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 36px;
+  padding: 0 var(--s-3);
+  border-color: var(--line-strong);
+  border-radius: var(--r-arch);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  font-size: var(--text-small);
+}
+.page-refresh:hover svg {
+  transform: rotate(60deg);
+}
+.page-refresh svg {
+  transition: transform var(--t-slow) var(--ease);
+}
+.settle-jump {
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  color: var(--text-2);
+  font-size: var(--text-small);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+.settle-jump:hover {
+  color: var(--text);
+}
+.settle-jump svg {
+  color: var(--net);
+}
+
+/* The page's own words: a headline and one paragraph at the head of the rail. */
+.mainnet-page[data-layout='gate'] > .section-heading {
+  display: block;
+  margin: var(--s-5) 0 0;
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--line);
+}
+.mainnet-page[data-layout='gate'] > .section-heading h1 {
+  margin: var(--s-3) 0 var(--s-2);
+  font-size: clamp(1.625rem, 1.3rem + 1.2vw, 2.125rem);
+}
+.mainnet-page[data-layout='gate'] > .section-heading .muted {
+  max-width: 46ch;
+  font-size: var(--text-ui);
+  line-height: 1.62;
+  text-wrap: pretty;
+}
+.mainnet-page[data-layout='gate'] .section-heading .badge {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: var(--text-ui);
+  font-variant-caps: all-small-caps;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+}
+
+/* The trust strip is the rail's ledger: record, caps in use with their meters, the way into the details. */
+.trust-strip {
+  display: grid;
+  gap: 0;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  color: var(--text);
+  font-size: var(--text-small);
+  overflow: hidden;
+}
+.trust-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px var(--s-2);
+  min-height: 44px;
+  padding: 10px var(--s-4);
+  border-bottom: 1px solid var(--line);
+}
+.trust-item:first-child {
+  font-weight: 600;
+}
+.trust-meters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-2);
+  flex: 1 0 100%;
+}
+.trust-meters .cap-meter {
+  height: 4px;
+  margin: 2px 0 4px;
+  background: var(--surface-3);
+}
+.trust-meters .cap-meter::after {
+  background: linear-gradient(90deg, var(--text-3), var(--text));
+}
+.trust-details {
+  justify-content: space-between;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 var(--s-4);
+  border-radius: 0;
+  flex-direction: row-reverse;
+  transition: background var(--t-fast) var(--ease);
+}
+.trust-details svg {
+  color: var(--text-2);
+  transition: transform var(--t-fast) var(--ease);
+}
+.trust-details:hover svg {
+  transform: translateX(2px);
+  color: var(--text);
+}
+.confirmation-rule {
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  scroll-margin-top: calc(var(--header-h) + var(--s-4));
+}
+
+@media (min-width: 1060px) {
+  .mainnet-page[data-layout='gate'] {
+    /* Rows of the rail that are empty (no hold, no confirmation rule) leave no gap behind: spacing is the items'. */
+    row-gap: 0;
+    grid-template-columns: minmax(0, 480px) minmax(0, 392px);
+    grid-template-rows: auto auto auto auto auto 1fr;
+    justify-content: center;
+    align-items: start;
+    column-gap: clamp(48px, 6vw, 104px);
+    max-width: 1120px;
+  }
+  /* The status line heads the rail; page-wide alerts keep the full width above the gate. */
+  .mainnet-page[data-layout='gate'] > .page-status {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    grid-template-columns: subgrid;
+  }
+  .mainnet-page[data-layout='gate'] > .page-status > p.finality-line.microcopy,
+  .mainnet-page[data-layout='gate'] > .page-status > .page-refresh {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .mainnet-page[data-layout='gate'] > .page-status > .page-refresh {
+    justify-self: end;
+  }
+  .mainnet-page[data-layout='gate'] > .live-hero {
+    grid-column: 1;
+    grid-row: 2 / span 5;
+  }
+  .mainnet-page[data-layout='gate'] > .section-heading {
+    grid-column: 2;
+    grid-row: 2;
+    margin-top: 40px;
+    padding-top: 0;
+    border-top: 0;
+  }
+  .mainnet-page[data-layout='gate'] > .rail-slot {
+    grid-column: 2;
+    grid-row: 3;
+    margin-top: var(--s-5);
+  }
+  .mainnet-page[data-layout='gate'] > .confirmation-rule {
+    grid-column: 2;
+    grid-row: 4;
+    margin-top: var(--s-4);
+  }
+  /* The ledger travels with the gate: it holds under the header while the gate scrolls past (its grid area runs
+     down to the gate's foot, so it never leaves the gate's side). */
+  .mainnet-page[data-layout='gate'] > .trust-strip {
+    grid-column: 2;
+    grid-row: 5 / span 2;
+    align-self: start;
+    position: sticky;
+    top: calc(var(--header-h) + var(--s-4));
+    margin-top: var(--s-5);
+  }
+  .mainnet-page[data-layout='gate'] > .reference[data-mode='docked'] {
+    grid-column: 1 / -1;
+    grid-row: 7;
+    margin-top: var(--s-6);
+  }
+  .settle-jump {
+    display: none;
+  }
+}
+
+/* ---------- The gate ---------- */
+.live-hero {
+  position: relative;
+  justify-self: center;
+  width: 100%;
+  max-width: 480px;
+  container-type: inline-size;
+}
+.live-hero > .card.swap-card {
+  /* One design unit: the gate is drawn 480 wide and scales with its column. */
+  --u: calc(100cqi / 480);
+  --jamb: calc(10 * var(--u));
+  position: relative;
+  min-height: 420px;
+  margin-top: calc(176 * var(--u));
+  padding: 0 calc(var(--jamb) + var(--s-5)) var(--s-5);
+  border: 0;
+  border-bottom: calc(7 * var(--u)) solid var(--stone-3);
+  border-radius: 0 0 var(--r-gate) var(--r-gate);
+  background: var(--surface);
+  box-shadow:
+    inset 16px 0 20px -18px var(--recess),
+    inset -16px 0 20px -18px var(--recess),
+    0 0 0 1px var(--stone-edge),
+    var(--gate-shadow);
+}
+/* The jambs: courses of stone down both sides of the opening. */
+.live-hero > .card.swap-card::before,
+.live-hero > .card.swap-card::after {
+  content: '';
+  position: absolute;
+  top: calc(30 * var(--u));
+  bottom: 0;
+  width: var(--jamb);
+  background:
+    var(--grain),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 calc(72 * var(--u) - 1px),
+      var(--mortar) 0 calc(72 * var(--u))
+    ),
+    linear-gradient(to bottom, var(--stone-2), var(--stone-1));
+}
+.live-hero > .card.swap-card::before {
+  left: 0;
+  box-shadow: inset -1px 0 0 var(--stone-edge);
+}
+.live-hero > .card.swap-card::after {
+  right: 0;
+  box-shadow: inset 1px 0 0 var(--stone-edge);
+}
+.swap-card > :not(.gate-arch) {
+  position: relative;
+  z-index: 1;
+}
+.gate-arch {
+  position: absolute;
+  z-index: 0;
+  left: 0;
+  top: calc(-180 * var(--u));
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  pointer-events: none;
+  filter: drop-shadow(0 -1px 0 color-mix(in srgb, var(--text) 5%, transparent));
+}
+.gate-opening {
+  fill: var(--surface);
+}
+.gate-stone {
+  stroke: var(--mortar);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+.gate-stone-1 {
+  fill: var(--stone-1);
+}
+.gate-stone-2 {
+  fill: var(--stone-2);
+}
+.gate-stone-3 {
+  fill: var(--stone-3);
+}
+.gate-keystone {
+  fill: var(--stone-2);
+}
+.gate-shade {
+  pointer-events: none;
+}
+.shade-lo {
+  stop-color: #000;
+  stop-opacity: 0.34;
+}
+.shade-hi {
+  stop-color: #fff;
+  stop-opacity: 0.05;
+}
+.gate-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--text) 22%, transparent);
+  stroke-width: 1;
+}
+.gate-fall {
+  opacity: calc(var(--lamp-level) * 0.95);
+  mix-blend-mode: var(--glow-blend);
+}
+.gate-wash {
+  opacity: var(--lamp-level);
+  mix-blend-mode: var(--glow-blend);
+}
+.gate-rim {
+  fill: none;
+  stroke-width: 1.6;
+  opacity: calc(0.2 + var(--lamp-level) * 0.8);
+}
+.gate-soffit {
+  fill: none;
+  stroke: var(--stone-edge);
+  stroke-width: 1;
+  /* The arch's thickness: its underside throws a soft shadow onto the opening. */
+  filter: drop-shadow(0 3px 3px var(--recess));
+}
+.lamp-stop {
+  stop-color: var(--lamp-color);
+}
+.recess-stop {
+  stop-color: var(--recess);
+}
+.glass-core {
+  stop-color: color-mix(
+    in srgb,
+    #fff calc(min(1, var(--lamp-level)) * 42%),
+    color-mix(
+      in srgb,
+      var(--lamp-color) calc(min(1, var(--lamp-level)) * 100%),
+      var(--lamp-glass-off)
+    )
+  );
+}
+.glass-edge {
+  stop-color: color-mix(
+    in srgb,
+    var(--lamp-color) calc(30% + min(1, var(--lamp-level)) * 66%),
+    var(--lamp-glass-off)
+  );
+}
+.lamp-glass {
+  stroke: var(--lamp-iron);
+  stroke-width: 0.8;
+}
+.lamp-iron {
+  fill: var(--lamp-iron);
+}
+.lamp-bars {
+  fill: none;
+  stroke: var(--lamp-iron);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+}
+.lamp-flame {
+  fill: #fffdf0;
+  opacity: calc(var(--lamp-level) * 1.15 - 0.2);
+}
+.lamp-bloom {
+  fill: var(--lamp-color);
+  opacity: calc(var(--lamp-level) * var(--glow-halo));
+  filter: blur(11px);
+  mix-blend-mode: var(--glow-blend);
+}
+.lamp-ring {
+  fill: none;
+  stroke: var(--ok);
+  stroke-width: 1.4;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+/* In flight: a dashed ring stands round the lamp, so the state is visible without motion; it turns slowly. */
+[data-lamp='pending'] .lamp-ring {
+  stroke: var(--lamp-color);
+  stroke-dasharray: 3 4.5;
+  opacity: 0.85;
+  animation: lamp-orbit 9s linear infinite;
+}
+/* Attention or failure: a solid ring in the state's colour. */
+[data-lamp='warn'] .lamp-ring,
+[data-lamp='danger'] .lamp-ring {
+  stroke: var(--lamp-color);
+  opacity: 0.7;
+}
+@keyframes lamp-orbit {
+  to {
+    transform: rotate(1turn);
+  }
+}
+[data-lamp='settled'] .lamp-ring {
+  opacity: 0.75;
+  animation: lamp-ring 1.6s var(--ease) 1 backwards;
+}
+@keyframes lamp-ring {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+/* The title stands in the tympanum, under the lamp. */
+.mainnet-page .swap-card > h2 {
+  display: block;
+  height: 36px;
+  margin: calc(-46 * var(--u)) 0 calc(62 * var(--u) - 36px);
+  font-family: var(--font-display);
+  font-size: clamp(1.25rem, calc(27 * var(--u)), 1.625rem);
+  font-weight: 480;
+  font-variation-settings: 'opsz' 72;
+  letter-spacing: -0.01em;
+  line-height: 36px;
+  text-align: center;
+}
+
+/* ---------- The two legs ---------- */
+.swap-leg,
+.swap-leg[data-leg] {
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: 'caption caption' 'amount token';
+  align-items: center;
+  gap: 0 var(--s-3);
+  padding: var(--s-3) var(--s-3) 10px var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-3);
+  background: var(--surface-2);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent),
+    inset 0 -18px 24px -24px rgb(0 0 0 / 0.35);
+  transition:
+    border-color var(--t-base) var(--ease),
+    box-shadow var(--t-base) var(--ease);
+}
+.swap-leg:focus-within {
+  border-color: color-mix(in srgb, var(--net) 70%, var(--line-strong));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text) 4%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--net) 16%, transparent);
+}
+[data-lamp='lit'] .swap-leg[data-leg='receive'] {
+  border-color: color-mix(in srgb, var(--net) 46%, var(--line-strong));
+}
+.swap-leg .token-field {
+  color: var(--text-2);
+  font-size: var(--text-small);
+  font-weight: 500;
+}
+.swap-leg .amount-field {
+  container-type: inline-size;
+}
+.swap-leg .amount-input,
+.swap-leg .amount-output {
+  min-height: 60px;
+  font-family: var(--font-ui);
+  font-size: clamp(1.125rem, calc(100cqi / (var(--chars, 1) * 0.64)), var(--text-numeral));
+  font-weight: 560;
+  font-feature-settings: 'tnum', 'cv11', 'ss03';
+  letter-spacing: -0.035em;
+  line-height: 60px;
+  overflow: visible;
+  text-overflow: clip;
+}
+/* A figure too long for one line at the smallest size wraps; it is never cut. */
+.swap-leg .amount-output {
+  display: block;
+  min-height: 60px;
+  line-height: 1.12;
+  padding: calc((60px - 1.12em) / 2) 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.swap-leg .amount-input {
+  caret-color: var(--net);
+  text-overflow: clip;
+}
+.figure-char {
+  display: inline-block;
+  animation: figure-roll 440ms var(--ease) backwards;
+  animation-delay: calc(var(--i) * 22ms);
+}
+.figure[data-empty] .figure-char {
+  animation: none;
+}
+@keyframes figure-roll {
+  from {
+    opacity: 0;
+    transform: translateY(0.4em);
+    filter: blur(3px);
+  }
+}
+.swap-card[data-quoting] .amount-output {
+  width: 62%;
+  min-height: 0;
+  height: 36px;
+  margin: 12px 0;
+  padding: 0;
+  border-radius: var(--r-2);
+  background:
+    linear-gradient(
+        100deg,
+        transparent 30%,
+        color-mix(in srgb, var(--net) 26%, transparent) 50%,
+        transparent 70%
+      )
+      0 0 / 220% 100%,
+    var(--surface-3);
+  color: transparent;
+  animation: quote-sweep 1.1s linear infinite;
+}
+@keyframes quote-sweep {
+  from {
+    background-position:
+      120% 0,
+      0 0;
+  }
+  to {
+    background-position:
+      -100% 0,
+      0 0;
+  }
+}
+.token-chip {
+  gap: var(--s-2);
+  min-height: 44px;
+  padding: 0 10px 0 8px;
+  border-color: var(--line-strong);
+  background: var(--surface);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent),
+    0 1px 2px rgb(0 0 0 / 0.2);
+  transition:
+    border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
+}
+.token-chip:hover {
+  border-color: var(--control-border);
+  background: var(--surface-3);
+}
+.token-chip:active {
+  transform: scale(0.97);
+}
+.token-chip > svg {
+  transition: transform var(--t-fast) var(--ease);
+}
+.token-chip:hover > svg {
+  transform: translateY(1px);
+}
+
+/* The gate between the legs exchanges them. */
+.swap-gate {
+  width: 48px;
+  height: 44px;
+  margin: -13px auto;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 24px 24px 8px 8px;
+  background: var(--surface);
+  box-shadow: 0 0 0 4px var(--surface);
+  color: var(--net);
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.swap-gate > * {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--t-base) var(--ease),
+    transform var(--t-slow) var(--ease-spring);
+}
+.swap-gate .gate-glyph {
+  width: 22px;
+  height: 22px;
+}
+.swap-gate-arrows {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.6);
+  color: var(--text);
+}
+.swap-gate:hover,
+.swap-gate:focus-visible {
+  border-color: var(--net);
+  background: var(--surface-2);
+}
+.swap-gate:hover .gate-glyph,
+.swap-gate:focus-visible .gate-glyph {
+  opacity: 0;
+  transform: scale(0.7);
+}
+.swap-gate:hover .swap-gate-arrows,
+.swap-gate:focus-visible .swap-gate-arrows {
+  opacity: 1;
+  transform: none;
+}
+.swap-gate:active .swap-gate-arrows {
+  transform: rotate(180deg);
+}
+.swap-gate-arrows {
+  width: 18px;
+  height: 18px;
+}
+
+/* Settings and the quote request share a line once a quote is on the card. */
+.swap-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--s-2);
+}
+.swap-form > * {
+  grid-column: 1 / -1;
+}
+.swap-settings {
+  margin-top: var(--s-2);
+}
+.swap-settings .disclosure-toggle {
+  min-height: 40px;
+}
+.chip {
+  white-space: nowrap;
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+.swap-card[data-phase='quoted'] .swap-settings:not([data-open]) {
+  grid-column: 1;
+}
+.swap-card[data-phase='quoted'] .settings-label {
+  display: none;
+}
+.swap-card[data-phase='quoted'] .swap-settings .disclosure-chevron {
+  margin-left: auto;
+}
+.swap-card[data-phase='quoted'] .swap-settings:not([data-open]) + .get-quote {
+  grid-column: 2;
+}
+.swap-card[data-phase='quoted'] .get-quote {
+  justify-self: end;
+  align-self: center;
+  width: auto;
+  min-height: 36px;
+  margin-top: var(--s-2);
+  padding: 0 var(--s-3);
+  border-color: var(--line-strong);
+  border-radius: var(--r-arch);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+.swap-card[data-phase='quoted'] .get-quote:hover:not(:disabled) {
+  border-color: var(--control-border);
+  background: var(--surface-3);
+}
+.swap-card[data-phase='quoted'] .get-quote:hover .requote-icon {
+  transform: rotate(120deg);
+}
+.requote-icon {
+  color: var(--net);
+  transition: transform var(--t-slow) var(--ease);
+}
+
+/* The one primary action: lit by the lamp. */
+.button.primary,
+.swap-card[data-phase='form'] .get-quote {
+  position: relative;
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0.16), transparent 55%), var(--net);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.42),
+    inset 0 -2px 0 rgb(0 0 0 / 0.16),
+    0 1px 2px rgb(0 0 0 / 0.3),
+    0 10px 28px -12px color-mix(in srgb, var(--net) 70%, transparent);
+  letter-spacing: 0.005em;
+  transition:
+    transform var(--t-fast) var(--ease),
+    filter var(--t-fast) var(--ease),
+    box-shadow var(--t-base) var(--ease);
+}
+.button.primary:hover:not(:disabled),
+.swap-card[data-phase='form'] .get-quote:hover:not(:disabled) {
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0.16), transparent 55%), var(--net);
+  transform: translateY(-1px);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.42),
+    inset 0 -2px 0 rgb(0 0 0 / 0.16),
+    0 2px 4px rgb(0 0 0 / 0.3),
+    0 14px 32px -12px color-mix(in srgb, var(--net) 80%, transparent);
+}
+.button.primary:active:not(:disabled),
+.swap-card[data-phase='form'] .get-quote:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.3);
+}
+.button.primary:disabled {
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text-3);
+}
+.swap-form .get-quote,
+.swap-actions .button {
+  min-height: 56px;
+  border-radius: var(--r-3);
+  font-size: var(--text-body);
+}
+
+/* ---------- Under the form ---------- */
+.swap-card > .balances-line {
+  margin-top: var(--s-3);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  text-align: center;
+  text-wrap: balance;
+}
+
+/* The quote, set as a receipt. */
+.quote-box {
+  position: relative;
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4) 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  -webkit-mask:
+    radial-gradient(circle 5px at 50% 0, #0000 97%, #000) 50% 0 / 16px 51% repeat-x,
+    radial-gradient(circle 5px at 50% 100%, #0000 97%, #000) 50% 100% / 16px 51% repeat-x;
+  mask:
+    radial-gradient(circle 5px at 50% 0, #0000 97%, #000) 50% 0 / 16px 51% repeat-x,
+    radial-gradient(circle 5px at 50% 100%, #0000 97%, #000) 50% 100% / 16px 51% repeat-x;
+  animation: receipt-in var(--t-slow) var(--ease);
+}
+@keyframes receipt-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+    clip-path: inset(0 0 100% 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+.swap-card .quote-box .detail-list[aria-label='Quote'] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  gap: 0;
+  margin: 0;
+  padding: var(--s-1) 0 0;
+  border: 0;
+}
+.quote-list dt,
+.quote-list dd {
+  padding: 9px 0;
+  border: 0;
+  font-size: var(--text-ui);
+}
+.quote-list dt {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+/* The dotted leader of a receipt line. */
+.quote-list dt::after {
+  content: '';
+  flex: 1;
+  min-width: var(--s-3);
+  margin-right: var(--s-2);
+  border-bottom: 1.5px dotted var(--line-strong);
+  transform: translateY(-3px);
+}
+.quote-list dd {
+  max-width: 34ch;
+  color: var(--text);
+  font-weight: 500;
+  text-align: right;
+  text-wrap: balance;
+}
+.quote-list dt.glance + dd.glance {
+  font-weight: 600;
+}
+.expander[data-expanded] .quote-list > dt:not(.glance):first-of-type,
+.expander[data-expanded] .quote-list > dt:not(.glance):first-of-type + dd {
+  border-top: 0;
+}
+.quote-box .expander-toggle {
+  min-height: 40px;
+  margin-top: var(--s-1);
+  padding-bottom: 6px;
+  border-top: 1px dashed var(--line-strong);
+  font-size: var(--text-small);
+}
+.pool-depth {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin: var(--s-1) 0 var(--s-2);
+  padding-top: var(--s-2);
+  border-top: 1px dashed var(--line-strong);
+}
+.pool-depth-curve {
+  flex: none;
+  overflow: visible;
+}
+.depth-line {
+  fill: none;
+  stroke: var(--text-3);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+.depth-move {
+  stroke: var(--net);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.depth-before {
+  fill: var(--surface-2);
+  stroke: var(--text-2);
+  stroke-width: 1.5;
+}
+.depth-after {
+  fill: var(--net);
+}
+.pool-depth-text {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  color: var(--text-2);
+  font-size: var(--text-micro);
+  line-height: 1.45;
+}
+.pool-depth-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* What can still go wrong: one lead and its three conditions, word for word. */
+.swap-card .revert-panel {
+  display: grid;
+  gap: 6px;
+  margin-top: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  border-radius: var(--r-3);
+  background: color-mix(in srgb, var(--info) 5%, var(--surface));
+  color: var(--text);
+  font-size: var(--text-small);
+  line-height: 1.5;
+}
+.revert-lead {
+  font-weight: 600;
+}
+.revert-item {
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  gap: var(--s-2);
+  align-items: start;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.revert-item svg {
+  margin-top: 2px;
+  color: var(--info);
+}
+.revert-more {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* The account that will sign. */
+.swap-actions {
+  margin-top: var(--s-4);
+}
+.wallet-line {
+  margin: 0 0 var(--s-1);
+  color: var(--text-2);
+  font-size: var(--text-micro);
+  line-height: 1.5;
+  text-align: center;
+  text-wrap: balance;
+}
+.wallet-line code {
+  color: var(--text);
+}
+.swap-card .next-step {
+  justify-content: center;
+  margin-top: var(--s-3);
+  text-align: left;
+}
+.next-step[data-tone='action']::before {
+  border-color: var(--net);
+  background: var(--net);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--net) 20%, transparent);
+}
+.wallet-option {
+  border-color: var(--line-strong);
+  border-radius: var(--r-3);
+  background: var(--surface-2);
+}
+.wallet-option:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+/* Activity. */
+.activity-title {
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.06em;
+  font-size: var(--text-ui) !important;
+}
+.activity-empty {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.activity-empty::before {
+  content: '';
+  width: 14px;
+  height: 16px;
+  flex: none;
+  border: 1.5px solid var(--text-3);
+  border-bottom-width: 2.5px;
+  border-radius: 7px 7px 1px 1px;
+  opacity: 0.7;
+}
+
+/* A transaction's passage through the gate. */
+.passage {
+  --pass: var(--net);
+  display: grid;
+  gap: 6px;
+  margin: var(--s-3) 0 var(--s-2);
+  max-width: 340px;
+}
+.passage[data-stage='settled'] {
+  --pass: var(--ok);
+}
+.passage[data-stage='failed'] {
+  --pass: var(--danger);
+}
+.passage[data-stage='unknown'] {
+  --pass: var(--warn);
+}
+.passage-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+}
+.passage-track::before,
+.passage-fill {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
+}
+.passage-track::before {
+  right: 11px;
+  background: var(--line-strong);
+}
+.passage-fill {
+  width: 0;
+  background: var(--pass);
+  transition: width var(--t-slow) var(--ease);
+}
+.passage[data-reached='1'] .passage-fill {
+  width: calc(50% - 9px);
+}
+.passage[data-reached='2'] .passage-fill {
+  width: calc(100% - 20px);
+}
+.passage-node {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-3);
+  transition:
+    border-color var(--t-base) var(--ease),
+    background var(--t-base) var(--ease);
+}
+.passage-node:last-child {
+  width: 24px;
+  height: 24px;
+  border-radius: 12px 12px 4px 4px;
+}
+.passage-node[data-here] {
+  border-color: var(--pass);
+  color: var(--pass);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--pass) 20%, transparent);
+}
+.passage-node[data-done] {
+  border-color: var(--pass);
+  background: var(--pass);
+  color: var(--accent-fg);
+}
+.passage[data-stage='settled'] .passage-node:last-child,
+.passage[data-stage='failed'] .passage-node:last-child {
+  background: var(--pass);
+  color: var(--accent-fg);
+  box-shadow: none;
+}
+/* The mote: light moving toward the next stop while the page waits. */
+.passage-mote {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  height: 6px;
+  margin-top: -3px;
+  opacity: 0;
+  pointer-events: none;
+}
+.passage-mote::after {
+  content: '';
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pass);
+  box-shadow: 0 0 10px 2px var(--pass);
+}
+.passage[data-stage='wallet'] .passage-mote {
+  animation: passage-first 2s var(--ease) infinite;
+}
+.passage[data-stage='sent'] .passage-mote {
+  animation: passage-second 2.6s var(--ease) infinite;
+}
+@keyframes passage-first {
+  0% {
+    opacity: 0;
+    transform: translateX(2%);
+  }
+  20%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(46%);
+  }
+}
+@keyframes passage-second {
+  0% {
+    opacity: 0;
+    transform: translateX(52%);
+  }
+  20%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(93%);
+  }
+}
+.passage-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-3);
+  font-size: var(--text-micro);
+  font-weight: 500;
+}
+.passage-labels > [data-here] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.rail-slot:empty {
+  display: none;
+}
+.rail-slot > .hold-recovery {
+  margin: 0;
+}
+/* The hold: what to read first is set first. */
+.hold-line {
+  display: block;
+  margin-top: 6px;
+}
+.hold-line:first-child {
+  color: var(--text);
+  font-weight: 600;
+}
+.hold-line[data-warn] {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-2);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  color: var(--text);
+}
+.hold-line[data-warn]::before {
+  content: '';
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  background: var(--warn);
+  -webkit-mask: var(--icon-hand) center / contain no-repeat;
+  mask: var(--icon-hand) center / contain no-repeat;
+}
+.hold-recovery > p:first-child {
+  font-weight: 600;
+}
+.swap-card[data-hold] .devnet4-steps[aria-label='Transactions'] > li:last-child {
+  border-color: color-mix(in srgb, var(--net) 30%, var(--line-strong));
+  background:
+    linear-gradient(to bottom, color-mix(in srgb, var(--net) 5%, transparent), transparent 120px),
+    var(--surface-2);
+}
+.hold-recovery {
+  border-radius: var(--r-3);
+}
+
+/* ---------- Sheets and overlays ---------- */
+.token-sheet-row {
+  border-radius: var(--r-3);
+  transition:
+    background var(--t-fast) var(--ease),
+    transform var(--t-fast) var(--ease);
+}
+.token-sheet-row:active {
+  transform: scale(0.99);
+}
+.token-sheet-row[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--net) 40%, var(--line-strong));
+}
+.token-sheet-name {
+  font-family: var(--font-display);
+  font-size: var(--text-lead);
+  font-weight: 500;
+  font-variation-settings: 'opsz' 36;
+}
+.token-sheet-detail {
+  font-variant-numeric: tabular-nums;
+}
+.toast {
+  border-radius: var(--r-arch);
+  padding: 10px 18px 10px 14px;
+  animation: toast-in 320ms var(--ease-spring);
+}
+.toast svg {
+  color: var(--ok);
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.94);
+  }
+}
+
+/* ---------- Loading: the gate before it opens ---------- */
+.live-hero > .card.skeleton-card {
+  display: grid;
+  gap: var(--s-3);
+  align-content: start;
+  min-height: 420px;
+}
+.skeleton-card > .skeleton-title {
+  justify-self: center;
+  width: 84px;
+  height: 26px;
+  margin: calc(-42 * var(--u)) 0 calc(58 * var(--u) - 26px);
+}
+.skeleton {
+  background:
+    linear-gradient(
+        100deg,
+        transparent 30%,
+        color-mix(in srgb, var(--text) 7%, transparent) 50%,
+        transparent 70%
+      )
+      0 0 / 220% 100%,
+    var(--surface-3);
+  animation: quote-sweep 1.5s linear infinite;
+}
+
+/* Without the gate (reads unavailable): the alert takes the column's measure, so it lines up with the Refresh
+   control above it and the reference cards below it. */
+.mainnet-page[data-layout='column'] .read-failure {
+  justify-self: stretch;
+  max-width: none;
+}
+
+/* The pools, docked under the gate on a wide screen: one row per pool, its name, reserves and caps side by side,
+   figures in tabular digits so reserves line up. Notices stay inside the reserves cell, in full. */
+.pool-cards td {
+  font-variant-numeric: tabular-nums;
+}
+@media (min-width: 760px) {
+  .mainnet-page .reference[data-mode='docked'] .pool-cards tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.5fr);
+    align-items: start;
+    gap: var(--s-5);
+  }
+  .mainnet-page .reference[data-mode='docked'] .pool-cards td {
+    margin-top: 0;
+  }
+}
+
+/* The skim action under a pending-excess notice takes its own line instead of breaking the sentence. */
+[aria-label='Pending excess'] > .button {
+  display: flex;
+  width: fit-content;
+  margin-top: var(--s-3);
+}
+
+/* Six networks in the header never run under the network switcher: the list scrolls sideways within its own
+   space (a thin scrollbar shows there is more) instead of overflowing onto the controls. */
+@media (min-width: 861px) {
+  .main-nav {
+    flex: 1 1 auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+  .main-nav a {
+    flex: none;
+    white-space: nowrap;
+  }
+}
+
+/* ---------- Footer ---------- */
+.footer-licences {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+.footer-licences:hover {
+  text-decoration-color: currentColor;
+}
+
+/* ---------- Narrow screens ---------- */
+@media (max-width: 640px) {
+  .live-hero > .card.swap-card {
+    padding: 0 calc(var(--jamb) + var(--s-3)) var(--s-4);
+  }
+  .settings-label {
+    display: none;
+  }
+  .swap-settings .disclosure-chevron {
+    margin-left: auto;
+  }
+  /* The quote request takes its own line under the settings: nothing is squeezed or cut. */
+  .swap-card[data-phase='quoted'] .swap-settings:not([data-open]),
+  .swap-card[data-phase='quoted'] .swap-settings:not([data-open]) + .get-quote {
+    grid-column: 1 / -1;
+  }
+  .swap-card[data-phase='quoted'] .get-quote {
+    margin-top: 0;
+  }
+  .page-status {
+    gap: var(--s-2);
+  }
+  .page-status > p.finality-line.microcopy,
+  .page-status > .page-refresh {
+    padding: 0 10px;
+    font-size: var(--text-micro);
+  }
+  .page-status > p.finality-line.microcopy {
+    padding-left: var(--s-2);
+    gap: 6px;
+  }
+  .swap-settings .disclosure-toggle {
+    gap: 6px;
+  }
+  .chip {
+    padding: 0 8px;
+  }
+  .reference[data-mode='panel'] {
+    animation-name: sheet-up;
+  }
+  .quote-list dd {
+    text-align: right;
+  }
+  .swap-card .quote-box .detail-list[aria-label='Quote'] {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  }
+  .expander:not([data-expanded]) .quote-list {
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  }
+  .quote-list dd {
+    max-width: 22ch;
+  }
+}
+@keyframes sheet-up {
+  from {
+    opacity: 0;
+    transform: translateY(32px);
+  }
+}
+
+/* ---------- Motion off ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .gate-arch,
+  .wall-light,
+  .gate-arch *,
+  .figure-char,
+  .quote-box,
+  .passage-mote,
+  .passage-fill,
+  .token-chip .token-mark,
+  .toast,
+  .skeleton,
+  .swap-card[data-quoting] .amount-output,
+  .swap-gate > *,
+  .button.primary,
+  .get-quote,
+  .theme-toggle svg,
+  .page-refresh svg,
+  .requote-icon {
+    animation: none !important;
+    transition: none !important;
+  }
+  .passage-mote {
+    display: none;
+  }
+}
+
+/* ---------- Print: the figures and the words, no wall ---------- */
+@media print {
+  .app-shell {
+    background: #fff;
+    color: #000;
+  }
+  .topbar,
+  .footer,
+  .wall-light,
+  .gate-arch,
+  .toaster,
+  .page-refresh,
+  .settle-jump,
+  .skip-link,
+  .local-render-banner {
+    display: none !important;
+  }
+  .mainnet-page[data-layout='gate'] {
+    display: block;
+    max-width: none;
+  }
+  .live-hero > .card.swap-card {
+    margin-top: 0;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    background: none;
+  }
+  .live-hero > .card.swap-card::before,
+  .live-hero > .card.swap-card::after {
+    display: none;
+  }
+  .mainnet-page .swap-card > h2 {
+    margin: 0 0 12px;
+    text-align: left;
+  }
+  .reference[data-mode='panel'] {
+    position: static;
+    opacity: 1;
+    box-shadow: none;
+    border: 0;
+  }
+  .disclosure-region,
+  .disclosure-clip:not([data-open]) > .disclosure-region {
+    display: block !important;
+    max-height: none !important;
+  }
+  .quote-box {
+    -webkit-mask: none;
+    mask: none;
+  }
+  .expander:not([data-expanded]) .quote-list > :not(.glance) {
+    display: revert;
+  }
+}
