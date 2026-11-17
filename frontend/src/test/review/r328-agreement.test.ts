@@ -3,7 +3,7 @@
 // the first endpoint of the page is the one that may lie.
 import { describe, expect, it } from 'vitest';
 import type { Rpc } from '../../devnet4/chain';
-import { DISAGREEMENT, UNCONFIRMED, chainRpc } from '../../multichain/rpc';
+import { BEHIND, DISAGREEMENT, UNCONFIRMED, chainRpc } from '../../multichain/rpc';
 
 const h = (n: number) => `0x${n.toString(16).padStart(64, '0')}`;
 const q = (n: number) => `0x${n.toString(16)}`;
@@ -47,10 +47,10 @@ describe('R309-MC-3 at 0566af3: one lying endpoint', () => {
     // The chain is at block 1,000 (2 s blocks). The first endpoint presents block 730 as the head.
     const stale = honest(730);
     const rpc = chainRpc([stale, honest(1_000)], RULES);
-    const block = await settleBlock(rpc);
-    expect(block.number).toBe(q(725)); // 275 blocks = 550 s behind the real settle block 995
-    // Both endpoints "agree": the state at that old block is real. The page quotes from it.
-    expect(await reserveAt(rpc, block.hash)).toBe(q(725));
+    // Restated in the fourth pass (agent 364): the defect shown here at 0566af3 (the stale block 725 was accepted
+    // and its state quoted) is closed since c462735 and still at 9e4b5d1: two heads 270 blocks / 540 s apart stop
+    // the page. The old assertion, which demonstrated the defect, is at commit 709350b.
+    await expect(settleBlock(rpc)).rejects.toThrow(BEHIND);
   });
 
   it('R328-6: a receipt comes from the first endpoint alone: a false "reverted" receipt reaches the route unchallenged', async () => {
@@ -58,8 +58,9 @@ describe('R309-MC-3 at 0566af3: one lying endpoint', () => {
     const lying: Rpc = async (method, params) =>
       method === 'eth_getTransactionReceipt' ? falseReceipt : honest(1_000)(method, params);
     const rpc = chainRpc([lying, honest(1_000)], RULES);
-    expect(await rpc('eth_getTransactionReceipt', [h(7)])).toEqual(falseReceipt);
-    // The honest endpoint knows no such receipt; it is never asked.
+    // Restated in the fourth pass (agent 364): closed since c462735 (R328-6 b). The honest endpoint knows no such
+    // receipt, so the answer is null ("not seen yet"), which never ends a hold. Old assertion: commit 709350b.
+    expect(await rpc('eth_getTransactionReceipt', [h(7)])).toBeNull();
   });
 });
 

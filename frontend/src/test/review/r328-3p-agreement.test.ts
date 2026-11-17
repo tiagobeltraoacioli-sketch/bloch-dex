@@ -3,7 +3,7 @@
 // honest chain (block n has hash h(n), timestamp 1,000,000 + 2n; the pool's reserve at block n is n).
 import { describe, expect, it, vi } from 'vitest';
 import type { Rpc } from '../../devnet4/chain';
-import { BEHIND, DISAGREEMENT, UNCONFIRMED, chainRpc } from '../../multichain/rpc';
+import { DISAGREEMENT, UNCONFIRMED, chainRpc } from '../../multichain/rpc';
 
 const h = (n: number, fork = 0) => `0x${(n + fork * 2 ** 40).toString(16).padStart(64, '0')}`;
 const q = (n: number) => `0x${n.toString(16)}`;
@@ -54,7 +54,10 @@ describe('the safety property: a pinned read is used only when two endpoints giv
   });
   it('holds: the two endpoints have different blocks at the head (a one-block reorganisation seen by one) -> nothing is used', async () => {
     const rpc = chainRpc([node(1_000), node(1_000, { fork: 1 })], RULES);
-    await expect(at(rpc, (await head(rpc)).hash)).rejects.toThrow(UNCONFIRMED);
+    // Restated in the fourth pass (agent 364): at 9e4b5d1 the head HEADER must itself be the same block on both
+    // endpoints, so the page stops one step earlier (DISAGREEMENT at the head, before any state read); at
+    // c462735 the head was taken and the pinned read was UNCONFIRMED (commit 709350b). Stronger, same property.
+    await expect(head(rpc)).rejects.toThrow(DISAGREEMENT);
   });
   it('limit: with the first endpoint unreachable, the other two decide; if they lie alike (one provider behind two names) the lie is used', async () => {
     const rpc = chainRpc([down, node(1_000, { lie: 7 }), node(1_000, { lie: 7 })], RULES);
@@ -72,8 +75,12 @@ describe('R328-3P-4: the quote at the latest block is ONE endpoint\'s, pinned to
     const liar = node(1_000, { lie: -500 }); // half the output
     const honest = node(1_000);
     const rpc = chainRpc([liar, honest, node(1_000)], RULES);
-    expect(await rpc('eth_call', [{ to: '0x00', data: '0x' }, 'latest'])).toBe(q(500));
-    expect(honest.mock.calls).toHaveLength(0); // nobody else is asked
+    // Restated in the fourth pass (agent 364): CLOSED at 9e4b5d1. The tag is resolved to a head two endpoints
+    // agree on and read at its hash from two endpoints; the liar's answer is refused, the honest one is asked.
+    // At c462735 the liar's 0x1f4 came back and nobody else was asked (commit 709350b).
+    await expect(rpc('eth_call', [{ to: '0x00', data: '0x' }, 'latest'])).rejects.toThrow(DISAGREEMENT);
+    expect(honest.mock.calls.some(([m, p]) => m === 'eth_call' && typeof (p as unknown[])[1] === 'object')).toBe(true);
+    expect(liar.mock.calls.every(([m, p]) => m !== 'eth_call' || typeof (p as unknown[])[1] === 'object')).toBe(true);
   });
 });
 
@@ -81,12 +88,16 @@ describe('R328-3P-5: availability of the head rule', () => {
   it('a second endpoint that lags stops the page (BEHIND) although a healthy third is listed: the third is never asked for the head', async () => {
     const third = node(1_000);
     const rpc = chainRpc([node(1_000), node(900), third], RULES);
-    await expect(head(rpc)).rejects.toThrow(BEHIND);
-    expect(third.mock.calls).toHaveLength(0);
+    // Restated in the fourth pass (agent 364): CLOSED at 9e4b5d1, the third is asked and the page goes on at
+    // the older of the two close heads. At c462735: BEHIND, third never asked (commit 709350b).
+    expect((await head(rpc)).number).toBe(q(1_000));
+    expect(third.mock.calls.length).toBeGreaterThan(0);
   });
   it('a chain that makes blocks only when there is work (Linea: up to 82 s apart measured): ONE block of difference can be more than 90 s of chain time -> BEHIND', async () => {
     const rpc = chainRpc([node(1_000, { spacing: 100 }), node(999, { spacing: 100 })], RULES);
-    await expect(head(rpc)).rejects.toThrow(BEHIND);
+    // Restated in the fourth pass (agent 364): CLOSED at 9e4b5d1 ("apart" needs more than HEAD_GAP_BLOCKS blocks
+    // AND more than HEAD_GAP_SECONDS); the older head 999 is used. At c462735: BEHIND (commit 709350b).
+    expect((await head(rpc)).number).toBe(q(999));
   });
 });
 
