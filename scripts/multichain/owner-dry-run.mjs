@@ -263,6 +263,14 @@ async function main() {
     r = run("deploy-dry-run");
     check(`${key}-3 deploy.sh dry-run: ends "nothing was sent", no error`, r.status === 0 && /dry run only: nothing was sent/.test(r.output) && !/Error/.test(r.output), r.output.slice(-600));
     check(`${key}-3 the dry run sent nothing (deploying account nonce 0)`, (await nonceOf(deployer)) === 0);
+    // forge's own upfront requirement at the fork's price (gas limits with its margin x its fee estimate): the
+    // document's funding must cover it, or step 4 stops with "insufficient funds" (seen on Linea, 2026-11-17).
+    {
+      const est = r.output.match(new RegExp(`Estimated amount required: ([0-9.]+) ${symbol}`))?.[1];
+      const price = r.output.match(/Estimated gas price: ([0-9.]+) gwei/)?.[1];
+      evidence.forgeEstimate = { amountRequired: est ?? null, gasPriceGwei: price ?? null, totalGas: r.output.match(/Estimated total gas used for script: ([0-9]+)/)?.[1] ?? null };
+      check(`${key}-3 the stated ${funding.deployer} ${symbol} covers forge's estimated amount required (${est} ${symbol} at ${price} gwei)`, est !== undefined && parseUnits(est, 18) < deployerFund, est);
+    }
 
     r = run("deploy-broadcast");
     check(`${key}-4 deploy.sh broadcast: "== sent."`, r.status === 0 && /== sent\./.test(r.output), r.output.slice(-600));

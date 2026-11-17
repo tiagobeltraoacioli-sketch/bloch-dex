@@ -223,7 +223,7 @@ And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceil
 cast gas-price --rpc-url https://mainnet.optimism.io
 ```
 
-**op-mainnet-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error.
+**op-mainnet-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error. It prints `Estimated amount required: … ETH`: forge's own upper bound at the chain's price now (its gas limits carry a margin, so it is about 1.4 times what is spent). If the deploying account holds less than that, fund the difference and repeat this step.
 
 <!-- run: op-mainnet deploy-dry-run -->
 ```
@@ -271,7 +271,7 @@ And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceil
 cast gas-price --rpc-url https://mainnet.base.org
 ```
 
-**base-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error.
+**base-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error. It prints `Estimated amount required: … ETH`: forge's own upper bound at the chain's price now (its gas limits carry a margin, so it is about 1.4 times what is spent). If the deploying account holds less than that, fund the difference and repeat this step.
 
 <!-- run: base deploy-dry-run -->
 ```
@@ -319,7 +319,7 @@ And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceil
 cast gas-price --rpc-url https://arb1.arbitrum.io/rpc
 ```
 
-**arbitrum-one-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error.
+**arbitrum-one-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error. It prints `Estimated amount required: … ETH`: forge's own upper bound at the chain's price now (its gas limits carry a margin, so it is about 1.4 times what is spent). If the deploying account holds less than that, fund the difference and repeat this step.
 
 <!-- run: arbitrum-one deploy-dry-run -->
 ```
@@ -353,7 +353,7 @@ Endpoint used for sending in this section: `https://rpc.linea.build` (the first 
 node scripts/multichain/gate.mjs linea pre
 ```
 
-**linea-2. Fund the deploying account** with **0.003 ETH** on Linea (from any wallet of yours; a plain transfer to `DEPLOYER_ADDRESS`, the address of section 2.4). Then check it arrived:
+**linea-2. Fund the deploying account** with **0.01 ETH** on Linea (from any wallet of yours; a plain transfer to `DEPLOYER_ADDRESS`, the address of section 2.4). Then check it arrived:
 
 <!-- run: linea deployer-balance -->
 ```
@@ -367,7 +367,7 @@ And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceil
 cast gas-price --rpc-url https://rpc.linea.build
 ```
 
-**linea-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error.
+**linea-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error. It prints `Estimated amount required: … ETH`: forge's own upper bound at the chain's price now (its gas limits carry a margin, so it is about 1.4 times what is spent). If the deploying account holds less than that, fund the difference and repeat this step.
 
 <!-- run: linea deploy-dry-run -->
 ```
@@ -415,7 +415,7 @@ And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceil
 cast gas-price --rpc-url https://bsc-rpc.publicnode.com
 ```
 
-**bnb-smart-chain-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error.
+**bnb-smart-chain-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error. It prints `Estimated amount required: … BNB`: forge's own upper bound at the chain's price now (its gas limits carry a margin, so it is about 1.4 times what is spent). If the deploying account holds less than that, fund the difference and repeat this step.
 
 <!-- run: bnb-smart-chain deploy-dry-run -->
 ```
@@ -463,7 +463,7 @@ And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceil
 cast gas-price --rpc-url https://ethereum-rpc.publicnode.com
 ```
 
-**ethereum-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error.
+**ethereum-3. Deployment dry run.** Builds, plans, runs the pre gate again and simulates the three deployments from the deploying account. Nothing is sent. `cast` asks for the deploying key's password. It must end with `== dry run only: nothing was sent` and no error. It prints `Estimated amount required: … ETH`: forge's own upper bound at the chain's price now (its gas limits carry a margin, so it is about 1.4 times what is spent). If the deploying account holds less than that, fund the difference and repeat this step.
 
 <!-- run: ethereum deploy-dry-run -->
 ```
@@ -706,7 +706,7 @@ Then fill the chain's row of the progress table (section 6) and go on to the nex
 ### 5.4 Linea (`linea`, chain id 59144): open the pool
 
 
-**linea-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Linea with the native amount you will deposit **plus 0.001 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step linea-7.
+**linea-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Linea with the native amount you will deposit **plus 0.003 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step linea-7.
 
 <!-- run: linea market -->
 ```
