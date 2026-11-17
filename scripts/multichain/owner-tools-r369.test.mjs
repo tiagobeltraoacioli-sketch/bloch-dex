@@ -41,7 +41,11 @@ function gateWorld(local, chain, plan, over = {}) {
     asked.push({ method, block: params?.[params.length - 1] });
     if (over.down && method !== "eth_chainId" && method !== "eth_getBlockByNumber") throw new Error("HTTP 403: archive requests require a personal token");
     if (method === "eth_chainId") return "0x2105";
-    if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: chain.chain.genesisHash } : { number: "0x64", hash: BLOCK, timestamp: "0x1" };
+    if (method === "eth_getBlockByNumber") {
+      if (params[0] === "0x0") return { hash: chain.chain.genesisHash };
+      if (params[0] === "latest" && over.latest) return over.latest;
+      return { number: "0x64", hash: BLOCK, timestamp: over.timestamp ?? "0x1" };
+    }
     if (method === "eth_getCode") return codes.get(lower(params[0])) ?? "0x";
     if (method === "eth_getTransactionCount") return over.depositorNonce ?? "0x0";
     if (method === "eth_call") {
@@ -215,4 +219,33 @@ test("R369-7 fixed: a public-chain broadcast shows chain id, target, the three a
   assert.match(script, /\[ "\$TYPED" = "\$CHAIN" \] \|\| \{ echo "stopped; nothing was sent" >&2; exit 1; \}/);
   assert.match(script, /\[ -t 0 \] \|\| \{ echo "broadcast to a public chain needs a terminal/);
   assert.match(script, /if \[ "\$MODE" = broadcast \] && \[ -z "\$REHEARSAL_RPC" \]; then/, "only a public-chain broadcast asks; a loopback rehearsal runs unattended");
+});
+
+test("R369-13 fixed: the finalized block one endpoint names is refused when it is older than the stated bound behind the newest head of the endpoints", async () => {
+  const { local, chain, plan } = pinnedSetup();
+  const now = 1_800_000_000;
+  const hex = (n) => `0x${n.toString(16)}`;
+  // Both endpoints have block 0x64 (2 days old) with the same hash; the first names it as `finalized`, the second's
+  // head is current. Before the fix the gate judged two-day-old state and passed.
+  const stale = { timestamp: hex(now - 2 * 86_400), latest: { number: "0x9999", hash: `0x${"cd".repeat(32)}`, timestamp: hex(now) } };
+  const liar = gateWorld(local, chain, plan, stale).request;
+  const honest = gateWorld(local, chain, plan, stale).request;
+  const old = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: liar, others: [honest], feeProof: { valid: true, problems: [] } });
+  assert.equal(old.decision, "fail");
+  assert.match(old.failed.join("; "), /finalized block is at most .* behind the newest head/);
+  // A finalized block within the bound passes.
+  const fresh = { timestamp: hex(now - 20 * 60), latest: { number: "0x9999", hash: `0x${"cd".repeat(32)}`, timestamp: hex(now) } };
+  const ok = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: gateWorld(local, chain, plan, fresh).request, others: [gateWorld(local, chain, plan, fresh).request], feeProof: { valid: true, problems: [] } });
+  assert.equal(ok.decision, "pass", JSON.stringify(ok.failed));
+});
+
+test("R369-13 fixed: first-deposit.mjs refuses a head the first endpoint names when another endpoint's head is newer than the stated bound", () => {
+  const source = readFileSync(join(ROOT, "scripts/multichain/first-deposit.mjs"), "utf8");
+  assert.match(source, /HEAD_AGE_BOUND_SECONDS/);
+  assert.match(source, /the block read at is at most \$\{HEAD_AGE_BOUND_SECONDS\} s behind the newest head/);
+});
+
+test("R369-10 fixed: every cast send line first-deposit.mjs prints pins --chain", () => {
+  const source = readFileSync(join(ROOT, "scripts/multichain/first-deposit.mjs"), "utf8");
+  for (const line of source.split("\n").filter((l) => /`cast send \$\{/.test(l) || /cast send \$\{planned/.test(l))) assert.match(line, /--chain \$\{chain\.chain\.chainId\}/, line.trim());
 });
