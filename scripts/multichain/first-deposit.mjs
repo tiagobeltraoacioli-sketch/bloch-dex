@@ -49,6 +49,7 @@ import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
   EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, pinnedStateReader, planChain, refuse, retrying,
+  ownerToolsCheck,
 } from "./lib.mjs";
 import { deviationBps, marketRecord, nativeFor, priceOf, readMarket, tokenFor } from "./market.mjs";
 import { decodeDeposit, openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
@@ -184,8 +185,16 @@ function parseArgs(argv) {
  * block only when there is work, up to 82 s apart when measured; the printed deposit's deadline is 20 minutes). */
 export const HEAD_AGE_BOUND_SECONDS = 300;
 
-export async function main(argv, print = console.log) {
+export async function main(argv, print = console.log, toolsCheck = null) {
   const o = parseArgs(argv);
+  // Review R402-5: `prepare` prints the lines the depositing key will sign. On a public chain it first runs the
+  // owner tools check itself (the command line passes it; a loopback rehearsal has no owner key and skips it).
+  if (o.mode === "prepare" && !o.rehearsal && toolsCheck) {
+    const tools = toolsCheck();
+    if (!tools.ok) print(tools.output.trimEnd());
+    refuse(tools.ok, `the owner tools check did not pass on ${tools.directory} (docs/OWNER-DEPLOY-NOW.md, "Your own tools"); nothing was printed to send`);
+    print(`owner tools: PASS (${tools.directory})`);
+  }
   const shared = loadShared();
   refuse(shared.chains.includes(o.key), `${o.key} is not in deployments/multichain.json chains`);
   const chain = loadChain(o.key);
@@ -422,7 +431,7 @@ export async function main(argv, print = console.log) {
 }
 
 if (isMain(import.meta.url)) {
-  main(process.argv.slice(2)).then(
+  main(process.argv.slice(2), console.log, ownerToolsCheck).then(
     (code) => process.exit(code),
     (error) => {
       console.error(error instanceof MultichainError ? error.message : error);

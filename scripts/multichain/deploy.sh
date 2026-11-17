@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # The DEX on one public EVM chain (docs/MULTICHAIN-DEPLOY.md). The owner runs this; nothing else in the repository
 # sends a transaction to a public chain.
 #
@@ -30,6 +30,9 @@ while [ $# -gt 0 ]; do
     *) echo "unknown option $1 (forge options go after --)" >&2; exit 2 ;;
   esac
 done
+for arg in ${FORGE_ARGS[@]+"${FORGE_ARGS[@]}"}; do
+  case "$arg" in --broadcast|--rpc-url|--fork-url|-f) echo "$arg is set by this script; remove it" >&2; exit 2 ;; esac
+done
 if [ -n "$REHEARSAL_RPC" ]; then
   [[ "$REHEARSAL_RPC" =~ ^http://127\.0\.0\.1:[0-9]{2,5}/?$ ]] || { echo "--rehearsal-rpc must be a loopback URL (http://127.0.0.1:PORT)" >&2; exit 2; }
   GATE_ARGS=(--rpc "$REHEARSAL_RPC" --rehearsal)
@@ -37,11 +40,25 @@ if [ -n "$REHEARSAL_RPC" ]; then
 else
   [ -z "$REFERENCE" ] || [ "$MODE" = dry-run ] || { echo "a reference plan (owner choices still TBD-owner) is never broadcast to a public chain" >&2; exit 2; }
   GATE_ARGS=()
+  # Review R402-5: a run against a public chain (the only kind that is handed a key) first runs the owner tools
+  # check itself, on the directory its own forge comes from, and stops unless the check's last line is the PASS
+  # line: forge, cast, node, the compiler and the PATH are then the pinned ones in this very process. A rehearsal
+  # on a loopback fork (throwaway keys) does not need the owner's directory.
+  FORGE_PATH=$(type -P forge || true)
+  TOOLS_DIR=${FORGE_PATH%/bin/forge}
+  if [ -z "$FORGE_PATH" ] || [ "$TOOLS_DIR" = "$FORGE_PATH" ]; then
+    echo "forge is not found in an owner tools directory (found: '${FORGE_PATH:-nowhere}'): paste the PATH line of docs/OWNER-DEPLOY-NOW.md; nothing was sent" >&2
+    exit 1
+  fi
+  TOOLS_CHECK=$(/bin/bash "$ROOT/scripts/multichain/owner-toolchain.sh" check "$TOOLS_DIR" 2>&1) || true
+  if [ "$(printf '%s\n' "$TOOLS_CHECK" | /usr/bin/tail -1)" != "owner tools: PASS" ]; then
+    printf '%s\n' "$TOOLS_CHECK" >&2
+    echo "the owner tools check did not pass; nothing was sent" >&2
+    exit 1
+  fi
+  echo "== owner tools: PASS ($TOOLS_DIR)"
   RPC_URL=${MC_RPC_URL:-$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).rpc[0])' "deployments/$CHAIN/chain.json")}
 fi
-for arg in ${FORGE_ARGS[@]+"${FORGE_ARGS[@]}"}; do
-  case "$arg" in --broadcast|--rpc-url|--fork-url|-f) echo "$arg is set by this script; remove it" >&2; exit 2 ;; esac
-done
 
 echo "== build (solc 0.8.24, paris, as foundry.toml pins)"
 forge build > /dev/null

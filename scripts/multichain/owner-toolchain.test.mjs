@@ -9,7 +9,8 @@ import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ROOT } from "./lib.mjs";
+import { ROOT, ownerToolsCheck } from "./lib.mjs";
+import { main as firstDeposit } from "./first-deposit.mjs";
 
 const SCRIPT = join(ROOT, "scripts/multichain/owner-toolchain.sh");
 const PINS = join(ROOT, "scripts/multichain/owner-toolchain.pins");
@@ -392,6 +393,67 @@ test("install refuses an existing directory, an archive whose SHA-256 differs (b
     const noPins = r.check();
     assert.equal(noPins.status, 1);
     assert.match(noPins.out, /the pins file .* is missing/);
+  } finally {
+    rmSync(r.base, { recursive: true, force: true });
+  }
+});
+
+test("R402-5: deploy.sh and first-deposit prepare run the owner tools check themselves and stop without the PASS line", { skip: !mac }, async () => {
+  const deploy = readFileSync(join(ROOT, "scripts/multichain/deploy.sh"), "utf8");
+  assert.ok(deploy.startsWith("#!/bin/bash\n"), "an absolute interpreter (R402-1)");
+  // The check comes before the build, the plan, the gate and forge script.
+  const at = (text) => deploy.indexOf(text);
+  assert.ok(at('owner-toolchain.sh" check "$TOOLS_DIR"') > 0 && at('owner-toolchain.sh" check "$TOOLS_DIR"') < Math.min(at("\nforge build"), at("\nforge script"), at("node scripts/multichain/plan.mjs"), at("node -e")));
+  // A forge on the PATH that is not in a checked directory: deploy.sh stops, and starts neither it nor node.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "owner-deploy-")));
+  try {
+    mkdirSync(join(base, "tools/bin"), { recursive: true });
+    const marker = join(base, "ran");
+    for (const t of ["forge", "node"]) writeFileSync(join(base, "tools/bin", t), `#!/bin/sh\necho ${t} >> ${marker}\n`, { mode: 0o755 });
+    const env = { PATH: `${base}/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: process.env.HOME };
+    for (const mode of ["dry-run", "broadcast"]) {
+      const r = spawnSync("/bin/bash", [join(ROOT, "scripts/multichain/deploy.sh"), "base", mode], { encoding: "utf8", env });
+      assert.equal(r.status, 1, `${mode}: ${r.stdout}${r.stderr}`);
+      assert.match(r.stderr, /^FAIL /m, mode);
+      assert.match(r.stderr, /the owner tools check did not pass; nothing was sent\n$/, mode);
+      assert.ok(!/owner tools: PASS/.test(`${r.stdout}${r.stderr}`), mode);
+    }
+    // No forge at all, or a forge that is not under a bin directory.
+    const none = spawnSync("/bin/bash", [join(ROOT, "scripts/multichain/deploy.sh"), "base", "dry-run"], { encoding: "utf8", env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: process.env.HOME } });
+    assert.equal(none.status, 1);
+    assert.match(none.stderr, /forge is not found in an owner tools directory \(found: 'nowhere'\)/);
+    assert.ok(!existsSync(marker), "neither the unchecked forge nor node was started");
+
+    // The tool-side check: a node outside a checked directory is refused; the lines are not printed.
+    const bad = ownerToolsCheck({ execPath: join(base, "tools/node/bin/node"), env });
+    assert.equal(bad.ok, false);
+    assert.equal(bad.directory, join(base, "tools"));
+    assert.match(bad.output, /owner tools: FAIL; do not use these tools with any key/);
+    const printed = [];
+    await assert.rejects(firstDeposit(["base", "prepare", "--pair", "WETH/USDC", "--native", "1", "--gate-report", join(base, "none.json")], (l) => printed.push(l), () => bad), /the owner tools check did not pass on .*; nothing was printed to send/);
+    assert.ok(!printed.some((l) => /cast send/.test(l)));
+    // A rehearsal on a loopback fork does not ask for the owner's directory (it stops later, on its own inputs).
+    let asked = 0;
+    await assert.rejects(firstDeposit(["base", "prepare", "--pair", "WETH/USDC", "--native", "1", "--gate-report", join(base, "none.json"), "--rpc", "http://127.0.0.1:9", "--rehearsal"], () => {}, () => (asked++, bad)));
+    assert.equal(asked, 0);
+    // verify and add print nothing a key signs blindly here: not gated (verify is read-only).
+    const source = readFileSync(join(ROOT, "scripts/multichain/first-deposit.mjs"), "utf8");
+    assert.match(source, /main\(process\.argv\.slice\(2\), console\.log, ownerToolsCheck\)/);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("R402-5: the tool-side check passes on a checked directory (stand-in programs, the real script)", { skip: !mac }, () => {
+  const r = rig();
+  try {
+    assert.equal(r.install().status, 0);
+    const good = ownerToolsCheck({ execPath: join(r.tools, "node/bin/node"), env: { ...r.withPath, HOME: process.env.HOME }, script: r.script });
+    assert.equal(good.ok, true, good.output);
+    assert.equal(good.directory, r.tools);
+    // Exit 0 without the PASS line (--no-run prints another line) is not accepted: only the exact last line counts.
+    const text = readFileSync(join(ROOT, "scripts/multichain/lib.mjs"), "utf8");
+    assert.match(text, /ok: r\.status === 0 && output\.trim\(\)\.split\("\\n"\)\.at\(-1\) === "owner tools: PASS"/);
   } finally {
     rmSync(r.base, { recursive: true, force: true });
   }
