@@ -68,7 +68,13 @@ export function Shell({
         <NetworkKeyContext.Provider value={network}>{children}</NetworkKeyContext.Provider>
       </main>
       <footer className="footer">
-        <div className="footer-inner">{footer}</div>
+        <div className="footer-inner">
+          {footer}
+          {/* Third-party licences and notices (docs/LICENSING.md), shipped by both builds. */}
+          <a className="footer-licences" href="./THIRD-PARTY-NOTICES.txt">
+            Licences
+          </a>
+        </div>
       </footer>
       {after}
       <Toaster />
