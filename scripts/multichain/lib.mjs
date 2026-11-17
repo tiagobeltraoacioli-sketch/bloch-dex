@@ -26,6 +26,14 @@ export const UINT112_MAX = (1n << 112n) - 1n;
 export const BLOCH_L2_CHAIN_IDS = Object.freeze([700770, 700771]);
 /** EIP-7702: an externally owned account that delegates to code reads `0xef0100 ++ address`. */
 export const EIP7702_PREFIX = "0xef0100";
+/**
+ * The first depositor of the reference (rehearsal) plan: the last 20 bytes of
+ * keccak256("postern-dex.multichain.reference-first-depositor"). Nobody holds a key for it, so a factory deployed
+ * from the reference plan can never have a pool opened; rehearsals impersonate it on a loopback fork. It is not
+ * the fee address: the depositing account is a dedicated key (review R328-1).
+ */
+export const REFERENCE_FIRST_DEPOSITOR_PREIMAGE = "postern-dex.multichain.reference-first-depositor";
+export const REFERENCE_FIRST_DEPOSITOR = getAddress(`0x${keccak256(stringToHex(REFERENCE_FIRST_DEPOSITOR_PREIMAGE)).slice(26)}`);
 
 const HASH = /^0x[0-9a-f]{64}$/;
 const ADDRESS_ANY = /^0x[0-9a-fA-F]{40}$/;
@@ -78,6 +86,7 @@ export function validateShared(shared) {
     // false price before the owner's deposit. There is no override: the factory cannot be changed afterwards.
     refuse(lower(shared.firstDepositor) !== ZERO_ADDRESS, "firstDepositor is the zero address: first deposits would be open to anyone. Name the owner's depositing account (an ordinary key account)");
     refuse(lower(shared.firstDepositor) !== lower(shared.create2.deployer), "firstDepositor is the CREATE2 deployer, not an account");
+    refuseDepositorInUse(shared);
   }
   refuse(Array.isArray(shared.chains) && shared.chains.length > 0 && new Set(shared.chains).size === shared.chains.length, "chains");
   const off = shared.l2Only;
@@ -86,6 +95,20 @@ export function validateShared(shared) {
     "l2Only: every Bloch-L2-only rule must be stated off (false) for these chains",
   );
   return shared;
+}
+
+/**
+ * Review R328-1: the pair accepts a first mint whose transaction ORIGIN is the first depositor, whoever the sender
+ * is. Any contract that account calls can therefore open a still-unopened pair at any price. So the depositing
+ * account is a dedicated key that sends nothing but the transactions first-deposit.mjs prints: never the fee
+ * address (a wallet in daily use), never the reference address (nobody has its key).
+ */
+function refuseDepositorInUse(shared) {
+  refuse(
+    lower(shared.firstDepositor) !== lower(shared.feeTo.address),
+    "firstDepositor is the fee address. The depositing account must be a dedicated key used for nothing but first deposits: any contract it calls could open a pool in its name (the pair accepts the transaction origin)",
+  );
+  refuse(lower(shared.firstDepositor) !== lower(REFERENCE_FIRST_DEPOSITOR), "firstDepositor is the reference rehearsal address: nobody holds its key");
 }
 
 function validateToken(token, field) {
@@ -173,19 +196,21 @@ export function pendingChoices(shared, chain) {
 
 /**
  * The owner's choices a plan is made for. `reference: true` replaces every open choice with the reference
- * rehearsal values (first deposits by the fee address only, no reserve caps) and marks the plan as not for a real
- * deployment. No plan, reference or real, has open first deposits (review R309-MC-1).
+ * rehearsal values (first deposits by REFERENCE_FIRST_DEPOSITOR only, no reserve caps) and marks the plan as not
+ * for a real deployment. No plan, reference or real, has open first deposits (review R309-MC-1), and none has the
+ * fee address as its depositing account (review R328-1).
  */
 export function choicesFor(shared, chain, { reference = false } = {}) {
   const open = pendingChoices(shared, chain);
   refuse(reference || open.length === 0, `owner choices are still open (${open.join("; ")}); use --reference for a rehearsal plan`);
   // Also here, for a caller that builds its own configuration object: no plan has open first deposits.
   refuse(isPending(shared.firstDepositor) || lower(shared.firstDepositor) !== ZERO_ADDRESS, "firstDepositor is the zero address: first deposits would be open to anyone");
+  if (!isPending(shared.firstDepositor)) refuseDepositorInUse(shared);
   const bySymbol = new Map([chain.wrappedNative, ...chain.tokens].map((t) => [t.symbol, t]));
   const caps = isPending(chain.reserveCaps) ? [] : chain.reserveCaps.map((c) => ({ token: bySymbol.get(c.token).address, symbol: c.token, cap: c.cap }));
   return {
     reference: open.length > 0,
-    firstDepositor: isPending(shared.firstDepositor) ? shared.feeTo.address : shared.firstDepositor,
+    firstDepositor: isPending(shared.firstDepositor) ? REFERENCE_FIRST_DEPOSITOR : shared.firstDepositor,
     caps,
   };
 }

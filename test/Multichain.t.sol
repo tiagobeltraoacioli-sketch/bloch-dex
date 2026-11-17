@@ -24,6 +24,7 @@ contract MultichainScriptTest is TestBase {
     address constant FEE_TO = 0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544;
     /// @dev The owner's depositing account of the plan under test.
     address constant DEPOSITOR = address(0xA11CE);
+    address constant OTHER_DEPOSITOR = address(0xB0B);
     bytes constant DEPLOYER_RUNTIME =
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
@@ -84,6 +85,10 @@ contract MultichainScriptTest is TestBase {
         _env(address(0));
         vm.expectRevert(bytes("MC: FIRST_DEPOSITOR"));
         script.run();
+        // The fee address as the depositing account is refused too (review R328-1: a dedicated key).
+        _env(FEE_TO);
+        vm.expectRevert(bytes("MC: FIRST_DEPOSITOR_IS_FEE_TO"));
+        script.run();
 
         // 2. The deployment: planned addresses, the owner's fee address, the release candidate's pair code.
         _env(DEPOSITOR);
@@ -110,11 +115,11 @@ contract MultichainScriptTest is TestBase {
         assertEq(UniswapV2Factory(r.factory).allPairsLength(), 1);
 
         // 4. Another first depositor is another factory address (and so another router and lens).
-        (address closed,,) = _env(FEE_TO);
+        (address closed,,) = _env(OTHER_DEPOSITOR);
         assertTrue(closed != factory);
         DeployMultichain.Result memory other = script.run();
         assertEq(other.factory, closed);
         assertTrue(!other.factoryExisted);
-        assertEq(UniswapV2Factory(closed).firstDepositor(), FEE_TO);
+        assertEq(UniswapV2Factory(closed).firstDepositor(), OTHER_DEPOSITOR);
     }
 }

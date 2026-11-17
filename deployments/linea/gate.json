@@ -33,6 +33,9 @@
       "address": "0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544",
       "mustBe": "externally owned account (an EIP-7702 delegation is reported, not refused)"
     },
+    "firstDepositor": {
+      "mustBe": "a dedicated key account: not the fee address, no code, no EIP-7702 delegation, no transaction on the chain before the factory is deployed"
+    },
     "pairInitCodeHash": "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683"
   },
   "ownerChoices": {

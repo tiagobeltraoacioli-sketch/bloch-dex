@@ -95,6 +95,9 @@ contract DeployMultichain {
         require(feeTo != address(0), "MC: FEE_TO");
         // Review R309-MC-1: first deposits are never open on a public chain.
         require(firstDepositor != address(0), "MC: FIRST_DEPOSITOR");
+        // Review R328-1: the depositing account is a dedicated key, never the fee address (the pair accepts a first
+        // mint by transaction origin, so that account must call nothing but the router).
+        require(firstDepositor != feeTo, "MC: FIRST_DEPOSITOR_IS_FEE_TO");
         require(wrapped.codehash == vm.envBytes32("MC_WRAPPED_CODE_HASH"), "MC: WRAPPED_CODE");
         address[] memory capTokens = vm.envOr("MC_CAP_TOKENS", ",", new address[](0));
         uint256[] memory caps = vm.envOr("MC_CAPS", ",", new uint256[](0));

@@ -6,15 +6,23 @@ pragma solidity ^0.8.24;
 // anyone opens the pool with dust at a false price and then takes the native side of the owner's deposit. The
 // package's plan now always has a first depositor, creates no pair at deployment, and deposits with minimums equal
 // to the amounts. These tests are the reviewer's attack against that configuration: every form of it must fail.
+// Review R328-1 to R328-3 (agent 328, test/review/R328FirstDeposit.t.sol on its branch) then attacked that
+// configuration: the frozen pair accepts a first mint by transaction ORIGIN, so a contract the depositing account
+// calls can open the pool; and tokens sent to the pair's address in front of the deposit join the opening pool.
+// The contracts cannot change. The last tests state those facts and what the package's tools rely on to refuse
+// their consequences (scripts/multichain/opening.mjs, first-deposit.mjs, gate.mjs; the kit tests and the fork
+// rehearsal exercise the tools themselves).
 // The token here has 18 decimals; prices: 1 native = 3,000.
 import {TestBase, TestToken} from "./TestBase.sol";
 import {WBLCH} from "../contracts/assets/WBLCH.sol";
 import {UniswapV2Factory} from "../contracts/UniswapV2Factory.sol";
 import {UniswapV2Pair} from "../contracts/UniswapV2Pair.sol";
 import {BDexRouter} from "../contracts/periphery/BDexRouter.sol";
+import {OriginOpener} from "./mocks/OriginOpener.sol";
 
 interface OriginVm {
     function startPrank(address sender, address origin) external;
+    function expectEmit(bool topic1, bool topic2, bool topic3, bool data, address emitter) external;
 }
 
 contract MultichainFirstDepositTest is TestBase {
@@ -171,5 +179,123 @@ contract MultichainFirstDepositTest is TestBase {
         );
         vm.stopPrank();
         assertTrue(pair.totalSupply() > 0);
+    }
+
+    // ------------------------------------------------------------------ review R328-1: the origin rule
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Mint(address indexed sender, uint256 amount0, uint256 amount1);
+
+    /// R328-1, the fact: one transaction of the depositing account to a contract of the attacker opens the planned
+    /// pool at the attacker's price (1 native = 2). The contracts are frozen, so this cannot be prevented on-chain.
+    /// What the package relies on afterwards, shown here at the contract level:
+    ///   - a first deposit as `prepare` prints it (minimums = amounts) reverts on that pool;
+    ///   - the hostile opening is a transaction whose target is NOT the router (the gate and `verify` prove an
+    ///     opening only from a transaction of the depositor sent straight to the router: opening.mjs);
+    ///   - `add` refuses a pool whose price is not the owner's stated amounts (here 10 native would be paired with
+    ///     20 tokens instead of 30,000: first-deposit.mjs addTransactions).
+    function test_R328_1_aContractCalledByTheDepositorOpensThePool_andTheStrictDepositReverts() public {
+        ovm.startPrank(ATTACKER, ATTACKER);
+        OriginOpener hostile = new OriginOpener(address(factory), address(wrapped), address(usdc));
+        payable(address(hostile)).transfer(1e12);
+        usdc.transfer(address(hostile), 2e12);
+        vm.stopPrank();
+
+        // Not by the attacker's own transaction, even through that contract: the origin is the attacker.
+        ovm.startPrank(ATTACKER, ATTACKER);
+        vm.expectRevert(bytes("BDEX: FIRST_DEPOSITOR"));
+        hostile.claim();
+        vm.stopPrank();
+
+        // By the depositing account's transaction: accepted. The sender of the mint is the hostile contract.
+        ovm.startPrank(OWNER, OWNER);
+        hostile.claim();
+        vm.stopPrank();
+        UniswapV2Pair pair = UniswapV2Pair(factory.getPair(address(wrapped), address(usdc)));
+        assertTrue(pair.totalSupply() > 0);
+        (uint256 rNative, uint256 rToken) = _reserves(pair);
+        assertEq(rNative, 1e12);
+        assertEq(rToken, 2e12);
+        assertTrue(pair.balanceOf(ATTACKER) > 0);
+
+        // The owner's first deposit as printed cannot go in at that price: it reverts.
+        ovm.startPrank(OWNER, OWNER);
+        usdc.approve(address(router), TOKEN);
+        vm.expectRevert(bytes("BDEX: INSUFFICIENT_A_AMOUNT"));
+        router.addLiquidityBLCH{value: NATIVE}(address(usdc), TOKEN, TOKEN, NATIVE, OWNER, block.timestamp);
+        vm.stopPrank();
+
+        // What `add` would have paired with 10 native at this pool's price: 20 tokens, 1,500 times away from the
+        // owner's 30,000. The tool refuses anything more than 1% away.
+        assertEq(NATIVE * rToken / rNative, 20 ether);
+    }
+
+    /// The proof the gate and `verify` ask for: the owner's opening emits, from the pair, the lock of the minimum
+    /// liquidity (Transfer from the zero address to the zero address of 1,000 units: only a pair's first mint
+    /// does) and one Mint whose sender is the router. A later deposit emits no such lock.
+    function test_theOwnersOpeningLocksTheMinimumLiquidityOnce_withTheRouterAsTheMintSender() public {
+        address pair = factory.createPair(address(wrapped), address(usdc));
+        (uint256 a0, uint256 a1) = UniswapV2Pair(pair).token0() == address(wrapped) ? (NATIVE, TOKEN) : (TOKEN, NATIVE);
+        ovm.startPrank(OWNER, OWNER);
+        usdc.approve(address(router), TOKEN);
+        ovm.expectEmit(true, true, false, true, pair);
+        emit Transfer(address(0), address(0), 1000);
+        ovm.expectEmit(true, false, false, true, pair);
+        emit Mint(address(router), a0, a1);
+        router.addLiquidityBLCH{value: NATIVE}(address(usdc), TOKEN, TOKEN, NATIVE, OWNER, block.timestamp);
+        vm.stopPrank();
+        assertEq(UniswapV2Pair(pair).balanceOf(address(0)), 1000);
+
+        // A second deposit: nothing more is locked.
+        ovm.startPrank(OWNER, OWNER);
+        usdc.approve(address(router), 3_000 ether);
+        router.addLiquidityBLCH{value: 1 ether}(address(usdc), 3_000 ether, 0, 0, OWNER, block.timestamp);
+        vm.stopPrank();
+        assertEq(UniswapV2Pair(pair).balanceOf(address(0)), 1000);
+    }
+
+    // ------------------------------------------------------------------ review R328-2, R328-3: a donation
+
+    /// R328-2, the fact: tokens sent to the pair's address in front of the owner's deposit join the opening pool;
+    /// minimums equal to the amounts do not see them. The pool opens with the deposit PLUS the donation, the Mint
+    /// log says so, the owner's shares own all of it, and the donor has lost it: after the market trades the pool
+    /// back to 3,000 the owner's position is worth more than what the owner put in.
+    function test_R328_2_aDonationInFrontOfTheDepositJoinsThePool_asAGiftToTheOwner() public {
+        ovm.startPrank(ATTACKER, ATTACKER);
+        UniswapV2Pair pair = UniswapV2Pair(factory.createPair(address(wrapped), address(usdc)));
+        usdc.transfer(address(pair), 300 ether); // 1% of one side
+        vm.stopPrank();
+        _ownerOpens(); // does not revert
+        (uint256 rNative, uint256 rToken) = _reserves(pair);
+        assertEq(rNative, NATIVE);
+        assertEq(rToken, TOKEN + 300 ether);
+        // The owner holds every share but the locked minimum: the donation is the owner's.
+        assertEq(pair.balanceOf(OWNER), pair.totalSupply() - 1000);
+
+        // Arbitrage back to 1 native = 3,000: someone sells native for the cheap tokens until the price is right.
+        address[] memory path = new address[](2);
+        path[0] = address(wrapped);
+        path[1] = address(usdc);
+        ovm.startPrank(ATTACKER, ATTACKER);
+        router.swapExactBLCHForTokens{value: 0.0498 ether}(0, path, ATTACKER, block.timestamp);
+        vm.stopPrank();
+        (rNative, rToken) = _reserves(pair);
+        // Worth of the pool at the market price, in tokens, against the owner's deposit worth 60,000.
+        uint256 worth = rNative * 3_000 + rToken;
+        assertTrue(worth > 60_299 ether);
+        assertTrue(rToken * 1000 / rNative > 2_999_000 && rToken * 1000 / rNative < 3_001_000);
+    }
+
+    /// R328-3, the fact: one base unit at the pair's address does not stop the owner's deposit (the tool must not
+    /// stop on it either: `prepare` accepts up to 0.1% of a side).
+    function test_R328_3_oneUnitAtThePairAddressDoesNotStopTheDeposit() public {
+        ovm.startPrank(ATTACKER, ATTACKER);
+        UniswapV2Pair pair = UniswapV2Pair(factory.createPair(address(wrapped), address(usdc)));
+        usdc.transfer(address(pair), 1);
+        vm.stopPrank();
+        _ownerOpens();
+        (uint256 rNative, uint256 rToken) = _reserves(pair);
+        assertEq(rNative, NATIVE);
+        assertEq(rToken, TOKEN + 1);
     }
 }
