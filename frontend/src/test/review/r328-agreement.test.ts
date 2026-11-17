@@ -43,7 +43,7 @@ describe('R309-MC-3 at 0566af3: one lying endpoint', () => {
     await expect(reserveAt(rpc, block.hash)).rejects.toThrow(DISAGREEMENT);
   });
 
-  it('R328-5: WHICH block is "settled" is the first endpoint alone: a real block from 9 minutes ago is accepted, and the second endpoint confirms its (stale) state', async () => {
+  it('R328-6: WHICH block is "settled" is the first endpoint alone: a real block from 9 minutes ago is accepted, and the second endpoint confirms its (stale) state', async () => {
     // The chain is at block 1,000 (2 s blocks). The first endpoint presents block 730 as the head.
     const stale = honest(730);
     const rpc = chainRpc([stale, honest(1_000)], RULES);
@@ -53,7 +53,7 @@ describe('R309-MC-3 at 0566af3: one lying endpoint', () => {
     expect(await reserveAt(rpc, block.hash)).toBe(q(725));
   });
 
-  it('R328-5: a receipt comes from the first endpoint alone: a false "reverted" receipt reaches the route unchallenged', async () => {
+  it('R328-6: a receipt comes from the first endpoint alone: a false "reverted" receipt reaches the route unchallenged', async () => {
     const falseReceipt = { status: '0x0', blockNumber: q(990), blockHash: h(990), transactionHash: h(7) };
     const lying: Rpc = async (method, params) =>
       method === 'eth_getTransactionReceipt' ? falseReceipt : honest(1_000)(method, params);
@@ -63,7 +63,7 @@ describe('R309-MC-3 at 0566af3: one lying endpoint', () => {
   });
 });
 
-describe('R328-4 and R328-6 at 0566af3: a second endpoint that keeps only recent state', () => {
+describe('R328-4 and R328-5 at 0566af3: a second endpoint that keeps only recent state', () => {
   it('the strict read (state at the finalized block, 600 blocks old) can never be confirmed', async () => {
     // The second endpoint serves state for the newest 30 blocks only (Arbitrum One: about a minute).
     const rpc = chainRpc([honest(1_000), honest(1_000, 970)], RULES);
