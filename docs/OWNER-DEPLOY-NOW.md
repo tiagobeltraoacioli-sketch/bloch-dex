@@ -1,6 +1,6 @@
 # PosternDEX on six public chains: the owner's deployment, step by step
 
-Status: **ready for the owner to run; dry-run on a fork of each of the six chains at commit `8710848`: PASS on all six (section 9); nothing deployed.** Written
+Status: **ready for the owner to run; dry-run on a fork of each of the six chains at commit `fb89873`: PASS on all six (section 9); nothing deployed.** Written
 2026-11-17 by agent 367 (round 18) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
 behind every rule are in that document; this one is only the sequence, with every command exactly as you type it.
 A Portuguese copy for the owner is kept outside this public repository (the repository is English only), with the same command blocks; this English file is the one the dry run executes.
@@ -191,18 +191,18 @@ Chain), `0x8A1DdC0BAE18A038D4E5Bb088eeDcdE10b61db53` (Ethereum). If any differs,
 
 ## 3. Money per chain
 
-Read on 2026-11-17 between 04:52 and 04:58 UTC from each chain's reviewed public endpoint (`eth_gasPrice`; Linea: `linea_estimateGas`; rollup data fees from the rollups' own oracles: OP Stack `GasPriceOracle.getL1Fee`, Arbitrum `NodeInterface.gasEstimateL1Component`), applied to the gas the dry run's own receipts used (the same bytes you send). "Today" is that hour; plan with the funding column, which covers prices well above it. USD at the market price the dry run's `prepare` read (Chainlink and a pool, on the fork).
+Read on 2026-11-17 between 05:04 and 05:06 UTC from each chain's reviewed public endpoint (`eth_gasPrice`; Linea: `linea_estimateGas`; rollup data fees from the rollups' own oracles: OP Stack `GasPriceOracle.getL1Fee`, Arbitrum `NodeInterface.gasEstimateL1Component`), applied to the gas the dry run's own receipts used (the same bytes you send). "Today" is that hour; plan with the funding column, which covers prices well above it. USD at the market price the dry run's `prepare` read (Chainlink and a pool, on the fork).
 
 | Chain | Fund the deploying account (step 2) | It covers forge's upfront bound up to | Today: gas price | Today: deployment (3 tx) | Today: approve + first deposit | Today: total | Depositing account: deposit + this for gas (step 6) | Minimum first deposit |
 |---|---|---|---|---|---|---|---|---|
-| OP Mainnet | 0.001 ETH | 0.078 gwei (12,889,611 gas) | 0.00103 gwei | 0.00000955 ETH | 0.00000265 ETH | **0.0000122 ETH** (about US$ 0.022) | 0.0005 ETH | 0.1 ETH |
+| OP Mainnet | 0.001 ETH | 0.078 gwei (12,889,611 gas) | 0.00103 gwei | 0.00000958 ETH | 0.00000266 ETH | **0.00001224 ETH** (about US$ 0.022) | 0.0005 ETH | 0.1 ETH |
 | Base | 0.001 ETH | 0.078 gwei (12,889,611 gas) | 0.00600 gwei | 0.00005402 ETH | 0.0000155 ETH | **0.00006952 ETH** (about US$ 0.13) | 0.0005 ETH | 0.1 ETH |
-| Arbitrum One | 0.002 ETH | 0.16 gwei (12,726,905 gas) | 0.0200 gwei | 0.00018044 ETH | 0.00005199 ETH | **0.00023242 ETH** (about US$ 0.43) | 0.001 ETH | 0.1 ETH |
+| Arbitrum One | 0.002 ETH | 0.16 gwei (12,726,905 gas) | 0.0201 gwei | 0.00018094 ETH | 0.00005218 ETH | **0.00023311 ETH** (about US$ 0.43) | 0.001 ETH | 0.1 ETH |
 | Linea | 0.01 ETH | 0.78 gwei (12,889,927 gas) | 0.0396 gwei | 0.00035495 ETH | 0.00010262 ETH | **0.00045756 ETH** (about US$ 0.84) | 0.003 ETH | 0.1 ETH |
-| BNB Smart Chain | 0.005 BNB | 0.39 gwei (12,889,927 gas) | 0.0500 gwei | 0.00044809 BNB | 0.00012917 BNB | **0.00057726 BNB** (about US$ 0.34) | 0.003 BNB | 0.5 BNB |
-| Ethereum | 0.03 ETH | 2.3 gwei (12,889,927 gas) | 0.128 gwei | 0.00115097 ETH | 0.00033192 ETH | **0.0014829 ETH** (about US$ 2.71) | 0.015 ETH | 1 ETH |
+| BNB Smart Chain | 0.005 BNB | 0.39 gwei (12,889,927 gas) | 0.0500 gwei | 0.00044809 BNB | 0.00012916 BNB | **0.00057724 BNB** (about US$ 0.34) | 0.003 BNB | 0.5 BNB |
+| Ethereum | 0.03 ETH | 2.3 gwei (12,889,927 gas) | 0.134 gwei | 0.00120324 ETH | 0.000347 ETH | **0.00155023 ETH** (about US$ 2.84) | 0.015 ETH | 1 ETH |
 
-**Total today for the six chains' transactions: about US$ 4.47** (gas only; the deposits themselves are your liquidity, not a cost). The deploying account needs the sum of its column across the six chains (0.001 ETH + 0.001 ETH + 0.002 ETH + 0.01 ETH + 0.005 BNB + 0.03 ETH); what is not spent stays in it (section 8). The ceiling column is the funding divided by forge's own upfront gas bound (`Estimated total gas used for script`, about 1.4 times the gas spent): above that price step 3 shows an `Estimated amount required` larger than the funding, and you fund the difference. Linea's price moved from 0.04 to 0.32 gwei (`eth_gasPrice`) within this day; its funding is set for that. By today's readings BNB Smart Chain (US$ 0.34) is cheaper than Arbitrum One and Linea; the order of section 4 is kept (the differences are cents and move by the hour; it groups the ETH rollups first).
+**Total today for the six chains' transactions: about US$ 4.59** (gas only; the deposits themselves are your liquidity, not a cost). The deploying account needs the sum of its column across the six chains (0.001 ETH + 0.001 ETH + 0.002 ETH + 0.01 ETH + 0.005 BNB + 0.03 ETH); what is not spent stays in it (section 8). The ceiling column is the funding divided by forge's own upfront gas bound (`Estimated total gas used for script`, about 1.4 times the gas spent): above that price step 3 shows an `Estimated amount required` larger than the funding, and you fund the difference. Linea's price moved from 0.04 to 0.32 gwei (`eth_gasPrice`) within this day; its funding is set for that. Today BNB Smart Chain (US$ 0.34) compares with Arbitrum One (US$ 0.43) and Linea (US$ 0.84); the order of section 4 is kept whatever the hour's ranking (the differences are cents; the ETH rollups come first).
 
 
 ## 4. Deploying, chain by chain
@@ -242,7 +242,7 @@ cast gas-price --rpc-url https://mainnet.optimism.io
 scripts/multichain/deploy.sh op-mainnet dry-run -- --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer
 ```
 
-**op-mainnet-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. It must end with `== sent.` and print the next command. No pair is created.
+**op-mainnet-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. Before signing it prints the three transactions (to the CREATE2 deployer, value 0, the chain id, the planned factory, router and lens with `feeTo` and `firstDepositor`) and asks you to type the chain's key (`op-mainnet`): compare the addresses with section 2.5, then type it (anything else stops; nothing is sent). It must end with `== sent.` and print the next command. No pair is created.
 
 <!-- run: op-mainnet deploy-broadcast -->
 ```
@@ -290,7 +290,7 @@ cast gas-price --rpc-url https://mainnet.base.org
 scripts/multichain/deploy.sh base dry-run -- --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer
 ```
 
-**base-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. It must end with `== sent.` and print the next command. No pair is created.
+**base-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. Before signing it prints the three transactions (to the CREATE2 deployer, value 0, the chain id, the planned factory, router and lens with `feeTo` and `firstDepositor`) and asks you to type the chain's key (`base`): compare the addresses with section 2.5, then type it (anything else stops; nothing is sent). It must end with `== sent.` and print the next command. No pair is created.
 
 <!-- run: base deploy-broadcast -->
 ```
@@ -338,7 +338,7 @@ cast gas-price --rpc-url https://arb1.arbitrum.io/rpc
 scripts/multichain/deploy.sh arbitrum-one dry-run -- --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer
 ```
 
-**arbitrum-one-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. It must end with `== sent.` and print the next command. No pair is created.
+**arbitrum-one-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. Before signing it prints the three transactions (to the CREATE2 deployer, value 0, the chain id, the planned factory, router and lens with `feeTo` and `firstDepositor`) and asks you to type the chain's key (`arbitrum-one`): compare the addresses with section 2.5, then type it (anything else stops; nothing is sent). It must end with `== sent.` and print the next command. No pair is created.
 
 <!-- run: arbitrum-one deploy-broadcast -->
 ```
@@ -386,7 +386,7 @@ cast gas-price --rpc-url https://rpc.linea.build
 scripts/multichain/deploy.sh linea dry-run -- --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer
 ```
 
-**linea-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. It must end with `== sent.` and print the next command. No pair is created.
+**linea-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. Before signing it prints the three transactions (to the CREATE2 deployer, value 0, the chain id, the planned factory, router and lens with `feeTo` and `firstDepositor`) and asks you to type the chain's key (`linea`): compare the addresses with section 2.5, then type it (anything else stops; nothing is sent). It must end with `== sent.` and print the next command. No pair is created.
 
 <!-- run: linea deploy-broadcast -->
 ```
@@ -434,7 +434,7 @@ cast gas-price --rpc-url https://bsc-rpc.publicnode.com
 scripts/multichain/deploy.sh bnb-smart-chain dry-run -- --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer
 ```
 
-**bnb-smart-chain-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. It must end with `== sent.` and print the next command. No pair is created.
+**bnb-smart-chain-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. Before signing it prints the three transactions (to the CREATE2 deployer, value 0, the chain id, the planned factory, router and lens with `feeTo` and `firstDepositor`) and asks you to type the chain's key (`bnb-smart-chain`): compare the addresses with section 2.5, then type it (anything else stops; nothing is sent). It must end with `== sent.` and print the next command. No pair is created.
 
 <!-- run: bnb-smart-chain deploy-broadcast -->
 ```
@@ -482,7 +482,7 @@ cast gas-price --rpc-url https://ethereum-rpc.publicnode.com
 scripts/multichain/deploy.sh ethereum dry-run -- --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer
 ```
 
-**ethereum-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. It must end with `== sent.` and print the next command. No pair is created.
+**ethereum-4. Deploy.** Three transactions (factory, router, lens), signed by the deploying key; the password is asked once. Before signing it prints the three transactions (to the CREATE2 deployer, value 0, the chain id, the planned factory, router and lens with `feeTo` and `firstDepositor`) and asks you to type the chain's key (`ethereum`): compare the addresses with section 2.5, then type it (anything else stops; nothing is sent). It must end with `== sent.` and print the next command. No pair is created.
 
 <!-- run: ethereum deploy-broadcast -->
 ```
@@ -1007,18 +1007,18 @@ nothing but printed deposits) if you will open further pairs on these factories;
 
 ## 9. The dry run of this document
 
-Run of record: commit `8710848`, 2026-11-17 04:50 UTC onward, on the Mac, anvil 1.7.1 forks of each chain on loopback (ports 46710 to 46760), Foundry 1.7.1, Node 24. Command: `node scripts/multichain/owner-dry-run.mjs once --out DIR --pt FILE`, then `node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR` per chain. Evidence (every command run, its output, `evidence.json`) is kept in the agent's scratch (`agents/367-dex-deploykit-r18.md` names it); it contains no key of the owner's (none was used) and the throwaway key never leaves it.
+Run of record: commit `fb89873`, 2026-11-17 05:00 UTC onward, on the Mac, anvil 1.7.1 forks of each chain on loopback (ports 46710 to 46760), Foundry 1.7.1, Node 24. Command: `node scripts/multichain/owner-dry-run.mjs once --out DIR --pt FILE`, then `node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR` per chain. Evidence (every command run, its output, `evidence.json`) is kept in the agent's scratch (`agents/367-dex-deploykit-r18.md` names it); it contains no key of the owner's (none was used) and the throwaway key never leaves it.
 
 Once (section 2): **PASS, 13 checks** (kit tests; `check-depositor` FIT on the six chains against the public endpoints; the fee-proof message equal to the one printed here; the signing page written; `record` refusing a throwaway key's signature of the exact message and writing nothing; `verify` NOT VALID because the owner has not signed yet; the deploying key created, read back and distinct from the two other accounts; the plan's addresses; the Portuguese copy's 106 blocks equal to these).
 
 | Chain | Result | Fork block | Public pre gate (real chain, read-only) | Gas: factory, router, lens | Gas: approve, first deposit | Midway drills | Depositing account after (left of the funding) |
 |---|---|---|---|---|---|---|---|
-| OP Mainnet | **PASS, 38 checks** | 159,646,197 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,138 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.0005 ETH, 1.830309 USDC |
-| Base | **PASS, 38 checks** | 58,504,782 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,198 | 11 of 11 pass; M3 after the clock jump: PASS | 0.0005 ETH, 1.832864 USDC |
-| Arbitrum One | **PASS, 38 checks** | 524,944,065 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 55,449, 2,542,345 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.001 ETH, 1.831906 USDC |
-| Linea | **PASS, 38 checks** | 32,628,754 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 59,854, 2,531,067 | 11 of 11 pass; M3 after the clock jump: PASS | 0.003 ETH, 1.827899 USDC |
-| BNB Smart Chain | **PASS, 38 checks** | 134,058,591 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 53,476, 2,529,945 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.003 BNB, 2.972205 USDC (Binance-Peg) |
-| Ethereum | **PASS, 38 checks** | 26,432,503 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 55,570, 2,528,862 | 11 of 11 pass; M3 after the clock jump: PASS | 0.015 ETH, 18.304637 USDC |
+| OP Mainnet | **PASS, 38 checks** | 159,646,482 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,138 | 11 of 11 pass; M3 after the clock jump: PASS | 0.0005 ETH, 1.830341 USDC |
+| Base | **PASS, 38 checks** | 58,507,456 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,198 | 11 of 11 pass; M3 after the clock jump: PASS | 0.0005 ETH, 1.82968 USDC |
+| Arbitrum One | **PASS, 38 checks** | 524,946,136 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 55,449, 2,542,345 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.001 ETH, 1.830634 USDC |
+| Linea | **PASS, 38 checks** | 32,628,819 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 59,854, 2,531,067 | 11 of 11 pass; M3 after the clock jump: PASS | 0.003 ETH, 1.827899 USDC |
+| BNB Smart Chain | **PASS, 38 checks** | 134,060,133 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 53,476, 2,529,694 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.003 BNB, 2.968648 USDC (Binance-Peg) |
+| Ethereum | **PASS, 38 checks** | 26,432,558 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 55,570, 2,528,862 | 11 of 11 pass; M3 after the clock jump: PASS | 0.015 ETH, 18.294566 USDC |
 
 What each chain's run checked, in order: the owner's step 1 against the public chain untouched (read-only; it fails today on the fee-address proof alone, which is the owner's step 2.3); then on the fork: step 1 PASS; the deploying account funded with exactly the stated amount and read back by step 2; step 3 ends "nothing was sent", the deploying nonce stays 0, and forge's own `Estimated amount required` is below the stated funding; step 4 sends three successful transactions from the throwaway key, the three contracts at the planned addresses; **M1** step 4 again sends nothing; **M4** step 5 before finality prints WAIT and no PASS; step 5 PASS with the pair absent; step 6's market read, the depositing account funded with deposit + allowance and token + 1% and both balances read back by step 6's commands; step 7's `prepare` prints two `cast send` lines from `0x1ec3…C8f3` with `--chain`; **M2** a lone approve, then `prepare` again and its fresh pair opens the pool; **M3** the deposit sent after its 20-minute deadline reverts and creates no pool (then `prepare` either passes or refuses a feed made stale by the clock jump on the fork; both are correct); **M3b** a deposit that runs out of gas reverts, creates no pool, and `prepare` again gives a pair that opens it; M2, M3 and M3b on snapshots, reverted; then the real sequence: `prepare`, the two printed lines with the documented suffix (`--unlocked` for the impersonated account), both mined from the depositing account, exactly two transactions sent by it; step 8 `verify` PASS; step 9 post gate PASS with the pair open and its opening proven; step 10 the page's record written; today's cost from the public chain, cross-checked with `cost.mjs` on the three deployment transactions.
 
