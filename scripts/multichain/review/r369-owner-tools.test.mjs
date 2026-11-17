@@ -152,7 +152,7 @@ test("R369-4: one firstDepositor for all six chains: the documented recovery 'a 
   assert.equal(typeof committed.firstDepositor, "string");
 });
 
-test("R369-13: the pinned block itself is still one endpoint's choice: a first endpoint that names an OLD finalized block (canonical, so the others confirm its hash) makes the pre gate judge the depositor and the fee address on state from before a delegation was set", async () => {
+test("R369-13 (closed at 279b900, regression): an OLD finalized block named by the first endpoint is refused; before the fix: the pinned block itself was still one endpoint's choice: a first endpoint that names an OLD finalized block (canonical, so the others confirm its hash) makes the pre gate judge the depositor and the fee address on state from before a delegation was set", async () => {
   const local = clone(open);
   const chain = clone(base);
   const plan0 = planChain(local, chain, artifacts, { reference: true });
@@ -175,7 +175,10 @@ test("R369-13: the pinned block itself is still one endpoint's choice: a first e
   const liar = async (method, params) => (method === "eth_getBlockByNumber" && params[0] === "finalized" ? OLD : honest(method, params));
   const truthFirst = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: honest, others: [honest], feeProof: { valid: true, problems: [] } });
   assert.equal(truthFirst.decision, "fail");
-  const stale = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: liar, others: [honest], feeProof: { valid: true, problems: [] } });
-  assert.equal(stale.decision, "pass", JSON.stringify(stale.failed));
-  assert.equal(stale.finalized.number, 16);
+  // Closed at 360's 279b900: the finalized block may not be older than the chain's bound behind the newest head.
+  const NEWHEAD = { ...NEW, timestamp: `0x${(1 + 4 * 3600).toString(16)}` };
+  const honest2 = async (m, p) => (m === "eth_getBlockByNumber" && p[0] === "latest" ? NEWHEAD : honest(m, p));
+  const liar2 = async (m, p) => (m === "eth_getBlockByNumber" && p[0] === "finalized" ? OLD : honest2(m, p));
+  const stale = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: liar2, others: [honest2], feeProof: { valid: true, problems: [] } }).catch((e) => ({ decision: "refused", error: String(e.message) }));
+  assert.notEqual(stale.decision, "pass");
 });
