@@ -59,6 +59,9 @@ import {
   cannotRenewText,
   entryQuietMs,
   monotonicMs,
+  ageSince,
+  stampNow,
+  NEVER,
   renewalCheckMs,
   renewalText,
   staleAt,
@@ -265,7 +268,7 @@ export default function MainnetLive({
 
   // When the snapshot on screen was read (monotonic clock), and whether a read is in flight: the age bound of a
   // public network's snapshot (ui/snapshot-renewal.ts). Read by the renewal only.
-  const takenAt = useRef(0);
+  const takenAt = useRef(NEVER);
   const reading = useRef(false);
   useEffect(() => {
     let current = true;
@@ -279,7 +282,7 @@ export default function MainnetLive({
         if (s.status !== 'live') return;
         const snap = await readSnapshot(rpc, s.deployment, 'mainnet');
         const pools = await readExcess(rpc, snap.finalized.hash, s.deployment.lens, snap.pools);
-        if (current) takenAt.current = monotonicMs();
+        if (current) takenAt.current = stampNow();
         if (current)
           setSnapshot({
             ...snap,
@@ -341,10 +344,10 @@ export default function MainnetLive({
   failed.current = failure !== '';
   useEffect(() => {
     if (!snapshotMaxAgeMs) return;
-    const timer = setInterval(() => {
+    const look = () => {
       const at = monotonicMs();
       const due = backgroundRenewal({
-        ageMs: at - takenAt.current,
+        ageMs: ageSince(takenAt.current),
         maxAgeMs: snapshotMaxAgeMs,
         sinceEditMs: at - cardActivity.current.editedAt,
         quoteOnScreen: cardActivity.current.quoteOnScreen,
@@ -355,15 +358,24 @@ export default function MainnetLive({
         hidden: typeof document !== 'undefined' && document.hidden,
       });
       if (due === 'renew') setGeneration((g) => g + 1);
-    }, renewalCheckMs(snapshotMaxAgeMs));
-    return () => clearInterval(timer);
+    };
+    const timer = setInterval(look, renewalCheckMs(snapshotMaxAgeMs));
+    // A tab shown again (or a device woken: browsers throttle or stop timers meanwhile) looks at once (R364-7).
+    const shown = () => {
+      if (!document.hidden) look();
+    };
+    document.addEventListener('visibilitychange', shown);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', shown);
+    };
   }, [snapshotMaxAgeMs]);
   const freshness = useMemo<Freshness | undefined>(
     () =>
       snapshotMaxAgeMs
         ? {
             maxAgeMs: snapshotMaxAgeMs,
-            ageMs: () => monotonicMs() - takenAt.current,
+            ageMs: () => ageSince(takenAt.current),
             activity: cardActivity,
             renew: () => setGeneration((g) => g + 1),
           }
