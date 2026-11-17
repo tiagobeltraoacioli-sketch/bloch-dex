@@ -9,6 +9,9 @@
 // stays). Then the rehearsal files of the page are derived from each fork's gate
 // report, the multichain site is built with them (a "not for publication" build), served on BASE+10 with its own
 // headers, and frontend/integration/browser/multichain.mjs drives it in headless Chrome (DevTools on BASE+11).
+// The page reads each fork through TWO stand-in endpoints (endpoint-proxy.mjs on BASE+20+2i and BASE+21+2i), as it
+// reads a public chain through two endpoints; the browser scenarios make them disagree, limit requests and
+// recover (set MULTICHAIN_SHOTS=<dir> for screenshots of each state).
 // Everything is loopback and throwaway; the forks read the public endpoints. Exit status 0 only when every fork
 // rehearsal and every browser assertion passed.
 import { spawn, spawnSync } from "node:child_process";
@@ -73,6 +76,8 @@ try {
       name: chain.chain.name,
       chainId: chain.chain.chainId,
       rpc: `http://127.0.0.1:${port}`,
+      // The two endpoints the page reads this fork through.
+      endpoints: [0, 1].map((n) => `http://127.0.0.1:${base + 20 + 2 * i + n}`),
       native: chain.nativeCurrency.symbol,
       wrapped: { address: lower(chain.wrappedNative.address), symbol: chain.wrappedNative.symbol },
       token: { address: lower(chain.tokens[0].address), symbol: chain.tokens[0].symbol },
@@ -88,7 +93,15 @@ try {
   for (const chain of chains) {
     const made = spawnSync("node", ["scripts/multichain/frontend-files.mjs", chain.key, "--gate-report", join(out, chain.key, "gate-report.json"), "--out", files, "--rpc", chain.rpc, "--rehearsal"], { cwd: ROOT, encoding: "utf8" });
     if (made.status !== 0) throw new Error(`frontend-files.mjs ${chain.key}: ${made.stderr}`);
-    bundle.push({ network: JSON.parse(readFileSync(join(files, chain.key, "frontend.network.json"), "utf8")), record: JSON.parse(readFileSync(join(files, chain.key, "frontend.record.json"), "utf8")) });
+    const network = JSON.parse(readFileSync(join(files, chain.key, "frontend.network.json"), "utf8"));
+    // The page's endpoints of this chain: two stand-ins in front of the fork (a rehearsal file may list several
+    // loopback URLs; with two, every pinned read must agree on both, as in production).
+    for (const endpoint of chain.endpoints) {
+      const child = spawn("node", ["scripts/multichain/endpoint-proxy.mjs", new URL(endpoint).port, chain.rpc], { cwd: ROOT, stdio: "ignore" });
+      children.push(child);
+    }
+    network.rpc.urls = chain.endpoints;
+    bundle.push({ network, record: JSON.parse(readFileSync(join(files, chain.key, "frontend.record.json"), "utf8")) });
   }
   const bundleFile = join(out, "bundle.json");
   writeFileSync(bundleFile, `${JSON.stringify(bundle, null, 2)}\n`);

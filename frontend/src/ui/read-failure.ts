@@ -2,7 +2,12 @@
 // always shown in full next to these words; nothing here decides whether anything is sent (a failed read sends
 // nothing, by the route's own logic).
 
-export type ReadFailureKind = 'disagreement' | 'unconfirmed' | 'rate-limited' | 'other';
+export type ReadFailureKind =
+  | 'disagreement'
+  | 'unconfirmed'
+  | 'rate-limited'
+  | 'unreachable'
+  | 'other';
 export type ReadFailure = {
   kind: ReadFailureKind;
   title: string;
@@ -48,6 +53,20 @@ export function classifyReadFailure(message: string): ReadFailure {
       title: 'The endpoint is limiting requests',
       advice:
         'The public endpoints of this network are shared and refuse requests for a while when they are busy. The page backs off and reads again by itself; your funds and any transaction you already sent are not affected.',
+      retry: 'auto',
+    };
+  // What a browser reports when a request got no usable answer: the network is down, the endpoint timed out, or
+  // (common on shared public endpoints) it refused the request without the headers a browser needs to read why.
+  if (
+    /Failed to fetch|NetworkError|Load failed|network request failed|timed out|TimeoutError|aborted/i.test(
+      message,
+    )
+  )
+    return {
+      kind: 'unreachable',
+      title: 'The endpoint did not answer',
+      advice:
+        'No endpoint of this network gave an answer the browser could read: the connection is down, or a busy public endpoint refused the request. The page reads again by itself, a little later each time.',
       retry: 'auto',
     };
   return {

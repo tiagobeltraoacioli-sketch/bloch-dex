@@ -124,7 +124,13 @@ describe('a failed read is named, shown in full, and read again the right way', 
       'chain: eth_call failed: Too Many Requests',
     ])
       expect(classifyReadFailure(text)).toMatchObject({ kind: 'rate-limited', retry: 'auto' });
-    for (const text of ['chain: eth_call returned HTTP 500', 'Failed to fetch', 'Unavailable.'])
+    for (const text of ['Failed to fetch', 'The operation timed out.', 'Load failed'])
+      expect(classifyReadFailure(text)).toMatchObject({ kind: 'unreachable', retry: 'auto' });
+    for (const text of [
+      'chain: eth_call returned HTTP 500',
+      'chain: the deployment record does not match the chain',
+      'Unavailable.',
+    ])
       expect(classifyReadFailure(text)).toMatchObject({ kind: 'other', retry: 'manual' });
     expect([0, 1, 2, 3, 4, 9].map(readRetrySeconds)).toEqual([15, 30, 60, 120, 120, 120]);
     expect([0, 0.2, 59, 60, 3599, 3600, 3725].map(clockText)).toEqual([
@@ -170,7 +176,7 @@ describe('a failed read is named, shown in full, and read again the right way', 
       expect(block.getAttribute('data-kind')).toBe('disagreement');
       expect(block.textContent).toContain('The endpoints disagree');
       expect(block.textContent).toContain(
-        `Base reads are unavailable: ${DISAGREEMENT}. No transaction can be sent from this page.`,
+        `Base reads are unavailable: ${DISAGREEMENT.replace(/\.$/, '')}. No transaction can be sent from this page.`,
       );
       expect(screen.queryByTestId('read-retry')).toBeNull();
       expect(screen.queryByRole('button', { name: 'Swap' })).toBeNull();
@@ -209,7 +215,7 @@ describe('a failed read is named, shown in full, and read again the right way', 
         expect(block().getAttribute('data-kind')).toBe(kind);
         expect(block().textContent).toContain(title);
         expect(block().textContent).toContain(
-          `Base reads are unavailable: ${text}. No transaction can be sent from this page.`,
+          `Base reads are unavailable: ${text.replace(/\.$/, '')}. No transaction can be sent from this page.`,
         );
         expect(screen.getByTestId('read-retry').textContent).toBe('Reading again in 0:15');
         await act(async () => void (await vi.advanceTimersByTimeAsync(5_000)));

@@ -460,9 +460,15 @@ decisions above. What moved to the settle rule: displayed pools and balances, th
 of a hold by the saved transaction's own receipt (if that block is later replaced, the same signed transaction is
 the only thing that can execute, once).
 
-The page shows the rule in words above the swap form of each network, for example: "On Ethereum this page treats a
+The page shows the rule in words above the swap form of each network, always on screen (it is never behind a
+click), for example: "On Ethereum this page treats a
 block as settled once 2 blocks are on top of it (about 24 seconds), not at the chain's own finality. Where this
-page says "finalized" on this network, it means that. …". Shown by the page rehearsal (section 11): on each fork,
+page says "confirmed" on this network, it means that. …". On a network with a depth rule the route's own texts say
+"confirmed" where the Bloch L2 route says "finalized" (`wording.settled`; sentences written by the route's logic
+modules pass through `worded()` in `frontend/src/mainnet/wording.ts`); BNB Smart Chain, whose rule is the chain's
+own `finalized` block, keeps "finalized". While a sent swap waits, the page counts it against the rule ("In block
+N: 12 of 32 confirmations"), from one endpoint and for orientation only: the hold ends on the verified receipt.
+Shown by the page rehearsal (section 11): on each fork,
 blocks are mined at the chain's measured block time and only as many as the rule asks; the swap's outcome appears
 within seconds while the fork's `finalized` block is still behind the swap.
 
@@ -603,7 +609,7 @@ Recorded, not fixed in this package:
 
 | Issue | Where it matters | What to do |
 |---|---|---|
-| **The route's texts say "finalized"** on chains where the page settles on a depth ("Pools at finalized block", "verified canonical and finalized", "Finalized balances"). The page states above the form what the word means on that network, but the texts themselves are the Bloch L2 route's | Users of the five depth chains | The UI redesign (agent 318's line) owns the route's texts; it should say "confirmed" there |
+| (Closed in round 17) The route's texts said "finalized" on chains where the page settles on a depth | Users of the five depth chains | The redesigned page says "confirmed" there; the page rehearsal asserts that the whole page text of a depth chain holds no "finalized" outside the confirmation note |
 | **Arbitrum One: fixed gas limit under an L1 fee spike** (review R309-MC-8). The page asks 250,000 gas per hop; on Arbitrum the limit must also cover the L1 data charge. Measured: execution 158,109, and a small L1 component at that hour. Not measured under a spike | A swap on Arbitrum One during an Ethereum fee spike could run out of gas (the user loses the fee of a failed transaction, not the swap) | A per-chain gas limit, or an estimate on Arbitrum, in a later change to the route |
 | **Anchored swaps revert on Arbitrum One** (section 5) | Direct callers only; the page does not use them | None in this package |
 | **Fee address** (review R309-MC-7): it has never sent a transaction on OP Mainnet or Linea, and on Base it carries an EIP-7702 delegation to `0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`, whose code was not reviewed here | Whether anyone but the key can move the fee shares on Base depends on that delegate contract | Before Base: the owner confirms what the delegate is, or clears the delegation. Before OP Mainnet and Linea: the owner signs one transaction or message with the key on a chain where it has none. If the reference plan's choice is kept (the fee address is also the first depositor), the same applies to the depositing account |

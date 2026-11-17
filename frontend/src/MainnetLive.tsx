@@ -328,7 +328,8 @@ export default function MainnetLive({
           now={now}
           onRetry={() => setGeneration((g) => g + 1)}
         >
-          {wording.reads} are unavailable: {failure}. No transaction can be sent from this page.
+          {wording.reads} are unavailable: {failure.replace(/\.$/, '')}. No transaction can be sent
+          from this page.
         </ReadFailureBlock>
       ) : !state ? (
         <p className="muted" role="status">

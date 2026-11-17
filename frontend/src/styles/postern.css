@@ -2762,6 +2762,7 @@ li[data-state='failed'] .state-pill {
   overflow-wrap: anywhere;
 }
 .read-failure[data-kind='unconfirmed'],
+.read-failure[data-kind='unreachable'],
 .read-failure[data-kind='rate-limited'] {
   --tone: var(--warn);
 }
@@ -2816,6 +2817,7 @@ li[data-state='failed'] .state-pill {
   font-size: var(--text-small);
 }
 .form-error[data-kind='unconfirmed'],
+.form-error[data-kind='unreachable'],
 .form-error[data-kind='rate-limited'] {
   --tone: var(--warn);
 }

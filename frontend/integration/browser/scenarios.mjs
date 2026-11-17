@@ -866,8 +866,20 @@ scenario('idle-chain-swap-lands-in-the-second-block', 'R309-3P-1, 4P-3: an idle 
   // swapExactBLCHForTokens(amountOutMin, path, to, deadline): the deadline is the fourth head word.
   const signedDeadline = Number(BigInt(`0x${w.wallet.sends()[0].params[0].data.slice(10 + 3 * 64, 10 + 4 * 64)}`));
   w.check('the signed deadline is 75 minutes from the page clock', Math.abs(signedDeadline - (deviceNow + 75 * 60)) <= 90, signedDeadline - deviceNow);
-  const text = (await page.text()).replace(/\s+/g, ' ');
-  w.check('the waiting user is told what ends the wait on a quiet chain', /on a quiet chain the finalized block that ends this wait can be up to 24 hours away/.test(text));
+  // What must be on screen WITHOUT a click while a swap is held (reviewer 309's ruling, items a to e), read with
+  // visibleText: the text of clipped or inert regions does not count. Only the idle-chain explanation may sit
+  // behind "Why is this waiting?"; it is checked after that one click, on screen.
+  const seen = await page.visibleText();
+  const QUIET = /on a quiet chain the finalized block that ends this wait can be up to 24 hours away/;
+  w.check('held swap, on screen without a click: the transaction with its state and its hash', new RegExp(`${SWAP} ?: ?pending ?0x[0-9a-f]{64}`).test(seen), seen.slice(0, 600));
+  w.check('held swap, on screen without a click: "Do not resend with a new nonce; Swap stays disabled until the outcome is known."', seen.includes('Do not resend with a new nonce; Swap stays disabled until the outcome is known.'));
+  w.check('held swap, on screen without a click: how the hold ends, with the countdown to the saved deadline', seen.includes("This hold ends with the swap's finalized receipt, or once its deadline has passed in a finalized block.") && /Saved deadline in (\d+:)?\d{1,2}:\d\d \(at \d\d:\d\d\), by this device's clock\./.test(seen), /Saved deadline[^.]*\./.exec(seen)?.[0]);
+  w.check('held swap, on screen without a click: time or an empty explorer result cannot clear the hold, and nothing else on the page clears it', seen.includes('Time passing or an empty explorer result cannot clear the hold.') && seen.includes('Nothing else on this page clears a hold.'));
+  const reach = async (name) => (await page.reachableButton(name)) !== null;
+  w.check('held swap, on screen without a click: the hash field and both checks', seen.includes('Transaction hash from wallet activity') && (await reach('Check transaction hash')) && (await reach('Check cancellation or replacement')));
+  w.check('the idle-chain explanation is one click away: not on screen yet, and its button "Why is this waiting?" is', !QUIET.test(seen) && (await reach('Why is this waiting?')), QUIET.test(seen));
+  await page.click('Why is this waiting?');
+  w.check('the waiting user is told what ends the wait on a quiet chain (on screen after "Why is this waiting?")', QUIET.test(await page.visibleText()));
   // The block that takes the swap is the second after the pause: its time is 65 minutes after the swap was signed,
   // past what the default 60 minutes would have allowed and inside the raised deadline.
   await rpc('evm_setNextBlockTimestamp', [hex(deviceNow + 65 * 60)]);

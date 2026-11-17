@@ -39,7 +39,7 @@ the user must see is never behind a click. The page's own description follows th
 | Interface | Inter Variable, weight 400 to 600                                                               | everything else                                        |
 | Data      | Inter with `tabular-nums` and slashed zero off; system monospace for addresses, hashes and code | amounts, tables, identifiers                           |
 
-Scale (rem): 0.75 micro, 0.8125 small, 0.875 interface, 1 body, 1.125 lead, 1.375 title, 1.75 to 2.5 display (fluid),
+Scale (rem): 0.75 micro, 0.8125 small, 0.875 interface, 1 body, 1.125 lead, 1.375 title, 1.75 figure (a headline number inside a card), 1.75 to 2.5 display (fluid),
 1.75 to 2.375 amount numerals (fluid). Labels are sentence case; small-caps labels use `font-variant-caps`, never
 `text-transform`, so copied and machine-read text stays as written. Both faces are self-hosted (SIL OFL 1.1, licence
 texts in `public/licenses/`), Latin subsets only.
@@ -100,12 +100,34 @@ definition list, pool card with cap meter, table, dialog, bottom sheet (dialogs 
 popover, disclosure. Feedback: trust strip, reference panel, deadline clock, notice (info / ok / warn / danger with rail and icon), status line, next-step line,
 transaction timeline with state marks, skeleton, spinner, toast, empty state, badge and chip.
 
+## Public networks: waiting and refusal states
+
+The multichain site draws the same route with the lamp of the selected network. Four pieces are specific to it;
+all of them use the existing blocks (rail notice, bordered status line, bar), none adds a colour.
+
+- **Confirmation rule.** A course above the gate with the lamp on its rail ("How this network settles here"): the
+  network's note in full, its first sentence (the rule) in the reading colour. Always on the page, in every state,
+  never inside a disclosure. Where the rule is a depth the route says "confirmed", not "finalized".
+- **Confirmation count.** Inside the tracked transaction, above the deadline: "In block N: 12 of 32 confirmations",
+  a bar in the lamp colour (green when the depth is reached, marching while the transaction is in no block yet), what
+  is left in blocks and time, and one line that the count is for orientation and the hold ends on the verified
+  receipt. When the endpoint stops answering or limits requests the count says it is behind, on a warn rail.
+- **Deadline countdown.** The saved deadline of a hold counts down second by second in tabular figures (m:ss, h:mm:ss),
+  with its wall-clock time; the last five minutes take the warn colour; once passed it counts up and says what
+  releases the hold. The same clock on the Bloch L2.
+- **Read failure.** One block where the card would be: a serif title naming the kind (the endpoints disagree, a second
+  endpoint has not confirmed, the endpoint is limiting requests, the endpoint did not answer), the route's own
+  sentence in full, what the page does about it, and one button. Disagreement is danger-toned and waits for the user
+  ("Read again"); the other three are warn-toned, and the page reads again by itself after 15, 30, 60, then 120
+  seconds, counting the wait down next to "Read now". A quote refused for the same reasons carries the same title
+  inside the card's alert.
+
 ## Routes (all restyled)
 
 | Route                               | What it is                                                                                                                                                                                                     |
 | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `#/mainnet`                         | the live route: network block, finality status, bridge-exit notices, swap card with every transaction state, pools with reserve caps, deployment record, bridged assets                                        |
-| `#/trade`, `#/pools`, `#/portfolio` | the sample-data preview (labelled as such): swap with route comparison and chart, pool list and details, positions and activity, with their dialogs (token sheet, settings, wallet, network, liquidity, guide) |
+| `#/trade`, `#/pools`, `#/portfolio` | the sample-data preview (labelled as such; its stylesheet `styles/preview.css` takes type, space, radius and colour from the tokens only, checked by `scripts/check-css.mjs`): swap with route comparison and chart, pool list and details, positions and activity, with their dialogs (token sheet, settings, wallet, network, liquidity, guide) |
 | `#/live-pools`                      | read-only pool snapshot behind the host gate, and its unavailable state                                                                                                                                        |
 | `#/devnet4`                         | zero-value devnet route (development builds only)                                                                                                                                                              |
 | error boundary, local-render banner | full-page states                                                                                                                                                                                               |

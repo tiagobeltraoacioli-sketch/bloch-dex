@@ -6,6 +6,7 @@ const ICON = {
   disagreement: GitCompareArrows,
   unconfirmed: CloudOff,
   'rate-limited': Hourglass,
+  unreachable: CloudOff,
   other: TriangleAlert,
 } as const;
 
