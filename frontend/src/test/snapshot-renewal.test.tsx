@@ -3,6 +3,8 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { Rpc } from '../devnet4/chain';
 import {
+  ageSince,
+  renewalClock,
   backgroundRenewal,
   cannotRenewText,
   entryQuietMs,
@@ -61,6 +63,24 @@ describe('background renewal of the snapshot block', () => {
 
   it('an edit 10 s ago or more is not mid-entry', () => {
     expect(backgroundRenewal({ ...due, sinceEditMs: ENTRY_QUIET_MS })).toBe('renew');
+  });
+
+  it('an age is the larger of the monotonic and the wall-clock elapsed time (R364-7)', () => {
+    const real = { ...renewalClock };
+    try {
+      let mono = 1000;
+      let wall = 5000;
+      renewalClock.now = () => mono;
+      renewalClock.wall = () => wall;
+      const from = { mono: 1000, wall: 5000 };
+      wall += 600_000; // slept: the monotonic clock stood still
+      expect(ageSince(from)).toBe(600_000);
+      wall -= 3_600_000; // wall clock set back
+      mono += 30_000;
+      expect(ageSince(from)).toBe(30_000);
+    } finally {
+      Object.assign(renewalClock, real);
+    }
   });
 
   it('a quote or a swap is never built on a snapshot at or past the bound', () => {

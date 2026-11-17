@@ -51,7 +51,7 @@ import networkJson from '../../../deployments/mainnet/frontend.network.json';
 import { UNCONFIRMED } from '../multichain/rpc';
 import { renewalClock } from '../ui/snapshot-renewal';
 
-const realClock = renewalClock.now;
+const realClock = { ...renewalClock };
 import type { Provider } from '../wallet';
 
 const BUSDC = '0x1b7c0fb59f34683cd9214566636e63a0f7e092f6' as Address;
@@ -3319,15 +3319,19 @@ describe('renewed snapshot block and the swap form', () => {
   // hand (`age`), so a loaded machine cannot renew a card in the middle of a step; the checks run every 50 ms.
   const BOUND = 400;
   let clock = 0;
+  let wall = 0;
   const age = (ms: number) => {
     clock += ms;
+    wall += ms;
   };
   beforeEach(() => {
     clock = 0;
+    wall = 0;
     renewalClock.now = () => clock;
+    renewalClock.wall = () => wall;
   });
   afterEach(() => {
-    renewalClock.now = realClock;
+    Object.assign(renewalClock, realClock);
   });
   const fill = async (user: ReturnType<typeof userEvent.setup>) => {
     await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
@@ -3406,6 +3410,65 @@ describe('renewed snapshot block and the swap form', () => {
     expect(screen.queryByLabelText('Quote')).toBeNull();
     expect(pinnedQuotes(state, INCLUDED.hash)).toBe(0);
     expect(sends(requests)).toHaveLength(0);
+  });
+
+  it('never renews under a user who is typing: the pause ends 10 s (here half the bound) after the last edit (R364-9)', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet, BOUND);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    state.finalizedBlock = INCLUDED;
+    // The user types while the snapshot is not yet due (age 300 of 400; the clock moves only by hand) ...
+    age(300);
+    await user.type(screen.getByLabelText('Amount'), '1');
+    const amount = screen.getByLabelText('Amount');
+    // ... then the snapshot passes the bound 120 ms after that edit (the pause is 200 ms): the renewal waits.
+    age(120);
+    await new Promise((r) => setTimeout(r, 600));
+    expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 440');
+    expect(screen.getByLabelText('Amount')).toBe(amount);
+    // Still typing (100 ms after the next edit): still no renewal.
+    await user.type(screen.getByLabelText('Amount'), '2');
+    age(100);
+    await new Promise((r) => setTimeout(r, 600));
+    expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 440');
+    expect(screen.getByLabelText('Amount')).toBe(amount);
+    // The user stops: once the pause has passed since the last edit, it renews; the typed amount survives.
+    age(150);
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('12');
+  });
+
+  it('counts the age by the wall clock too: a device that slept renews when shown again (R364-7)', async () => {
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet, 60_000);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    state.finalizedBlock = INCLUDED;
+    // The monotonic clock stood still through a sleep of ten minutes; the wall clock did not.
+    wall += 600_000;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
+    // And the wall clock set back does not make the snapshot look new: the monotonic age still counts.
+    cleanup();
+    const second = fakeChain();
+    page(second.rpc, fakeWallet(second.state).wallet, 60_000);
+    await screen.findByLabelText('Finalized balances', {}, { timeout: 10000 });
+    second.state.finalizedBlock = INCLUDED;
+    clock += 600_000;
+    wall -= 3_600_000;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 15000 },
+    );
   });
 
   it('never renews a quote on screen by itself; Swap on a quote past the bound renews, quotes again and sends nothing', async () => {

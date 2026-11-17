@@ -20,15 +20,26 @@ export const entryQuietMs = (maxAgeMs: number) => Math.min(ENTRY_QUIET_MS, Math.
 export const renewalCheckMs = (maxAgeMs: number) =>
   Math.max(20, Math.min(RENEWAL_CHECK_MS, Math.floor(maxAgeMs / 8)));
 
-/** A monotonic clock for ages: a change of the device's wall clock must not make an old snapshot look new. Tests
- * replace `renewalClock.now` to move ages without waiting; nothing else writes it. */
+/** Two clocks for ages. The monotonic one cannot be set back, but may stand still while the device sleeps
+ * (review R364-7); the wall clock keeps counting through sleep, but can be set back. An age is the LARGER of the two
+ * elapsed times (`ageSince`), so neither failure makes an old snapshot look new. Tests replace `now` and `wall` to
+ * move time without waiting; nothing else writes them. */
 export const renewalClock = {
   now: (): number =>
     typeof performance !== 'undefined' && typeof performance.now === 'function'
       ? performance.now()
       : Date.now(),
+  wall: (): number => Date.now(),
 };
 export const monotonicMs = (): number => renewalClock.now();
+export type Stamp = { mono: number; wall: number };
+export const stampNow = (): Stamp => ({ mono: renewalClock.now(), wall: renewalClock.wall() });
+/** Never read: an age of Infinity. */
+export const NEVER: Stamp = { mono: -Infinity, wall: -Infinity };
+export const ageSince = (from: Stamp): number => {
+  const now = stampNow();
+  return Math.max(now.mono - from.mono, now.wall - from.wall);
+};
 
 export type BackgroundFacts = {
   /** Milliseconds since the snapshot on screen was read. */
