@@ -4,7 +4,7 @@
 // needed). Nothing is sent to a public chain: every transaction goes to the fork; public endpoints are only READ
 // (the public pre gate, the market, gas prices and rollup data-fee oracles for the cost).
 //
-//   node scripts/multichain/owner-dry-run.mjs once  --out DIR
+//   node scripts/multichain/owner-dry-run.mjs once  --out DIR [--pt FILE]
 //   node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR [--fork-url URL] [--pid-dir DIR]
 //
 // The blocks are those of the document marked `<!-- run: <chain>|once <step> -->`; the run refuses to start when an
@@ -16,11 +16,12 @@
 //
 // Midway-failure drills (section 6 of the document), each on an anvil snapshot that is reverted afterwards except
 // the first: (M1) the deployment command run a second time sends nothing; (M2) the approve sent and the deposit not:
-// `prepare` again prints a fresh pair of lines, which go through; (M3) the deposit sent after its deadline reverts,
+// `prepare` again prints a fresh pair of lines, which go through; (M3b) a deposit that runs out of gas reverts,
+// nothing is deposited, and `prepare` again prints a pair that goes through; (M3) the deposit sent after its deadline reverts,
 // nothing is deposited, and `prepare` again works; (M4) the post gate run before finality says WAIT.
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
@@ -85,6 +86,8 @@ async function main() {
   };
   const save = () => writeFileSync(join(out, "evidence.json"), `${JSON.stringify(evidence, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2)}\n`);
   const keyDir = join(out, "deployer-key");
+  // A fresh throwaway key per run (a keystore left by an earlier run has another password).
+  rmSync(keyDir, { recursive: true, force: true });
   const pwFile = join(out, "deployer-key.password");
   /** Run one shell command line (as the owner pastes it, after the documented changes) and log it. */
   const sh = (step, original, command, { timeoutMs = 900_000 } = {}) => {
@@ -141,6 +144,13 @@ async function main() {
       r = sh("fee-proof-record", blocks["once fee-proof-record"], blocks["once fee-proof-record"].replace("0xSIGNATURE", sig));
       const proofAfter = existsSync(proofFile) ? readFileSync(proofFile, "utf8") : null;
       check("2.3 record refuses a signature by any key but the fee address's, and writes nothing", r.status !== 0 && proofAfter === proofBefore, r.output);
+    }
+    if (opt.pt) {
+      // The owner's Portuguese copy (kept outside this English-only repository) must carry the same blocks.
+      const pt = blocksOf(readFileSync(resolve(opt.pt), "utf8"));
+      const diff = [...new Set([...Object.keys(pt), ...Object.keys(blocks)])].filter((k) => pt[k] !== blocks[k]);
+      evidence.ptCopy = { blocks: Object.keys(pt).length, differing: diff };
+      check(`the Portuguese copy has the same ${Object.keys(blocks).length} marked command blocks, byte for byte`, diff.length === 0, diff.join(", "));
     }
     r = run("plan");
     const want = ["0x47D4ae3D6d8e2d8261Ee7beEF510a217Bf4a4C50", "0x5709FF514a909aD0D994eC73D6128F38bF4F1Ca6", "0xc1D01eF14c0Cfe961f548398f9b12CfDC71172C9", "0xFf5f74c4Ca90Ae6024a29175c6d9d92CbD51C5E1", "0xf6046184F7267f0872BaB182C661f1C85695cAE2", "0x605E6b76402FF050BddC903Ea2326451272f7e32", "0x8A1DdC0BAE18A038D4E5Bb088eeDcdE10b61db53"];
@@ -317,7 +327,8 @@ async function main() {
     const doPrepare = (name) => {
       const p = run("prepare", name);
       const lines = prepareLines(p.output);
-      const verifyLine = p.output.split("\n").find((l) => l.startsWith(`node scripts/multichain/first-deposit.mjs ${key} verify`));
+      // prepare ends with "Then: node scripts/multichain/first-deposit.mjs <chain> verify ... --tx <hash of the deposit>".
+      const verifyLine = p.output.match(new RegExp(`node scripts/multichain/first-deposit\\.mjs ${key} verify [^\\n]*`))?.[0];
       return { ...p, lines, verifyLine };
     };
     let p = doPrepare("prepare");
@@ -345,9 +356,26 @@ async function main() {
       const reserves = await rpc("eth_getCode", [plan.pairs[0].address, "latest"]);
       check("M3 the deposit sent after its 20-minute deadline reverts (status 0) and creates no pool", statusOf(d3.output) === "0" || /EXPIRED|revert/i.test(d3.output), d3.output.slice(-300));
       check("M3 nothing was deposited: the pair does not exist", reserves === "0x", reserves.length);
+      // After 21 minutes of fork time the Chainlink feeds on the fork have not moved (nobody updates them on a
+      // fork): prepare either still finds a market price or refuses with a stale feed. Both are correct; which one
+      // depends on the feed's heartbeat. Recorded, not a pass condition (M3b is the pass condition).
       const after = doPrepare("M3-prepare-again");
-      check("M3 prepare again after the revert: PASS, two lines", after.status === 0 && after.lines.length === 2, after.output.slice(-400));
+      evidence.m3PrepareAfterDeadline = after.status === 0 && after.lines.length === 2 ? "PASS (feeds still fresh by their heartbeat)" : /s old at the pinned block/.test(after.output) ? "refused: a feed is stale on the fork after 21 minutes (no market price, nothing printed)" : `unexpected: ${after.output.slice(-300)}`;
+      check("M3 prepare after the deadline revert: either PASS or the stale-feed refusal, never anything else", !evidence.m3PrepareAfterDeadline.startsWith("unexpected"), evidence.m3PrepareAfterDeadline);
       await rpc("evm_revert", [snap2]);
+      // M3b: a deposit that runs out of gas (sent with too low a gas limit), without moving the clock: reverted,
+      // nothing deposited, and prepare again prints a fresh pair that goes through.
+      const snap3 = await rpc("evm_snapshot");
+      const oog = doPrepare("M3b-prepare");
+      sh("M3b-approve", oog.lines[0], sendLine(oog.lines[0]));
+      const d3b = sh("M3b-deposit-out-of-gas", oog.lines[1], `${sendLine(oog.lines[1])} --gas-limit 300000`);
+      check("M3b a deposit that runs out of gas is mined with status 0 and creates no pool", (statusOf(d3b.output) === "0" || /revert|out of gas/i.test(d3b.output)) && (await rpc("eth_getCode", [plan.pairs[0].address, "latest"])) === "0x", d3b.output.slice(-300));
+      const again3 = doPrepare("M3b-prepare-again");
+      check("M3b prepare again after the reverted deposit: PASS, two lines", again3.status === 0 && again3.lines.length === 2, again3.output.slice(-400));
+      const a3 = sh("M3b-approve-again", again3.lines[0], sendLine(again3.lines[0]));
+      const d3c = sh("M3b-deposit-again", again3.lines[1], sendLine(again3.lines[1]));
+      check("M3b the fresh pair goes through: the pool opens", a3.status === 0 && statusOf(d3c.output) === "1", d3c.output.slice(-300));
+      await rpc("evm_revert", [snap3]);
     }
     // The real sequence (the state before M2): prepare's lines as printed, approve then deposit.
     p = doPrepare("prepare-final");

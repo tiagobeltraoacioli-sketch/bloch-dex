@@ -3,10 +3,10 @@
 Status: **ready for the owner to run; dry-run on a fork of each chain (section 8); nothing deployed.** Written
 2026-11-17 by agent 367 (round 18) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
 behind every rule are in that document; this one is only the sequence, with every command exactly as you type it.
-A Portuguese copy for the owner is `docs/OWNER-DEPLOY-NOW-PT.md`; this English file is the one the dry run executes.
+A Portuguese copy for the owner is kept outside this public repository (the repository is English only), with the same command blocks; this English file is the one the dry run executes.
 
 What happens: on each of OP Mainnet, Base, Arbitrum One, Linea, BNB Smart Chain and Ethereum, three contracts
-(factory, router, lens; the audited Bloch L2 release candidate, byte for byte) are deployed at the planned
+(factory, router, lens: the Bloch L2 release candidate, byte for byte; its audit covered the contracts, not these six configurations, `docs/MULTICHAIN-DEPLOY.md` 12.4) are deployed at the planned
 addresses, then the first pool (the chain's wrapped native coin against its USDC) is opened by your depositing
 account with your money at the chain's market price, proven, and recorded for the page. The protocol fee goes to
 `0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544` on every chain, for ever (it cannot be changed after step 4 of a chain).
@@ -213,7 +213,7 @@ node scripts/multichain/gate.mjs op-mainnet pre
 cast balance DEPLOYER_ADDRESS --ether --rpc-url https://mainnet.optimism.io
 ```
 
-And the gas price now, in gwei; if it is above the ceiling in the table of section 3, wait or fund more:
+And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceiling in the table of section 3, wait or fund more:
 
 <!-- run: op-mainnet gas-price -->
 ```
@@ -275,7 +275,7 @@ Send the two printed lines **in order, within a few minutes**, each one exactly 
 --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://mainnet.optimism.io
 ```
 
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (its `verify` line has it filled in: copy that line).
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
 
 **op-mainnet-8. Prove the opening** from the deposit transaction. It must say `PASS`.
 
@@ -329,7 +329,7 @@ node scripts/multichain/gate.mjs base pre
 cast balance DEPLOYER_ADDRESS --ether --rpc-url https://mainnet.base.org
 ```
 
-And the gas price now, in gwei; if it is above the ceiling in the table of section 3, wait or fund more:
+And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceiling in the table of section 3, wait or fund more:
 
 <!-- run: base gas-price -->
 ```
@@ -391,7 +391,7 @@ Send the two printed lines **in order, within a few minutes**, each one exactly 
 --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://mainnet.base.org
 ```
 
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (its `verify` line has it filled in: copy that line).
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
 
 **base-8. Prove the opening** from the deposit transaction. It must say `PASS`.
 
@@ -445,7 +445,7 @@ node scripts/multichain/gate.mjs arbitrum-one pre
 cast balance DEPLOYER_ADDRESS --ether --rpc-url https://arb1.arbitrum.io/rpc
 ```
 
-And the gas price now, in gwei; if it is above the ceiling in the table of section 3, wait or fund more:
+And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceiling in the table of section 3, wait or fund more:
 
 <!-- run: arbitrum-one gas-price -->
 ```
@@ -507,7 +507,7 @@ Send the two printed lines **in order, within a few minutes**, each one exactly 
 --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://arb1.arbitrum.io/rpc
 ```
 
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (its `verify` line has it filled in: copy that line).
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
 
 **arbitrum-one-8. Prove the opening** from the deposit transaction. It must say `PASS`.
 
@@ -561,7 +561,7 @@ node scripts/multichain/gate.mjs linea pre
 cast balance DEPLOYER_ADDRESS --ether --rpc-url https://rpc.linea.build
 ```
 
-And the gas price now, in gwei; if it is above the ceiling in the table of section 3, wait or fund more:
+And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceiling in the table of section 3, wait or fund more:
 
 <!-- run: linea gas-price -->
 ```
@@ -623,7 +623,7 @@ Send the two printed lines **in order, within a few minutes**, each one exactly 
 --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://rpc.linea.build
 ```
 
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (its `verify` line has it filled in: copy that line).
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
 
 **linea-8. Prove the opening** from the deposit transaction. It must say `PASS`.
 
@@ -677,7 +677,7 @@ node scripts/multichain/gate.mjs bnb-smart-chain pre
 cast balance DEPLOYER_ADDRESS --ether --rpc-url https://bsc-rpc.publicnode.com
 ```
 
-And the gas price now, in gwei; if it is above the ceiling in the table of section 3, wait or fund more:
+And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceiling in the table of section 3, wait or fund more:
 
 <!-- run: bnb-smart-chain gas-price -->
 ```
@@ -739,7 +739,7 @@ Send the two printed lines **in order, within a few minutes**, each one exactly 
 --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://bsc-rpc.publicnode.com
 ```
 
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (its `verify` line has it filled in: copy that line).
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
 
 **bnb-smart-chain-8. Prove the opening** from the deposit transaction. It must say `PASS`.
 
@@ -793,7 +793,7 @@ node scripts/multichain/gate.mjs ethereum pre
 cast balance DEPLOYER_ADDRESS --ether --rpc-url https://ethereum-rpc.publicnode.com
 ```
 
-And the gas price now, in gwei; if it is above the ceiling in the table of section 3, wait or fund more:
+And the gas price now, in wei (divide by 10^9 for gwei); if it is above the ceiling in the table of section 3, wait or fund more:
 
 <!-- run: ethereum gas-price -->
 ```
@@ -855,7 +855,7 @@ Send the two printed lines **in order, within a few minutes**, each one exactly 
 --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://ethereum-rpc.publicnode.com
 ```
 
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (its `verify` line has it filled in: copy that line).
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
 
 **ethereum-8. Prove the opening** from the deposit transaction. It must say `PASS`.
 
@@ -924,7 +924,7 @@ deployment is independent; the depositing account's rule holds for as long as it
 | 7 | `prepare` says tokens sit at the pair's address and prints a `skim` command | someone sent tokens to the not-yet-created pair (above 0.1% of a side) | Send the printed `skim` from **the deploying account, never the depositing account** (`--keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer`), naming an address of yours; then step 7 again |
 | 7 | **`STOP`: the pool is already open** | you did not open it: the depositing key was used elsewhere or stolen | Deposit nothing on that chain; do not use `add`. That pair of that factory is lost (no money is). `docs/MULTICHAIN-DEPLOY.md` section 10: a new depositing key, a new factory on that chain |
 | 7 | the `approve` went through, the deposit was not sent (closed terminal, waited too long) | an allowance of exactly the token amount to the router stands; no money moved | **Run `prepare` again** (shown in the dry run: it prints a fresh pair of lines) and send both new lines; the new `approve` replaces the old allowance |
-| 7 | the deposit reverted (`status 0`), for example sent after its 20-minute deadline | nothing was deposited; only its gas was spent | **Run `prepare` again** and send the new lines (shown in the dry run). Never write a deposit by hand or with other minimums |
+| 7 | the deposit reverted (`status 0`), for example sent after its 20-minute deadline or with too little gas | nothing was deposited; only its gas was spent | **Run `prepare` again** and send the new lines (shown in the dry run). Never write a deposit by hand or with other minimums |
 | 8 | `verify` reports a gift above 0.1% | someone sent tokens to the pair's address in front of your deposit; they are now in the pool and owned by your shares | Nothing is lost: **do not withdraw**. Continue with step 9; compare the pool's price with the market before the page is published |
 | 8 or 9 | `verify` or the gate cannot prove the opening | the opening was not your printed deposit | As for `STOP` |
 | 10 | `frontend-files` refuses | the report is not a passed post gate with the opening proven | Repeat step 9 until it passes |
@@ -983,6 +983,7 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 | funding (steps 2 and 6) and waiting (steps 5 and 9) | `anvil_setBalance` with exactly the amounts of section 3, the token by its balance slot; 70 blocks mined so that anvil's `finalized` (64 behind) covers the transactions | the owner funds from a wallet and waits for the chain |
 | `fee-proof.mjs record` | not run (it needs the fee address's signature); the pre gates of the dry run report the proof as "not required (rehearsal)", and the public pre gate is run read-only to show that it fails on the missing proof only | no one but the owner can sign it |
 | `git add`, `git commit`, `npm ci`, `git checkout` | not run | they change the repository, not a chain |
+| the Portuguese owner copy | its marked blocks are compared with this file's (`once --pt FILE`); any difference fails the run | the owner may follow either |
 
 ## 10. Not done / not proven
 
