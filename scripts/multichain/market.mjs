@@ -216,7 +216,7 @@ export async function main(argv, print = console.log) {
   const chain = loadChain(key);
   const pairName = o.pair ?? `${chain.initialPairs[0].tokenA}/${chain.initialPairs[0].tokenB}`;
   const token = listedTokenOf(chain, pairName);
-  // The first two reviewed endpoints (a third is listed on three chains for the page's sake).
+  // The first two reviewed endpoints (Linea lists three and Arbitrum One and BNB Smart Chain four, for the page).
   const requests = (o.rehearsal ? [o.rpc] : chain.rpc.slice(0, 2)).map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
   const at = await pinnedBlock(requests);
   const market = await readMarket({ chain, token, requests, at });

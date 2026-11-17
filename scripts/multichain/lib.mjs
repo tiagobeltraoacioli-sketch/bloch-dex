@@ -6,7 +6,8 @@
 // code and runtime code hash of each contract, and the pair addresses. Nothing in this file talks to an RPC, signs
 // or broadcasts. The Bloch L2 procedure (scripts/staging) is separate and is not touched by anything here.
 import { createRequire } from "node:module";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -77,6 +78,46 @@ export function retrying(request, { tries = 3, delayMs = 1500 } = {}) {
         await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
       }
     }
+  };
+}
+
+/** The state reads `pinnedStateReader` answers; in each the block is the LAST parameter. */
+export const STATE_METHODS = new Set(["eth_call", "eth_getCode", "eth_getBalance", "eth_getTransactionCount", "eth_getStorageAt"]);
+const isRevert = (error) => /execution reverted|revert/i.test(String(error?.message ?? error));
+
+/**
+ * Review R369-1: a state answer that a gate or the deposit tool decides on never comes from one endpoint.
+ * Returns a JSON-RPC function for the methods of STATE_METHODS only: whatever block the caller names, the read is
+ * sent to EVERY endpoint at `blockHash` (EIP-1898, `requireCanonical`), and its answer is used only when at least
+ * `min` endpoints answered (default: two, or one when only one endpoint is given, which is a loopback rehearsal)
+ * and every endpoint that answered gave the same bytes. A revert counts as an answer (the chain's answer); it is
+ * rethrown when the endpoints agree on it. An endpoint that fails (pruned state, rate limit, timeout) is not a
+ * disagreement, but it is not counted; an endpoint that answers differently is: `DISAGREEMENT`, and nothing is
+ * decided. `onRead` (optional) receives { method, answered, failed } for the report.
+ */
+export function pinnedStateReader(requests, blockHash, { min = Math.min(2, requests.length), onRead = null } = {}) {
+  refuse(Array.isArray(requests) && requests.length > 0 && /^0x[0-9a-f]{64}$/.test(String(blockHash)), "pinnedStateReader needs endpoints and a block hash");
+  refuse(min >= 1 && min <= requests.length, `pinnedStateReader: ${min} agreeing endpoints asked of ${requests.length}`);
+  const pin = { blockHash, requireCanonical: true };
+  return async (method, params) => {
+    refuse(STATE_METHODS.has(method), `${method} is not a state read; it cannot be pinned to a block`);
+    const pinned = [...params.slice(0, -1), pin];
+    const settled = await Promise.allSettled(requests.map((r) => r(method, pinned)));
+    const answers = [];
+    let revert = null;
+    let failed = 0;
+    for (const s of settled) {
+      if (s.status === "fulfilled") answers.push(JSON.stringify(s.value ?? null));
+      else if (isRevert(s.reason)) {
+        answers.push("REVERT");
+        revert ??= s.reason;
+      } else failed++;
+    }
+    onRead?.({ method, answered: answers.length, failed });
+    if (answers.length && answers.some((a) => a !== answers[0])) throw new MultichainError(`DISAGREEMENT: the endpoints give different answers to ${method} at block ${blockHash}; nothing is decided on it`);
+    if (answers.length < min) throw new MultichainError(`${method} at block ${blockHash}: ${answers.length} endpoint${answers.length === 1 ? "" : "s"} answered, ${min} must agree (${failed} failed: try again later)`);
+    if (answers[0] === "REVERT") throw revert;
+    return JSON.parse(answers[0]);
   };
 }
 
@@ -219,6 +260,45 @@ export function addressesInDeployments(root = ROOT) {
   walkDir(join(root, "deployments"), "deployments");
   return found;
 }
+
+/**
+ * Review R369-5: every address written in any file the repository tracks (`git ls-files`), outside deployments/
+ * (which `addressesInDeployments` reads, JSON-aware). Binary files are skipped. Refuses when the file list cannot
+ * be read: the check is never silently narrower than it says.
+ */
+export function addressesInRepository(root = ROOT) {
+  const listed = spawnSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  refuse(listed.status === 0 && typeof listed.stdout === "string" && listed.stdout.length > 0, `the repository's file list could not be read (git ls-files in ${root}): the depositing account cannot be checked against it`);
+  const found = new Map();
+  const ADDRESS_IN_TEXT = /(?<![0-9a-fA-Fx])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g;
+  for (const relative of listed.stdout.split("\0").filter(Boolean).sort()) {
+    if (relative.startsWith("deployments/")) continue;
+    const path = join(root, relative);
+    if (!existsSync(path) || !statSync(path).isFile()) continue;
+    const bytes = readFileSync(path);
+    if (bytes.includes(0)) continue;
+    for (const m of bytes.toString("utf8").match(ADDRESS_IN_TEXT) ?? []) {
+      const key = m.toLowerCase();
+      if (!found.has(key)) found.set(key, []);
+      if (found.get(key).length < 5 && !found.get(key).includes(relative)) found.get(key).push(relative);
+    }
+  }
+  return found;
+}
+
+/**
+ * Review R369-5: the accounts of the public development mnemonic ("test test ... junk"), indexes 0 to 19, which
+ * anvil, Hardhat and Foundry's tests fund by default. Their keys are public: anyone could open every pool with one.
+ */
+export const PUBLIC_DEVELOPMENT_ACCOUNTS = [
+  "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
+  "0x90F79bf6EB2c4f870365E785982E1f101E93b906", "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65", "0x9965507D1a55bcC2695C58ba16FB37d819B0A4dc",
+  "0x976EA74026E726554dB657fA54763abd0C3a0aa9", "0x14dC79964da2C08b23698B3D3cc7Ca32193d9955", "0x23618e81E3f5cdF7f54C3d65f7FBc0aBf5B21E8f",
+  "0xa0Ee7A142d267C1f36714E4a8F75612F20a79720", "0xBcd4042DE499D14e55001CcbB24a551F3b954096", "0x71bE63f3384f5fb98995898A86B02Fb2426c5788",
+  "0xFABB0ac9d68B0B445fB7357272Ff202C5651694a", "0x1CBd3b2770909D4e10f157cABC84C7264073C9Ec", "0xdF3e18d64BC6A983f673Ab319CCaE4f1a57C7097",
+  "0xcd3B766CCDd6AE721141F452C550Ca635964ce71", "0x2546BcD3c84621e976D8185a91A922aE77ECEc30", "0xbDA5747bFD65F08deb54cb465eB87D40e51B197E",
+  "0xdD2FD4581271e230360230F9337D5c0430Bf44C0", "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199",
+];
 
 function validateToken(token, field) {
   checksummed(token?.address, `${field}.address`);
