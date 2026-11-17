@@ -15,6 +15,7 @@
   },
   "rpc": [
     "https://rpc.linea.build",
+    "https://linea.drpc.org",
     "https://linea-rpc.publicnode.com"
   ],
   "explorer": "https://lineascan.build",

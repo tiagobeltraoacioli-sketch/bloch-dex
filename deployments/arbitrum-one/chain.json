@@ -15,6 +15,7 @@
   },
   "rpc": [
     "https://arb1.arbitrum.io/rpc",
+    "https://arbitrum-one.public.blastapi.io",
     "https://arbitrum-one-rpc.publicnode.com"
   ],
   "explorer": "https://arbiscan.io",

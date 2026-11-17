@@ -13,6 +13,7 @@
   "rpc": {
     "urls": [
       "https://rpc.linea.build",
+      "https://linea.drpc.org",
       "https://linea-rpc.publicnode.com"
     ],
     "rehearsal": false

@@ -204,7 +204,7 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
         n.swap !== null &&
         Object.keys(n.swap).every((k) => k === 'deadlineMinutes') &&
         Number.isInteger(deadlineMinutes) &&
-        deadlineMinutes >= 5 &&
+        deadlineMinutes >= 10 &&
         deadlineMinutes <= 60),
     'swap.deadlineMinutes',
   );

@@ -237,7 +237,8 @@ export function savedSwapDeadline(data: Hex): bigint | null {
 /**
  * Two decisions end a hold WITHOUT the saved call's own receipt: its deadline passed (`expiredSwap`), or another
  * transaction used its nonce (`finalizedReplacementReceipt`). If either were wrong, a second request could execute
- * next to the first. An RPC of a public chain whose page settles on a confirmation depth carries a stricter
+ * next to the first. A third is a receipt that says REVERTED (`finalizedTransactionReceipt`): after it the user
+ * may send the swap again. An RPC of a public chain whose page settles on a confirmation depth carries a stricter
  * reader for exactly these two (multichain/rpc.ts `chainRpc`, review R309-MC-2). The Bloch L2's RPC carries
  * none, so nothing changes there: `finalized` for everything.
  */
@@ -453,7 +454,12 @@ async function finalizedTransactionReceipt(
     tx.blockHash === r.blockHash && quantity(tx.blockNumber) === r.blockNumber,
     'The transaction body and receipt disagree about inclusion.',
   );
-  const finalized = block(await rpc('eth_getBlockByNumber', ['finalized', false]));
+  // A REVERTED outcome frees the account for another request (the page offers a retry after a revert on the
+  // minimum): if its block were replaced, the first transaction and the retry could both execute. Like the two
+  // decisions that end a hold without a receipt, it therefore waits for the strict rule where the RPC carries
+  // one (review R328-7). A success is released by the settle rule: nothing is sent again after it.
+  const settling = r.status === 'reverted' ? strictOf(rpc) : rpc;
+  const finalized = block(await settling('eth_getBlockByNumber', ['finalized', false]));
   if (finalized.number < r.blockNumber) return null;
   const included = { number: r.blockNumber, hash: r.blockHash };
   const boundary = { number: BigInt(intent.afterBlockNumber), hash: intent.afterBlockHash };
@@ -473,7 +479,7 @@ async function finalizedTransactionReceipt(
     txAgain.blockHash === r.blockHash && quantity(txAgain.blockNumber) === r.blockNumber,
     'Transaction inclusion changed during verification.',
   );
-  const finalAgain = block(await rpc('eth_getBlockByNumber', ['finalized', false]));
+  const finalAgain = block(await settling('eth_getBlockByNumber', ['finalized', false]));
   assert(
     finalAgain.number >= finalized.number &&
       (finalAgain.number !== finalized.number || finalAgain.hash === finalized.hash),
