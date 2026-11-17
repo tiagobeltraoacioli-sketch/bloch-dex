@@ -483,7 +483,7 @@ for (const [mode, expectNote] of [['error-fee-data', true], ['error-fee-data-los
     await swapNative(w, page);
     await page.waitText(NO_HASH);
     const text = (await page.text()).replace(/\s+/g, ' ');
-    w.check(`the fee diagnostic is ${expectNote ? 'shown' : 'not invented'}`, /RPC fee diagnostic \(not bound to your wallet's signed transaction\)/.test(text) === expectNote);
+    w.check(`the fee diagnostic is ${expectNote ? 'shown' : 'not invented'}`, /RPC fee diagnostic \(not bound to your wallet's signed transaction\)/.test(text) === expectNote, text.slice(Math.max(0, text.indexOf('Wallet submission') - 600), text.indexOf('Wallet submission') + 1600));
     w.check('the hold stays and Swap is disabled', await disabled(page, 'Swap'));
     await delay(11_000);
     w.check('no retry and no fee increase: one wallet request', w.wallet.sends().length === 1, w.wallet.sends().length);
