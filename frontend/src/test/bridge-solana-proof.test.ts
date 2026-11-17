@@ -50,7 +50,7 @@ describe('Solana destination proof: the format is data and matches the router of
     expect(n).toBe(6);
   });
   it('refuses every invalid vector, each for its stated reason (wrong key, tag, bit, nonce, amount, burner, router, chain, route, shape, all zero, redirect shown for an exit)', async () => {
-    expect(vectors.invalid.length).toBeGreaterThanOrEqual(13);
+    expect(vectors.invalid.length).toBe(14);
     for (const v of vectors.invalid) {
       const verdict = await verifyCarriedProof(v.message, v.wallet, v.proof as Hex);
       expect(verdict.ok, v.why).toBe(false);

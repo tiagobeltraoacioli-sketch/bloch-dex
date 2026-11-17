@@ -65,8 +65,10 @@ const unread = (route: LiveRoute, error: unknown): SourceExit => ({
  * same hash, and every state read at that hash must be the same on both. One endpoint is accepted only when every
  * listed endpoint is loopback (a rehearsal bundle; config.ts admits loopback in local render builds only).
  */
+// A loopback-only route exists only in a local render build (config.ts); production bundles drop this test entirely.
+const rehearsalOnly = (route: LiveRoute) => (__POSTERN_LOCAL_RENDER__ ? route.read.urls.every((u) => u.startsWith('http://127.0.0.1')) : false);
 export function evmSourceRpc(route: LiveRoute, fetchImpl: Fetch = fetch): Rpc {
-  const loopback = route.read.urls.every((u) => u.startsWith('http://127.0.0.1'));
+  const loopback = rehearsalOnly(route);
   refuse(route.read.urls.length >= 2 || loopback, `${route.name}: a deposit needs two independent endpoints of the network, and this route lists one. Nothing is read or sent.`);
   return agreeingRpc(route.read.urls.map((u) => httpRpc(u, fetchImpl)));
 }
@@ -98,7 +100,7 @@ export async function readEvmDepositState(route: LiveRoute, account: Address, fe
  * of gas; a high one is bounded. (agreeingRpc leaves estimates to one endpoint, so they are asked here separately.)
  */
 export async function evmSourceGas(route: LiveRoute, from: Address, call: { to: Address; data: Hex }, fetchImpl: Fetch = fetch): Promise<bigint> {
-  const loopback = route.read.urls.every((u) => u.startsWith('http://127.0.0.1'));
+  const loopback = rehearsalOnly(route);
   refuse(route.read.urls.length >= 2 || loopback, `${route.name}: a deposit needs two independent endpoints of the network, and this route lists one. Nothing is sent.`);
   const estimates = await Promise.all(
     route.read.urls.slice(0, 2).map(async (u) => {
