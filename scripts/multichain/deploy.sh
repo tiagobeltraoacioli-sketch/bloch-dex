@@ -56,6 +56,10 @@ node scripts/multichain/gate.mjs "$CHAIN" pre $REFERENCE ${GATE_ARGS[@]+"${GATE_
 grep -v '^ok  ' "$GATE_OUT" || true
 [ "$GATE_STATUS" = 0 ] || { echo "the pre gate did not pass; nothing was sent" >&2; exit 1; }
 node scripts/multichain/plan.mjs "$CHAIN" $REFERENCE --env > "$ENV_FILE"
+# Review R369-6: the forge script reads optional MC_* variables (MC_PAIR_TOKENS, MC_CAP_TOKENS, MC_CAPS) with a
+# default; one left in the caller's shell by a rehearsal or a test must not reach a broadcast. Only what the plan
+# prints below is passed (MC_RPC_URL was read above and is not used by the forge script).
+while IFS= read -r name; do unset "$name"; done < <(compgen -e | grep '^MC_' || true)
 set -a
 # shellcheck disable=SC1090
 . "$ENV_FILE"

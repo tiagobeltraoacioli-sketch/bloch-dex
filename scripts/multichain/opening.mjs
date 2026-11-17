@@ -103,10 +103,22 @@ export async function readOpening({ request, others = [], hash, finalizedNumber 
   if (lower(receipt.transactionHash ?? "") !== hash || lower(tx.hash ?? "") !== hash) out.problems.push("the endpoint answered with another transaction");
   const block = await soft(request("eth_getBlockByNumber", [receipt.blockNumber, false]));
   if (block?.hash !== receipt.blockHash) out.problems.push("the transaction's block is not the chain's block at that height");
+  // Review R369-2: the transaction and its receipt are not one endpoint's word. Every other endpoint must have the
+  // same block at that height; and at least one other endpoint (when any is given) must serve the same transaction
+  // and the same receipt (inclusion, status, sender, target, input, value, logs). One that does not have them yet
+  // is not counted; one that serves different ones fails the proof.
+  const txFields = (t) => JSON.stringify([lower(t?.hash ?? ""), lower(t?.from ?? ""), lower(t?.to ?? ""), lower(t?.input ?? ""), String(t?.value ?? ""), String(t?.blockHash ?? ""), String(t?.blockNumber ?? "")]);
+  const receiptFields = (r) => JSON.stringify([lower(r?.transactionHash ?? ""), String(r?.blockHash ?? ""), String(r?.blockNumber ?? ""), String(r?.status ?? ""), lower(r?.from ?? ""), lower(r?.to ?? ""), (r?.logs ?? []).map((l) => [lower(l.address ?? ""), (l.topics ?? []).map(lower), lower(l.data ?? ""), String(l.logIndex ?? "")])]);
+  let confirmed = 0;
   for (const other of others) {
     const same = await soft(other("eth_getBlockByNumber", [receipt.blockNumber, false]));
     if (same?.hash !== receipt.blockHash) out.problems.push("another endpoint has a different block at the transaction's height");
+    const [otherTx, otherReceipt] = [await soft(other("eth_getTransactionByHash", [hash])), await soft(other("eth_getTransactionReceipt", [hash]))];
+    if (!otherTx || !otherReceipt) continue;
+    if (txFields(otherTx) !== txFields(tx) || receiptFields(otherReceipt) !== receiptFields(receipt)) out.problems.push("another endpoint serves a different transaction or receipt under this hash");
+    else confirmed++;
   }
+  if (others.length > 0 && confirmed === 0) out.problems.push("no other endpoint serves this transaction and its receipt yet: one endpoint's word is not a proof (try again later)");
   if (finalizedNumber !== null && out.blockNumber > finalizedNumber) out.problems.push(`the transaction is in block ${out.blockNumber}, above the finalized block ${finalizedNumber}: wait`);
   out.proven = out.problems.length === 0;
   return out;

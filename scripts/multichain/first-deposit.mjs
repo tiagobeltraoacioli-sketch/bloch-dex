@@ -48,7 +48,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, planChain, refuse, retrying,
+  EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, pinnedStateReader, planChain, refuse, retrying,
 } from "./lib.mjs";
 import { deviationBps, marketRecord, nativeFor, priceOf, readMarket, tokenFor } from "./market.mjs";
 import { decodeDeposit, openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
@@ -229,8 +229,11 @@ export async function main(argv, print = console.log) {
     }
     check("the other reviewed endpoint has the same block at that height", same === head.hash, same);
   }
-  const call = async (target, functionName, args = []) => decodeFunctionResult({ abi: ABI, functionName, data: await request("eth_call", [{ to: target, data: encodeFunctionData({ abi: ABI, functionName, args }) }, at]) });
-  const codeAt = async (address) => codeHashOf(await request("eth_getCode", [address, at]));
+  // Every state answer at that block's HASH, from every endpoint; used only when two (one in a loopback rehearsal)
+  // answered and all that answered agree (review R369-1). The market read below does the same itself.
+  const pinned = pinnedStateReader([request, ...others], head.hash);
+  const call = async (target, functionName, args = []) => decodeFunctionResult({ abi: ABI, functionName, data: await pinned("eth_call", [{ to: target, data: encodeFunctionData({ abi: ABI, functionName, args }) }, "pinned"]) });
+  const codeAt = async (address) => codeHashOf(await pinned("eth_getCode", [address, "pinned"]));
 
   if (o["gate-report"]) {
     const report = JSON.parse(readFileSync(o["gate-report"], "utf8"));
@@ -329,7 +332,7 @@ export async function main(argv, print = console.log) {
   } else {
     // The depositing account: a plain key account. Code at the address (a contract, or an EIP-7702 delegation
     // that others may be able to drive) is how someone else's call becomes this account's transaction.
-    const code = await request("eth_getCode", [depositor, at]);
+    const code = await pinned("eth_getCode", [depositor, "pinned"]);
     check("the depositing account has no code and no EIP-7702 delegation (a dedicated key account)", code === "0x", `${code.slice(0, 60)}: use an account without code as firstDepositor`);
     let transactions;
     if (o.mode === "prepare") {
@@ -375,7 +378,7 @@ export async function main(argv, print = console.log) {
     const need = transactions.length ? BigInt(transactions[0].args[1]) : tokenAmount;
     const have = await call(token.address, "balanceOf", [depositor]);
     check(`the depositing account holds the ${token.symbol} to deposit (${amountText(need, token)})`, have >= need, amountText(have, token));
-    const coin = BigInt(await request("eth_getBalance", [depositor, at]));
+    const coin = BigInt(await pinned("eth_getBalance", [depositor, "pinned"]));
     check(`the depositing account holds the native coin to deposit (${nativeText(native)}) and something for gas`, coin > native, nativeText(coin));
     result.transactions = transactions.map((t) => ({ ...t, value: t.value.toString() }));
     result.deadline = deadline.toString();
@@ -383,7 +386,12 @@ export async function main(argv, print = console.log) {
       print("");
       print(`Send these two transactions FROM ${depositor} (the factory's first depositor), exactly as printed, and send nothing else from that account.`);
       print(`Add your signer option (--keystore FILE for the depositing key's encrypted keystore, or --ledger, --trezor, --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
-      // --chain: cast refuses to send when the RPC URL added by hand is another chain's.
+      // Review R369-3: the opening is proven only for a deposit sent by the depositing account STRAIGHT to the
+      // router. A wallet that batches the two transactions (an EIP-7702 "smart account") sends them to the account
+      // itself: the pool opens, its opening can never be proven, and the page never lists that pair.
+      print(`Send them with \`cast send\`, one at a time, exactly as printed. Never import this key into a browser wallet, never accept "switch to smart account", and never send the two as one batched transaction: a deposit that does not go straight from ${depositor} to the router ${router.address} opens the pool in a way no tool can prove, and that pair is then lost for this factory.`);
+      // --chain: the transaction is signed for this chain id only (EIP-155); another chain's node rejects it
+      // (review R369-8: cast itself does not compare the id with the RPC URL's chain).
       for (const t of transactions) print(`cast send ${t.to} "${t.signature}" ${t.args.join(" ")}${t.value > 0n ? ` --value ${t.value}` : ""} --from ${depositor} --chain ${chain.chain.chainId}`);
       print("");
       print(o.mode === "prepare"
