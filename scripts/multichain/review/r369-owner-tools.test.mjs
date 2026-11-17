@@ -50,7 +50,7 @@ function gateWorld(local, chain, plan, over = {}) {
   return { request, pins: { deployer: keccak256(code("deployer")), wrapped: keccak256(code("wrapped")), token: keccak256(code("token")), multicall: keccak256(code("multicall")) } };
 }
 
-test("R369-1: the pre gate takes every state answer from the FIRST endpoint alone; a second endpoint that sees the depositor's EIP-7702 delegation (and a used nonce, and an unidentified fee-address delegate) is asked only for block hashes", async () => {
+test("R369-1 (closed at 6b260da, regression): a second endpoint that sees the depositor's EIP-7702 delegation, a used nonce and an unidentified fee-address delegate makes the pre gate fail even when the first endpoint lies", async () => {
   const local = clone(open);
   const chain = clone(base);
   const plan0 = planChain(local, chain, artifacts, { reference: true });
@@ -68,11 +68,13 @@ test("R369-1: the pre gate takes every state answer from the FIRST endpoint alon
   assert.match(alone.failed.join("; "), /no code and no EIP-7702 delegation/);
   assert.match(alone.failed.join("; "), /never sent a transaction/);
   assert.match(alone.failed.join("; "), /identified delegate/);
-  // With the liar first and the truthful one as the "other" reviewed endpoint, the gate PASSES.
+  // Fixed at 360's 6b260da: with the liar first and the truthful one second the gate no longer passes.
   truth.asked.length = 0;
-  const both = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: liar, others: [truth], feeProof: { valid: true, problems: [] } });
-  assert.equal(both.decision, "pass", JSON.stringify(both.failed));
-  assert.deepEqual([...new Set(truth.asked)].sort(), ["eth_chainId", "eth_getBlockByNumber"], "the second endpoint is never asked for code, nonce or calls");
+  // The gate throws DISAGREEMENT (gate.mjs main exits 2, no report): fail closed.
+  const both = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: liar, others: [truth], feeProof: { valid: true, problems: [] } }).catch((e) => ({ decision: "refused", error: String(e.message) }));
+  assert.notEqual(both.decision, "pass", "a disagreement must not pass the gate");
+  if (both.decision === "refused") assert.match(both.error, /DISAGREEMENT/);
+  assert.ok(truth.asked.includes("eth_getCode"), "the second endpoint is asked for state");
 });
 
 function openingFixture({ pair, router, depositor, token, wrappedIs0, native = 10n ** 19n, tokenAmount = 30_000_000_000n, over = {} }) {
@@ -100,7 +102,7 @@ const openingFacts = () => {
   return { pair: pair.address, router: plan.contracts.router.address, depositor: plan.arguments.firstDepositor, token: base.tokens[0].address, wrappedIs0: lower(pair.token0) === lower(base.wrappedNative.address) };
 };
 
-test("R369-2: an opening is 'proven' from one endpoint's transaction and receipt; the other endpoint only has to hold a block of that hash, and is never asked whether the transaction exists", async () => {
+test("R369-2 (closed at 6b260da, regression): an opening served by one endpoint only is not proven", async () => {
   const facts = openingFacts();
   const fake = openingFixture(facts);
   const liar = async (method) => (method === "eth_getTransactionByHash" ? fake.tx : method === "eth_getTransactionReceipt" ? fake.receipt : { number: "0x60", hash: fake.receipt.blockHash });
@@ -111,8 +113,8 @@ test("R369-2: an opening is 'proven' from one endpoint's transaction and receipt
     return method === "eth_getBlockByNumber" ? { number: "0x60", hash: fake.receipt.blockHash, transactions: [] } : null;
   };
   const r = await readOpening({ request: liar, others: [truth], hash: fake.hash, finalizedNumber: 100, ...facts });
-  assert.equal(r.proven, true, r.problems.join("; "));
-  assert.deepEqual(asked, ["eth_getBlockByNumber"]);
+  assert.equal(r.proven, false, "fixed at 6b260da: one endpoint's word is not a proof");
+  assert.ok(asked.includes("eth_getTransactionReceipt"));
 });
 
 test("R369-3: a first deposit sent by the depositing key as an EIP-7702 batch (a wallet's 'smart account' approve+deposit) opens the pool at the right price but can never be proven: the pool is stranded for the page", () => {
@@ -126,9 +128,9 @@ test("R369-3: a first deposit sent by the depositing key as an EIP-7702 batch (a
   // Nothing else in the tools proves an opening (gate.mjs:254-262 has no other path) and the pair can never be opened again.
 });
 
-test("R369-5: check-depositor's 'used nowhere in the repository' looks under deployments/ only: a key published in this repository's own scripts (anvil's account 0) passes the offline checks", () => {
+test("R369-5 (closed at 6b260da, regression): a public development account is refused by check-depositor's offline checks", () => {
   const ANVIL_0 = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"; // lowercase in scripts/staging/rehearse-deploy-anvil.sh; its key is public
-  assert.deepEqual(offlineProblems(ANVIL_0, open), []);
+  assert.match(offlineProblems(ANVIL_0, open).join("; "), /public development mnemonic/, "fixed at 6b260da");
 });
 
 test("R369-4: one firstDepositor for all six chains: the documented recovery 'a new depositing account for that chain; chains already finished are not affected' (docs/MULTICHAIN-DEPLOY.md section 10) changes the planned factory of EVERY chain, so the finished chains' post gate, first-deposit and record tools then point at a factory that is not deployed", () => {
@@ -148,4 +150,32 @@ test("R369-4: one firstDepositor for all six chains: the documented recovery 'a 
   }
   // There is no per-chain depositor in the shared file's schema: validateShared takes exactly one.
   assert.equal(typeof committed.firstDepositor, "string");
+});
+
+test("R369-13: the pinned block itself is still one endpoint's choice: a first endpoint that names an OLD finalized block (canonical, so the others confirm its hash) makes the pre gate judge the depositor and the fee address on state from before a delegation was set", async () => {
+  const local = clone(open);
+  const chain = clone(base);
+  const plan0 = planChain(local, chain, artifacts, { reference: true });
+  const probe = gateWorld(local, chain, plan0);
+  local.create2.deployerCodeHash = probe.pins.deployer;
+  chain.wrappedNative.codeHash = probe.pins.wrapped;
+  chain.tokens[0].codeHash = probe.pins.token;
+  chain.multicall3.codeHash = probe.pins.multicall;
+  const plan = planChain(local, chain, artifacts, { reference: true });
+  const OLD = { number: "0x10", hash: `0x${"01".repeat(32)}`, timestamp: "0x1" };
+  const NEW = { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x2" };
+  const before = gateWorld(local, chain, plan).request; // the chain's state at OLD: nothing at the depositor
+  const after = gateWorld(local, chain, plan, { depositorCode: `0xef0100${"66".repeat(20)}`, depositorNonce: "0x1" }).request; // at NEW
+  // An honest node: blocks by number as they are, state as of the block hash asked.
+  const honest = async (method, params) => {
+    if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? before(method, params) : params[0] === "finalized" ? NEW : params[0] === OLD.number ? OLD : NEW;
+    const at = params[params.length - 1]?.blockHash;
+    return (at === OLD.hash ? before : after)(method, params);
+  };
+  const liar = async (method, params) => (method === "eth_getBlockByNumber" && params[0] === "finalized" ? OLD : honest(method, params));
+  const truthFirst = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: honest, others: [honest], feeProof: { valid: true, problems: [] } });
+  assert.equal(truthFirst.decision, "fail");
+  const stale = await evaluateGate({ shared: local, chain, plan, phase: "pre", request: liar, others: [honest], feeProof: { valid: true, problems: [] } });
+  assert.equal(stale.decision, "pass", JSON.stringify(stale.failed));
+  assert.equal(stale.finalized.number, 16);
 });
