@@ -1731,6 +1731,13 @@
   }
 }
 
+/* The skim action under a pending-excess notice takes its own line instead of breaking the sentence. */
+[aria-label='Pending excess'] > .button {
+  display: flex;
+  width: fit-content;
+  margin-top: var(--s-3);
+}
+
 /* ---------- Footer ---------- */
 .footer-licences {
   display: inline-flex;
