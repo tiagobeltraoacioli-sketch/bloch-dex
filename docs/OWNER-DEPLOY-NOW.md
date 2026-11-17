@@ -1,6 +1,6 @@
 # PosternDEX on six public chains: the owner's deployment, step by step
 
-Status: **ready for the owner to run; dry-run on a fork of each of the six chains at commit `ab2a3fa`: PASS on all six (section 9); nothing deployed.** Written
+Status: **ready for the owner to run; dry-run on a fork of each of the six chains at commit `cf93f6e`: PASS on all six (section 9); nothing deployed.** Written
 2026-11-17 by agent 367 (round 18) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
 behind every rule are in that document; this one is only the sequence, with every command exactly as you type it.
 A Portuguese copy for the owner is kept outside this public repository (the repository is English only), with the same command blocks; this English file is the one the dry run executes.
@@ -10,6 +10,41 @@ What happens: on each of OP Mainnet, Base, Arbitrum One, Linea, BNB Smart Chain 
 addresses, then the first pool (the chain's wrapped native coin against its USDC) is opened by your depositing
 account with your money at the chain's market price, proven, and recorded for the page. The protocol fee goes to
 `0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544` on every chain, for ever (it cannot be changed after step 4 of a chain).
+
+## Before anything: the repository and the tools
+
+Once, on this Mac: get the repository (the folder `~/postern-dex` does not exist yet).
+
+<!-- run: once clone -->
+```
+git clone https://github.com/tiagobeltraoacioli-sketch/postern-dex.git ~/postern-dex
+```
+
+Once, on this Mac: three small launchers for Foundry. The Foundry 1.7.1 installed here needs its own copy of the
+`libusb` library, which it finds only through `DYLD_LIBRARY_PATH`; macOS removes that variable whenever a script
+runs (`deploy.sh` is one), so exporting it in the terminal is not enough: the deployment's `forge` would stop with
+"Library not loaded: libusb". Each launcher sets it right before starting the real program (found by the dry run).
+
+<!-- run: once shim-dir -->
+```
+mkdir -p ~/.local/share/dex-tools/shim
+```
+
+<!-- run: once shims -->
+```
+for t in forge cast anvil; do printf '#!/bin/sh\nDYLD_LIBRARY_PATH="$HOME/.local/share/dex-tools/libusb/lib" exec "$HOME/.local/share/dex-tools/foundry/%s" "$@"\n' $t > ~/.local/share/dex-tools/shim/$t; chmod +x ~/.local/share/dex-tools/shim/$t; done
+```
+
+In **every new terminal** you use for this guide, first this line. It puts Node.js 24 and the Foundry launchers in
+front of the terminal's path (`forge --version` then shows 1.7.1 and `node --version` v24.21.0, the versions of the
+dry run); without it `node`, `forge` and `cast` are not found.
+
+<!-- run: once env-path -->
+```
+export PATH="$HOME/.local/share/dex-tools/node/node-v24.21.0-darwin-x64/bin:$HOME/.local/share/dex-tools/shim:$PATH"
+```
+
+Then the two keystore variables of the rules below, and section 2.
 
 Rules for the whole procedure:
 
@@ -75,7 +110,7 @@ git pull --ff-only
 git log -1 --oneline
 ```
 
-Compare the commit printed with the one the integrator names. Then install the frontend's packages (used by the
+Compare the commit printed with the one the integrator names (`a99f761` when this was written, or a later one the integrator announces). Then install the frontend's packages (used by the
 tools as a library; no install script runs):
 
 ```
@@ -203,11 +238,11 @@ Chain), `0x8A1DdC0BAE18A038D4E5Bb088eeDcdE10b61db53` (Ethereum). If any differs,
 
 ## 3. Money per chain
 
-Read on 2026-11-17 between 05:48 and 05:51 UTC from each chain's reviewed public endpoint (`eth_gasPrice`; Linea: `linea_estimateGas`; rollup data fees from the rollups' own oracles: OP Stack `GasPriceOracle.getL1Fee`, Arbitrum `NodeInterface.gasEstimateL1Component`), applied to the gas the dry run's own receipts used (the same bytes you send). "Today" is that hour; plan with the funding column, which covers prices well above it. USD at the market price the dry run's `prepare` read (Chainlink and a pool, on the fork).
+Read on 2026-11-17 between 05:48 and 19:41 UTC from each chain's reviewed public endpoint (`eth_gasPrice`; Linea: `linea_estimateGas`; rollup data fees from the rollups' own oracles: OP Stack `GasPriceOracle.getL1Fee`, Arbitrum `NodeInterface.gasEstimateL1Component`), applied to the gas the dry run's own receipts used (the same bytes you send). "Today" is that hour; plan with the funding column, which covers prices well above it. USD at the market price the dry run's `prepare` read (Chainlink and a pool, on the fork).
 
 | Chain | Fund the deploying account (step 2) | It covers forge's upfront bound up to | Today: gas price | Today: deployment (3 tx) | Today: approve + first deposit | Today: total | Depositing account: deposit + this for gas (step 6) | Minimum first deposit |
 |---|---|---|---|---|---|---|---|---|
-| OP Mainnet | 0.001 ETH | 0.078 gwei (12,889,611 gas) | 0.00103 gwei | 0.00000956 ETH | 0.00000266 ETH | **0.00001222 ETH** (about US$ 0.022) | 0.0005 ETH | 0.1 ETH |
+| OP Mainnet | 0.001 ETH | 0.078 gwei (12,889,611 gas) | 0.00104 gwei | 0.00000973 ETH | 0.00000269 ETH | **0.00001243 ETH** (about US$ 0.022) | 0.0005 ETH | 0.1 ETH |
 | Base | 0.001 ETH | 0.078 gwei (12,889,611 gas) | 0.00600 gwei | 0.000054 ETH | 0.0000155 ETH | **0.00006949 ETH** (about US$ 0.13) | 0.0005 ETH | 0.1 ETH |
 | Arbitrum One | 0.002 ETH | 0.16 gwei (12,726,905 gas) | 0.0200 gwei | 0.00018059 ETH | 0.00005199 ETH | **0.00023259 ETH** (about US$ 0.43) | 0.001 ETH | 0.1 ETH |
 | Linea | 0.01 ETH | 0.78 gwei (12,889,927 gas) | 0.0396 gwei | 0.00035495 ETH | 0.00010262 ETH | **0.00045756 ETH** (about US$ 0.84) | 0.003 ETH | 0.1 ETH |
@@ -1019,13 +1054,13 @@ nothing but printed deposits) if you will open further pairs on these factories;
 
 ## 9. The dry run of this document
 
-Run of record: commit `ab2a3fa`, 2026-11-17 05:46 UTC onward, on the Mac, anvil 1.7.1 forks of each chain on loopback (ports 46710 to 46760), Foundry 1.7.1, Node 24. Command: `node scripts/multichain/owner-dry-run.mjs once --out DIR --pt FILE`, then `node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR` per chain. Evidence (every command run, its output, `evidence.json`) is kept in the agent's scratch (`agents/367-dex-deploykit-r18.md` names it); it contains no key of the owner's (none was used) and the throwaway key never leaves it.
+Run of record: commit `cf93f6e` for the once section and OP Mainnet (after the clone and terminal lines were added); the other five chains at `ab2a3fa`, whose chain blocks are byte-identical to these (checked), 2026-11-17 19:38 UTC onward, on the Mac, anvil 1.7.1 forks of each chain on loopback (ports 46710 to 46760), Foundry 1.7.1, Node 24. Command: `node scripts/multichain/owner-dry-run.mjs once --out DIR --pt FILE`, then `node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR` per chain. Evidence (every command run, its output, `evidence.json`) is kept in the agent's scratch (`agents/367-dex-deploykit-r18.md` names it); it contains no key of the owner's (none was used) and the throwaway key never leaves it.
 
-Once (section 2): **PASS, 13 checks** (kit tests; `check-depositor` FIT on the six chains against the public endpoints; the fee-proof message equal to the one printed here; the signing page written; `record` refusing a throwaway key's signature of the exact message and writing nothing; `verify` NOT VALID because the owner has not signed yet; the deploying key created, read back and distinct from the two other accounts; the plan's addresses; the Portuguese copy's 106 blocks equal to these).
+Once (section 2): **PASS, 15 checks** (kit tests; `check-depositor` FIT on the six chains against the public endpoints; the fee-proof message equal to the one printed here; the signing page written; `record` refusing a throwaway key's signature of the exact message and writing nothing; `verify` NOT VALID because the owner has not signed yet; the deploying key created, read back and distinct from the two other accounts; the plan's addresses; the Portuguese copy's 110 blocks equal to these).
 
 | Chain | Result | Fork block | Public pre gate (real chain, read-only) | Gas: factory, router, lens | Gas: approve, first deposit | Midway drills | Depositing account after (left of the funding) |
 |---|---|---|---|---|---|---|---|
-| OP Mainnet | **PASS, 38 checks** | 159,647,818 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,138 | 11 of 11 pass; M3 after the clock jump: PASS | 0.0005 ETH, 1.836265 USDC |
+| OP Mainnet | **PASS, 38 checks** | 159,672,810 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,138 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.0005 ETH, 1.787465 USDC |
 | Base | **PASS, 38 checks** | 58,520,653 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,198 | 11 of 11 pass; M3 after the clock jump: PASS | 0.0005 ETH, 1.836708 USDC |
 | Arbitrum One | **PASS, 38 checks** | 524,954,169 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 55,449, 2,542,345 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.001 ETH, 1.836442 USDC |
 | Linea | **PASS, 38 checks** | 32,629,084 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 59,854, 2,531,067 | 11 of 11 pass; M3 after the clock jump: PASS | 0.003 ETH, 1.840888 USDC |
