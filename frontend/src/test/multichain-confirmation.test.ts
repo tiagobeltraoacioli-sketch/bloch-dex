@@ -10,6 +10,7 @@ import {
   UNCONFIRMED,
   agreeingRpc,
   chainRpc,
+  fallbackRpc,
   settledRpc,
 } from '../multichain/rpc';
 
@@ -157,6 +158,96 @@ describe('two endpoints must agree on every read pinned to a block hash', () => 
     expect(await rpc('eth_getTransactionReceipt', [h(3)])).toBe('0x1');
     expect(b).not.toHaveBeenCalled();
     expect(await agreeingRpc([a], 0)('eth_call', pinned)).toBe('0x1');
+  });
+});
+
+describe('the block a tag names is taken from two endpoints', () => {
+  it('R309-MC-3: `latest` is the newer of the two heads, so one endpoint cannot hold the page on an old state', async () => {
+    // The first endpoint withholds 40 blocks (a true, old state); the second is at the head.
+    const [stale, fresh] = [node(960), node(1_000)];
+    expect(
+      await agreeingRpc([stale.rpc, fresh.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).toMatchObject({ number: q(1_000), hash: h(1_000) });
+    // Whichever of the two lags.
+    expect(
+      await agreeingRpc([fresh.rpc, stale.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).toMatchObject({ number: q(1_000) });
+    // The settled block of a depth rule follows that head, and is found on the endpoint that has it.
+    const rpc = chainRpc([stale.rpc, fresh.rpc], { settle: { depth: 5 }, strict: { depth: 30 } });
+    expect(await rpc('eth_getBlockByNumber', ['finalized', false])).toMatchObject({
+      number: q(995),
+      hash: h(995),
+    });
+    expect(await rpc.strict('eth_getBlockByNumber', ['finalized', false])).toMatchObject({
+      number: q(970),
+    });
+  });
+  it('a head only one endpoint answers is used (the pinned reads then need the other)', async () => {
+    const down = vi.fn<Rpc>(async () => {
+      throw new Error('network');
+    });
+    const up = node(1_000);
+    expect(
+      await agreeingRpc([down, up.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).toMatchObject({ number: q(1_000) });
+    expect(down).toHaveBeenCalledTimes(1);
+    await expect(
+      agreeingRpc([down, down], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).rejects.toThrow('network');
+  });
+  it('`finalized` and `safe` are the older of the two answers, and both endpoints must answer', async () => {
+    // One endpoint claims a newer block is final (Linea's public endpoints did exactly this for `finalized`).
+    const [honest, eager] = [node(1_000, 64), node(1_000, 0)];
+    for (const order of [
+      [honest.rpc, eager.rpc],
+      [eager.rpc, honest.rpc],
+    ])
+      expect(
+        await agreeingRpc(order, 0)('eth_getBlockByNumber', ['finalized', false]),
+      ).toMatchObject({ number: q(936) });
+    expect(
+      await agreeingRpc([honest.rpc, eager.rpc], 0)('eth_getBlockByNumber', ['safe', false]),
+    ).toMatchObject({ number: q(968) });
+    const down = vi.fn<Rpc>(async () => {
+      throw new Error('network');
+    });
+    await expect(
+      agreeingRpc([honest.rpc, down], 0)('eth_getBlockByNumber', ['finalized', false]),
+    ).rejects.toThrow(UNCONFIRMED);
+    expect(down).toHaveBeenCalledTimes(3);
+    // An endpoint without the tag (null) does not count as an answer; a third endpoint stands in.
+    const without = vi.fn<Rpc>(async () => null);
+    await expect(
+      agreeingRpc([honest.rpc, without], 0)('eth_getBlockByNumber', ['finalized', false]),
+    ).rejects.toThrow(UNCONFIRMED);
+    expect(
+      await agreeingRpc([honest.rpc, without, eager.rpc], 0)('eth_getBlockByNumber', [
+        'finalized',
+        false,
+      ]),
+    ).toMatchObject({ number: q(936) });
+    // The strict reader of a tag chain: the older `finalized` of the two.
+    const rpc = chainRpc([eager.rpc, honest.rpc], {
+      settle: { depth: 2 },
+      strict: { tag: 'finalized' },
+    });
+    expect(await rpc.strict('eth_getBlockByNumber', ['finalized', false])).toMatchObject({
+      number: q(936),
+    });
+  });
+  it('a block by number or hash that the first endpoint does not have yet is asked of the next', async () => {
+    const [behind, ahead] = [node(990), node(1_000)];
+    const rpc = fallbackRpc([behind.rpc, ahead.rpc]);
+    expect(await rpc('eth_getBlockByNumber', [q(1_000), false])).toMatchObject({ hash: h(1_000) });
+    // A block nobody has is `null`, as from one endpoint; a missing block 0 stays an error.
+    expect(await rpc('eth_getBlockByNumber', [q(2_000), false])).toBeNull();
+    const none = vi.fn<Rpc>(async () => null);
+    expect(await fallbackRpc([none, none])('eth_getBlockByHash', [h(5), false])).toBeNull();
+    await expect(fallbackRpc([none, none])('eth_getBlockByNumber', ['0x0', false])).rejects.toThrow(
+      /does not serve block 0/,
+    );
+    // Anything else that is `null` (an unknown receipt) is the first endpoint's answer.
+    expect(await fallbackRpc([none, ahead.rpc])('eth_getTransactionReceipt', [h(3)])).toBeNull();
   });
 });
 
