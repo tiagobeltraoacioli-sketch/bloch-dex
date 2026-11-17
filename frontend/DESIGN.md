@@ -173,8 +173,9 @@ keeps every rule above and draws the idea literally.
   (`src/gate/Passage.tsx`).
 - **Desktop: a verification rail beside the gate** (headline, a hold's recovery controls beside the tracked swap,
   the confirmation rule, and the trust strip, which stays in view under the header while the gate scrolls).
-  **Phone: the gate first**; once a quote is on the card its action block (wallet line, Approve / Swap, the
-  next-step line) stays at the foot of the screen while the receipt above it is read, within the card only.
+  **Phone: the gate first**: the first screen holds the arch, both legs and Get quote. Once quoted, Swap comes after
+  the receipt and the revert conditions, in reading order. A sticky action bar was tried (iteration 5) and removed:
+  it covered "Minimum received" on the first screen.
 - **Finish**: footer link "Licences" to `/THIRD-PARTY-NOTICES.txt` on both sites; 404 page; print stylesheet (no
   arch, no light); `check-contrast.mjs` covers the new pairs.
 
