@@ -41,7 +41,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, EMPTY_CODE_HASH, FEE_PROOF_FILE, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, feeDelegationOn, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse, retrying,
+  EIP7702_PREFIX, EMPTY_CODE_HASH, FEE_PROOF_FILE, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, feeDelegationOn, loadArtifacts, loadChain, loadShared, lower, pinnedStateReader, planChain, planSummary, refuse, retrying,
 } from "./lib.mjs";
 import { loadFeeProof } from "./fee-proof.mjs";
 import { openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
@@ -115,8 +115,12 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
     checks.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });
     return Boolean(ok);
   };
-  const call = async (to, functionName, args = [], at = "latest") => {
-    const data = await request("eth_call", [{ to, data: encodeFunctionData({ abi: ABI, functionName, args }) }, at]);
+  // Every state answer is read through `state` (review R369-1): at the finalized block's HASH, from every endpoint,
+  // used only when two of them (one in a loopback rehearsal) answered and all that answered agree.
+  let state = null;
+  const stateReads = { endpoints: 1 + others.length, agreeing: Math.min(2, 1 + others.length), reads: 0, endpointFailures: 0 };
+  const call = async (to, functionName, args = []) => {
+    const data = await state("eth_call", [{ to, data: encodeFunctionData({ abi: ABI, functionName, args }) }, "pinned"]);
     return decodeFunctionResult({ abi: ABI, functionName, data });
   };
   const soft = async (work) => {
@@ -144,22 +148,28 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
     const same = await Promise.all(others.map((r) => soft(async () => (await r("eth_getBlockByNumber", [at, false]))?.hash ?? null)));
     check("the other endpoints have the same block at the finalized height", same.every((h) => h === finalized.hash), same);
   }
+  state = pinnedStateReader([request, ...others], finalized.hash, {
+    onRead: ({ failed }) => {
+      stateReads.reads++;
+      stateReads.endpointFailures += failed;
+    },
+  });
 
   // 2. What the deployment builds on.
-  const codeAt = async (address) => codeHashOf(await request("eth_getCode", [address, at]));
+  const codeAt = async (address) => codeHashOf(await state("eth_getCode", [address, "pinned"]));
   check("the CREATE2 deployer holds the pinned code", (await codeAt(shared.create2.deployer)) === shared.create2.deployerCodeHash);
   for (const token of [chain.wrappedNative, ...chain.tokens]) {
     check(`${token.symbol} at ${token.address} holds the pinned code`, (await codeAt(token.address)) === token.codeHash);
-    const facts = await soft(async () => ({ name: (await call(token.address, "name", [], at)), symbol: await call(token.address, "symbol", [], at), decimals: Number(await call(token.address, "decimals", [], at)) }));
+    const facts = await soft(async () => ({ name: (await call(token.address, "name")), symbol: await call(token.address, "symbol"), decimals: Number(await call(token.address, "decimals")) }));
     check(`${token.symbol} answers the listed name, symbol and decimals`, facts.name === token.name && facts.symbol === token.symbol && facts.decimals === token.decimals, facts);
   }
   check("Multicall3 holds the pinned code", (await codeAt(chain.multicall3.address)) === chain.multicall3.codeHash);
-  const multicallChain = await soft(() => call(chain.multicall3.address, "getChainId", [], at));
+  const multicallChain = await soft(() => call(chain.multicall3.address, "getChainId"));
   check("Multicall3 answers getChainId() with the chain id", typeof multicallChain === "bigint" && Number(multicallChain) === chain.chain.chainId, typeof multicallChain === "bigint" ? multicallChain.toString() : multicallChain);
   // The fee address. Minting fee shares to it and paying tokens to it never runs code at it; redeeming to it in
   // the native coin does (docs/MULTICHAIN-DEPLOY.md section 6). A delegation is accepted only to an identified
   // delegate that holds the code recorded for this chain; the designator seen is recorded either way.
-  const feeCode = await request("eth_getCode", [shared.feeTo.address, at]);
+  const feeCode = await state("eth_getCode", [shared.feeTo.address, "pinned"]);
   const named = /^0xef0100[0-9a-f]{40}$/i.test(feeCode) ? `0x${feeCode.slice(8).toLowerCase()}` : null;
   const delegation = feeDelegationOn(shared, chain.chain.key, feeCode, named ? await codeAt(named) : null);
   check("the fee address is an externally owned account: no code, or an EIP-7702 delegation to an identified delegate that holds its recorded code", delegation.accepted, delegation.problem ?? undefined);
@@ -183,6 +193,7 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       const ok = check(`${c.name} ${c.address} holds the planned code at the finalized block`, hash === c.runtimeCodeHash, hash);
       // Review R309-MC-5: deployed but not finalized yet is "wait", not "something is wrong".
       if (!ok && hash === EMPTY_CODE_HASH) {
+        // Informational only (the check above has already failed): one endpoint's latest block, to say WAIT.
         const latest = await soft(async () => codeHashOf(await request("eth_getCode", [c.address, "latest"])));
         if (latest === c.runtimeCodeHash) waiting.push(c.name);
       }
@@ -194,9 +205,9 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
   // of calls to other contracts is how someone else opens a pool in its name.
   const depositor = plan.arguments.firstDepositor;
   check("the plan's firstDepositor is not the fee address (the depositing account is a dedicated key)", lower(depositor) !== lower(shared.feeTo.address));
-  const depositorCode = await request("eth_getCode", [depositor, at]);
+  const depositorCode = await state("eth_getCode", [depositor, "pinned"]);
   check("the depositing account has no code and no EIP-7702 delegation", depositorCode === "0x", depositorCode.slice(0, 60));
-  const depositorNonce = await soft(async () => Number(BigInt(await request("eth_getTransactionCount", [depositor, at]))));
+  const depositorNonce = await soft(async () => Number(BigInt(await state("eth_getTransactionCount", [depositor, "pinned"]))));
   const firstDepositor = { address: depositor, code: depositorCode === "0x" ? "none" : depositorCode.toLowerCase().startsWith(EIP7702_PREFIX) ? "EIP-7702 delegation" : "contract", transactions: Number.isInteger(depositorNonce) ? depositorNonce : null };
   if (phase === "pre" && contracts.factory?.codeHash === EMPTY_CODE_HASH)
     check("the depositing account has never sent a transaction on this chain (a new, dedicated key), while the factory is not deployed", depositorNonce === 0, depositorNonce);
@@ -204,23 +215,23 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
   if (phase === "post" && Object.values(contracts).every((c) => c.codeHash === c.planned)) {
     const f = plan.contracts.factory.address;
     const same = (a, b) => typeof a === "string" && lower(a) === lower(b);
-    check("factory.feeTo() is the owner's fee address", same(await soft(() => call(f, "feeTo", [], at)), plan.arguments.feeTo));
-    check("factory.firstDepositor() is the planned value", same(await soft(() => call(f, "firstDepositor", [], at)), plan.arguments.firstDepositor));
-    check("factory.INIT_CODE_PAIR_HASH() is the release candidate's", (await soft(() => call(f, "INIT_CODE_PAIR_HASH", [], at))) === plan.pair.initCodeHash);
+    check("factory.feeTo() is the owner's fee address", same(await soft(() => call(f, "feeTo")), plan.arguments.feeTo));
+    check("factory.firstDepositor() is the planned value", same(await soft(() => call(f, "firstDepositor")), plan.arguments.firstDepositor));
+    check("factory.INIT_CODE_PAIR_HASH() is the release candidate's", (await soft(() => call(f, "INIT_CODE_PAIR_HASH"))) === plan.pair.initCodeHash);
     const capOf = new Map(plan.arguments.reserveCaps.map((c) => [lower(c.token), BigInt(c.cap)]));
     for (const token of [chain.wrappedNative, ...chain.tokens]) {
-      const cap = await soft(() => call(f, "reserveCap", [token.address], at));
+      const cap = await soft(() => call(f, "reserveCap", [token.address]));
       check(`factory.reserveCap(${token.symbol}) is the planned value (${capOf.get(lower(token.address)) ?? 0n})`, cap === (capOf.get(lower(token.address)) ?? 0n), typeof cap === "bigint" ? cap.toString() : cap);
     }
-    check("router.factory() is the factory", same(await soft(() => call(plan.contracts.router.address, "factory", [], at)), f));
-    check("router.WBLCH() is the chain's wrapped native token", same(await soft(() => call(plan.contracts.router.address, "WBLCH", [], at)), plan.arguments.wrappedNative));
-    check("lens.factory() is the factory", same(await soft(() => call(plan.contracts.lens.address, "factory", [], at)), f));
+    check("router.factory() is the factory", same(await soft(() => call(plan.contracts.router.address, "factory")), f));
+    check("router.WBLCH() is the chain's wrapped native token", same(await soft(() => call(plan.contracts.router.address, "WBLCH")), plan.arguments.wrappedNative));
+    check("lens.factory() is the factory", same(await soft(() => call(plan.contracts.lens.address, "factory")), f));
     for (const p of plan.pairs) {
-      const got = await soft(() => call(f, "getPair", [p.token0, p.token1], at));
+      const got = await soft(() => call(f, "getPair", [p.token0, p.token1]));
       const created = same(got, p.address);
       const entry = { tokenA: p.tokenA, tokenB: p.tokenB, address: p.address, token0: p.token0, token1: p.token1, created, state: "absent" };
       // Tokens can be sent to the pair's address before it exists; they would join the first deposit.
-      const held = await soft(async () => [await call(p.token0, "balanceOf", [p.address], at), await call(p.token1, "balanceOf", [p.address], at)]);
+      const held = await soft(async () => [await call(p.token0, "balanceOf", [p.address]), await call(p.token1, "balanceOf", [p.address])]);
       check(`the token balances at the pair address ${p.tokenA}/${p.tokenB} can be read`, Array.isArray(held), held?.failed);
       if (Array.isArray(held)) entry.balances = held.map(String);
       if (!created) {
@@ -231,13 +242,13 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       if (created) {
         entry.codeHash = await codeAt(p.address);
         check(`pair ${p.tokenA}/${p.tokenB} ${p.address} holds the release candidate's pair code`, entry.codeHash === plan.pair.runtimeCodeHash, entry.codeHash);
-        check(`pair ${p.tokenA}/${p.tokenB} has the planned token0 and token1`, same(await soft(() => call(p.address, "token0", [], at)), p.token0) && same(await soft(() => call(p.address, "token1", [], at)), p.token1));
-        const caps = await soft(() => call(p.address, "reserveCaps", [], at));
+        check(`pair ${p.tokenA}/${p.tokenB} has the planned token0 and token1`, same(await soft(() => call(p.address, "token0")), p.token0) && same(await soft(() => call(p.address, "token1")), p.token1));
+        const caps = await soft(() => call(p.address, "reserveCaps"));
         const want = [capOf.get(lower(p.token0)) ?? 0n, capOf.get(lower(p.token1)) ?? 0n];
         check(`pair ${p.tokenA}/${p.tokenB} copied the planned caps`, Array.isArray(caps) && caps[0] === want[0] && caps[1] === want[1], Array.isArray(caps) ? caps.map(String) : caps);
         entry.reserveCaps = want.map(String);
-        const supply = await soft(() => call(p.address, "totalSupply", [], at));
-        const reserves = await soft(() => call(p.address, "getReserves", [], at));
+        const supply = await soft(() => call(p.address, "totalSupply"));
+        const reserves = await soft(() => call(p.address, "getReserves"));
         const read = check(`pair ${p.tokenA}/${p.tokenB} answers totalSupply() and getReserves()`, typeof supply === "bigint" && Array.isArray(reserves), supply?.failed ?? reserves?.failed);
         if (read && Array.isArray(held)) {
           entry.totalSupply = supply.toString();
@@ -281,6 +292,7 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       finalized: finalized && typeof finalized.hash === "string" ? { number: Number(BigInt(finalized.number)), hash: finalized.hash, timestamp: Number(BigInt(finalized.timestamp ?? "0x0")) } : null,
       feeTo: typeof feeTo === "undefined" ? null : feeTo,
       firstDepositor: typeof firstDepositor === "undefined" ? null : firstDepositor,
+      stateReads,
       plan: planSummary(plan),
       pairs,
       l2Only: { ...shared.l2Only },

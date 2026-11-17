@@ -20,7 +20,10 @@ import { LOCKED_SHARES, MINT_TOPIC, TRANSFER_TOPIC, openingFromReceipt, priceShi
 
 const viem = createRequire(new URL("../../frontend/package.json", import.meta.url))("viem");
 /** An owner's depositing account for tests where the choices are made: a dedicated key, not the fee address. */
-const OWNER_DEPOSITOR = viem.getAddress("0x00000000000000000000000000000000000a11ce");
+// A depositing account of the tests' own. Built at run time so that its address is written in no file: since review
+// R369-5, check-depositor refuses an address that appears in any tracked file, and the earlier fixture
+// (0x…0a11ce) is written in simulate-chain.mjs and test/AssetDeployment.t.sol as a stranger's account.
+const OWNER_DEPOSITOR = viem.getAddress(`0x${"0".repeat(34)}${"de9051"}`);
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 // The committed configuration carries the owner's choices (the depositing account, no caps). Most tests below are

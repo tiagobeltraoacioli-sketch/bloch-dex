@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, MultichainError, PENDING, REFERENCE_FIRST_DEPOSITOR, ROOT, ZERO_ADDRESS, addressesInDeployments, checksummed, loadArtifacts, loadChain, lower, planChain, readJson, refuse, retrying, validateShared,
+  EIP7702_PREFIX, MultichainError, PENDING, PUBLIC_DEVELOPMENT_ACCOUNTS, REFERENCE_FIRST_DEPOSITOR, ROOT, ZERO_ADDRESS, addressesInDeployments, addressesInRepository, checksummed, loadArtifacts, loadChain, lower, planChain, readJson, refuse, retrying, validateShared,
 } from "./lib.mjs";
 
 export const DEPOSITOR_CHECK_SCHEMA = "postern.dex.multichain-depositor-check.v1";
@@ -43,6 +43,19 @@ export function offlineProblems(address, shared, { root = ROOT, planned = [] } =
   for (const p of planned) if (lower(p.address) === a) problems.push(`it is the address the plan would deploy ${p.what} to`);
   const places = addressesInDeployments(root).get(a);
   if (places) problems.push(`it appears in the repository's deployments (${places.join(", ")}): the depositing account must be an address used for nothing else`);
+  if (PUBLIC_DEVELOPMENT_ACCOUNTS.some((d) => lower(d) === a)) problems.push("it is an account of the public development mnemonic (anvil / Hardhat): its key is public");
+  // Review R369-5: any other file the repository tracks (scripts, tests, documents). The address already recorded
+  // as firstDepositor is written in the documents and tests on purpose and is judged on deployments/ alone.
+  let recorded = null;
+  try {
+    recorded = lower(readJson(join(root, "deployments/multichain.json")).firstDepositor ?? "");
+  } catch {
+    recorded = null;
+  }
+  if (a !== recorded) {
+    const elsewhere = addressesInRepository(root).get(a);
+    if (elsewhere) problems.push(`it appears in files of the repository (${elsewhere.join(", ")}): the depositing account must be an address used for nothing else`);
+  }
   return problems;
 }
 
@@ -98,7 +111,7 @@ export async function checkDepositor(address, shared, { root = ROOT, transportFo
     for (const p of entry.problems) problems.push(`${key}: ${p}`);
   }
   const offline = offlineProblems(address, shared, { root, planned });
-  print(`${offline.length ? "FAIL" : "ok  "} not the zero address, the fee address, the CREATE2 deployer, the reference address, a delegate, a planned address, nor any address written under deployments/${offline.length ? `  ${offline.join("; ")}` : ""}`);
+  print(`${offline.length ? "FAIL" : "ok  "} not the zero address, the fee address, the CREATE2 deployer, the reference address, a delegate, a planned address, a public development account, nor any address written under deployments/ or in any other file the repository tracks${offline.length ? `  ${offline.join("; ")}` : ""}`);
   problems.push(...offline);
   return { schema: DEPOSITOR_CHECK_SCHEMA, address, fit: problems.length === 0, problems, chains, planned };
 }
