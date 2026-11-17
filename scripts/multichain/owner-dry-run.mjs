@@ -4,8 +4,18 @@
 // needed). Nothing is sent to a public chain: every transaction goes to the fork; public endpoints are only READ
 // (the public pre gate, the market, gas prices and rollup data-fee oracles for the cost).
 //
-//   node scripts/multichain/owner-dry-run.mjs once  --out DIR [--pt FILE]
+//   node scripts/multichain/owner-dry-run.mjs once  --out DIR [--pt FILE] [--archives DIR] [--stand-in DIR]
 //   node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR [--fork-url URL] [--pid-dir DIR]
+//                                                     [--tools DIR | --archives DIR] [--stand-in DIR]
+//
+// The tools (review R369-16): the run installs the owner's toolchain with the document's own install block into
+// DIR/owner-tools (from the pinned official URLs; with --archives DIR from archives already fetched from them, each
+// still compared with the pins), or checks an earlier run's directory (--tools DIR), always with the document's own
+// PATH line and check block, and then runs every command with those tools.
+// --stand-in DIR is for a session that may not start a program it has just downloaded: install and check then run
+// with --no-run (hashes, digest, permissions and PATH only), and the commands run with the installed directory's own
+// launchers over the programs of DIR (DIR/foundry/{forge,cast,anvil}, DIR/node/…/bin/node, DIR/libusb/lib), after
+// this run has checked that those four programs have exactly the pinned SHA-256. The result names the mode.
 //
 // The blocks are those of the document marked `<!-- run: <chain>|once <step> -->`; the run refuses to start when an
 // expected block is missing. Each block is run as written, with only the changes listed in the document's section
@@ -21,7 +31,8 @@
 // nothing is deposited, and `prepare` again works; (M4) the post gate run before finality says WAIT.
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
@@ -32,12 +43,26 @@ const { keccak256, encodeAbiParameters, encodeFunctionData, decodeFunctionResult
 
 export const DOC = "docs/OWNER-DEPLOY-NOW.md";
 export const CHAIN_STEPS = ["pre-gate", "deployer-balance", "gas-price", "deploy-dry-run", "deploy-broadcast", "post-gate-deployed", "market", "depositor-native", "depositor-token", "prepare", "send-suffix", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
-export const ONCE_STEPS = ["clone", "shim-dir", "shims", "env-path", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
+export const ONCE_STEPS = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
 export const ORDER = ["op-mainnet", "base", "arbitrum-one", "linea", "bnb-smart-chain", "ethereum"];
 const DEPOSITOR_KEYSTORE = '--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"';
 // The document names the deploying key's directory only as DEX_DEPLOYER_KEYSTORE_DIR (H398-3); the dry run sets it
 // to its own throwaway directory in every command's environment and keeps the command text as written.
 const DEPLOYER_DIR = '"$DEX_DEPLOYER_KEYSTORE_DIR"';
+// The owner's tools directory and the path of the toolchain script, as the document writes them.
+export const OWNER_TOOLS = ["~/dex-owner-tools", "$HOME/dex-owner-tools"];
+export const TOOLCHAIN_SCRIPT = "~/postern-dex/scripts/multichain/owner-toolchain.sh";
+export const TOOL_NAMES = ["forge", "cast", "anvil", "node", "npm"];
+
+/** The pinned SHA-256 of each program of a platform (scripts/multichain/owner-toolchain.pins): { "foundry/forge": hex, … }. */
+export function pinnedFiles(platform, text = readFileSync(join(ROOT, "scripts/multichain/owner-toolchain.pins"), "utf8")) {
+  const pins = {};
+  for (const l of text.split("\n")) {
+    const f = l.split(" ");
+    if (f[0] === platform && f[1] === "file") pins[f[3]] = f[2];
+  }
+  return pins;
+}
 
 /** The marked command blocks of the document: { "<scope> <step>": command }. */
 export function blocksOf(text) {
@@ -68,7 +93,8 @@ const argv = process.argv.slice(2);
 const scope = argv[0];
 for (let i = 1; i < argv.length; i += 2) opt[argv[i].replace(/^--/, "").replace(/-(.)/g, (_, c) => c.toUpperCase())] = argv[i + 1];
 if (import.meta.url === `file://${process.argv[1]}`) {
-  refuse(scope && opt.out && (scope === "once" || (ORDER.includes(scope) && opt.port)), "usage: owner-dry-run.mjs once --out DIR | <chain> --port PORT --out DIR [--fork-url URL] [--pid-dir DIR]");
+  refuse(scope && opt.out && (scope === "once" || (ORDER.includes(scope) && opt.port)), "usage: owner-dry-run.mjs once --out DIR [--pt FILE] | <chain> --port PORT --out DIR [--fork-url URL] [--pid-dir DIR] [--tools DIR]; both: [--archives DIR] [--stand-in DIR]");
+  refuse(!(opt.tools && scope === "once"), "once installs the tools itself (--tools is for a chain run)");
   await main();
 }
 
@@ -89,27 +115,11 @@ async function main() {
     return Boolean(ok);
   };
   const save = () => writeFileSync(join(out, "evidence.json"), `${JSON.stringify(evidence, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2)}\n`);
-  // The document's launchers (once) and its "every new terminal" PATH line, with the launcher directory moved into
-  // this run's own directory (the owner's ~/.local/share/dex-tools/shim is not written by a dry run).
-  const shimDir = join(out, "shim");
-  const shimmed = (cmd) => cmd.replaceAll("~/.local/share/dex-tools/shim", shimDir).replaceAll("$HOME/.local/share/dex-tools/shim", shimDir);
-  rmSync(shimDir, { recursive: true, force: true });
-  for (const step of ["shim-dir", "shims"]) {
-    const r = spawnSync("bash", ["-c", shimmed(blocks[`once ${step}`])], { encoding: "utf8" });
-    refuse(r.status === 0, `the document's ${step} block failed: ${r.stderr}`);
-  }
-  const envPrefix = `${shimmed(blocks["once env-path"])}; `;
-  const keyDir = join(out, "deployer-key");
-  // A fresh throwaway key per run (a keystore left by an earlier run has another password).
-  rmSync(keyDir, { recursive: true, force: true });
-  const pwFile = join(out, "deployer-key.password");
-  /** Run one shell command line (as the owner pastes it, after the documented changes) and log it. */
-  const sh = (step, original, command, { timeoutMs = 900_000 } = {}) => {
-    appendFileSync(log, `\n## ${step}\n# document: ${original}\n$ ${envPrefix}${command}\n`);
+  /** Run one shell command line and log it next to the document's block it came from. */
+  const shell = (step, original, command, { timeoutMs = 900_000, cwd = ROOT, env = {} } = {}) => {
+    appendFileSync(log, `\n## ${step}\n# document: ${original}\n$ ${command}\n`);
     const started = Date.now();
-    // Every command runs after the document's two "every new terminal" lines (Node 24 and Foundry 1.7.1 first in
-    // PATH), exactly as the owner's terminal has them.
-    const r = spawnSync("bash", ["-c", `${envPrefix}${command}`], { cwd: ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1", DEX_DEPLOYER_KEYSTORE_DIR: keyDir, DEX_DEPOSITOR_KEYSTORE_DIR: join(out, "no-depositor-key") } });
+    const r = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1", ...env } });
     const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     appendFileSync(log, `${output}\n# exit ${r.status} after ${Math.round((Date.now() - started) / 1000)} s\n`);
     writeFileSync(join(out, `${step}.log`), output);
@@ -117,6 +127,83 @@ async function main() {
     save();
     return { status: r.status, output };
   };
+
+  // ---------------------------------------------------------------- the owner's tools (review R369-16)
+  // The document's install block, PATH line and check block, as written, with the tools directory moved into this
+  // run's own directory (the owner's ~/dex-owner-tools is never written by a dry run) and the toolchain script taken
+  // from the commit under test.
+  const toolsDir = opt.tools ? resolve(opt.tools) : join(out, "owner-tools");
+  const swap = (cmd) => OWNER_TOOLS.reduce((c, d) => c.replaceAll(d, toolsDir), cmd).replaceAll(TOOLCHAIN_SCRIPT, join(ROOT, "scripts/multichain/owner-toolchain.sh"));
+  const noRun = opt.standIn ? " --no-run" : "";
+  const passLine = opt.standIn ? /^owner tools: HASHES PASS, programs not run/ : /^owner tools: PASS$/;
+  const lastLine = (output) => output.trim().split("\n").at(-1) ?? "";
+  const docPath = swap(blocks["once env-path"]);
+  const toolsCheck = (step, prefix = `${docPath}; `) => shell(step, blocks["once tools-check"], `${prefix}${swap(blocks["once tools-check"])}${noRun}`);
+  evidence.tools = { directory: toolsDir, mode: opt.standIn ? "stand-in" : "installed", installedBy: opt.tools ? "an earlier run (--tools)" : opt.archives ? "this run, from --archives" : "this run, from the pinned URLs" };
+  if (!opt.tools) {
+    rmSync(toolsDir, { recursive: true, force: true });
+    const r = shell("tools-install", blocks["once tools-install"], `${swap(blocks["once tools-install"])}${opt.archives ? ` --from ${resolve(opt.archives)}` : ""}${noRun}`);
+    check(`tools: the document's install block builds the tools directory from the pinned archives (${evidence.tools.installedBy.replace("this run, ", "")}), every archive's SHA-256 checked first`, r.status === 0 && (r.output.match(/^ok {4}\S+ sha256 [0-9a-f]{64}$/gm) ?? []).length >= 2 && (opt.standIn ? passLine.test(lastLine(r.output)) : /^owner tools: installed and verified in /.test(lastLine(r.output))), r.output.slice(-500));
+  }
+  {
+    const r = toolsCheck("tools-check");
+    check(`tools: the document's PATH line then its check block: ${opt.standIn ? "hashes, digest, permissions and PATH pass (programs not run: --stand-in)" : "the last line is exactly \"owner tools: PASS\""}`, r.status === 0 && passLine.test(lastLine(r.output)) && !/^FAIL/m.test(r.output), r.output.slice(-600));
+  }
+  if (scope === "once") {
+    // Refusals on the real directory, each undone: a byte added to cast; access for the group; no PATH line.
+    const cast = join(toolsDir, "foundry/cast");
+    const size = statSync(cast).size;
+    appendFileSync(cast, "\n");
+    let r = toolsCheck("T1-cast-changed");
+    truncateSync(cast, size);
+    check("T1 one byte added to cast: the check refuses, names cast and prints no PASS", r.status === 1 && /^FAIL foundry\/cast has SHA-256 [0-9a-f]{64}; pinned [0-9a-f]{64}$/m.test(r.output) && !/owner tools: (PASS|HASHES PASS)/.test(r.output), r.output.slice(-400));
+    chmodSync(toolsDir, 0o750);
+    r = toolsCheck("T2-group-access");
+    chmodSync(toolsDir, 0o700);
+    check("T2 the directory opened to the group: the check refuses", r.status === 1 && /has access mode 750; it must be 700/.test(r.output) && !/owner tools: (PASS|HASHES PASS)/.test(r.output), r.output.slice(-400));
+    r = toolsCheck("T3-no-path-line", "export PATH=/usr/bin:/bin; ");
+    check("T3 without the document's PATH line: the check refuses", r.status === 1 && /FAIL this terminal's PATH finds forge at 'nowhere'/.test(r.output) && !/owner tools: (PASS|HASHES PASS)/.test(r.output), r.output.slice(-400));
+    r = toolsCheck("tools-check-again");
+    check("tools: with the three changes undone the check passes again", r.status === 0 && passLine.test(lastLine(r.output)), r.output.slice(-400));
+  }
+  // The directory whose bin/ the commands use: the installed one, or (--stand-in) its launchers over DIR's programs.
+  let binDir = join(toolsDir, "bin");
+  let envPrefix = `${docPath}; `;
+  if (opt.standIn) {
+    const from = resolve(opt.standIn);
+    const nodeRoot = existsSync(join(from, "node/bin/node")) ? join(from, "node") : join(from, "node", readdirSync(join(from, "node")).find((d) => existsSync(join(from, "node", d, "bin/node"))) ?? "missing");
+    const platform = process.arch === "arm64" ? "darwin-arm64" : "darwin-x64";
+    const pins = pinnedFiles(platform);
+    const sha = (f) => createHash("sha256").update(readFileSync(f)).digest("hex");
+    const actual = { "foundry/forge": sha(join(from, "foundry/forge")), "foundry/cast": sha(join(from, "foundry/cast")), "foundry/anvil": sha(join(from, "foundry/anvil")), "node/bin/node": sha(join(nodeRoot, "bin/node")) };
+    const equal = Object.entries(actual).every(([k, v]) => pins[k] === v);
+    const libusb = existsSync(join(from, "libusb/lib/libusb-1.0.0.dylib")) ? sha(join(from, "libusb/lib/libusb-1.0.0.dylib")) : null;
+    evidence.tools.standIn = { directory: from, programs: actual, pinned: pins, libusb, libusbIsThePinnedOne: libusb !== null && libusb === pins["libusb/lib/libusb-1.0.0.dylib"] };
+    refuse(equal, `--stand-in ${from}: forge, cast, anvil or node there does not have the pinned SHA-256; not used`);
+    check("tools (--stand-in): forge, cast, anvil and node of the stand-in directory have exactly the pinned SHA-256 (the same bytes as the installed ones)", equal);
+    const stand = join(out, "stand-in-tools");
+    rmSync(stand, { recursive: true, force: true });
+    mkdirSync(join(stand, "bin"), { recursive: true });
+    for (const t of TOOL_NAMES) copyFileSync(join(toolsDir, "bin", t), join(stand, "bin", t));
+    for (const t of TOOL_NAMES) chmodSync(join(stand, "bin", t), 0o700);
+    symlinkSync(join(from, "foundry"), join(stand, "foundry"));
+    symlinkSync(nodeRoot, join(stand, "node"));
+    if (existsSync(join(from, "libusb"))) symlinkSync(join(from, "libusb"), join(stand, "libusb"));
+    binDir = join(stand, "bin");
+    envPrefix = `export PATH="${binDir}:$PATH"; `;
+  }
+  {
+    const r = shell("tools-type", blocks["once tools-type"], `${envPrefix}${blocks["once tools-type"]}`);
+    check("tools: `type` finds forge, cast, anvil, node and npm in the tools directory's bin and nowhere else", r.status === 0 && TOOL_NAMES.every((t) => r.output.split("\n").includes(`${t} is ${binDir}/${t}`)), r.output);
+  }
+  const keyDir = join(out, "deployer-key");
+  // A fresh throwaway key per run (a keystore left by an earlier run has another password).
+  rmSync(keyDir, { recursive: true, force: true });
+  const pwFile = join(out, "deployer-key.password");
+  /** Run one shell command line (as the owner pastes it, after the documented changes) and log it. Every command
+   * runs after the document's "every new terminal" PATH line (the checked tools first in PATH), exactly as the
+   * owner's terminal has it. */
+  const sh = (step, original, command, options = {}) => shell(step, original, `${envPrefix}${command}`, { ...options, env: { DEX_DEPLOYER_KEYSTORE_DIR: keyDir, DEX_DEPOSITOR_KEYSTORE_DIR: join(out, "no-depositor-key") } });
 
   if (scope === "once") {
     const t = (cmd) =>
@@ -131,12 +218,18 @@ async function main() {
     let r = sh("clone", blocks["once clone"], blocks["once clone"].replace("~/postern-dex", join(out, "postern-dex")));
     const reviewed = spawnSync("git", ["-C", join(out, "postern-dex"), "merge-base", "--is-ancestor", "a99f761", "origin/main"], { encoding: "utf8" });
     check("0 the clone succeeds and its main contains the reviewed a99f761", r.status === 0 && reviewed.status === 0, `${r.output.slice(-200)} ${reviewed.stderr}`);
+    const commit = shell("clone-commit", blocks["once clone-commit"], blocks["once clone-commit"].replace("~/postern-dex", join(out, "postern-dex")));
+    check("0 the clone's commit is printed for comparison with the integrator's", commit.status === 0 && /^[0-9a-f]{7,40} \S/.test(commit.output), commit.output);
     rmSync(join(out, "postern-dex"), { recursive: true, force: true });
+    // The line that lists running agents. This dry run is itself started by an agent session, so the line must find
+    // one (status 0, something listed); run by a person with no agent on the machine it prints nothing (status 1).
+    const agents = shell("no-agents", blocks["once no-agents"], blocks["once no-agents"]);
+    evidence.agentsListed = agents.output.trim().split("\n").filter(Boolean).length;
+    check("0 the no-agent line runs: it lists the agent session this dry run is started from, or nothing at all", (agents.status === 0 && evidence.agentsListed > 0) || (agents.status === 1 && evidence.agentsListed === 0), `${agents.status}: ${agents.output.slice(0, 200)}`);
     // Through a script (as deploy.sh runs forge): the launcher must survive macOS removing DYLD_* variables.
-    writeFileSync(join(out, "tools-check.sh"), "#!/usr/bin/env bash\ncommand -v node; command -v forge; command -v cast; node --version; forge --version; cast --version\n", { mode: 0o755 });
-    r = sh("env-tools", `${blocks["once shims"]} + ${blocks["once env-path"]}`, join(out, "tools-check.sh"));
-    const home = process.env.HOME;
-    check("0 the launchers and the PATH line give Node v24.21.0 and Foundry 1.7.1, also inside a script", r.status === 0 && r.output.includes(`${home}/.local/share/dex-tools/node/node-v24.21.0-darwin-x64/bin/node`) && r.output.includes(`${shimDir}/forge`) && /v24\.21\.0/.test(r.output) && /forge Version: 1\.7\.1/.test(r.output) && /cast Version: 1\.7\.1/.test(r.output), r.output);
+    writeFileSync(join(out, "tools-check.sh"), "#!/usr/bin/env bash\ncommand -v node; command -v forge; command -v cast; node --version; forge --version; cast --version; npm --version\n", { mode: 0o755 });
+    r = sh("env-tools", `${blocks["once env-path"]} + a script`, join(out, "tools-check.sh"));
+    check("0 the launchers and the PATH line give Node v24.21.0, npm 11.19.0 and Foundry 1.7.1, also inside a script", r.status === 0 && ["node", "forge", "cast"].every((t) => r.output.split("\n").includes(`${binDir}/${t}`)) && /^v24\.21\.0$/m.test(r.output) && /^11\.19\.0$/m.test(r.output) && /^forge Version: 1\.7\.1$/m.test(r.output) && /^cast Version: 1\.7\.1$/m.test(r.output), r.output);
     r = run("kit-tests");
     check("2.1 kit tests: fail 0", r.status === 0 && /ℹ fail 0/.test(r.output), r.output.slice(-400));
     r = run("check-depositor");
@@ -230,7 +323,7 @@ async function main() {
       check(`step 1 on the public chain (read-only): every check passes except the missing fee-address proof (the owner's signature, section 2.3)`, r.status !== 0 && fails.length === 1 && /proof of control of the fee address/.test(fails[0]), `${r.status}: ${fails.join(" | ") || r.output.slice(-300)}`);
   }
 
-  const anvil = spawn("anvil", ["--fork-url", forkUrl, "--port", String(port), "--host", "127.0.0.1", "--silent", "--retries", "20", "--fork-retry-backoff", "1500", "--timeout", "60000"], { stdio: ["ignore", "ignore", "inherit"] });
+  const anvil = spawn(join(binDir, "anvil"), ["--fork-url", forkUrl, "--port", String(port), "--host", "127.0.0.1", "--silent", "--retries", "20", "--fork-retry-backoff", "1500", "--timeout", "60000"], { stdio: ["ignore", "ignore", "inherit"] });
   if (opt.pidDir) writeFileSync(join(opt.pidDir, `anvil-${key}-${port}.pid`), `${anvil.pid} anvil --fork-url ${forkUrl} --port ${port}\n`);
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, () => (anvil.kill("SIGTERM"), process.exit(143)));
   process.on("exit", () => anvil.kill("SIGTERM"));

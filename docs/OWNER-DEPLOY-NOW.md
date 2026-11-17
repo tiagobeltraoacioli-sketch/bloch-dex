@@ -1,7 +1,7 @@
 # PosternDEX on six public chains: the owner's deployment, step by step
 
-Status: **ready for the owner to run; dry-run on a fork of each of the six chains at commit `cf93f6e`: PASS on all six (section 9); nothing deployed.** Written
-2026-11-17 by agent 367 (round 18) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
+Status: **ready for the owner to run; dry-run on a fork of each of the six chains: PASS on all six (section 9); nothing deployed.** Written
+2026-11-17 by agent 367 (round 18; the tools section by agent 401, round 19) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
 behind every rule are in that document; this one is only the sequence, with every command exactly as you type it.
 A Portuguese copy for the owner is kept outside this public repository (the repository is English only), with the same command blocks; this English file is the one the dry run executes.
 
@@ -20,29 +20,84 @@ Once, on this Mac: get the repository (the folder `~/postern-dex` does not exist
 git clone https://github.com/tiagobeltraoacioli-sketch/postern-dex.git ~/postern-dex
 ```
 
-Once, on this Mac: three small launchers for Foundry. The Foundry 1.7.1 installed here needs its own copy of the
-`libusb` library, which it finds only through `DYLD_LIBRARY_PATH`; macOS removes that variable whenever a script
-runs (`deploy.sh` is one), so exporting it in the terminal is not enough: the deployment's `forge` would stop with
-"Library not loaded: libusb". Each launcher sets it right before starting the real program (found by the dry run).
+The scripts you are about to run come from this copy. Print its commit and compare it with the one the integrator
+names as reviewed (section 2.1 says which) before you run anything from it:
 
-<!-- run: once shim-dir -->
+<!-- run: once clone-commit -->
 ```
-mkdir -p ~/.local/share/dex-tools/shim
+git -C ~/postern-dex log -1 --oneline
 ```
 
-<!-- run: once shims -->
+### Your own tools, checked before any key is used
+
+`forge` and `cast` sign your transactions, `node` runs every check of this guide and `anvil` rehearses: whoever can
+change those programs decides what you sign and what the checks print (review R369-16). So you do not use a copy
+somebody else put on this Mac (in particular not the one in `~/.local/share/dex-tools/`, which an agent installed
+and agents can write). You install your own, from the publishers, into a new directory, and a script of this
+repository compares every program with SHA-256 values committed here before each session.
+
+**No agent while you sign.** Before a signing session (any terminal in which you will type a keystore password or
+confirm in a wallet), close every assistant or agent session on this Mac (Claude Code, Codex, their terminals and
+desktop apps) and leave them closed until you have finished. An agent runs as your macOS user: a directory closed
+to other users is not closed to it. This line lists what is still running; it must print nothing:
+
+<!-- run: once no-agents -->
 ```
-for t in forge cast anvil; do printf '#!/bin/sh\nDYLD_LIBRARY_PATH="$HOME/.local/share/dex-tools/libusb/lib" exec "$HOME/.local/share/dex-tools/foundry/%s" "$@"\n' $t > ~/.local/share/dex-tools/shim/$t; chmod +x ~/.local/share/dex-tools/shim/$t; done
+pgrep -lf -i "claude|codex"
 ```
 
-In **every new terminal** you use for this guide, first this line. It puts Node.js 24 and the Foundry launchers in
-front of the terminal's path (`forge --version` then shows 1.7.1 and `node --version` v24.21.0, the versions of the
-dry run); without it `node`, `forge` and `cast` are not found.
+**Once: install.** The directory `~/dex-owner-tools` must not exist yet. The script downloads Foundry v1.7.1 from
+its GitHub release, Node.js v24.21.0 from nodejs.org and, on an Intel Mac such as this one (`uname -m` prints
+`x86_64`), the `libusb` library that Foundry's Intel build loads, from Homebrew's package store; it compares each
+archive's SHA-256 with the committed value (`scripts/multichain/owner-toolchain.pins`, which says where every value
+comes from) before unpacking it, builds the directory with access for you only, and ends with the check below. It
+uses only programs of macOS itself and asks for no password. About 150 MB, under a minute.
+
+<!-- run: once tools-install -->
+```
+/bin/bash ~/postern-dex/scripts/multichain/owner-toolchain.sh install ~/dex-owner-tools
+```
+
+It must end with `owner tools: installed and verified`. If it ends with `FAIL`, nothing was installed: stop.
+
+In **every new terminal** you use for this guide, first these three lines. The first puts your tools in front of the
+terminal's path (without it `node`, `forge` and `cast` are not found, or others are):
 
 <!-- run: once env-path -->
 ```
-export PATH="$HOME/.local/share/dex-tools/node/node-v24.21.0-darwin-x64/bin:$HOME/.local/share/dex-tools/shim:$PATH"
+export PATH="$HOME/dex-owner-tools/bin:$PATH"
 ```
+
+The second is the check. It refuses unless the directory and everything in it is yours alone (no access for group
+or others), `forge`, `cast`, `anvil`, `node` and `libusb` have the committed SHA-256, the directory as a whole (every
+file, including `npm`) has the committed digest, this terminal finds the five programs there, and each one, started
+as `deploy.sh` will start it, reports Foundry 1.7.1 or Node.js v24.21.0. Nothing of the directory is run before
+the hashes pass. It takes a few seconds.
+
+<!-- run: once tools-check -->
+```
+/bin/bash ~/postern-dex/scripts/multichain/owner-toolchain.sh check ~/dex-owner-tools
+```
+
+The last line must be exactly `owner tools: PASS`. **On any `FAIL`, type no password and confirm nothing in a
+wallet**: remove the directory (`~/dex-owner-tools` holds nothing but the tools), install again, and if it fails
+again, stop and ask.
+
+The third shows what this terminal will really start when you type the five names:
+
+<!-- run: once tools-type -->
+```
+type forge cast anvil node npm
+```
+
+Each of the five lines must end with your home directory followed by `/dex-owner-tools/bin/` and the program's
+name (for example `forge is /Users/you/dex-owner-tools/bin/forge`). A line saying `alias` or `function`, or
+another path: stop.
+
+Why launchers (`~/dex-owner-tools/bin`): Foundry's build for Intel Macs looks for `libusb` at a Homebrew path, and
+macOS removes the variable that could point it elsewhere whenever a script runs (`deploy.sh` is one), so each
+launcher sets it right before starting the real program (found by the dry run); a launcher also starts its program
+without any library or Node option injected from the terminal.
 
 Then the two keystore variables of the rules below, and section 2.
 
@@ -76,8 +131,8 @@ export DEX_DEPLOYER_KEYSTORE_DIR=<owner-deployer-keystore-dir>
 | What | Detail |
 |---|---|
 | This repository | postern-dex at the commit the integrator (agent 366) names as reviewed, on `main`; `git status` clean |
-| Foundry | `forge`, `cast` (the dry run used Foundry 1.7.1) |
-| Node.js | version 24, and the frontend's packages installed once (section 2.1) |
+| Foundry | `forge`, `cast`, `anvil` 1.7.1: your own copy in `~/dex-owner-tools`, installed from the publisher and checked in every terminal ("Your own tools" above) |
+| Node.js | v24.21.0, in the same directory and under the same check; the frontend's packages installed once (section 2.1) |
 | The fee address's wallet | the wallet that holds `0x775a…0544` (a MetaMask account, or a Ledger): used once, to sign one message, no transaction (section 2.3) |
 | The depositing key | the encrypted keystore `"$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"` (address `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3`, created 2026-11-17). It signs only the two transactions step 7 prints on each chain |
 | A deploying key (new) | a **plain hot key, used once**: created in section 2.4, funded with a little gas money per chain, used for the three deployment transactions of each chain and nothing else, emptied and deleted at the end. It has **no power** over anything it deploys (the contracts have no owner); losing it or leaking it after the deployment costs nothing but its leftover gas money |
@@ -1089,6 +1144,10 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 | funding (steps 2 and 6) and waiting (steps 5 and 9) | `anvil_setBalance` with exactly the amounts of section 3, the token by its balance slot; 70 blocks mined so that anvil's `finalized` (64 behind) covers the transactions | the owner funds from a wallet and waits for the chain |
 | `fee-proof.mjs record` | not run (it needs the fee address's signature); the pre gates of the dry run report the proof as "not required (rehearsal)", and the public pre gate is run read-only to show that it fails on the missing proof only | no one but the owner can sign it |
 | `git add`, `git commit`, `npm ci`, `git checkout` | not run | they change the repository, not a chain |
+| `~/dex-owner-tools` (install, PATH line, check, `type`) | the dry run's own directory | the owner's directory is never written by a dry run |
+| `~/postern-dex/scripts/multichain/owner-toolchain.sh` | the script of the commit under test | the public clone holds `main`, which has the script only after this branch is merged |
+| `owner-toolchain.sh install` and `check`, only with `--stand-in DIR` | `--no-run` added; the commands after them run with the directory's own launchers over the programs of `DIR`, after the dry run has checked that `forge`, `cast`, `anvil` and `node` there have exactly the pinned SHA-256 | for a session that may not start a program it has just downloaded; stated in the result, and the `libusb` loaded is then `DIR`'s, not the pinned one (section 11) |
+| `pgrep` (no agent running) | run as written; the dry run is itself started by an agent, so it must list at least one process there (and nothing when a person runs it with no agent) | shows the line finds a running agent |
 | the Portuguese owner copy | its marked blocks are compared with this file's (`once --pt FILE`); any difference fails the run | the owner may follow either |
 
 ## 11. Not done / not proven
@@ -1096,7 +1155,12 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 - **Nothing was sent to any public chain and no key of the owner's was used.** Every transaction of the dry run went to a loopback fork; the depositing account and nothing else was impersonated there. Real inclusion, real fees charged, and Linea's prover limits on a real transaction are not shown.
 - **The accepting path of the fee-address proof** (`record` with the fee address's real signature) needs the owner's key; only its refusals were exercised here (a throwaway key's signature). The signing page was written, not used with a wallet. The pre gates on the forks run with `--rehearsal`, where the proof is "not required"; on the public chains they fail on it today, by design.
 - **Two endpoints on the fork.** With `--rpc … --rehearsal` the tools read one URL (the fork), so the two-endpoint agreement of the gates and of `prepare` was not exercised by this dry run (it is by the tools' own tests and by the read-only public pre gate and `check-depositor` runs above).
-- **The owner's machine.** Run on the coordinator's Mac with Foundry 1.7.1. The owner's zsh, Foundry version and keystore prompts were not seen; `npm ci`, `git` and the Ledger and MetaMask paths were not run.
+- **The owner's machine.** Run on the coordinator's Mac with Foundry 1.7.1. The owner's zsh and keystore prompts were not seen; `npm ci`, `git` and the Ledger and MetaMask paths were not run.
+- **The owner's tools (review R369-16): what the check cannot see.** The directory is closed to other macOS users, not to a program running as the owner's own user: such a program could also change the shell's start-up files, this clone, or the guide itself, and no script can rule that out from inside the same account. That is why the check is repeated in every terminal, `type` is shown, and no agent may run during a signing session; a separate macOS user account used only for signing would be the stronger separation (an owner decision). `pgrep` finds only processes whose command line contains "claude" or "codex".
+- **Signatures of the releases were not verified, only their published checksums.** Foundry's Sigstore bundles and GitHub attestations and the PGP signature of Node's `SHASUMS256.txt` were downloaded but not verified (no verifier was available to the agent; the pins file names them). The checksums come from the same publishers' sites as the archives.
+- **Homebrew's `libusb` was not loaded by anything here.** The dry run of this commit ran in the stand-in mode of section 10: this session was not permitted to start a program it had just downloaded, so `install` and `check` ran as written plus `--no-run` (archive hashes, program hashes, directory digest, permissions, PATH: all pass, and three refusals shown), and every later command ran through the installed directory's own launchers over programs with exactly the pinned SHA-256 (the same bytes) and a locally built `libusb`. Shown without running: the 15 `libusb` functions that `forge` and `cast` import are all among the 104 the pinned library exports; its compatibility version is 7.0.0 (6.0.0 required); it is x86_64 for macOS 14.0 or later. The owner's own check starts every program before any key is used and says `FAIL` if one does not start.
+- **Apple silicon.** The `darwin-arm64` pins were hashed from the official archives and the directory was built from them on this Intel Mac; nothing was run on an Apple-silicon Mac.
+- **The compiler.** `forge build` fetches `solc` 0.8.24 on first use into the user's Library folder; it is not among the pinned programs. The planned addresses are computed from the compiled code, and section 2.5 has the owner compare them with the list printed there: a compiler producing other code gives other addresses. `git`, `curl`, `python3` and `shasum` are macOS's own and are not checked.
 - **Gas prices are of one hour.** The cost table is today's reading; Linea's `eth_gasPrice` moved eightfold within the day. The funding column, not the "today" columns, is what to plan with.
 - **The deposit size.** The dry run used each chain's minimum (0.1 ETH; 0.5 BNB; 1 ETH on Ethereum). A larger deposit changes the token amount and nothing else in the sequence.
 - **Waiting is simulated.** 70 mined blocks stand for the chain's finality; the real waits are in steps 5 and 9.
