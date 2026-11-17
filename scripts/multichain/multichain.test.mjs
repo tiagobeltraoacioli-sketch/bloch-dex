@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import {
   CHAIN_DEPENDENT_OPCODES, POST_PARIS_OPCODES, REFERENCE_FIRST_DEPOSITOR, REFERENCE_FIRST_DEPOSITOR_PREIMAGE, ROOT, ZERO_ADDRESS, checksummed, choicesFor, forgeEnvironment, loadArtifacts, loadChain, loadShared, lower,
-  opcodesOf, pendingChoices, planChain, validateChain, validateRule, validateShared,
+  opcodesOf, pendingChoices, planChain, retrying, validateChain, validateRule, validateShared,
 } from "./lib.mjs";
 import { DONATION_BPS, MAX_TOLERANCE_BPS, addTransactions, giftWithinTolerance, hasStrictMinimums, openingTransactions } from "./first-deposit.mjs";
 import { evaluateGate, gateConfig } from "./gate.mjs";
@@ -573,4 +573,22 @@ test("the post gate reports each pair's state; the record needs every pair open;
   const early = await gate({ finalizedHasCode: false });
   assert.equal(early.decision, "fail");
   assert.deepEqual(early.waiting, ["factory", "router", "lens"]);
+});
+
+test("a public endpoint that fails once is asked again; a revert is the chain's answer", async () => {
+  let calls = 0;
+  const flaky = retrying(async () => {
+    if (++calls < 3) throw new Error("fetch failed");
+    return "0x1";
+  }, { delayMs: 1 });
+  assert.equal(await flaky("eth_chainId", []), "0x1");
+  assert.equal(calls, 3);
+  calls = 0;
+  const down = retrying(async () => { calls++; throw new Error("HTTP 429"); }, { delayMs: 1 });
+  await assert.rejects(() => down("eth_chainId", []), /429/);
+  assert.equal(calls, 3);
+  calls = 0;
+  const reverting = retrying(async () => { calls++; throw new Error("execution reverted: BDEX: K"); }, { delayMs: 1 });
+  await assert.rejects(() => reverting("eth_call", []), /BDEX: K/);
+  assert.equal(calls, 1);
 });
