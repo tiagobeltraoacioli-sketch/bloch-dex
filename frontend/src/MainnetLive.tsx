@@ -54,6 +54,16 @@ import { DeadlineClock } from './ui/DeadlineClock';
 import { ConfirmationProgress } from './ui/ConfirmationProgress';
 import { ReadFailureBlock } from './ui/ReadFailure';
 import { classifyReadFailure, readRetrySeconds } from './ui/read-failure';
+import {
+  backgroundRenewal,
+  cannotRenewText,
+  entryQuietMs,
+  monotonicMs,
+  renewalCheckMs,
+  renewalText,
+  staleAt,
+  type RenewalReason,
+} from './ui/snapshot-renewal';
 import type { ProgressRule } from './ui/confirmation-progress';
 import { quoteRate } from './ui/rate';
 import type { Address, Hex } from 'viem';
@@ -153,12 +163,27 @@ type FormMemory = {
   focus: string | null;
   settingsOpen: boolean;
   detailsOpen: boolean;
+  /** Set when the card asked for the renewal itself (ui/snapshot-renewal.ts): the new card says why, once. */
+  renewal?: RenewalReason;
+};
+
+/** What the background renewal needs to know of the card (ui/snapshot-renewal.ts `backgroundRenewal`). */
+type CardActivity = { editedAt: number; quoteOnScreen: boolean };
+
+/** The snapshot's age bound, for the card (public networks only): its age now, and the route's renewal. */
+type Freshness = {
+  maxAgeMs: number;
+  ageMs: () => number;
+  activity: MutableRefObject<CardActivity>;
+  renew: () => void;
 };
 
 export type ConfirmationView = {
   note: string;
   rule: ProgressRule;
   blockSeconds: number | null;
+  /** The rule that settles a REVERTED swap (`confirmation.reverted`, else the strict rule; R328-3P-3). */
+  reverted?: ProgressRule;
 };
 
 function ExplorerLink({
@@ -238,9 +263,14 @@ export default function MainnetLive({
   const failedReads = useRef(0);
   const [retryAt, setRetryAt] = useState<number | null>(null);
 
+  // When the snapshot on screen was read (monotonic clock), and whether a read is in flight: the age bound of a
+  // public network's snapshot (ui/snapshot-renewal.ts). Read by the renewal only.
+  const takenAt = useRef(0);
+  const reading = useRef(false);
   useEffect(() => {
     let current = true;
     setFailure('');
+    reading.current = true;
     void (async () => {
       try {
         const s = await load();
@@ -249,6 +279,7 @@ export default function MainnetLive({
         if (s.status !== 'live') return;
         const snap = await readSnapshot(rpc, s.deployment, 'mainnet');
         const pools = await readExcess(rpc, snap.finalized.hash, s.deployment.lens, snap.pools);
+        if (current) takenAt.current = monotonicMs();
         if (current)
           setSnapshot({
             ...snap,
@@ -270,6 +301,8 @@ export default function MainnetLive({
         if (current) failedReads.current = 0;
       } catch (error) {
         if (current) setFailure(message(error, 'Unavailable.'));
+      } finally {
+        if (current) reading.current = false;
       }
     })();
     return () => {
@@ -297,18 +330,46 @@ export default function MainnetLive({
   // snapshot; the end of a hold renews it), it leaves a failed read to that state's own counted retry, and the
   // card keeps what the user typed, where the cursor was and what was open, and reads its quote again at the new
   // block (`formMemory`, used only with this prop).
+  // Round 18 (R328-3P-2): the timer no longer renews blindly every `snapshotMaxAgeMs`; it looks every few seconds
+  // whether the snapshot is past the bound and renews only when nobody is typing in the card or reading a quote
+  // (ui/snapshot-renewal.ts `backgroundRenewal`, every pause named there); the card renews on demand before a quote
+  // or a swap on a snapshot past the bound, and once after an UNCONFIRMED quote read (`freshness` below).
   const cardBusy = useRef(false);
   const formMemory = useRef<FormMemory | null>(null);
+  const cardActivity = useRef<CardActivity>({ editedAt: -Infinity, quoteOnScreen: false });
   const failed = useRef(false);
   failed.current = failure !== '';
   useEffect(() => {
     if (!snapshotMaxAgeMs) return;
     const timer = setInterval(() => {
-      if (cardBusy.current || failed.current || holdOpen.current) return;
-      if (typeof document === 'undefined' || !document.hidden) setGeneration((g) => g + 1);
-    }, snapshotMaxAgeMs);
+      const at = monotonicMs();
+      const due = backgroundRenewal({
+        ageMs: at - takenAt.current,
+        maxAgeMs: snapshotMaxAgeMs,
+        sinceEditMs: at - cardActivity.current.editedAt,
+        quoteOnScreen: cardActivity.current.quoteOnScreen,
+        walletRequest: cardBusy.current,
+        holdOpen: holdOpen.current,
+        failure: failed.current,
+        reading: reading.current,
+        hidden: typeof document !== 'undefined' && document.hidden,
+      });
+      if (due === 'renew') setGeneration((g) => g + 1);
+    }, renewalCheckMs(snapshotMaxAgeMs));
     return () => clearInterval(timer);
   }, [snapshotMaxAgeMs]);
+  const freshness = useMemo<Freshness | undefined>(
+    () =>
+      snapshotMaxAgeMs
+        ? {
+            maxAgeMs: snapshotMaxAgeMs,
+            ageMs: () => monotonicMs() - takenAt.current,
+            activity: cardActivity,
+            renew: () => setGeneration((g) => g + 1),
+          }
+        : undefined,
+    [snapshotMaxAgeMs],
+  );
 
   const holdOpen = useRef(false);
   const live = state?.status === 'live';
@@ -457,6 +518,7 @@ export default function MainnetLive({
             receiptPollMs={receiptPollMs}
             onRefresh={() => setGeneration((g) => g + 1)}
             memory={snapshotMaxAgeMs ? formMemory : undefined}
+            freshness={freshness}
             busyRef={cardBusy}
             railSlot={railSlot}
             lastOutcome={lastOutcome}
@@ -1085,6 +1147,7 @@ function SwapPanel({
   receiptPollMs,
   onRefresh,
   memory,
+  freshness,
   busyRef,
   railSlot,
   lastOutcome,
@@ -1105,6 +1168,8 @@ function SwapPanel({
   onRefresh?: () => void;
   /** Set on a network whose snapshot block is renewed by a timer: the form's inputs survive the remount. */
   memory?: MutableRefObject<FormMemory | null>;
+  /** Set on the same networks: the snapshot's age bound, renewed on demand before a quote or a swap. */
+  freshness?: Freshness;
   /** Told while a wallet request of this card is in flight, so a timed renewal waits. */
   busyRef?: MutableRefObject<boolean>;
   /** Layout: on a wide screen a hold's recovery controls are drawn here, beside the gate. */
@@ -1171,11 +1236,21 @@ function SwapPanel({
     if (memory?.current) memory.current = { ...memory.current, ...shown.current };
   };
   // After a transaction of this card the form starts empty, as before: nothing is kept while a hold is open or
-  // a wallet request is in flight.
+  // a wallet request is in flight, nor after a transaction of this card got a hash until the user edits the form
+  // again (R344-UI-6: else the card came back after a mined swap with the same amount and a fresh quote).
+  const sentSinceEdit = useRef(false);
+  const hashedSeen = useRef(0);
+  const hashed = steps.filter((s) => s.hash).length;
+  if (pendingSwap.open || hashed > hashedSeen.current) {
+    sentSinceEdit.current = true;
+    hashedSeen.current = hashed;
+  }
+  // Set when this card asks for a renewal itself; the new card reads it from the memory and says why.
+  const renewing = useRef<RenewalReason | null>(null);
   useEffect(() => {
     if (!memory) return;
     memory.current =
-      pendingSwap.open || busy
+      pendingSwap.open || busy || sentSinceEdit.current
         ? null
         : {
             inKey,
@@ -1185,8 +1260,26 @@ function SwapPanel({
             deadline,
             quoted: !!quote || quoting,
             ...shown.current,
+            ...(renewing.current ? { renewal: renewing.current } : {}),
           };
   });
+  // What the background renewal reads of this card: when the user last typed or chose, and whether a quote is on
+  // screen (it is then left alone; a quote past the bound is renewed by the Swap button instead).
+  const edited = () => {
+    // Refs only: a state update here would re-render a controlled <select> between its input and change events
+    // and put its old value back.
+    sentSinceEdit.current = false;
+    if (freshness) freshness.activity.current.editedAt = monotonicMs();
+  };
+  useEffect(() => {
+    if (!freshness) return;
+    const activity = freshness.activity;
+    activity.current.quoteOnScreen = !!quote;
+    return () => {
+      activity.current.quoteOnScreen = false;
+    };
+  }, [quote, freshness]);
+  const renewedBy = kept?.renewal ?? null;
   useLayoutEffect(() => {
     const field = kept?.focus
       ? cardRef.current?.querySelector<HTMLInputElement>(`input[data-field="${kept.focus}"]`)
@@ -1371,11 +1464,61 @@ function SwapPanel({
     }
   }
 
+  // R328-3P-2: a quote is never built on a snapshot past the age bound (public networks): the card asks the route
+  // for a newer block first, keeps its inputs across the remount (memory, with `quoted` so the new card quotes at
+  // the new block through the unchanged getQuote()), and the new card says why. While a hold is open or a wallet
+  // request is in flight the remount would clear what the card holds, so no quote is read and the card says so.
+  const stale = () => !!freshness && staleAt(freshness.ageMs(), freshness.maxAgeMs);
+  // A renewal that read the same block again does not remount the card (its key is the block hash): the card then
+  // quotes itself, on the renewed (fresh) snapshot.
+  const firstSnapshot = useRef(snapshot);
   useEffect(() => {
-    if (requote > 0) void getQuote();
+    if (snapshot === firstSnapshot.current || !renewing.current) return;
+    renewing.current = null;
+    void getQuote().finally(() => setQuoting(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot]);
+  function renewFirst(reason: RenewalReason, now = true) {
+    if (!freshness) return;
+    if (pendingSwap.open || busy)
+      return setQuoteNote(
+        cannotRenewText(pendingSwap.open ? 'hold' : 'wallet-request', freshness.maxAgeMs),
+      );
+    renewing.current = reason;
+    setQuoting(true);
+    // `now` false: the user is typing (a reply superseded by an edit); the background renewal takes it once the
+    // user pauses, and the remounted card quotes then.
+    if (now) freshness.renew();
+  }
+  function quoteOrRenew() {
+    // A press of Get quote ends the entry: an UNCONFIRMED refusal of this quote may renew at once.
+    if (freshness) freshness.activity.current.editedAt = -Infinity;
+    if (stale()) return renewFirst('quote');
+    setQuoting(true);
+    void getQuote().finally(() => setQuoting(false));
+  }
+  useEffect(() => {
+    if (requote > 0) {
+      if (stale()) {
+        const since = monotonicMs() - (freshness?.activity.current.editedAt ?? -Infinity);
+        return renewFirst('quote', since >= entryQuietMs(freshness!.maxAgeMs));
+      }
+      void getQuote();
+    }
     // Runs only when a reply was dropped, with the form of this render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requote]);
+  // Once per card that was not itself made for this reason: a pinned quote read refused as UNCONFIRMED (one endpoint
+  // no longer serves the block) is asked again at a newer block. Never while the user is typing.
+  const refusedUnconfirmed =
+    !!freshness && !!quoteNote && classifyReadFailure(quoteNote).kind === 'unconfirmed';
+  useEffect(() => {
+    if (!refusedUnconfirmed || renewedBy === 'unconfirmed' || renewing.current) return;
+    const since = monotonicMs() - freshness!.activity.current.editedAt;
+    if (since < entryQuietMs(freshness!.maxAgeMs)) return;
+    renewFirst('unconfirmed');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refusedUnconfirmed]);
 
   /**
    * Persist the intent before calling the wallet. A missing hash after that
@@ -1542,6 +1685,7 @@ function SwapPanel({
     const from = options.find((o) => o.token.address === info.tokenIn);
     const to = options.find((o) => o.token.address === info.tokenOut);
     if (!from || !to || !isAllowedSlippageBps(bps)) return;
+    edited();
     clear();
     setInKey(from.key);
     setOutKey(to.key);
@@ -1572,8 +1716,8 @@ function SwapPanel({
   const uses = signed ? headroomUse(snapshot.pools, signed.path, signed.amounts) : [];
   const symbolOf = (a: Address) => options.find((o) => o.token.address === a)?.label ?? short(a);
   // The token of a leg changes through one handler, whether the select or the token sheet asks.
-  const choosePay = (key: string) => (setInKey(key), setAttempt(1), clear());
-  const chooseReceive = (key: string) => (setOutKey(key), setAttempt(1), clear());
+  const choosePay = (key: string) => (edited(), setInKey(key), setAttempt(1), clear());
+  const chooseReceive = (key: string) => (edited(), setOutKey(key), setAttempt(1), clear());
   const choices = options.map((o) => ({
     key: o.key,
     label: o.label,
@@ -1757,6 +1901,8 @@ function SwapPanel({
                     rule={confirmation.rule}
                     blockSeconds={confirmation.blockSeconds}
                     pollMs={receiptPollMs}
+                    reverted={tracked.intent?.kind === 'swap' ? confirmation.reverted : undefined}
+                    now={now}
                   />
                 )}
               {tracked.deadline > 0n &&
@@ -1800,6 +1946,7 @@ function SwapPanel({
     <div
       ref={cardRef}
       onFocusCapture={(e) => note({ focus: (e.target as HTMLElement).dataset?.field ?? null })}
+      onInputCapture={edited}
       onBlurCapture={() => note({ focus: null })}
       className="card devnet4-swap swap-card"
       data-phase={quote ? 'quoted' : 'form'}
@@ -1940,9 +2087,9 @@ function SwapPanel({
           className="button secondary get-quote"
           aria-busy={quoting || undefined}
           onClick={() => {
-            // Presentation: the card shows that a quote is being read. getQuote itself is unchanged.
-            setQuoting(true);
-            void getQuote().finally(() => setQuoting(false));
+            // Presentation: the card shows that a quote is being read. getQuote itself is unchanged; on a snapshot
+            // past the age bound the card first asks for a newer block (R328-3P-2).
+            quoteOrRenew();
           }}
         >
           {quoting ? (
@@ -1952,6 +2099,18 @@ function SwapPanel({
           )}
           Get quote
         </button>
+        {renewedBy &&
+          freshness &&
+          // Until the user changes the form the renewal was made for.
+          kept?.inKey === inKey &&
+          kept.outKey === outKey &&
+          kept.amount === amount &&
+          kept.slippage === slippage &&
+          kept.deadline === deadline && (
+          <p className="microcopy renewal-note" role="status" data-testid="renewal-note">
+            {renewalText(renewedBy, freshness.maxAgeMs)}
+          </p>
+        )}
       </div>
       {balances && (
         <p className="microcopy balances-line" aria-label={`${settledCapital()} balances`}>
@@ -2151,7 +2310,7 @@ function SwapPanel({
               holdBlocksSend ||
               pendingSwap.open
             }
-            onClick={() => void swap(quote!)}
+            onClick={() => (stale() ? renewFirst('swap') : void swap(quote!))}
           >
             Swap
           </button>

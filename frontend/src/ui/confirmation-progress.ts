@@ -10,7 +10,7 @@ export type ProgressFacts = {
   reference: bigint | null;
 };
 export type Progress = {
-  phase: 'unseen' | 'counting' | 'reached';
+  phase: 'unseen' | 'counting' | 'reached' | 'reverted';
   /** Share of the way, 0 to 100, for the bar. */
   percent: number;
   headline: string;
@@ -73,5 +73,61 @@ export function confirmationProgress(
     percent: 0,
     headline: `In block ${facts.included}: waiting for the chain's ${rule.tag} block`,
     detail: `The chain's ${rule.tag} block is ${blocks(behind)} behind it${blockSeconds ? ` (${span(Number(behind) * blockSeconds)} of blocks; the chain decides when it moves)` : ''}.`,
+  };
+}
+
+const clock = (ms: number) => {
+  const at = new Date(ms);
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+};
+
+/**
+ * A swap whose receipt says REVERTED (review R328-3P-3): the page holds the account until the network's rule for a
+ * reverted swap (`confirmation.reverted`, else the strict rule) covers the receipt's block, because a second swap
+ * sent earlier could execute next to the first if that block were replaced. The time is an estimate (blocks left
+ * times the network's block time, by this device's clock); the hold itself ends on the receipt the page verifies.
+ * `facts.reference` is the head (depth rule) or the block of the rule's tag.
+ */
+export function revertedProgress(
+  rule: ProgressRule,
+  blockSeconds: number | null,
+  facts: { included: bigint; reference: bigint | null },
+  nowMs: number,
+): Progress {
+  const goal =
+    'depth' in rule
+      ? `${blocks(rule.depth)} are on top of block ${facts.included}`
+      : `the chain's own ${rule.tag} block has reached block ${facts.included}`;
+  const why = `Until ${goal}, that block could still be replaced, and a second swap sent now could execute next to this one; so this page holds this account until then, and only then lets you swap again.`;
+  const left =
+    facts.reference === null
+      ? null
+      : 'depth' in rule
+        ? BigInt(rule.depth) - (facts.reference > facts.included ? facts.reference - facts.included : 0n)
+        : facts.included - facts.reference;
+  if (left !== null && left <= 0n)
+    return {
+      phase: 'reverted',
+      percent: 100,
+      headline: `Reverted in block ${facts.included}; this account can send again once the page has verified the reverted receipt`,
+      detail: `${why} That point is reached: the hold ends as soon as the page has checked the receipt itself.`,
+    };
+  const percent =
+    'depth' in rule && left !== null
+      ? Math.round((Number(BigInt(rule.depth) - left) / rule.depth) * 100)
+      : 0;
+  if (left === null || blockSeconds === null)
+    return {
+      phase: 'reverted',
+      percent,
+      headline: `Reverted in block ${facts.included}; this account can send again once ${goal}`,
+      detail: why,
+    };
+  const at = nowMs + Number(left) * blockSeconds * 1000;
+  return {
+    phase: 'reverted',
+    percent,
+    headline: `Reverted in block ${facts.included}; this account can send again at about ${clock(at)}`,
+    detail: `${why} ${blocks(left)} to go${'tag' in rule ? ` (the ${rule.tag} block moves when the chain decides; this time assumes it keeps pace)` : ''}; the time is an estimate by this device's clock.`,
   };
 }
