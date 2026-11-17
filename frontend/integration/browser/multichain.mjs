@@ -208,7 +208,7 @@ try {
     for (let attempt = 0; ; attempt++) {
       await fresh(chain);
       await page.select('You pay', chain.native);
-      await page.select('You receive', chain.token.symbol);
+      await page.select('You receive', chain.token.shown ?? chain.token.symbol);
       await page.fill('Amount', AMOUNT);
       await page.click('Get quote');
       try {
@@ -221,7 +221,9 @@ try {
     await delay(700);
     await shots(chain);
   };
-  const swapLabel = (chain) => `Swap ${AMOUNT} ${chain.native} for ${chain.token.symbol}`;
+  const swapLabel = (chain) => `Swap ${AMOUNT} ${chain.native} for ${chain.token.shown ?? chain.token.symbol}`;
+  // The label is matched inside a regular expression: its characters are literal ("USDC (Binance-Peg)").
+  const swapPattern = (chain) => swapLabel(chain).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
   const swapsOn = (chain) => wallet.sent.filter((s) => s.chainId === chain.chainId);
   const disabled = async (name) => (await page.button(name))?.disabled === true;
 
@@ -239,7 +241,11 @@ try {
     const text = await flat();
     const onScreen = await page.visibleText();
     check(`${chain.key}: the page shows this network's words and none of the Bloch L2's`, new RegExp(`PosternDEX on ${chain.name}`).test(text) && !L2_WORDS.test(text), L2_WORDS.exec(text)?.[0]);
-    check(`${chain.key}: the pool of ${chain.wrapped.symbol} and ${chain.token.symbol} is shown on screen and the native coin is ${chain.native}`, (onScreen.includes(`${chain.wrapped.symbol}/${chain.token.symbol}`) || onScreen.includes(`${chain.token.symbol}/${chain.wrapped.symbol}`)) && (await page.evaluate(`[...document.querySelectorAll('[data-testid="token-chip-pay"]')].some((c) => c.textContent.includes(${JSON.stringify(chain.native)}) && window.__h.reachable(c))`)), onScreen.slice(0, 300));
+    // Merge (agent 366): the redesign's on-screen check (visible text, the pay chip reachable) with 360's label rule
+    // (review R344-UI-16): a token with a label is printed under its label, with its note on screen.
+    const shown = chain.token.shown ?? chain.token.symbol;
+    check(`${chain.key}: the pool of ${chain.wrapped.symbol} and ${shown} is shown on screen and the native coin is ${chain.native}`, (onScreen.includes(`${chain.wrapped.symbol}/${shown}`) || onScreen.includes(`${shown}/${chain.wrapped.symbol}`)) && (await page.evaluate(`[...document.querySelectorAll('[data-testid="token-chip-pay"]')].some((c) => c.textContent.includes(${JSON.stringify(chain.native)}) && window.__h.reachable(c))`)), onScreen.slice(0, 300));
+    if (chain.token.note) check(`${chain.key}: the token's note is on screen ("${chain.token.note}") and the pool is never named with the bare symbol`, onScreen.includes(chain.token.note) && !((bare) => bare.includes(`${chain.wrapped.symbol}/${chain.token.symbol}`) || bare.includes(`${chain.token.symbol}/${chain.wrapped.symbol}`))(text.split(shown).join("")), onScreen.slice(0, 400));
     const depth = chain.confirmation.settle.depth;
     check(
       `${chain.key}: the page says on screen, without a click, what "${word(chain)}" means on this network (${depth ? `${depth} block${depth === 1 ? '' : 's'} on top` : "the chain's own finalized block"})`,
@@ -303,7 +309,7 @@ try {
       record.leftPending = true;
       continue;
     }
-    const settled = await settleAtChainPace(chain, page, sent[0].hash, `/${swapLabel(chain)}: mined/`, sentAt);
+    const settled = await settleAtChainPace(chain, page, sent[0].hash, `/${swapPattern(chain)}: mined/`, sentAt);
     record.settle = settled;
     check(
       `${chain.key}: the swap flow completed ${settled.seconds} s after the wallet request, with ${settled.blocksMined} block${settled.blocksMined === 1 ? '' : 's'} at this chain's ${settled.blockSeconds} s block time (rule: ${JSON.stringify(settled.rule)}; chain time ${settled.expectedSeconds} s, plus at most ${SETTLE_MARGIN_SECONDS} s for the page)`,
@@ -323,7 +329,7 @@ try {
       check(`${first.key}: after a swap on ${second.key}, this chain's own pending swap still holds it (Swap disabled)`, await disabled('Swap'));
       check(`${first.key}: no second transaction was asked for this chain`, swapsOn(first).length === 1, swapsOn(first).length);
       const tokenBeforeFirst = await tokenBalance(first, address);
-      evidence.chains[0].settle = await settleAtChainPace(first, page, swapsOn(first)[0].hash, `/${swapLabel(first)}: mined/`, Date.now());
+      evidence.chains[0].settle = await settleAtChainPace(first, page, swapsOn(first)[0].hash, `/${swapPattern(first)}: mined/`, Date.now());
       if ('depth' in first.confirmation.settle) check(`${first.key}: its held swap was released ${evidence.chains[0].settle.seconds} s after its block, by the chain's rule, without waiting for finality`, evidence.chains[0].settle.seconds <= evidence.chains[0].settle.expectedSeconds + SETTLE_MARGIN_SECONDS && evidence.chains[0].settle.finalizedBehindTheSwap, evidence.chains[0].settle);
       const firstReceipt = await rpc(first, 'eth_getTransactionReceipt', [swapsOn(first)[0].hash]);
       check(`${first.key}: its swap was then mined on its own fork and ${first.token.symbol} arrived`, firstReceipt?.status === '0x1' && (await tokenBalance(first, address)) > tokenBeforeFirst, firstReceipt?.status);

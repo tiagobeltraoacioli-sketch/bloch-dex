@@ -80,7 +80,9 @@ try {
       endpoints: [0, 1].map((n) => `http://127.0.0.1:${base + 20 + 2 * i + n}`),
       native: chain.nativeCurrency.symbol,
       wrapped: { address: lower(chain.wrappedNative.address), symbol: chain.wrappedNative.symbol },
-      token: { address: lower(chain.tokens[0].address), symbol: chain.tokens[0].symbol },
+      // `shown`: what the page prints for the token (its label where the network file gives one: BNB Smart Chain's
+      // "USDC (Binance-Peg)", review R344-UI-16); `symbol` stays the contract's own.
+      token: { address: lower(chain.tokens[0].address), symbol: chain.tokens[0].symbol, shown: chain.tokens[0].label ?? chain.tokens[0].symbol, note: chain.tokens[0].note ?? null },
       router: lower(report.plan.contracts.router.address),
       // The chain's confirmation rule and measured block time: the browser scenarios mine at that pace.
       confirmation: { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds },
