@@ -954,3 +954,23 @@ test("BNB Smart Chain's Binance-Peg token is listed under a truthful label, neve
   assert.throws(bad({ label: "Dollar (Binance-Peg)" }), /beginning with the symbol/);
   assert.throws(bad({ note: "short" }), /one line/);
 });
+
+test("licensing: no unfilled template, the GPL governs the contracts, the frontend ships its third-party notices", () => {
+  const read = (path) => readFileSync(join(ROOT, path), "utf8");
+  const license = read("LICENSE");
+  assert.ok(!/<year>|<copyright holders>/.test(license), "the MIT template's placeholders are gone");
+  assert.match(license, /contracts\/ {2}script\/ {2}test\/ +GPL-3\.0-or-later/);
+  assert.match(license, /where that line and this file differ, this file governs/);
+  assert.match(license, /Copyright \(c\) 2026 TBD-owner/);
+  assert.match(read("LICENSES/GPL-3.0-or-later.txt"), /GNU GENERAL PUBLIC LICENSE\s+Version 3, 29 June 2007/);
+  assert.match(read("NOTICE"), /Uniswap V2 Core[\s\S]*GPL-3\.0-or-later[\s\S]*Uniswap V2 Periphery/);
+  for (const path of ["script/LICENSE", "test/LICENSE"]) assert.match(read(path), /GPL-3\.0-or-later/);
+  for (const path of ["frontend/LICENSE", "scripts/LICENSE"]) assert.match(read(path), /MIT License/);
+  assert.equal(JSON.parse(read("frontend/package.json")).license, "MIT");
+  const notices = read("frontend/public/THIRD-PARTY-NOTICES.txt");
+  assert.match(notices, /Portions \(c\) 2025 Reown, Inc\. All Rights Reserved/);
+  assert.match(notices, /SIL OPEN FONT LICENSE Version 1\.1/i);
+  assert.match(notices, /@fontsource-variable\/inter \d+\.\d+\.\d+ {2}-- {2}OFL-1\.1/);
+  const check = spawnSync("node", ["frontend/scripts/third-party-notices.mjs", "--check"], { cwd: ROOT, encoding: "utf8" });
+  assert.equal(check.status, 0, check.stderr);
+});

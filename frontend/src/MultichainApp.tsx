@@ -70,6 +70,11 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         <p className="muted" data-testid="confirmation-rule">
           {chain.confirmationNote}
         </p>
+        {chain.tokenNotes.map((note) => (
+          <p className="muted" data-testid="token-note" key={note}>
+            {note}
+          </p>
+        ))}
         <MainnetLive
           key={chain.key}
           network={chain.network}

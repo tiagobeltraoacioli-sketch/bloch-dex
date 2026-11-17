@@ -1,0 +1,7 @@
+The files in this directory are licensed under the MIT License (text: ../LICENSES/MIT.txt; the same text is in
+../LICENSE). Copyright (c) 2026 TBD-owner.
+
+The page built from this directory bundles third-party packages under their own licences. They are listed, with
+their licence texts, in public/THIRD-PARTY-NOTICES.txt, which is copied into every build
+(node scripts/third-party-notices.mjs writes it from the lockfile; `--check` fails when it is out of date).
+Two of them are not open-source licences: see ../docs/LICENSING.md section 4.

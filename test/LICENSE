@@ -1,0 +1,4 @@
+The files in this directory are licensed under the GNU General Public License, version 3 or (at your option) any
+later version (GPL-3.0-or-later): they import and are compiled with the contracts under contracts/, which derive
+from Uniswap V2 (GPL-3.0-or-later). Full text: ../LICENSES/GPL-3.0-or-later.txt. See ../LICENSE and
+../docs/LICENSING.md. Copyright (C) 2026 TBD-owner.

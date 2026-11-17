@@ -1,6 +1,40 @@
+PosternDEX: licences
+
+This repository is not under one licence. Which licence governs a file depends on what the file derives from.
+The details and the evidence are in docs/LICENSING.md; attributions are in NOTICE.
+
+  Path                                   Licence              Full text
+  -------------------------------------  -------------------  ------------------------------------
+  contracts/  script/  test/             GPL-3.0-or-later     LICENSES/GPL-3.0-or-later.txt
+  everything else (frontend/, scripts/,  MIT                  LICENSES/MIT.txt (the same text follows)
+  deployments/, docs/, top-level files)
+
+contracts/, script/ and test/: the exchange contracts are a port of Uniswap V2 (v2-core and v2-periphery), which
+their publisher licenses under the GNU General Public License, version 3 or any later version. A work derived
+from GPL code can only be distributed under the GPL, so that licence governs those files, the other Solidity
+files that are compiled together with them into the deployed contracts, and the deployment scripts and tests
+that import them. The line "SPDX-License-Identifier: MIT" at the head of the files under contracts/ predates
+this statement and does not change it: where that line and this file differ, this file governs. (The contract
+sources are frozen byte for byte for the deployments in progress; the header lines are corrected at the next
+revision of the contracts.) Copyright in the changes and additions made in this repository:
+
+  Copyright (C) 2026 TBD-owner
+
+  This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+  Public License as published by the Free Software Foundation, either version 3 of the License, or (at your
+  option) any later version. This program is distributed in the hope that it will be useful, but WITHOUT ANY
+  WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+  GNU General Public License for more details (LICENSES/GPL-3.0-or-later.txt).
+
+Third-party software is under its own licences: the packages the frontend bundles are listed with their licence
+texts in frontend/public/THIRD-PARTY-NOTICES.txt (it ships with every build of the page). Two of them, Reown
+AppKit and WalletConnect, are not open-source licences: see docs/LICENSING.md section 4.
+
+Everything else in this repository:
+
 MIT License
 
-Copyright (c) <year> <copyright holders>
+Copyright (c) 2026 TBD-owner
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
 associated documentation files (the "Software"), to deal in the Software without restriction, including
@@ -13,6 +47,6 @@ portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
 LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
-EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-USE OR OTHER DEALINGS IN THE SOFTWARE.
+EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
+OR OTHER DEALINGS IN THE SOFTWARE.
