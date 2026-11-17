@@ -2830,3 +2830,7 @@ li[data-state='failed'] .state-pill {
     transition: none;
   }
 }
+.hold-trouble {
+  display: block;
+  margin-top: var(--s-2);
+}

@@ -132,6 +132,18 @@ describe('a failed read is named, shown in full, and read again the right way', 
       'Unavailable.',
     ])
       expect(classifyReadFailure(text)).toMatchObject({ kind: 'other', retry: 'manual' });
+    // Inside the card (a refused quote) nothing reads again by itself: the advice says what to do, and Refresh is
+    // offered where a newer block can help (review R328-5: a block too old for one endpoint).
+    expect(classifyReadFailure(UNCONFIRMED)).toMatchObject({ refresh: true });
+    expect(classifyReadFailure(UNCONFIRMED).quoteAdvice).toMatch(
+      /Nothing was sent\. Refresh reads a newer block; then get the quote again\.$/,
+    );
+    expect(classifyReadFailure(DISAGREEMENT)).toMatchObject({ refresh: true });
+    expect(classifyReadFailure('chain: eth_call returned HTTP 429')).toMatchObject({
+      refresh: false,
+    });
+    for (const text of [UNCONFIRMED, DISAGREEMENT, 'chain: x returned HTTP 429', 'Failed to fetch'])
+      expect(classifyReadFailure(text).quoteAdvice).not.toMatch(/by itself/);
     expect([0, 1, 2, 3, 4, 9].map(readRetrySeconds)).toEqual([15, 30, 60, 120, 120, 120]);
     expect([0, 0.2, 59, 60, 3599, 3600, 3725].map(clockText)).toEqual([
       '0:00',

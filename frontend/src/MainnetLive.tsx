@@ -373,6 +373,7 @@ export default function MainnetLive({
             holdToken={holdSource?.token}
             confirmation={confirmation}
             receiptPollMs={receiptPollMs}
+            onRefresh={() => setGeneration((g) => g + 1)}
           />
         </div>
       ) : (
@@ -947,6 +948,7 @@ function SwapPanel({
   holdToken,
   confirmation,
   receiptPollMs,
+  onRefresh,
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
@@ -960,6 +962,8 @@ function SwapPanel({
   holdToken?: Address;
   confirmation?: ConfirmationView;
   receiptPollMs?: number;
+  /** The page's own Refresh (a new snapshot block); offered inside an alert that a newer block can clear. */
+  onRefresh?: () => void;
 }) {
   const [holdAccepted, setHoldAccepted] = useState(false);
   const [quoting, setQuoting] = useState(false);
@@ -1399,6 +1403,16 @@ function SwapPanel({
   });
   // Presentation: a quote refused because the endpoints disagree, did not confirm or limit requests is named
   // (ui/read-failure.ts); every other note is shown as before.
+  // The same naming for an endpoint problem the tracker states in a held transaction's own sentence.
+  const holdKind =
+    tracked && (tracked.state === 'pending' || tracked.state === 'unknown')
+      ? classifyReadFailure(tracked.detail)
+      : null;
+  // Only the two refusals the page itself writes (multichain/rpc.ts); a wallet's own error text is not renamed.
+  const holdTrouble =
+    holdKind && (holdKind.kind === 'unconfirmed' || holdKind.kind === 'disagreement')
+      ? holdKind
+      : null;
   const quoteKind = quoteNote ? classifyReadFailure(quoteNote) : null;
   const quoteFailure = quoteKind && quoteKind.kind !== 'other' ? quoteKind : null;
   const earlier = history.filter(
@@ -1491,6 +1505,12 @@ function SwapPanel({
               <strong>{tracked.label}</strong>: <span className="state-pill">{tracked.state}</span>{' '}
               {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
               <span className="muted"> {worded(held.visible)}</span>
+              {holdTrouble && (
+                <span className="confirm-trouble hold-trouble" role="status">
+                  <strong>{holdTrouble.title}.</strong> The page keeps trying by itself; the hold
+                  stays until the outcome is verified. Your transaction is not affected.
+                </span>
+              )}
               {confirmation &&
                 tracked.hash &&
                 (tracked.state === 'pending' || tracked.state === 'unknown') && (
@@ -1679,7 +1699,12 @@ function SwapPanel({
         <p className="form-error" role="alert" data-kind={quoteFailure?.kind}>
           {quoteFailure && <strong className="alert-title">{quoteFailure.title}. </strong>}
           {worded(quoteNote)}
-          {quoteFailure && <span className="alert-advice"> {quoteFailure.advice}</span>}
+          {quoteFailure && <span className="alert-advice"> {quoteFailure.quoteAdvice}</span>}
+          {quoteFailure?.refresh && onRefresh && (
+            <button type="button" className="button secondary" onClick={onRefresh}>
+              <RefreshCw size={16} aria-hidden="true" /> Refresh
+            </button>
+          )}
         </p>
       )}
       {blocked.length > 0 && (

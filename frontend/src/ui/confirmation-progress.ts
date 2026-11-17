@@ -48,7 +48,8 @@ export function confirmationProgress(
         phase: 'reached',
         percent: 100,
         headline: `In block ${facts.included}: ${shown} of ${rule.depth} confirmations`,
-        detail: 'Depth reached. The page is checking the receipt before it releases the hold.',
+        detail:
+          'Depth reached. The page releases the hold once it has verified the receipt itself; that can take longer than this count.',
       };
     const left = rule.depth - have;
     return {
@@ -63,7 +64,8 @@ export function confirmationProgress(
       phase: 'reached',
       percent: 100,
       headline: `In block ${facts.included}: the chain's ${rule.tag} block has reached it`,
-      detail: 'The page is checking the receipt before it releases the hold.',
+      detail:
+        'The page releases the hold once it has verified the receipt itself; that can take longer than this count.',
     };
   const behind = facts.included - facts.reference;
   return {
