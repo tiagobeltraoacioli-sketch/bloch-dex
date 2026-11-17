@@ -116,11 +116,17 @@ all of them use the existing blocks (rail notice, bordered status line, bar), no
   with its wall-clock time; the last five minutes take the warn colour; once passed it counts up and says what
   releases the hold. The same clock on the Bloch L2.
 - **Read failure.** One block where the card would be: a serif title naming the kind (the endpoints disagree, a second
-  endpoint has not confirmed, the endpoint is limiting requests, the endpoint did not answer), the route's own
+  endpoint has not confirmed, one endpoint is behind the other, the endpoint is limiting requests, the endpoint did
+  not answer), the route's own
   sentence in full, what the page does about it, and one button. Disagreement is danger-toned and waits for the user
   ("Read again"); the other three are warn-toned, and the page reads again by itself after 15, 30, 60, then 120
   seconds, counting the wait down next to "Read now". A quote refused for the same reasons carries the same title
-  inside the card's alert.
+  inside the card's alert, says what helps there (nothing reads again by itself inside the card) and, where a newer
+  block can help, offers Refresh.
+- **Renewed snapshot block.** On public networks the page takes a new snapshot block every 30 seconds. The swap card
+  is rebuilt for it, and must not look rebuilt: the user's inputs, the cursor, the open settings and quote details
+  stay, and a quote that was on screen is read again at the new block. The renewal waits while the wallet is being
+  asked and while a swap is held.
 
 ## Routes (all restyled)
 
