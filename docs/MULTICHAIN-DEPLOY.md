@@ -1005,15 +1005,17 @@ made as in section 8, withdrawals as in section 6); see also section 13.
 
 Everything below is loopback or read-only, with throwaway keys. **Run of 2026-11-17 on this line (agent 360,
 round 18)**, tools at `6b260da` to `279b900` (reviews R369-1 to R369-13): forge 249 pass (36 suites); kit tests
-38 pass (owner-tools-r369.test.mjs added: 10); page unit tests 538 pass, 1 skipped (nine Bloch L2 site tests
-timed out under a machine load of 200 to 430 and passed 123 of 123 when their three files were run alone); tsc
+38 pass (owner-tools-r369.test.mjs added: 10); page unit tests 539 pass, 1 skipped at `22d2b8b` (a full run at a lower machine load;
+an earlier run under a load of 200 to 430 had nine timeouts that passed alone); tsc
 clean; both builds; production bundle of the Bloch L2 site 0 hits in 88 files; fork rehearsals PASS six of six,
 **45 checks each** (41 before: the depositing account and market-price checks of 343), first chains on
 `6b260da`, the last on `279b900` (the later changes touch only multi-endpoint reads, the public-chain prompt of
 `deploy.sh` and printed text, which a loopback rehearsal does not reach); pre gates on the six real chains:
 every check passes except the owner's fee-address proof, which is missing (19 or 20 checks ok and 1 FAIL each;
 on Arbitrum One and Linea one endpoint per state read refused pruned state and the two others agreed); live
-check PASS six of six. Earlier run of record (agent 326): commit `77b5d61` for the suites, the six fork
+check PASS six of six; page rehearsal PASS at `22d2b8b`, 6 chains, **60 assertions**, 0 failed (59 before: one added for
+BNB Smart Chain's label and note; at `a3cbc40` the page had failed on that chain because the label had been
+written into the pinned symbol, review R344-UI-16, fixed in `d2b7f9a`). Earlier run of record (agent 326): commit `77b5d61` for the suites, the six fork
 rehearsals, the costs and the pre gates; `d57cfab` and `5707bd8` for the page rehearsal and the six simulations;
 the simulations and costs were not repeated in round 18.
 
