@@ -1,9 +1,10 @@
 # PosternDEX on six public EVM chains: deployment package
 
 Status: **prepared and rehearsed, not deployed** (2026-11-17; revised after reviews R309-MC-1 to MC-9 and
-R328-1 to R328-3). Nothing in
+R328-1 to R328-8, and with the decisions of 2026-11-17 on the owner's open choices: section 2). Nothing in
 this repository has sent a transaction to any public chain or testnet. The owner runs the commands of section 8
-with the owner's own signer.
+with the owner's own signer. **One step of the owner's is missing before the first chain: the signed proof of
+control of the fee address (section 2.2); every pre gate refuses until it is recorded.**
 
 This is an additional product line. The Bloch L2 deployment (protocol fee to the Bloch Inc Safe, mainnet gate,
 bUSDC, audit commit `b6cd1a6`) is separate, is not changed by anything here, and keeps its own procedure
@@ -15,7 +16,7 @@ Stellar): `docs/MULTICHAIN-NON-EVM.md`.
 ## Contents
 
 1. What is deployed, and what the factory allows
-2. Owner's choices still open
+2. The choices: what was decided, and what only the owner can still do
 3. Addresses
 4. Chain facts verified on-chain
 5. EVM compatibility: what was proven and how
@@ -39,8 +40,8 @@ that gives another. No contract was edited. Everything chain-specific is a const
 | Constructor argument | Value |
 |---|---|
 | Factory `feeTo` | `0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544` on every chain (the owner's address, EIP-55 checked) |
-| Factory `firstDepositor` | the owner's depositing account, a key used for nothing else: required, never the zero address, never the fee address (section 2) |
-| Factory reserve caps | owner's choice per chain (section 2) |
+| Factory `firstDepositor` | `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3`, the owner's depositing account, a key used for nothing else (section 2.1) |
+| Factory reserve caps | none, on every chain (section 2.4) |
 | Router wrapped native token | the chain's canonical wrapper (section 4) |
 
 Not deployed: `WBLCH` (each chain has its own wrapped native token), `TreasuryFeeCollector`, a Safe.
@@ -60,17 +61,25 @@ Not deployed: `WBLCH` (each chain has its own wrapped native token), `TreasuryFe
   account must be a key used for nothing else: section 2.
 - A cap applies to every pair that contains the capped token.
 
-## 2. Owner's choices still open
+## 2. The choices: what was decided, and what only the owner can still do
 
-They are marked `TBD-owner` in the configuration, and `scripts/multichain/deploy.sh` refuses to broadcast while one
-is left. They are economic choices; nothing here invents them.
+The configuration held four open choices (`TBD-owner`). On 2026-11-17 the owner delegated them to the
+coordinator as technical decisions and created the depositing key. They are now committed; `deploy.sh` still
+refuses to broadcast if one is ever set back to `TBD-owner`.
 
-| Choice | File | What it means |
+| Choice | Decided | Where |
 |---|---|---|
-| `firstDepositor` | `deployments/multichain.json` | **The owner's depositing account: a new key made for this purpose and used for nothing else. Required. The zero address and the fee address are refused by every tool and by the deploy script, with no override.** Only that account can open a pool, on every pair of the factory, for ever; others can create pairs but not fund them. It must be a plain key account (no contract, no multisig, no smart account behind a bundler, no EIP-7702 delegation), new on each chain, and it sends only the transactions `first-deposit.mjs` prints. The rules and the reason follow below |
-| `reserveCaps` | `deployments/<chain>/chain.json` | `[]`: no caps (an ordinary constant-product exchange). A list of `{ "token": symbol, "cap": base units }`: a pool cannot grow past the cap on that token |
-| Opening price and first liquidity | not in a file | The first depositor's first deposit sets the price: the two amounts given to `first-deposit.mjs` (section 8, step 4). The owner provides liquidity on each chain separately; nothing here funds a pool |
-| Token list | `deployments/<chain>/chain.json` | Starts with the wrapped native token and the chain's USDC. On BNB Smart Chain the only "USDC" is Binance-Peg (section 4): listing it is the owner's decision |
+| `firstDepositor` | **`0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3`**, a key the owner created for this and nothing else. Written by `check-depositor.mjs --record`, never by hand (2.1) | `deployments/multichain.json` |
+| Fee address, proof of control | One signed message, verified offline; **the owner's step, still to do** (2.2) | `deployments/fee-address-proof.json` |
+| Fee address, the EIP-7702 delegation on Base | Accepted: the delegate is MetaMask's published, verified delegator (2.3) | `deployments/multichain.json` `feeTo.delegation` |
+| `reserveCaps` | **`[]` on all six chains**: no caps (2.4) | `deployments/<chain>/chain.json` |
+| Opening price | **The chain's market price**, read on the chain by the tool; the owner gives one amount (2.5) | `deployments/<chain>/chain.json` `openingPrice` |
+| First liquidity | The owner's money and the owner's amount, above a stated minimum per chain (2.5) | not in a file |
+| BNB Smart Chain's "USDC" | Listed, as **"USDC (Binance-Peg)"** with a note that Circle does not issue it (2.6) | `deployments/bnb-smart-chain/chain.json` |
+
+What only the owner can still do: sign the fee-address message (2.2), fund the depositing account and send
+the transactions of section 8, and write the copyright holder's name into the licence files
+(`docs/LICENSING.md` section 5).
 
 **Why first deposits are never open here (review R309-MC-1).** On a public chain a factory whose first deposits
 are open lets anyone open the owner's pool first, with dust, at a false price; the owner's deposit then pairs its
@@ -79,24 +88,83 @@ that way, without any mempool race. With `firstDepositor` set, that first mint r
 router, for every transaction that the depositing account did not send: shown by the forge tests
 (`test/MultichainFirstDeposit.t.sol`), by every fork rehearsal and on each chain's own node (section 11).
 
-**The depositing account is a dedicated key (review R328-1).** The pair's rule is "the sender of the first mint is
-the first depositor, **or the origin of the transaction is**". The contracts are frozen, so the second half
-cannot be removed. It means: if the depositing account ever sends a transaction to another contract (a claim
-page, a token with a transfer hook, another exchange's router), that contract can, inside that transaction, open
-any pair of the factory that is not open yet, at any price, in the account's name. The reviewer's test did it
-with one call. The exposure lasts from the factory's deployment to each pair's first deposit, and for ever for
-pairs opened later. So:
+### 2.1 The depositing key
 
-- **Use a new key** for `firstDepositor`: not the fee address, not a wallet that is used for anything else. A
-  hardware wallet account that has never been used on these chains is the simplest form. Fund it with exactly
-  what the deposits need.
-- **It sends only what `first-deposit.mjs` prints**: an approval of the listed token and the router's deposit.
-  Nothing else, ever: no other site, no claim, no transfer to a contract, no other token.
-- **No code at the address.** A contract cannot be the first depositor through the router (the origin of a
-  transaction is always a key account), and an EIP-7702 delegation puts code at the account that others may be
-  able to drive. The pre gate and `prepare` refuse a depositing account with code or a delegation.
-- **New on each chain.** The pre gate refuses a depositing account that has already sent a transaction on the
-  chain while the factory is not deployed there.
+**The rule and its reason (review R328-1).** The pair's rule is "the sender of the first mint is the first
+depositor, **or the origin of the transaction is**". The contracts are frozen, so the second half cannot be
+removed. It means: if the depositing account ever sends a transaction to another contract (a claim page, a token
+with a transfer hook, another exchange's router), that contract can, inside that transaction, open any pair of
+the factory that is not open yet, at any price, in the account's name. So the depositing account is a key that
+has done nothing and will do nothing but the deposits this package prints.
+
+**What the key can and cannot do.**
+
+- It can do one thing: make the **first deposit of each pair** of this factory. Nobody else can.
+- It holds funds only between the moment the owner funds it and that deposit. The LP shares can go to another
+  account of the owner (`--to`), so it need not hold anything afterwards.
+- After every pool the owner wants is open, it has **no power at all**: an open pool takes deposits and trades
+  from anyone, and the key has no other right in any contract.
+- **If it is lost before the pools are open**, those pairs can never be opened on this factory: no other
+  account can make a first deposit, and the factory cannot be changed. The remedy is a new key, which is a new
+  factory at new addresses, deployed again (section 10). Keep the keystore file and its password until the last
+  pool is open, in two places.
+- **If it is stolen before the pools are open**, the thief can open pools at a false price. That costs the owner
+  the pair, not money: `prepare` says STOP on a pool it did not open, the gate refuses to record an opening it
+  cannot prove, and the page never lists it (sections 8 and 10). A thief also takes whatever the account holds
+  at that moment, so fund it right before each deposit and with that deposit's amounts only.
+- It is **not** the fee address and has no claim on the protocol fee.
+
+**How it was made (the owner did this on 2026-11-17; kept here as the procedure).** On a machine that can be
+offline while the key is created, with Foundry installed. The directory is an example (it is where the owner
+keeps this one); any private directory will do.
+
+```
+cast wallet new ~/Desktop/DEX-CHAVE-DEPOSITANTE depositante
+```
+
+`cast` asks for a password twice (nothing is shown while typing), writes one file, the encrypted keystore
+(scrypt and AES, the standard Ethereum keystore format), and prints two lines: the file's path and
+`Address: 0x…`. The private key is never shown and is never typed anywhere. To read the address again later:
+
+```
+cast wallet address --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante
+```
+
+Then, online, check the address (an address, never the key or the file) and record it:
+
+```
+node scripts/multichain/check-depositor.mjs 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --record
+```
+
+The tool reads the six chains on every reviewed endpoint (at least two per chain must answer), read-only, and
+says FIT only when the address has **no code, nonce 0, no pending transaction and no EIP-7702 delegation
+everywhere**, is written exactly as EIP-55 writes it, and is none of: the fee address, the zero address, the
+CREATE2 deployer, the rehearsal address, a delegate contract, an address the plan would deploy to, or **any
+address written anywhere under `deployments/`** (a token, a pool, a feed, an earlier deployment). `--record`
+then writes it into `deployments/multichain.json` (`firstDepositor`, with `firstDepositorCheck`: what was read,
+on which endpoint, at which block). **That file is the one place the address lives**: the plan, the deploy
+script's inputs, the gate and `first-deposit.mjs` all take it from there, and each refuses a mismatch:
+
+| Reader | What it refuses |
+|---|---|
+| `lib.mjs` (every tool loads the file through it) | a `firstDepositor` that is not the recorded address, or has no record: a hand edit |
+| `deploy.sh` and the forge script | planned addresses that are not the ones this depositor gives (`MC_EXPECT_*`), the zero address, the fee address |
+| pre gate | code or a delegation at the account; any transaction from it while the factory is not deployed |
+| post gate | a factory whose `firstDepositor()` is another address |
+| `first-deposit.mjs` | the same, read again at the block of the deposit; code at the account |
+
+Recorded on 2026-11-17 (`firstDepositorCheck`): nonce 0, no code, balance 0 on 15 endpoints of the six chains.
+
+**Using it.** It signs only the two transactions `first-deposit.mjs prepare` prints, with
+`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` added (cast asks for the password). Nothing else,
+ever: no other site, no claim, no other token, no transfer to a contract. It is not the deploying account
+(section 8): deploying from it would break "nonce 0 before the factory exists", and the pre gate would say so.
+
+**Retiring it.** When the last pool the owner wants is open and its post gate has passed: move anything left in
+the account to another account of the owner (one plain transfer of the native coin per chain; LP shares only if
+`--to` was not used), then delete the keystore file and forget the password. From then on the address can do
+nothing, for anyone. Keep it instead only if the owner means to open **further pairs** on this factory later
+(section 8, "Later pairs"): then the rule above holds for as long as it is kept.
 
 What the tools do when the rule was broken anyway, or the key was used by someone else: a pool that is open when
 `prepare` runs was not opened by the tool, and `prepare` says STOP; the post gate does not pass an open pool until
@@ -106,22 +174,228 @@ from such a report; and `add` deposits only into a proven pool, at the price the
 refusals is run in each fork rehearsal against a hostile contract (section 11). They prevent the loss; they do
 not give the pool back: a pair opened by someone else stays open, at that factory, for ever (section 10).
 
-Two consequences to weigh before choosing caps:
+### 2.2 The fee address: proof that the owner controls it
 
-- **Addresses.** A cap names a token address, which differs per chain. With any cap the factory address differs
-  from chain to chain. Without caps it is the same on all six.
-- **A pool capped on both sides leaks fees to strangers on a public chain.** The pair keeps `reserve0 x reserve1`
-  under a ceiling; a swap's fee above the ceiling stays outside the reserves, where `skim` removes it. `skim` is
-  open to anyone and pays the address the caller names. On the Bloch L2 a keeper skims to the Safe. On a public
-  chain searchers will skim first, and the keeper cannot be given priority: the contracts have no place for it.
-  Uncapped pools have no ceiling and no such leak.
+`feeTo` is `0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544` on every chain and can never be changed. It has never
+sent a transaction on OP Mainnet or Linea, so nothing on those chains shows that anyone holds its key. No
+transaction is needed to show it: an address without code is controlled by the same key on every EVM chain, so
+**one signed message proves control on all six**. The message is fixed (one line; it names the address, the six
+chain ids and the purpose, under its own domain, so it is not valid for anything else):
 
-The reference plan used in every rehearsal is "the reference address is the first depositor, no caps". The
-reference address `0xb04cc27201710ee425739Cb5B97Ce4D4F21AAAD9` is the last 20 bytes of
-`keccak256("postern-dex.multichain.reference-first-depositor")`: nobody holds a key for it, so a factory deployed
-from the reference plan could never have a pool opened, and the tools refuse it as a real choice. Rehearsals
-impersonate it on a loopback fork. The owner names the real depositing account, and the addresses of section 3
-then change.
+```
+node scripts/multichain/fee-proof.mjs message
+```
+
+prints
+
+> PosternDEX fee address proof (postern.dex.multichain.fee-address-proof.v1). I control the address 0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544 and name it as the protocol fee recipient (feeTo) of the PosternDEX factory on the chains with ids 10, 8453, 42161, 59144, 56, 1. This message is not a transaction and authorizes no transfer and no approval.
+
+The owner signs exactly that text **as a message** (`personal_sign`, EIP-191) with the fee address, once, in the
+owner's own wallet. It costs nothing and sends nothing. Any "sign message" function does it; compare the text
+the wallet shows with the text above before confirming. With a hardware wallet through Foundry:
+
+```
+cast wallet sign --ledger "$(node scripts/multichain/fee-proof.mjs message)"
+```
+
+With a browser wallet that has no "sign message" of its own (the delegate of 2.3 is MetaMask's, so the fee
+address is presumably a MetaMask account): the tool writes a small page that asks the wallet for exactly this
+signature. The page loads nothing, sends nothing and asks for no transaction; serve it on this machine only.
+
+```
+node scripts/multichain/fee-proof.mjs page --out /tmp/fee-proof-page
+```
+
+```
+python3 -m http.server 8765 --bind 127.0.0.1 --directory /tmp/fee-proof-page
+```
+
+Open `http://127.0.0.1:8765/` in the browser that has the wallet, select the fee account, press the button,
+confirm in the wallet, copy the signature (`0x` and 130 hex digits), and stop the server with Ctrl-C. (The page
+was not exercised with a real wallet here; whatever it returns is checked by the next command, so a wrong
+result cannot be recorded.) Then record the signature:
+
+```
+node scripts/multichain/fee-proof.mjs record --signature 0xSIGNATURE
+```
+
+The tool verifies the signature offline, in its own process, and writes `deployments/fee-address-proof.json`
+only when it is valid. It is strict: exactly 65 bytes, `s` in the lower half of the curve order, `v` 27 or 28,
+and the recovered address equal to the fee address; a smart-account signature (ERC-1271, ERC-6492) is refused,
+because the proof is of the key. It starts no other program and takes no decision from an exit code. Commit
+the file. **The pre gate of every chain refuses without a valid proof**; today all six pre gates fail on this
+one check and pass every other (section 11). To check the recorded proof at any time:
+
+```
+node scripts/multichain/fee-proof.mjs verify
+```
+
+### 2.3 The fee address: the EIP-7702 delegation on Base
+
+On Base the fee address carries the designator `0xef0100` + `63c0c19a282a1B52b07dD5a65b58948A07DAE32B`: the
+account delegates its code to that contract. On the other five chains it has no code.
+
+**What the delegate is** (established on 2026-11-17 from its publisher and from verified source, not from
+memory):
+
+- MetaMask's **`EIP7702StatelessDeleGator`, version 1.3.0**, of the MetaMask Delegation Framework: the code the
+  MetaMask wallet puts behind an account when the user switches it to a "smart account". The publisher's
+  deployment page lists it under v1.3.0 as `EIP7702StatelessDeleGatorImpl: 0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`
+  and names Ethereum, Binance Smart Chain, Optimism, Arbitrum One, Linea and Base among its chains
+  (`https://github.com/MetaMask/delegation-framework/blob/main/documents/Deployments.md`).
+- Sourcify holds an **exact match** of its creation and runtime code on all six chains
+  (`src/EIP7702/EIP7702StatelessDeleGator.sol`, solc 0.8.23); `NAME()` and `VERSION()` read through the fee
+  address on Base answer `EIP7702StatelessDeleGator` and `1.3.0`.
+- Its runtime code is 11,185 bytes on all six chains and differs per chain only in immutables, so its hash does
+  too: Base `0x6af675ac…97ba`, Ethereum `0x0b77e469…09ab`, OP Mainnet `0x076ce337…b246`, Arbitrum One
+  `0xa6603bc6…17de`, Linea `0xeef4fc75…6082`, BNB Smart Chain `0x2f40923f…d55f` (each read from two endpoints;
+  all in `deployments/multichain.json`, with the sources and the dates).
+
+**Does anything that pays the fee run the delegate's code?** No. The frozen contracts pay `feeTo` in exactly
+one place: `UniswapV2Pair._mintFee` calls `_mint(feeTo, liquidity)`, and `_mint` (`UniswapV2ERC20.sol`) adds to
+`totalSupply` and `balanceOf[feeTo]` and emits `Transfer`. It makes no call to the recipient. The factory only
+stores the address; the lens only reads its balance; no other contract of the package names it. LP shares are
+plain ERC-20 balances without a receive hook, and so is USDC. So the fee **accrues** whatever code sits at the
+address, on every chain. The delegate's code runs in one case only, and at the owner's own request: when the
+owner **redeems** shares to the fee address in the native coin, the router sends the coin with a call, which
+runs the delegate's `receive()`; that function is empty and accepts it. Every fork rehearsal of Base does this
+redemption with the delegation in place (section 6), and the fee address receives exactly what its shares are
+worth.
+
+**What the delegation adds as risk.** Without it, only a transaction signed by the key moves the shares. With
+it, the account also acts when its code is called by one of two contracts fixed in the delegate, MetaMask's
+`DelegationManager` (`0xdb9B1e94…7dB3`) and the ERC-4337 EntryPoint (`0x00000000…a032`), and both of those
+paths need a signature of the **same key**: a signed user operation, or a signed "delegation" (a typed message
+that lets a named party act for the account within stated limits). The delegate has no owner, no other signer
+and no storage of its own. So the key is still the only authority, but there are now two more **kinds of
+thing the key can sign that move funds without a transaction of its own**: a delegation or a user operation
+shown by a site as a "permission". And the account now depends on the correctness of the delegate's code (its
+audits were not read here). An ordinary account has a small version of the first risk already (an LP share can
+be approved by a signed EIP-2612 permit).
+
+**Decision.** The delegation is **accepted**: the delegate is a published wallet delegator with verified
+source. The gate enforces exactly that, per chain:
+
+- a delegation to this delegate, holding the code hash recorded for the chain: accepted;
+- **any other delegate, or this address with other code: the gate fails** ("not an identified delegate").
+  Nothing is deployed on that chain until the owner clears the delegation or the new delegate is identified from
+  its publisher and recorded in `feeTo.delegation.accepted`;
+- the gate **records the designator it saw** in its report (`feeTo.designator`) and prints a **WARNING**, not a
+  failure, when it is not the one recorded for that chain in `feeTo.delegation.recorded` (Base: the designator
+  above; the other five: none). So a delegation that appears on another chain, or disappears from Base, is
+  seen at the next gate run.
+
+For the owner: treat the fee wallet as a vault. Sign no "permission", "delegation" or "smart account" request
+with it on any site. Clearing the delegation on Base (the wallet's own setting that turns the smart account
+off; how the wallet names it was not checked here) removes this risk and is the simpler state; it is not
+required.
+
+### 2.4 Reserve caps: none
+
+`reserveCaps` is `[]` on all six chains: an ordinary constant-product exchange. The caps exist on the Bloch L2
+to bound what a fault of the bridge could drain through the pool of a **bridged** asset. The assets listed here
+are each chain's own native coin and a token issued on that chain, so that risk does not exist here. Two
+further reasons:
+
+- **Addresses.** A cap names a token address, which differs per chain. Without caps the factory and the lens
+  have the same address on all six.
+- **A pool capped on both sides leaks fees to strangers on a public chain.** The pair keeps
+  `reserve0 x reserve1` under a ceiling; a swap's fee above the ceiling stays outside the reserves, where `skim`
+  removes it. `skim` is open to anyone and pays the address the caller names. On the Bloch L2 a keeper skims to
+  the Safe. On a public chain searchers will skim first, and the keeper cannot be given priority: the contracts
+  have no place for it.
+
+The reason is also written next to the value in each `chain.json` (`reserveCapsReason`).
+
+### 2.5 Opening price and first liquidity
+
+**The price is the market's, not a number typed by hand.** A pool that opens away from the market is traded
+back to it within blocks, at the depositor's cost. `first-deposit.mjs prepare` therefore takes the opening price
+from the chain itself, at the block of the deposit's preparation:
+
+- **Two independent on-chain references**, configured per chain in `chain.json` `openingPrice.references`:
+  a **Chainlink** feed pair (the native coin in USD divided by USDC in USD: prices aggregated from exchanges by
+  an oracle network, independent of this chain's pools), and the **5-minute time-weighted price of an
+  established pool** of the wrapped native coin and the listed token (a price one transaction, or one block,
+  cannot set).
+- **One pinned block, two endpoints.** Every read is pinned to one block hash and asked of the first two
+  reviewed endpoints; an answer counts only when both give the same bytes.
+- **The two references must agree within 1%** (`referencesAgreeBps`). If they do not (a feed that lags a fast
+  move, a pool being pushed, a token off its peg), or a feed's answer is older than its heartbeat plus ten
+  minutes, or the pool is not the one its publisher's factory names, or holds less than its stated depth, there
+  is no market price and **nothing is printed**. Try again later.
+- **The market price is the mean of the two.** The owner gives **one amount** (`--native 10`, or
+  `--token 18000`) and the tool computes the other. If both amounts are given, they are refused when their
+  price is **more than 0.5%** from the market (`maxDeviationBps`).
+
+The references, each address taken from its publisher's own page on 2026-11-17 (URL, date and what was found
+are recorded next to each address in `chain.json`); feeds from Chainlink's feed directory
+(`https://docs.chain.link/data-feeds/price-feeds/addresses`), pools as the address the publisher's factory
+returns from `getPool()`:
+
+| Chain | Chainlink feeds (native / USD; USDC / USD) | Pool, 5-minute mean | Its depth when measured |
+|---|---|---|---|
+| OP Mainnet | `0x13e3Ee69…08c5`; `0x16a9FA2F…E0f3` | Uniswap v3 WETH/USDC 0.30% `0xc1738D90…bcA4` (factory `0x1F98431c…F984`) | 1,029 WETH (the 0.05% pool held 105) |
+| Base | `0x71041ddd…Bb70`; `0x7e860098…bc6B` | Uniswap v3 WETH/USDC 0.05% `0xd0b53D92…F224` (factory `0x33128a8f…FDfD`) | 7,549 WETH |
+| Arbitrum One | `0x639Fe6ab…b612`; `0x50834F31…4aD3` | Uniswap v3 WETH/USDC 0.05% `0xC6962004…E8D0` (factory `0x1F98431c…F984`) | 12,703 WETH |
+| Linea | `0x3c6Cd9Cc…54dA`; `0xAADAa473…dCb5` | PancakeSwap v3 WETH/USDC 0.05% `0xd5539D03…2845` (factory `0x0BFbCF9f…1865`) | **18.8 WETH: thin** |
+| BNB Smart Chain | BNB / USD `0x0567F232…2aeE`; `0x51597f40…A163` | PancakeSwap v3 WBNB/USDC 0.01% `0xf2688Fb5…12C4` (factory `0x0BFbCF9f…1865`) | 2,250 WBNB |
+| Ethereum | `0x5f4eC3Df…8419`; `0x8fFfFfd4…18f6` | Uniswap v3 WETH/USDC 0.05% `0x88e6A0c2…5640` (factory `0x1F98431c…F984`) | 31,690 WETH |
+
+Notes on the choices. The pool is the deepest of the publisher's pools for the pair, preferring a low fee tier
+(its price stays within the fee of the market) where that tier is deep. Base's standard ETH / USD feed is
+listed in Chainlink's directory as the secondary proxy of another entry; it describes itself as "ETH / USD"
+on chain. Uniswap publishes no v3 deployment page for Linea, so Linea uses PancakeSwap's; **its pool is thin**
+(about 34,000 USD a side), which is why the pool is never used alone: a pushed pool leaves the 1% band around
+the feed and the tool refuses. On Linea the ETH / USD feed is updated on a 0.5% move or once a day, so it can
+itself be up to 0.5% from the market: on a fast day the tool will say "no market price" more often there. On
+BNB Smart Chain the feed prices Circle's USDC and the pool prices the Binance-Peg token itself; if the peg
+slipped, the two would part and the tool would refuse. To see the market without preparing anything:
+
+```
+node scripts/multichain/market.mjs op-mainnet --native 10
+```
+
+What this does not do: it does not hold the price still. The printed deposit is valid for 20 minutes; send it
+within a few, and run `prepare` again if you waited. A market that moves 0.5% in those minutes costs the
+depositor about what a 0.5% opening error costs: a few thousandths of a percent of the deposit, taken by the
+first arbitrage trade.
+
+**The size is the owner's.** Nothing here funds a pool. The tool enforces a floor per chain
+(`openingPrice.minimumNative`), with the reason next to it:
+
+| Chain | Minimum first deposit | Reason |
+|---|---|---|
+| Ethereum | 1 ETH and its USDC | The first deposit costs about 2.54 million gas: 0.013 ETH at 5 gwei, which is 0.64% of a deposit worth 2 ETH. Below that the gas of opening, and of every later change, dominates |
+| OP Mainnet, Base, Arbitrum One, Linea | 0.1 ETH and its USDC | Gas is negligible (under 0.001 ETH in every measurement). The floor keeps the pool above a few hundred dollars a side; below that a 100-dollar swap moves the price by tens of percent and the page's quotes are of no use |
+| BNB Smart Chain | 0.5 BNB and its USDC (Binance-Peg) | as above (0.5 BNB was about 296 USD when measured) |
+
+**The first share cannot be inflated, at any size.** The classic attack needs the attacker to be the first
+minter; here only the depositing account can be, and the pair locks 1,000 share units for ever. The tool also
+refuses a deposit that would create fewer than 10^12 share units, so that the locked units are at most a
+billionth of the pool (0.1 ETH with its USDC creates about 4 x 10^12). A floor is not a recommendation: a pool
+that is to be traded against needs far more, and the owner carries the price risk of whatever is put in
+(section 12.1).
+
+### 2.6 The token list, and BNB Smart Chain's "USDC"
+
+Each chain starts with the wrapped native token and the chain's USDC. BNB Smart Chain has no USDC issued by
+Circle: the token whose contract says `symbol() = "USDC"` there is Binance-Peg USD Coin, issued by Binance, with
+18 decimals (section 4). **It is listed, under a truthful label.** Pairs are permissionless on this factory, so
+anyone can make a pool with that token whether the page lists it or not: hiding it protects nobody, and a user
+who meets it elsewhere under the bare name "USDC" is the one who is misled. So the token list and the page
+show **"USDC (Binance-Peg)"**, 18 decimals, with one line: "USDC (Binance-Peg) is issued by Binance on BNB
+Smart Chain, not by Circle, and has 18 decimals." The contract's own symbol stays in the configuration
+(`symbol`, used by the pins and by `--pair WBNB/USDC`); what is shown is `label`, and the page never shows the
+bare symbol for a token that has a label.
+
+### 2.7 The plan
+
+With these choices the plan is no longer a rehearsal ("reference") plan: `node scripts/multichain/plan.mjs all`
+prints the addresses of section 3, and every rehearsal of section 11 was run with them, the depositing account
+impersonated on loopback forks (no key of the owner's was used or needed). The former reference depositor
+`0xb04cc27201710ee425739Cb5B97Ce4D4F21AAAD9` (an address nobody holds a key for) is still what the tools use
+when the choice is set back to `TBD-owner`, and they refuse it as a real choice.
 
 ## 3. Addresses
 
@@ -130,26 +404,32 @@ Factory, router and lens are created by the deterministic CREATE2 deployer `0x4e
 `keccak256("postern-dex.multichain.v1")` = `0xe5077402…c57a`. An address depends only on the deployer, the salt
 and the init code (contract code plus constructor arguments), not on who sends the transaction.
 
-With the reference plan (`node scripts/multichain/plan.mjs all --reference`):
+With the committed choices (`node scripts/multichain/plan.mjs all`): the addresses the owner's deployment will
+have.
 
 | Contract | Address | Same on |
 |---|---|---|
-| Factory | `0xFDb432E995EedB5a01931B161566EDceE2Cb3898` | all six |
-| Lens | `0xB9c4Bc1ffC2E0167952e7adbeaB12ebaD2380144` | all six |
-| Router | `0xA4C7Ac8758756a12894BC610bd1Ff9c218A90ddb` | OP Mainnet and Base (both use the WETH predeploy `0x4200…0006`) |
-| Router | `0xED70Dbf01981AE6FF5B71222C040D37D80F8E07F` | Arbitrum One |
-| Router | `0xF1bEe475eCFd326d8A3075633ffB9F7969aC7c2e` | Linea |
-| Router | `0x212D14e096B70472dEc7557c06a9865eBAfcB5bE` | BNB Smart Chain |
-| Router | `0x2bb381Ee8C58D277E74FF2d74DEd2DFD2f1a83a2` | Ethereum |
+| Factory | `0x47D4ae3D6d8e2d8261Ee7beEF510a217Bf4a4C50` | all six |
+| Lens | `0x5709FF514a909aD0D994eC73D6128F38bF4F1Ca6` | all six |
+| Router | `0xc1D01eF14c0Cfe961f548398f9b12CfDC71172C9` | OP Mainnet and Base (both use the WETH predeploy `0x4200…0006`) |
+| Router | `0xFf5f74c4Ca90Ae6024a29175c6d9d92CbD51C5E1` | Arbitrum One |
+| Router | `0xf6046184F7267f0872BaB182C661f1C85695cAE2` | Linea |
+| Router | `0x605E6b76402FF050BddC903Ea2326451272f7e32` | BNB Smart Chain |
+| Router | `0x8A1DdC0BAE18A038D4E5Bb088eeDcdE10b61db53` | Ethereum |
+
+The first pair of each chain (created by the first deposit): OP Mainnet `0xf948448d0d253B26EAFDf33Ffe45b5C85577E99E`,
+Base `0x1807A84b90C535F8AF4d76634C6bD792A80B496F`, Arbitrum One `0x5D1885394A404b3e4f32432b68dacf3c19EDedE2`,
+Linea `0xe99683328159b896F596cCF742b446e32b1E8205`, BNB Smart Chain `0x7CC3289655f5aA3147Dd8538b089Ee760c2c8851`,
+Ethereum `0x03DCe4f378e64B4620ba8b9791b1d45245505Cd8`.
 
 Why the router differs: the wrapped native token is a constructor argument, and it has another address on each
 chain except the two OP Stack chains. Pair addresses differ everywhere, because token addresses differ. (These
-addresses are not those of earlier editions of this document: the reference plan's `firstDepositor` was the zero
-address in the first and the fee address in the second.)
+addresses are not those of earlier editions of this document, whose plans had the zero address, the fee address
+and then a keyless rehearsal address as `firstDepositor`.)
 
-**These addresses change with the owner's choices.** Another `firstDepositor` or any cap is another factory init
-code, so another factory address, and with it another router and lens. Run the plan after the choices are made;
-the gate and the page take the addresses from the plan, never from this table.
+**These addresses follow from the choices.** Another `firstDepositor` or any cap is another factory init
+code, so another factory address, and with it another router and lens. The gate and the page take the addresses
+from the plan, never from this table.
 
 Because the addresses do not depend on the sender, anyone can create the same contracts first by sending the same
 bytes. The result is the identical contract with the identical `feeTo`: harmless. `deploy.sh` skips a step whose
@@ -183,12 +463,12 @@ Other facts:
   Chain 242, Arbitrum One 11, Base 1, Linea 0, OP Mainnet 0. **On Base it carries an EIP-7702 delegation** to
   `0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`: the key still controls the account, and code runs at the address
   when it is called. The fork rehearsal and the simulation on Base's own node show that it receives the native
-  coin and redeems its fee shares in that state. What that delegate contract is was not established here; the
-  owner should know it (a wallet sets such a delegation). The fee address is not the depositing account
-  (section 2), so this delegation has no part in the opening of a pool.
+  coin and redeems its fee shares in that state. The delegate is MetaMask's published `EIP7702StatelessDeleGator`
+  1.3.0, verified; what it is, what it changes and what the gate does about it are in section 2.3. The fee
+  address is not the depositing account, so this delegation has no part in the opening of a pool. That the
+  owner holds the key is shown by a signed message, not by these counts (section 2.2).
 - **BNB Smart Chain has no Circle-issued USDC.** The token with the symbol USDC is Binance-Peg USD Coin, issued by
-  Binance, with 18 decimals. The rehearsals use it, because a pool needs a second token; whether to list it is the
-  owner's decision.
+  Binance, with 18 decimals. It is listed under the label "USDC (Binance-Peg)", never as plain USDC (section 2.6).
 - **USDC is an upgradeable proxy whose issuer can pause it and blacklist addresses.** The pinned hash is the
   proxy's. A blacklisted pair address could not pay out USDC. This is USDC's own risk on every exchange.
 - **Multicall3** `0xcA11bde05977b3631167028862bE2a173976CA11` exists on all six; on Linea its code hash is another
@@ -321,10 +601,10 @@ Needs: this repository at the reviewed commit, Foundry (forge, cast), Node 24, `
 (`npm ci --ignore-scripts` in `frontend/`), and a signer forge supports (`--ledger`, `--trezor`, or
 `--account NAME` for an encrypted keystore). Never put a private key on a command line.
 
-Once, before the first chain: make the choices of section 2 in `deployments/multichain.json` (`firstDepositor`:
-the new key that will send the first deposits and nothing else) and in each `deployments/<chain>/chain.json`,
-then print the plan and compare the addresses with what you expect. The plan fails while a choice is open or
-`firstDepositor` is the zero address or the fee address.
+Once, before the first chain. The choices of section 2 are made and committed. What is left is the owner's
+signature for the fee address (section 2.2: `fee-proof.mjs message`, sign it with the fee address,
+`fee-proof.mjs record --signature …`, commit the file), and a look at the plan: its addresses must be those of
+section 3.
 
 Two accounts sign in this procedure, and they are different accounts: the **deploying account** (any funded
 account of the owner; steps 1 and 2) and the **depositing account** (`firstDepositor`; step 4 only).
@@ -337,8 +617,10 @@ For each chain, with its key in place of `op-mainnet` (`op-mainnet`, `base`, `ar
 `bnb-smart-chain`, `ethereum`):
 
 Step 1. Dry run, with the deploying account. It builds, plans, runs the pre gate (read-only) and simulates the
-deployment. Nothing is sent. The pre gate also looks at the depositing account: it must have no code, no
-EIP-7702 delegation and no transaction on this chain yet.
+deployment. Nothing is sent. The pre gate also looks at the depositing account (no code, no EIP-7702
+delegation, no transaction on this chain yet) and at the fee address: its signed proof of control must be
+recorded and valid, and a delegation at it must be to the identified delegate (a `WARNING:` line says when the
+delegation on this chain is not the recorded one: read it, it does not stop the run; section 2.3).
 The simulation runs from the signer's account, which must already hold the gas: with an unfunded account it prints
 "Script ran successfully" with the planned addresses and then stops with "lack of funds" (seen in a dry run
 against OP Mainnet with no signer). Fund the account and repeat until it ends without an error.
@@ -376,20 +658,26 @@ If the gate is run too early it prints `WAIT: … the planned code at the latest
 block yet`. That is not a failure of the deployment: run the gate again later. Any other failing check means stop
 (section 10).
 
-Step 4. Open the pool: the first deposit, from the depositing account, with the owner's own funds. It sets the
-opening price. **Use only this tool for it, and send nothing else from that account.** The tool reads the chain
-(both endpoints must show the same block), checks that the contracts are the ones the gate verified, that the
-depositing account has no code, that the pool is not open and what sits at the pair's address, and prints two
-`cast send` commands. Amounts are in whole units (10 native coin and 30,000 USDC in this example); `--to` names
-the account that receives the LP shares when it is not the depositor.
+Step 4. Open the pool: the first deposit, from the depositing account, with the owner's own funds. **Use only
+this tool for it, and send nothing else from that account.** First fund the depositing account on this chain
+with the native coin of the deposit plus gas and with the token amount (`market.mjs <chain> --native AMOUNT`
+shows how much token that is now; fund a little more than it says, the price moves). Then give the tool **one
+amount**, the native coin, in whole units (1 in this example; the minimum per chain is in section 2.5); it
+reads the chain's market price and computes the token amount. `--to` names the account that receives the LP
+shares when it is not the depositor. On BNB Smart Chain the pair is `WBNB/USDC`.
 
 ```
-node scripts/multichain/first-deposit.mjs op-mainnet prepare --pair WETH/USDC --native 10 --token 30000 --gate-report deployments/op-mainnet/gate-report.json
+node scripts/multichain/first-deposit.mjs op-mainnet prepare --pair WETH/USDC --native 1 --gate-report deployments/op-mainnet/gate-report.json
 ```
 
-`prepare` also prints the opening price of the two amounts; compare it with the market on that chain (the example
-amounts are not a price for any chain, least of all BNB Smart Chain). Send the two printed commands as they are,
-adding only your signer option and `--rpc-url`; they carry `--chain`, so `cast` refuses another chain's URL. The first approves
+The tool reads the chain (both endpoints must show the same block), checks that the contracts are the ones the
+gate verified, that the depositing account has no code, that the pool is not open and what sits at the pair's
+address, establishes the market price from the chain's two references (section 2.5; it prints both and the
+mean), and prints two `cast send` commands. If it says there is no market price, or that the deposit is below
+the minimum, nothing is printed: nothing is wrong on the chain; try again later, or with a larger amount.
+Send the two printed commands as they are, adding only your signer option
+(`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` for the keystore of section 2.1) and `--rpc-url`;
+they carry `--chain`, so `cast` refuses another chain's URL. Send them within a few minutes. The first approves
 exactly the token amount to the router. The second is the router's `addLiquidityBLCH` with **minimums equal to the
 amounts**; the tool has no option for other minimums. In that one transaction the router creates the pair and
 deposits. What this does and does not guarantee:
@@ -412,10 +700,11 @@ Then run `prepare` again.
 **If `prepare` says STOP: the pool is already open.** You did not open it. Deposit nothing, do not use `add`, and
 go to section 10.
 
-Then prove the opening, with the hash of the deposit transaction:
+Then prove the opening, with the hash of the deposit transaction. `prepare` prints this command with the two
+amounts it used (`TOKEN_AMOUNT` here):
 
 ```
-node scripts/multichain/first-deposit.mjs op-mainnet verify --pair WETH/USDC --native 10 --token 30000 --tx DEPOSIT_HASH
+node scripts/multichain/first-deposit.mjs op-mainnet verify --pair WETH/USDC --native 1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
 ```
 
 It must say PASS. It reads the opening from the transaction itself, not from the pool's reserves (they change
@@ -443,14 +732,15 @@ open, one that does not prove who opened each pool, or one whose factory has ope
 node scripts/multichain/frontend-files.mjs op-mainnet --gate-report deployments/op-mainnet/gate-report.json
 ```
 
-**Later deposits into an open pool.** State both amounts, at the market price. The tool compares them with the
+**Later deposits into an open pool.** State both amounts, at the market price (`market.mjs <chain> --native 1`
+prints the token amount for it). The tool compares them with the
 pool's own price and prints nothing when the two differ by more than the tolerance (0.5% by default, at most 1%):
 a pool whose price someone moved takes nothing from the owner. It deposits only into a pool whose opening the
 gate proved (the report of step 5). The deposit's minimums are that tolerance below its amounts, so a price
 pushed away in the same block makes it revert:
 
 ```
-node scripts/multichain/first-deposit.mjs op-mainnet add --pair WETH/USDC --native 1 --token 3000 --gate-report deployments/op-mainnet/gate-report.json
+node scripts/multichain/first-deposit.mjs op-mainnet add --pair WETH/USDC --native 1 --token TOKEN_AMOUNT --gate-report deployments/op-mainnet/gate-report.json
 ```
 
 A later deposit may come from any account. The command above prints it for the depositing account; if that is
@@ -472,7 +762,8 @@ used, the rule of section 2 still holds (the printed transactions and nothing el
   `add` afterwards. Tokens with a transfer fee or a rebasing balance are not supported by the strict minimums
   (the deposit reverts) and should not be listed.
 - *The depositing key stays what it is.* As long as the owner may open another pair, the key keeps the rule of
-  section 2. A key that has been used elsewhere in the meantime can still open pools, but anyone it called may
+  section 2.1; once it is retired (section 2.1, "Retiring it") no further pair can ever be opened on this
+  factory. A key that has been used elsewhere in the meantime can still open pools, but anyone it called may
   have opened one first; the gate's proof of the opening is what tells.
 
 If the sender through the reviewed public endpoint is a problem (rate limits), set `MC_RPC_URL` to the owner's own
@@ -754,18 +1045,25 @@ endpoint answered one trial with a rate limit (HTTP 429); the run of record pass
    CREATE2 route, uncapped pools, and public-chain conditions (searchers, front-running, permissionless pair
    creation with any token) were not what the audit looked at. The reviewer of this round reviews the package,
    which is not an audit.
-5. **Licence of the code's origin.** The pair, factory, LP token, the two libraries and the router are ports of
-   Uniswap V2 (`docs/AUDIT-SCOPE-DEX.md` names v2-core and v2-periphery as the upstream; two libraries say "ported
-   verbatim"). To the author's knowledge upstream publishes those under GPL-3.0, while the files here carry an MIT
-   notice and the repository's `LICENSE` is an MIT text with unfilled placeholders. Before these contracts are
-   published and operated under the DEX's name on public chains, a lawyer should confirm the licence the ports may
-   carry and what source publication it requires. This was not checked beyond reading the files.
+5. **Licence.** Established and corrected on 2026-11-17 (`docs/LICENSING.md`). The pair, factory, LP token, the
+   two libraries and the router are ports of Uniswap V2, which its publisher licenses under **GPL-3.0-or-later**
+   (read from the publisher's own `package.json` and `LICENSE`). That licence therefore governs `contracts/`,
+   `script/` and `test/`; the frontend, the tools and the documents stay MIT. The repository's `LICENSE`,
+   `NOTICE` and `LICENSES/` now say so; the header lines inside the frozen contract files still say MIT and are
+   stated as superseded (they are corrected at the next contract revision). Consequences for the owner: the
+   contracts' source must be available under the GPL to whoever uses them (publish the repository; verify the
+   contracts on each explorer as "GNU GPLv3"); the copyright holder's name is still to be filled in
+   (`docs/LICENSING.md` section 5); and the wallet-connection packages of the Bloch L2 site (Reown AppKit,
+   WalletConnect) are under a commercial-threshold licence, not an open-source one (section 4 of that file). A
+   lawyer should confirm the points listed in its section 6.
 6. **The fee address is one key.** Losing it loses the fee for ever; a thief of it takes the accrued shares. On
-   Base it currently delegates to a contract (section 4).
+   Base it delegates to MetaMask's smart-account code, which adds two kinds of signature that can move its funds
+   (section 2.3): sign no "permission" or "delegation" with it.
 7. **Permissionless pairs.** Anyone can create a pair with any token, including worthless or hostile ones, but
    only the owner's depositing account can open one (section 8, "Later pairs"). The page lists only the reviewed
    pairs.
-8. **BNB Smart Chain's "USDC" is not Circle's**, and has 18 decimals (section 4).
+8. **BNB Smart Chain's "USDC" is not Circle's**, and has 18 decimals; it is shown as "USDC (Binance-Peg)"
+   (section 2.6). Its value rests on Binance holding the USDC behind it.
 9. **Public endpoints.** The page depends on public RPC endpoints the owner does not run; they rate-limit, prune
    history and change. Two or three are listed per chain; the owner may prefer own endpoints.
 10. **The opening of a pool** (reviews R309-MC-1, R328-1 to R328-3). On a public chain the moment a pool opens is
@@ -803,7 +1101,8 @@ Recorded, not fixed in this package:
 | (Closed in round 17) The route's texts said "finalized" on chains where the page settles on a depth | Users of the five depth chains | The redesigned page says "confirmed" there; the page rehearsal asserts that the whole page text of a depth chain holds no "finalized" outside the confirmation note |
 | **Arbitrum One: fixed gas limit under an L1 fee spike** (review R309-MC-8). The page asks 250,000 gas per hop; on Arbitrum the limit must also cover the L1 data charge. Measured: execution 158,109, which leaves 91,891; the L1 component was about 1.5 gas per calldata byte at the hour of the cost run (a swap is a few hundred bytes: some hundreds of gas), so the limit holds until that component is on the order of 150 times that hour's. Not measured under a spike | A swap on Arbitrum One during an Ethereum fee spike could run out of gas (the user loses the fee of a failed transaction, not the swap) | A per-chain gas limit, or an estimate on Arbitrum, in a later change to the route |
 | **Anchored swaps revert on Arbitrum One** (section 5) | Direct callers only; the page does not use them | None in this package |
-| **Fee address** (review R309-MC-7): it has never sent a transaction on OP Mainnet or Linea, and on Base it carries an EIP-7702 delegation to `0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B`, whose code was not reviewed here | Whether anyone but the key can move the fee shares on Base depends on that delegate contract | Before Base: the owner confirms what the delegate is, or clears the delegation. Before OP Mainnet and Linea: the owner signs one transaction or message with the key on a chain where it has none. The fee address is never the depositing account (section 2) |
+| **Fee address** (review R309-MC-7): closed by the decisions of 2026-11-17. Control is proven by one signed message (section 2.2; **the owner's signature is still missing**); the delegate on Base is identified and the gate refuses any other (section 2.3). The delegate's own code was identified, not audited, here | The fee shares on Base move by the key's transaction, or by a user operation or delegation the key signed | The owner signs the proof; signs no "permission" with the fee wallet |
+| **The opening price depends on two outside references** (section 2.5) | Chainlink's feeds and one pool per chain; on Linea the pool is thin and the ETH / USD feed moves only on 0.5%, so `prepare` may answer "no market price" there on a volatile day | Try again later; the tool never falls back to one reference or to a typed price |
 | **The first-depositor rule accepts the transaction origin** (review R328-1; frozen contracts) | A contract the depositing account calls can open a pool in its name | A dedicated key and the tools' refusals (sections 2, 8 and 10); a new pair contract would be the only real fix and is not part of this package |
 | **A gift in front of the first deposit moves the opening price** (review R328-2; the frozen router does not look at tokens already at the pair) | The pool can open at a price that differs from the intended one by the size of what someone chose to give away | `prepare` refuses above 0.1% that is already there; `verify` and the gate report it; section 10 |
 | **After a reverted swap the account is held for the strict rule's time** (review R328-7; section 9) | A user whose swap reverted on its minimum waits 15 to 23 minutes on four chains, about an hour on Linea, before the page lets them retry | A third rule for this case (the chain's `safe` tag where it is close: the reviewer measured under 30 s on OP Mainnet and about a minute on Base) in a later change |

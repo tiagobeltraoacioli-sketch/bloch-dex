@@ -382,7 +382,7 @@ export async function main(argv, print = console.log) {
     if (checks.every((c) => c.ok)) {
       print("");
       print(`Send these two transactions FROM ${depositor} (the factory's first depositor), exactly as printed, and send nothing else from that account.`);
-      print(`Add your signer option (--ledger, --trezor or --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
+      print(`Add your signer option (--keystore FILE for the depositing key's encrypted keystore, or --ledger, --trezor, --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
       // --chain: cast refuses to send when the RPC URL added by hand is another chain's.
       for (const t of transactions) print(`cast send ${t.to} "${t.signature}" ${t.args.join(" ")}${t.value > 0n ? ` --value ${t.value}` : ""} --from ${depositor} --chain ${chain.chain.chainId}`);
       print("");
