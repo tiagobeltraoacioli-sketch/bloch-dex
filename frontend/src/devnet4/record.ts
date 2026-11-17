@@ -18,8 +18,12 @@ const HASH = /^0x[0-9a-f]{64}$/;
 
 export type DevnetToken = {
   address: Address;
-  /** On-chain symbol; the wrapper is shown as native BLCH in the swap form. */
+  /** On-chain symbol, exactly as the contract returns it (readSnapshot pins it); the wrapper is shown as native
+   * BLCH in the swap form. */
   symbol: string;
+  /** Optional display name (multichain network files only: "USDC (Binance-Peg)"); never pinned against the chain.
+   * Review R344-UI-16. */
+  label?: string;
   cap: bigint;
   wrapped: boolean;
 };

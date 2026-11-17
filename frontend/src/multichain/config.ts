@@ -416,8 +416,10 @@ export function parseRecord(
     codeHashes,
     tokens: [...listed.values()].map((t) => ({
       address: t.address,
-      // What the route shows: the label where the network file gives one.
-      symbol: shownSymbol(t),
+      // Review R344-UI-16: `symbol` stays the contract's own (readSnapshot pins it against the chain); the label,
+      // where the network file gives one, travels separately and is what the route shows.
+      symbol: t.symbol,
+      ...(t.label ? { label: t.label } : {}),
       cap: caps.get(t.address) ?? 0n,
       wrapped: t.address === chain.wrapped.address,
     })),
