@@ -83,14 +83,29 @@ test("the owner installs his own tools and checks their SHA-256 before the first
   // The three blocks, exactly: macOS's own bash, the script of the owner's clone, the owner-only directory.
   assert.equal(blocks["once tools-install"], `/bin/bash ${TOOLCHAIN_SCRIPT} install ${OWNER_TOOLS[0]}`);
   assert.equal(blocks["once tools-check"], `/bin/bash ${TOOLCHAIN_SCRIPT} check ${OWNER_TOOLS[0]}`);
-  assert.equal(blocks["once env-path"], `export PATH="${OWNER_TOOLS[1]}/bin:$PATH"`);
+  // R402-1: the tools and macOS's own four directories, nothing of the terminal's earlier PATH.
+  assert.equal(blocks["once env-path"], `export PATH="${OWNER_TOOLS[1]}/bin:/usr/bin:/bin:/usr/sbin:/sbin"`);
+  for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/\$PATH|\$\{PATH/.test(cmd), `${k} keeps the terminal's PATH`);
   assert.equal(blocks["once tools-type"], "type forge cast anvil node npm");
-  assert.equal(blocks["once clone-commit"], "git -C ~/postern-dex log -1 --oneline");
+  // R402-4: the commit is compared in full, in both places, and the reviewed one is stated in full (or still open).
+  assert.equal(blocks["once clone-commit"], "git -C ~/postern-dex rev-parse HEAD");
+  assert.ok(!/git[^\n]*log -1 --oneline/.test(text) && !/when this was written/.test(text));
+  assert.match(text, /```\ngit rev-parse HEAD\n```\n\nCompare all 40 characters printed with the reviewed commit: `(TBD-integrator|[0-9a-f]{40})`/);
+  // R402-3: the packages and the build come before the first block that reads the built code.
+  assert.equal(blocks["once npm-ci"], "npm --prefix frontend ci --ignore-scripts");
+  assert.equal(blocks["once forge-build"], "forge build");
+  // R402-1: every tool of the kit is started as `node <file>` or by /bin/bash or its own #!/bin/bash, never through
+  // a `#!/usr/bin/env` line resolved on the PATH.
+  for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/^scripts\/\S+\.mjs/.test(cmd), k);
+  assert.ok(readFileSync(join(ROOT, "scripts/multichain/deploy.sh"), "utf8").startsWith("#!/bin/bash\n"));
+  assert.ok(readFileSync(join(ROOT, "scripts/multichain/owner-toolchain.sh"), "utf8").startsWith("#!/bin/bash\n"));
+  // R402-5: the text says the scripts check again by themselves.
+  assert.match(text, /`deploy\.sh` \(steps 3 and 4\) and `first-deposit\.mjs prepare` \(step 7\) run the same check again by themselves/);
   // Neither rehearsal flag of the script is in the owner's blocks.
   for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/--no-run|--platform|--from /.test(cmd), k);
   // Order: clone, its commit, install, PATH, check, type; all before anything that signs, unlocks or creates a key.
   const at = (step) => text.indexOf(`<!-- run: once ${step} -->`);
-  const order = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type"].map(at);
+  const order = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "npm-ci", "forge-build", "kit-tests", "check-depositor", "plan"].map(at);
   assert.ok(order.every((p, i) => p > 0 && (i === 0 || p > order[i - 1])), order.join(","));
   // The first command block (marked or not) that names a keystore, a wallet, a signature or a send.
   const firstKeyUse = [...text.matchAll(/```\n([\s\S]*?)\n```/g)].find((m) => /cast wallet|--keystore|--ledger|KEYSTORE_DIR|fee-proof\.mjs (record|page)|deploy\.sh|cast send/.test(m[1]));

@@ -4,18 +4,20 @@
 // needed). Nothing is sent to a public chain: every transaction goes to the fork; public endpoints are only READ
 // (the public pre gate, the market, gas prices and rollup data-fee oracles for the cost).
 //
-//   node scripts/multichain/owner-dry-run.mjs once  --out DIR [--pt FILE] [--archives DIR] [--stand-in DIR]
+//   node scripts/multichain/owner-dry-run.mjs once  --out DIR [--pt FILE] [--archives DIR]
 //   node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR [--fork-url URL] [--pid-dir DIR]
-//                                                     [--tools DIR | --archives DIR] [--stand-in DIR]
+//                                                     [--clone DIR --tools DIR | --archives DIR]
 //
-// The tools (review R369-16): the run installs the owner's toolchain with the document's own install block into
-// DIR/owner-tools (from the pinned official URLs; with --archives DIR from archives already fetched from them, each
-// still compared with the pins), or checks an earlier run's directory (--tools DIR), always with the document's own
-// PATH line and check block, and then runs every command with those tools.
-// --stand-in DIR is for a session that may not start a program it has just downloaded: install and check then run
-// with --no-run (hashes, digest, permissions and PATH only), and the commands run with the installed directory's own
-// launchers over the programs of DIR (DIR/foundry/{forge,cast,anvil}, DIR/node/…/bin/node, DIR/libusb/lib), after
-// this run has checked that those four programs have exactly the pinned SHA-256. The result names the mode.
+// Where the blocks run (review R402-3): in a FRESH clone made by the document's own clone block (DIR/postern-dex),
+// moved to the commit under test (fetched from this worktree, which must have no uncommitted change), with the
+// document's `npm ci` and `forge build` blocks run in it: nothing an agent's worktree happens to hold (out/,
+// node_modules) is used. A chain run makes its own clone, or takes an earlier run's (--clone DIR, which must be at
+// the commit under test and unchanged).
+// The tools (reviews R369-16, R402-1, -2): the run installs the owner's toolchain with the document's own install
+// block into DIR/owner-tools (from the pinned official URLs; with --archives DIR from archives already fetched from
+// them, each still compared with the pins), or checks an earlier run's directory (--tools DIR), always with the
+// document's own PATH line and check block, and then runs every command with those tools, in an environment that
+// holds only what a new terminal has (HOME, USER, LOGNAME, SHELL, TERM, TMPDIR, LANG) and the two keystore variables.
 //
 // The blocks are those of the document marked `<!-- run: <chain>|once <step> -->`; the run refuses to start when an
 // expected block is missing. Each block is run as written, with only the changes listed in the document's section
@@ -31,8 +33,7 @@
 // nothing is deposited, and `prepare` again works; (M4) the post gate run before finality says WAIT.
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
@@ -43,7 +44,7 @@ const { keccak256, encodeAbiParameters, encodeFunctionData, decodeFunctionResult
 
 export const DOC = "docs/OWNER-DEPLOY-NOW.md";
 export const CHAIN_STEPS = ["pre-gate", "deployer-balance", "gas-price", "deploy-dry-run", "deploy-broadcast", "post-gate-deployed", "market", "depositor-native", "depositor-token", "prepare", "send-suffix", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
-export const ONCE_STEPS = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
+export const ONCE_STEPS = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "npm-ci", "forge-build", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
 export const ORDER = ["op-mainnet", "base", "arbitrum-one", "linea", "bnb-smart-chain", "ethereum"];
 const DEPOSITOR_KEYSTORE = '--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"';
 // The document names the deploying key's directory only as DEX_DEPLOYER_KEYSTORE_DIR (H398-3); the dry run sets it
@@ -51,7 +52,12 @@ const DEPOSITOR_KEYSTORE = '--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"
 const DEPLOYER_DIR = '"$DEX_DEPLOYER_KEYSTORE_DIR"';
 // The owner's tools directory and the path of the toolchain script, as the document writes them.
 export const OWNER_TOOLS = ["~/dex-owner-tools", "$HOME/dex-owner-tools"];
-export const TOOLCHAIN_SCRIPT = "~/postern-dex/scripts/multichain/owner-toolchain.sh";
+export const OWNER_CLONE = "~/postern-dex";
+export const TOOLCHAIN_SCRIPT = `${OWNER_CLONE}/scripts/multichain/owner-toolchain.sh`;
+// The pair's init code hash of the audited build (test/Core.t.sol pins it): unchanged by the pinned compiler.
+export const PAIR_INIT_CODE_HASH = "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683";
+// What a new terminal's environment holds; the commands of a dry run get these and nothing else of the session.
+export const TERMINAL_ENV = ["HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "LANG"];
 export const TOOL_NAMES = ["forge", "cast", "anvil", "node", "npm"];
 
 /** The pinned SHA-256 of each program of a platform (scripts/multichain/owner-toolchain.pins): { "foundry/forge": hex, … }. */
@@ -93,8 +99,9 @@ const argv = process.argv.slice(2);
 const scope = argv[0];
 for (let i = 1; i < argv.length; i += 2) opt[argv[i].replace(/^--/, "").replace(/-(.)/g, (_, c) => c.toUpperCase())] = argv[i + 1];
 if (import.meta.url === `file://${process.argv[1]}`) {
-  refuse(scope && opt.out && (scope === "once" || (ORDER.includes(scope) && opt.port)), "usage: owner-dry-run.mjs once --out DIR [--pt FILE] | <chain> --port PORT --out DIR [--fork-url URL] [--pid-dir DIR] [--tools DIR]; both: [--archives DIR] [--stand-in DIR]");
-  refuse(!(opt.tools && scope === "once"), "once installs the tools itself (--tools is for a chain run)");
+  refuse(scope && opt.out && (scope === "once" || (ORDER.includes(scope) && opt.port)), "usage: owner-dry-run.mjs once --out DIR [--pt FILE] [--archives DIR] | <chain> --port PORT --out DIR [--fork-url URL] [--pid-dir DIR] [--clone DIR --tools DIR | --archives DIR]");
+  refuse(!((opt.tools || opt.clone) && scope === "once"), "once makes its own clone and installs the tools itself (--clone and --tools are for a chain run)");
+  refuse(Boolean(opt.tools) === Boolean(opt.clone), "--clone and --tools come together (an earlier run's clone and tools directory)");
   await main();
 }
 
@@ -115,11 +122,17 @@ async function main() {
     return Boolean(ok);
   };
   const save = () => writeFileSync(join(out, "evidence.json"), `${JSON.stringify(evidence, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2)}\n`);
+  // The commit under test, and the clone the blocks run in.
+  const git = (args, cwd = ROOT) => spawnSync("/usr/bin/git", args, { cwd, encoding: "utf8" });
+  const head = git(["rev-parse", "HEAD"]).stdout.trim();
+  refuse(git(["status", "--porcelain", "--untracked-files=no"]).stdout.trim() === "", "the worktree has uncommitted changes: the dry run runs the blocks in a fresh clone at the committed HEAD; commit first");
+  const REPO = opt.clone ? resolve(opt.clone) : join(out, "postern-dex");
+  const terminal = Object.fromEntries(TERMINAL_ENV.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]]));
   /** Run one shell command line and log it next to the document's block it came from. */
-  const shell = (step, original, command, { timeoutMs = 900_000, cwd = ROOT, env = {} } = {}) => {
+  const shell = (step, original, command, { timeoutMs = 900_000, cwd = REPO, env = {} } = {}) => {
     appendFileSync(log, `\n## ${step}\n# document: ${original}\n$ ${command}\n`);
     const started = Date.now();
-    const r = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1", ...env } });
+    const r = spawnSync("/bin/bash", ["-c", command], { cwd, encoding: "utf8", timeout: timeoutMs, env: { ...terminal, PATH: "/usr/bin:/bin:/usr/sbin:/sbin", ...env } });
     const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     appendFileSync(log, `${output}\n# exit ${r.status} after ${Math.round((Date.now() - started) / 1000)} s\n`);
     writeFileSync(join(out, `${step}.log`), output);
@@ -127,74 +140,97 @@ async function main() {
     save();
     return { status: r.status, output };
   };
-
-  // ---------------------------------------------------------------- the owner's tools (review R369-16)
-  // The document's install block, PATH line and check block, as written, with the tools directory moved into this
-  // run's own directory (the owner's ~/dex-owner-tools is never written by a dry run) and the toolchain script taken
-  // from the commit under test.
   const toolsDir = opt.tools ? resolve(opt.tools) : join(out, "owner-tools");
-  const swap = (cmd) => OWNER_TOOLS.reduce((c, d) => c.replaceAll(d, toolsDir), cmd).replaceAll(TOOLCHAIN_SCRIPT, join(ROOT, "scripts/multichain/owner-toolchain.sh"));
-  const noRun = opt.standIn ? " --no-run" : "";
-  const passLine = opt.standIn ? /^owner tools: HASHES PASS, programs not run/ : /^owner tools: PASS$/;
+  // The document's paths: the owner's clone and tools directory become this run's own (the owner's are never written).
+  const swap = (cmd) => OWNER_TOOLS.reduce((c, d) => c.replaceAll(d, toolsDir), cmd).replaceAll(OWNER_CLONE, REPO);
+
+  // ---------------------------------------------------------------- the fresh clone (review R402-3)
+  evidence.clone = { directory: REPO, commit: head, madeBy: opt.clone ? "an earlier run (--clone)" : "this run" };
+  if (!opt.clone) {
+    rmSync(REPO, { recursive: true, force: true });
+    // The repository, cloned as the document says (read-only from the public GitHub), into the dry run's directory.
+    const r = shell("clone", blocks["once clone"], swap(blocks["once clone"]), { cwd: out });
+    const reviewed = git(["merge-base", "--is-ancestor", "a99f761", "origin/main"], REPO);
+    check("0 the clone succeeds and its main contains the reviewed a99f761", r.status === 0 && reviewed.status === 0, `${r.output.slice(-200)} ${reviewed.stderr}`);
+    const commit = shell("clone-commit", blocks["once clone-commit"], swap(blocks["once clone-commit"]), { cwd: out });
+    check("0 the clone's commit is printed in full (40 hexadecimal digits) for comparison with the integrator's (R402-4)", commit.status === 0 && /^[0-9a-f]{40}\n$/.test(commit.output) && commit.output.trim() === git(["rev-parse", "origin/main"], REPO).stdout.trim(), commit.output);
+    // The clone is of the public main; the blocks under test are this commit's: fetched from the worktree.
+    const moved = git(["fetch", "-q", ROOT, head], REPO).status === 0 && git(["checkout", "-q", "--detach", head], REPO).status === 0;
+    refuse(moved, `the clone could not be moved to the commit under test ${head}`);
+  }
+  check(`0 the blocks run in a ${opt.clone ? "clone of an earlier run, still" : "fresh clone moved"} at the commit under test ${head.slice(0, 7)}, with no change (R402-3)`, git(["rev-parse", "HEAD"], REPO).stdout.trim() === head && git(["status", "--porcelain", "--untracked-files=no"], REPO).stdout.trim() === "" && readFileSync(join(REPO, DOC), "utf8") === text);
+
+  // ---------------------------------------------------------------- the owner's tools (reviews R369-16, R402-1, -2, -6)
+  // The document's install block, PATH line and check block, as written.
+  const passLine = /^owner tools: PASS$/;
   const lastLine = (output) => output.trim().split("\n").at(-1) ?? "";
   const docPath = swap(blocks["once env-path"]);
-  const toolsCheck = (step, prefix = `${docPath}; `) => shell(step, blocks["once tools-check"], `${prefix}${swap(blocks["once tools-check"])}${noRun}`);
-  evidence.tools = { directory: toolsDir, mode: opt.standIn ? "stand-in" : "installed", installedBy: opt.tools ? "an earlier run (--tools)" : opt.archives ? "this run, from --archives" : "this run, from the pinned URLs" };
+  const toolsCheck = (step, prefix = `${docPath}; `, env = {}) => shell(step, blocks["once tools-check"], `${prefix}${swap(blocks["once tools-check"])}`, { env });
+  evidence.tools = { directory: toolsDir, installedBy: opt.tools ? "an earlier run (--tools)" : opt.archives ? "this run, from --archives" : "this run, from the pinned URLs" };
   if (!opt.tools) {
     rmSync(toolsDir, { recursive: true, force: true });
-    const r = shell("tools-install", blocks["once tools-install"], `${swap(blocks["once tools-install"])}${opt.archives ? ` --from ${resolve(opt.archives)}` : ""}${noRun}`);
-    check(`tools: the document's install block builds the tools directory from the pinned archives (${evidence.tools.installedBy.replace("this run, ", "")}), every archive's SHA-256 checked first`, r.status === 0 && (r.output.match(/^ok {4}\S+ sha256 [0-9a-f]{64}$/gm) ?? []).length >= 2 && (opt.standIn ? passLine.test(lastLine(r.output)) : /^owner tools: installed and verified in /.test(lastLine(r.output))), r.output.slice(-500));
+    const r = shell("tools-install", blocks["once tools-install"], `${swap(blocks["once tools-install"])}${opt.archives ? ` --from ${resolve(opt.archives)}` : ""}`);
+    check(`tools: the document's install block builds the tools directory from the pinned archives (${evidence.tools.installedBy.replace("this run, ", "")}), every archive's SHA-256 checked first, and starts every program`, r.status === 0 && (r.output.match(/^ok {4}\S+ sha256 [0-9a-f]{64}$/gm) ?? []).length >= 3 && /^owner tools: installed and verified in /.test(lastLine(r.output)), r.output.slice(-500));
   }
   {
     const r = toolsCheck("tools-check");
-    check(`tools: the document's PATH line then its check block: ${opt.standIn ? "hashes, digest, permissions and PATH pass (programs not run: --stand-in)" : "the last line is exactly \"owner tools: PASS\""}`, r.status === 0 && passLine.test(lastLine(r.output)) && !/^FAIL/m.test(r.output), r.output.slice(-600));
+    check("tools: the document's PATH line then its check block: the last line is exactly \"owner tools: PASS\"", r.status === 0 && passLine.test(lastLine(r.output)) && !/^FAIL/m.test(r.output), r.output.slice(-600));
   }
   if (scope === "once") {
-    // Refusals on the real directory, each undone: a byte added to cast; access for the group; no PATH line.
+    // Refusals on the real directory, each undone.
+    const none = (r) => !/owner tools: (PASS|HASHES PASS)/.test(r.output);
     const cast = join(toolsDir, "foundry/cast");
     const size = statSync(cast).size;
     appendFileSync(cast, "\n");
     let r = toolsCheck("T1-cast-changed");
     truncateSync(cast, size);
-    check("T1 one byte added to cast: the check refuses, names cast and prints no PASS", r.status === 1 && /^FAIL foundry\/cast has SHA-256 [0-9a-f]{64}; pinned [0-9a-f]{64}$/m.test(r.output) && !/owner tools: (PASS|HASHES PASS)/.test(r.output), r.output.slice(-400));
+    check("T1 one byte added to cast: the check refuses, names cast and prints no PASS", r.status === 1 && /^FAIL foundry\/cast has SHA-256 [0-9a-f]{64}; pinned [0-9a-f]{64}$/m.test(r.output) && none(r), r.output.slice(-400));
     chmodSync(toolsDir, 0o750);
     r = toolsCheck("T2-group-access");
     chmodSync(toolsDir, 0o700);
-    check("T2 the directory opened to the group: the check refuses", r.status === 1 && /has access mode 750; it must be 700/.test(r.output) && !/owner tools: (PASS|HASHES PASS)/.test(r.output), r.output.slice(-400));
+    check("T2 the directory opened to the group: the check refuses", r.status === 1 && /has access mode 750; it must be 700/.test(r.output) && none(r), r.output.slice(-400));
     r = toolsCheck("T3-no-path-line", "export PATH=/usr/bin:/bin; ");
-    check("T3 without the document's PATH line: the check refuses", r.status === 1 && /FAIL this terminal's PATH finds forge at 'nowhere'/.test(r.output) && !/owner tools: (PASS|HASHES PASS)/.test(r.output), r.output.slice(-400));
+    check("T3 without the document's PATH line: the check refuses", r.status === 1 && /FAIL this terminal's PATH finds forge at 'nowhere'/.test(r.output) && none(r), r.output.slice(-400));
+    // R402-1: the PATH line of the guide before this fix (the terminal's own PATH kept behind the tools), with a
+    // directory an agent can write in it.
+    mkdirSync(join(out, "agent-bin"), { recursive: true });
+    r = toolsCheck("T4-old-path-line", `export PATH="${toolsDir}/bin:${join(out, "agent-bin")}:/usr/bin:/bin:/usr/sbin:/sbin"; `);
+    check("T4 (R402-1) another directory kept in the PATH behind the tools: the check refuses and names it", r.status === 1 && r.output.includes(`PATH has the entry '${join(out, "agent-bin")}'`) && none(r), r.output.slice(-400));
+    // R402-2: the compiler changed by one byte.
+    const solc = join(toolsDir, "solc/solc-0.8.24");
+    const solcSize = statSync(solc).size;
+    appendFileSync(solc, "\n");
+    r = toolsCheck("T5-solc-changed");
+    truncateSync(solc, solcSize);
+    check("T5 (R402-2) one byte added to the compiler: the check refuses and names it", r.status === 1 && /^FAIL solc\/solc-0\.8\.24 has SHA-256/m.test(r.output) && none(r), r.output.slice(-400));
+    // R402-6: a variable that switches TLS verification off, and one that points cast elsewhere.
+    r = toolsCheck("T6-refused-variables", undefined, { NODE_TLS_REJECT_UNAUTHORIZED: "0", ETH_RPC_URL: "https://example.invalid" });
+    check("T6 (R402-6) NODE_TLS_REJECT_UNAUTHORIZED and ETH_RPC_URL set in the terminal: the check refuses and names both", r.status === 1 && /must not be \(open a new terminal, or unset them\): (NODE_TLS_REJECT_UNAUTHORIZED ETH_RPC_URL|ETH_RPC_URL NODE_TLS_REJECT_UNAUTHORIZED) $/m.test(r.output) && none(r), r.output.slice(-400));
+    // R402-7: an access-control list on cast (mode still 700).
+    spawnSync("/bin/chmod", ["+a", "everyone allow write,append,delete", cast]);
+    r = toolsCheck("T7-acl");
+    spawnSync("/bin/chmod", ["-N", cast]);
+    check("T7 (R402-7) an access-control list on cast: the check refuses", r.status === 1 && /FAIL carries an access-control list/.test(r.output) && none(r), r.output.slice(-400));
     r = toolsCheck("tools-check-again");
-    check("tools: with the three changes undone the check passes again", r.status === 0 && passLine.test(lastLine(r.output)), r.output.slice(-400));
+    check("tools: with the seven changes undone the check passes again", r.status === 0 && passLine.test(lastLine(r.output)), r.output.slice(-400));
   }
-  // The directory whose bin/ the commands use: the installed one, or (--stand-in) its launchers over DIR's programs.
-  let binDir = join(toolsDir, "bin");
-  let envPrefix = `${docPath}; `;
-  if (opt.standIn) {
-    const from = resolve(opt.standIn);
-    const nodeRoot = existsSync(join(from, "node/bin/node")) ? join(from, "node") : join(from, "node", readdirSync(join(from, "node")).find((d) => existsSync(join(from, "node", d, "bin/node"))) ?? "missing");
-    const platform = process.arch === "arm64" ? "darwin-arm64" : "darwin-x64";
-    const pins = pinnedFiles(platform);
-    const sha = (f) => createHash("sha256").update(readFileSync(f)).digest("hex");
-    const actual = { "foundry/forge": sha(join(from, "foundry/forge")), "foundry/cast": sha(join(from, "foundry/cast")), "foundry/anvil": sha(join(from, "foundry/anvil")), "node/bin/node": sha(join(nodeRoot, "bin/node")) };
-    const equal = Object.entries(actual).every(([k, v]) => pins[k] === v);
-    const libusb = existsSync(join(from, "libusb/lib/libusb-1.0.0.dylib")) ? sha(join(from, "libusb/lib/libusb-1.0.0.dylib")) : null;
-    evidence.tools.standIn = { directory: from, programs: actual, pinned: pins, libusb, libusbIsThePinnedOne: libusb !== null && libusb === pins["libusb/lib/libusb-1.0.0.dylib"] };
-    refuse(equal, `--stand-in ${from}: forge, cast, anvil or node there does not have the pinned SHA-256; not used`);
-    check("tools (--stand-in): forge, cast, anvil and node of the stand-in directory have exactly the pinned SHA-256 (the same bytes as the installed ones)", equal);
-    const stand = join(out, "stand-in-tools");
-    rmSync(stand, { recursive: true, force: true });
-    mkdirSync(join(stand, "bin"), { recursive: true });
-    for (const t of TOOL_NAMES) copyFileSync(join(toolsDir, "bin", t), join(stand, "bin", t));
-    for (const t of TOOL_NAMES) chmodSync(join(stand, "bin", t), 0o700);
-    symlinkSync(join(from, "foundry"), join(stand, "foundry"));
-    symlinkSync(nodeRoot, join(stand, "node"));
-    if (existsSync(join(from, "libusb"))) symlinkSync(join(from, "libusb"), join(stand, "libusb"));
-    binDir = join(stand, "bin");
-    envPrefix = `export PATH="${binDir}:$PATH"; `;
-  }
+  const binDir = join(toolsDir, "bin");
+  const envPrefix = `${docPath}; `;
   {
     const r = shell("tools-type", blocks["once tools-type"], `${envPrefix}${blocks["once tools-type"]}`);
     check("tools: `type` finds forge, cast, anvil, node and npm in the tools directory's bin and nowhere else", r.status === 0 && TOOL_NAMES.every((t) => r.output.split("\n").includes(`${t} is ${binDir}/${t}`)), r.output);
+  }
+  if (!opt.clone) {
+    // Section 2.1 in the fresh clone: the packages and the build (R402-3), with the checked npm and forge.
+    let r = shell("npm-ci", blocks["once npm-ci"], `${envPrefix}${blocks["once npm-ci"]}`);
+    check("2.1 npm ci in the fresh clone installs the frontend's packages from the lockfile (no install script)", r.status === 0 && existsSync(join(REPO, "frontend/node_modules/viem/package.json")), r.output.slice(-400));
+    r = shell("forge-build", blocks["once forge-build"], `${envPrefix}${blocks["once forge-build"]}`);
+    check("2.1 forge build in the fresh clone compiles with Solc 0.8.24 (the pinned compiler; forge is offline)", r.status === 0 && /Compiler run successful/.test(r.output) && /Solc 0\.8\.24/.test(r.output), r.output.slice(0, 600));
+  }
+  {
+    const pair = JSON.parse(readFileSync(join(REPO, "out/UniswapV2Pair.sol/UniswapV2Pair.json"), "utf8")).bytecode.object;
+    evidence.pairInitCodeHash = keccak256(pair);
+    check(`2.1 (R402-2) the pair's init code hash built by the pinned compiler is the audited ${PAIR_INIT_CODE_HASH.slice(0, 10)}…${PAIR_INIT_CODE_HASH.slice(-4)}`, evidence.pairInitCodeHash === PAIR_INIT_CODE_HASH, evidence.pairInitCodeHash);
   }
   const keyDir = join(out, "deployer-key");
   // A fresh throwaway key per run (a keystore left by an earlier run has another password).
@@ -214,13 +250,7 @@ async function main() {
         .replace(/^(cast wallet address --keystore .*)$/, `$1 --password-file ${pwFile}`);
     writeFileSync(pwFile, `dry-run-${Math.random().toString(36).slice(2)}\n`, { mode: 0o600 });
     const run = (step) => sh(step, blocks[`once ${step}`], t(blocks[`once ${step}`]));
-    // The repository, cloned as the document says (read-only from the public GitHub), into the dry run's directory.
-    let r = sh("clone", blocks["once clone"], blocks["once clone"].replace("~/postern-dex", join(out, "postern-dex")));
-    const reviewed = spawnSync("git", ["-C", join(out, "postern-dex"), "merge-base", "--is-ancestor", "a99f761", "origin/main"], { encoding: "utf8" });
-    check("0 the clone succeeds and its main contains the reviewed a99f761", r.status === 0 && reviewed.status === 0, `${r.output.slice(-200)} ${reviewed.stderr}`);
-    const commit = shell("clone-commit", blocks["once clone-commit"], blocks["once clone-commit"].replace("~/postern-dex", join(out, "postern-dex")));
-    check("0 the clone's commit is printed for comparison with the integrator's", commit.status === 0 && /^[0-9a-f]{7,40} \S/.test(commit.output), commit.output);
-    rmSync(join(out, "postern-dex"), { recursive: true, force: true });
+    let r;
     // The line that lists running agents. This dry run is itself started by an agent session, so the line must find
     // one (status 0, something listed); run by a person with no agent on the machine it prints nothing (status 1).
     const agents = shell("no-agents", blocks["once no-agents"], blocks["once no-agents"]);
@@ -238,7 +268,7 @@ async function main() {
     check("2.3 the fee-proof message is the one printed in the document", r.status === 0 && text.includes(`> ${r.output.trim()}`), r.output);
     r = run("fee-proof-page");
     check("2.3 the local signing page is written", r.status === 0 && existsSync(join(out, "fee-proof-page", "index.html")), r.output);
-    const proofFile = join(ROOT, "deployments/fee-address-proof.json");
+    const proofFile = join(REPO, "deployments/fee-address-proof.json");
     const proofBefore = existsSync(proofFile) ? readFileSync(proofFile, "utf8") : null;
     r = run("fee-proof-verify");
     evidence.feeProofRecorded = proofBefore !== null;
@@ -282,7 +312,7 @@ async function main() {
   const key = scope;
   const shared = loadShared();
   const chain = loadChain(key);
-  const plan = planChain(shared, chain, loadArtifacts());
+  const plan = planChain(shared, chain, loadArtifacts(join(REPO, "out")));
   const symbol = chain.nativeCurrency.symbol;
   const token = chain.tokens[0];
   const unit = 10n ** BigInt(token.decimals);
@@ -317,10 +347,21 @@ async function main() {
     const r = sh("public-pre-gate", blocks[`${key} pre-gate`], blocks[`${key} pre-gate`]);
     const fails = r.output.split("\n").filter((l) => l.startsWith("FAIL"));
     evidence.publicPreGate = { status: r.status, fails };
-    if (evidence.feeProofRecorded === true || existsSync(join(ROOT, "deployments/fee-address-proof.json")))
+    if (evidence.feeProofRecorded === true || existsSync(join(REPO, "deployments/fee-address-proof.json")))
       check(`step 1 on the public chain (read-only): PASS with the recorded fee-address proof`, r.status === 0 && /pre: PASS/.test(r.output), fails.join(" | "));
     else
       check(`step 1 on the public chain (read-only): every check passes except the missing fee-address proof (the owner's signature, section 2.3)`, r.status !== 0 && fails.length === 1 && /proof of control of the fee address/.test(fails[0]), `${r.status}: ${fails.join(" | ") || r.output.slice(-300)}`);
+  }
+
+  // Review R402-5: the owner's deployment and prepare commands, untransformed, against the PUBLIC chain (read-only
+  // up to where they stop): each runs the owner tools check itself and prints its PASS before anything else. Today
+  // deploy.sh then stops at the pre gate (no fee-address proof) and prepare at the missing gate report: neither
+  // reaches a key, and nothing is sent.
+  if (!existsSync(join(REPO, "deployments/fee-address-proof.json"))) {
+    const d = sh("public-deploy-dry-run", blocks[`${key} deploy-dry-run`], blocks[`${key} deploy-dry-run`]);
+    check(`${key}-3 (R402-5) deploy.sh against the public chain runs the owner tools check itself (PASS on the tools directory), then stops at the pre gate: nothing was sent`, d.status === 1 && d.output.includes(`== owner tools: PASS (${toolsDir})`) && d.output.indexOf("== owner tools: PASS") < d.output.indexOf("== build") && /the pre gate did not pass; nothing was sent/.test(d.output), d.output.slice(-500));
+    const p = sh("public-prepare", blocks[`${key} prepare`], blocks[`${key} prepare`]);
+    check(`${key}-7 (R402-5) first-deposit prepare against the public chain runs the owner tools check itself (PASS), then stops without printing anything to send`, p.status !== 0 && p.output.includes(`owner tools: PASS (${toolsDir})`) && !/^cast send /m.test(p.output), p.output.slice(-500));
   }
 
   const anvil = spawn(join(binDir, "anvil"), ["--fork-url", forkUrl, "--port", String(port), "--host", "127.0.0.1", "--silent", "--retries", "20", "--fork-retry-backoff", "1500", "--timeout", "60000"], { stdio: ["ignore", "ignore", "inherit"] });
@@ -391,7 +432,7 @@ async function main() {
 
     r = run("deploy-broadcast");
     check(`${key}-4 deploy.sh broadcast: "== sent."`, r.status === 0 && /== sent\./.test(r.output), r.output.slice(-600));
-    const broadcast = JSON.parse(readFileSync(join(ROOT, "broadcast/DeployMultichain.s.sol", String(chain.chain.chainId), "run-latest.json"), "utf8"));
+    const broadcast = JSON.parse(readFileSync(join(REPO, "broadcast/DeployMultichain.s.sol", String(chain.chain.chainId), "run-latest.json"), "utf8"));
     const names = ["factory", "router", "lens"];
     const txs = [];
     for (const [i, receipt] of broadcast.receipts.entries()) {
@@ -541,7 +582,7 @@ async function main() {
     // Cross-check: cost.mjs itself, on the three deployment receipts.
     mkdirSync(join(out, "cost-evidence"), { recursive: true });
     writeFileSync(join(out, "cost-evidence", "evidence.json"), JSON.stringify({ deployment: txs.slice(0, 3).map((x) => ({ step: x.step, gasUsed: x.gasUsed.toString() })) }));
-    const c = spawnSync("node", ["scripts/multichain/cost.mjs", key, "--evidence", join(out, "cost-evidence"), "--out", join(out, "cost-mjs.json")], { cwd: ROOT, encoding: "utf8" });
+    const c = spawnSync(join(binDir, "node"), ["scripts/multichain/cost.mjs", key, "--evidence", join(out, "cost-evidence"), "--out", join(out, "cost-mjs.json")], { cwd: REPO, encoding: "utf8", env: { ...terminal, PATH: `${binDir}:/usr/bin:/bin:/usr/sbin:/sbin` } });
     writeFileSync(join(out, "cost-mjs.log"), `${c.stdout}${c.stderr}`);
     evidence.costMjs = c.status === 0 ? JSON.parse(readFileSync(join(out, "cost-mjs.json"), "utf8")).total : `failed: ${c.stderr.slice(-200)}`;
     check(`cost: today's price read from the public chain for all five transactions`, evidence.cost && !evidence.cost.error, evidence.cost?.error);
