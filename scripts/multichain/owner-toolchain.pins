@@ -17,12 +17,19 @@
 #   one Homebrew publishes at https://formulae.brew.sh/api/formula/libusb.json (and is the blob's own address at
 #   ghcr.io). The Apple-silicon build of Foundry v1.7.1 does not load libusb.
 #
+# solc 0.8.24 (the compiler foundry.toml names; review R402-2), added 2026-11-17 21:50 UTC: the Solidity project's own
+#   macOS build, a universal program (x86_64 and arm64 in one file: the same pin for both platforms), from
+#   https://binaries.soliditylang.org/macosx-amd64/ ; its SHA-256 equals the `sha256` field of that directory's
+#   list.json for 0.8.24+commit.e11b9ed9, and its size (78,981,344 bytes) the `solc-macos` asset of the GitHub release
+#   v0.8.24 of ethereum/solidity. It is the same file forge had fetched into the user's Library folder on this Mac
+#   (same SHA-256), so pinning it changes no bytecode. It is not an archive: the file is installed as it is.
+#
 # Lines: <platform> <kind> <sha256 or -> <name> [<url or text>]
 #   archive: a release archive, checked before it is unpacked.   member: the one file taken from the libusb bottle.
 #   file:    a program inside the tools directory, checked by name at every check.
 #   tree:    the digest of the whole tools directory as owner-toolchain.sh builds it (every file, link, executable bit
 #            and directory), from two independent installs that agreed.
-#   version: the first line `<name> --version` must print ("_" stands for a space).
+#   version: a line that `<program> --version` must print among its first three ("_" stands for a space).
 #
 # To change a pin: download the publisher's artefact yourself, compare it with the publisher's checksum, and have a
 # reviewer repeat it. Never copy a hash from an installed copy.
@@ -36,12 +43,15 @@ darwin-x64 file 1c7745020321c227efe3eb84e1bfe084f2541987fe7fe516a293b1ef9adae0f4
 darwin-x64 file 50f019761f6054085e8d1c952ce4f4c53e8bebdfac90d4993c2e0ebd8915bda2 foundry/anvil
 darwin-x64 file 7abcf39bd37ab251015337ff75304d7555f0d8e88c6e0fbf04bce8ce34636f49 node/bin/node
 darwin-x64 file 53e6b188649a4302ba099673e2840c4d09c0475b59bfa967270175d171e2d4fc libusb/lib/libusb-1.0.0.dylib
-darwin-x64 tree aac26b76c5db8c1eccc9f4b463e6973d77659e0741913033eba9495a07d7cfdc .
-darwin-x64 version - forge forge_Version:_1.7.1
-darwin-x64 version - cast cast_Version:_1.7.1
-darwin-x64 version - anvil anvil_Version:_1.7.1
-darwin-x64 version - node v24.21.0
-darwin-x64 version - npm 11.19.0
+darwin-x64 archive cc2d44c706905ccc382f484625dff61d741e0c24232d226f139a6835fc644f3f solc-macosx-amd64-v0.8.24+commit.e11b9ed9 https://binaries.soliditylang.org/macosx-amd64/solc-macosx-amd64-v0.8.24+commit.e11b9ed9
+darwin-x64 file cc2d44c706905ccc382f484625dff61d741e0c24232d226f139a6835fc644f3f solc/solc-0.8.24
+darwin-x64 tree 3f509861181854da1323978a54b79fb1b416aebb46239afe4001feb6ec82979e .
+darwin-x64 version - bin/forge forge_Version:_1.7.1
+darwin-x64 version - bin/cast cast_Version:_1.7.1
+darwin-x64 version - bin/anvil anvil_Version:_1.7.1
+darwin-x64 version - bin/node v24.21.0
+darwin-x64 version - bin/npm 11.19.0
+darwin-x64 version - solc/solc-0.8.24 Version:_0.8.24+commit.e11b9ed9.Darwin.appleclang
 
 darwin-arm64 archive eacdc67718fac857cad9e19c7f6729dd80de731d09df81856391d093cfcab547 foundry_v1.7.1_darwin_arm64.tar.gz https://github.com/foundry-rs/foundry/releases/download/v1.7.1/foundry_v1.7.1_darwin_arm64.tar.gz
 darwin-arm64 archive bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057 node-v24.21.0-darwin-arm64.tar.gz https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz
@@ -49,9 +59,12 @@ darwin-arm64 file e729589084ca2f1479354353d1ec3d4789451b577f4cdee4e7dc57cae64a38
 darwin-arm64 file eb9a9dc730a0f178556b90d39a30212375ee6e7c754fee96fa95b2723878e220 foundry/cast
 darwin-arm64 file 5c9f9aad323062b1c0421a63595741430acaea150da3611e38c45071e4cf4e28 foundry/anvil
 darwin-arm64 file e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b node/bin/node
-darwin-arm64 tree 7428c4abe2e7853058b3bd4b0b97415f78e5630cba7863bad7127ebbd6e32e68 .
-darwin-arm64 version - forge forge_Version:_1.7.1
-darwin-arm64 version - cast cast_Version:_1.7.1
-darwin-arm64 version - anvil anvil_Version:_1.7.1
-darwin-arm64 version - node v24.21.0
-darwin-arm64 version - npm 11.19.0
+darwin-arm64 archive cc2d44c706905ccc382f484625dff61d741e0c24232d226f139a6835fc644f3f solc-macosx-amd64-v0.8.24+commit.e11b9ed9 https://binaries.soliditylang.org/macosx-amd64/solc-macosx-amd64-v0.8.24+commit.e11b9ed9
+darwin-arm64 file cc2d44c706905ccc382f484625dff61d741e0c24232d226f139a6835fc644f3f solc/solc-0.8.24
+darwin-arm64 tree 6a5a631c6ef5bca23e609f300ccc44f4bbbfcbaf6be45a96e3e7745c9b2b3997 .
+darwin-arm64 version - bin/forge forge_Version:_1.7.1
+darwin-arm64 version - bin/cast cast_Version:_1.7.1
+darwin-arm64 version - bin/anvil anvil_Version:_1.7.1
+darwin-arm64 version - bin/node v24.21.0
+darwin-arm64 version - bin/npm 11.19.0
+darwin-arm64 version - solc/solc-0.8.24 Version:_0.8.24+commit.e11b9ed9.Darwin.appleclang

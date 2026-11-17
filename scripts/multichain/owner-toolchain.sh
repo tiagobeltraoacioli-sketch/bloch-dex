@@ -11,8 +11,12 @@
 # check: refuses (exit 1, lines starting FAIL) unless DIR and everything in it is owned by the user running the
 #   check and closed to group and others, every pinned program has the pinned SHA-256, the whole directory (every
 #   file's SHA-256, every link, every executable bit, every directory name) has the pinned digest, the terminal's
-#   PATH finds forge, cast, anvil, node and npm in DIR/bin, and each program started through its launcher reports the
-#   pinned version. Hashes and permissions are checked first: nothing in DIR is run before they pass.
+#   PATH is exactly DIR/bin followed by macOS's own /usr/bin, /bin, /usr/sbin, /sbin (review R402-1: no other
+#   directory may supply a program to the session), every helper the guide and the kit start by name is found in
+#   those four, no variable that redirects or reconfigures a program is set (R402-6, list below), nothing carries
+#   an access-control list (R402-7), each program started through its launcher reports the pinned version, and forge
+#   reports the pinned compiler inside DIR as the one it will run, offline (R402-2).
+#   Hashes and permissions are checked first: nothing in DIR is run before they pass.
 #   The last line is exactly "owner tools: PASS" only when every check passed and the programs were run.
 #
 # This script runs only programs of macOS itself, by absolute path, and never a program from DIR before DIR passed.
@@ -20,6 +24,7 @@
 # check): the owner's guide uses neither.
 set -uo pipefail
 CALLER_PATH="${PATH:-}"
+CALLER_ENV=$(/usr/bin/env)
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 unset CDPATH BASH_ENV ENV PERL5LIB PERL5OPT PERLLIB PERL5DB GREP_OPTIONS
@@ -30,6 +35,24 @@ umask 077
 HERE=$(cd "${BASH_SOURCE[0]%/*}" && pwd -P) || exit 1
 PINS="$HERE/owner-toolchain.pins"
 TOOLS="forge cast anvil node npm"
+SYSTEM_DIRS="/usr/bin /bin /usr/sbin /sbin"
+# Every program the guide's blocks and the kit's scripts start by bare name besides the five tools (deploy.sh:
+# dirname, grep, mktemp, rm; lib.mjs: git; the guide: git, pgrep, mkdir, python3; interpreters: bash, sh, env).
+# With the PATH rule they can only come from macOS's directories; each is looked up to say so by name.
+HELPERS="bash sh env git mkdir pgrep python3 dirname grep mktemp rm cat"
+# Variables refused while set in the terminal (the guide's commands need none), and why. The launchers drop the
+# same names again right before starting a program. DYLD_* cannot be listed here: macOS removes them before this
+# script starts, as it does before each launcher (/bin/sh), which is what keeps them from the programs.
+#   NODE_*            NODE_OPTIONS / NODE_PATH load other code; NODE_TLS_REJECT_UNAUTHORIZED=0 and NODE_EXTRA_CA_CERTS
+#                     let one network position forge both endpoints of a gate; NODE_COMPILE_CACHE names a code cache
+#   npm_config_* NPM_CONFIG_*   another registry or script settings for npm ci
+#   FOUNDRY_* DAPP_*  another profile, compiler, RPC or signer default for forge and cast
+#   ETH_*             ETH_RPC_URL / ETH_FROM / ETH_KEYSTORE change where and as whom cast sends
+#   *_PROXY *_proxy   every HTTPS read and send through a chosen host
+#   SSL_CERT_* OPENSSL_CONF SSLKEYLOGFILE   other trust roots, or session keys written to a file
+#   GIT_CONFIG* GIT_EXEC_PATH GIT_SSH GIT_SSH_COMMAND GIT_DIR GIT_WORK_TREE   another git program or repository
+#   BASH_ENV ENV PYTHONPATH PYTHONSTARTUP PYTHONHOME PERL5LIB PERL5OPT   code run at the start of bash, python3, perl
+REFUSED_ENV='^((NODE|NPM|npm|FOUNDRY|DAPP|ETH|SSL_CERT|GIT_CONFIG)_[A-Za-z0-9_]*|[A-Za-z_]*_(PROXY|proxy)|OPENSSL_CONF|SSLKEYLOGFILE|GIT_EXEC_PATH|GIT_SSH|GIT_SSH_COMMAND|GIT_DIR|GIT_WORK_TREE|BASH_ENV|ENV|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5LIB|PERL5OPT)='
 
 die() {
   echo "FAIL $*" >&2
@@ -76,6 +99,9 @@ esac
 # A rehearsal for another platform cannot run that platform's programs here.
 [ "$PLATFORM" = "$HOST_PLATFORM" ] || RUN=0
 [ -n "$(pins tree)" ] || die "no pins for the platform $PLATFORM in $PINS"
+# The compiler's place inside the tools directory (the one `file` pin under solc/).
+SOLC=$(pins file | /usr/bin/awk 'index($2, "solc/") == 1 { print $2 }')
+[ -n "$SOLC" ] || die "no compiler pinned for the platform $PLATFORM in $PINS"
 case "$ROOT" in
   /*) ;;
   *) die "give the tools directory as an absolute path (got: $ROOT)" ;;
@@ -103,7 +129,7 @@ tree_digest() {
 
 # check_tree <skip PATH check: 0|1>: prints FAIL lines; returns the number of failures (capped at 1 as status).
 check_tree() {
-  local skip_path="$1" bad=0 line sum name url actual mode owner dir t found out want
+  local skip_path="$1" bad=0 line sum name url actual mode owner dir t found out want entry first ok
   fail() { echo "FAIL $*"; bad=1; }
 
   if [ -L "$ROOT" ] || [ ! -d "$ROOT" ]; then
@@ -128,7 +154,12 @@ check_tree() {
       *[2367]? | *[2367]) fail "the directory $dir above the tools is writable by group or others (mode $mode)" ;;
     esac
     [ ! -L "$dir" ] || fail "$dir above the tools is a link"
+    # An access-control list can grant what the mode bits deny (R402-7): no "allow" entry above the tools.
+    out=$(/bin/ls -lde "$dir" | /usr/bin/tail -n +2 | /usr/bin/grep ' allow ' | /usr/bin/head -2)
+    [ -z "$out" ] || fail "the directory $dir above the tools has an access-control list that allows: $out"
   done
+  out=$(/usr/bin/find "$ROOT" -acl -print 2>&1 | /usr/bin/head -5)
+  [ -z "$out" ] || fail "carries an access-control list (remove it with chmod -N, or install again): $out"
   out=$(/usr/bin/find "$ROOT" ! -user "$ME" -print 2>&1 | /usr/bin/head -5)
   [ -z "$out" ] || fail "not owned by you: $out"
   out=$(/usr/bin/find "$ROOT" ! -type l -perm +022 -print 2>&1 | /usr/bin/head -5)
@@ -157,12 +188,43 @@ EOF
   actual=$(tree_digest "$ROOT")
   [ "$actual" = "$want" ] || fail "the directory as a whole has digest $actual; pinned $want (a file was added, removed or changed: remove the directory and install again)"
 
-  # 4. The terminal's PATH finds the five programs here and nowhere else.
+  # 4. The terminal's PATH: the tools first, then macOS's own four directories, and nothing else; the five programs
+  #    are found here, every helper in macOS's directories.
   if [ "$skip_path" = 0 ]; then
+    first=1
+    while IFS= read -r entry; do
+      if [ "$first" = 1 ]; then
+        first=0
+        [ "$entry" = "$ROOT/bin" ] || fail "this terminal's PATH starts with '$entry', not with $ROOT/bin (paste the PATH line of the guide first)"
+        continue
+      fi
+      ok=0
+      for dir in $SYSTEM_DIRS; do [ "$entry" = "$dir" ] && ok=1; done
+      [ "$ok" = 1 ] || fail "this terminal's PATH has the entry '$entry': only $ROOT/bin and $SYSTEM_DIRS may be in it (paste the PATH line of the guide)"
+    done <<EOF
+$(printf '%s\n' "$CALLER_PATH" | /usr/bin/tr ':' '\n')
+EOF
+    for dir in $SYSTEM_DIRS; do
+      owner=$(/usr/bin/stat -f '%u' "$dir")
+      mode=$(/usr/bin/stat -f '%Lp' "$dir")
+      [ "$owner" = 0 ] && [ ! -L "$dir" ] || fail "$dir is not a directory owned by root"
+      case "$mode" in
+        *[2367]? | *[2367]) fail "$dir is writable by group or others (mode $mode)" ;;
+      esac
+    done
     for t in $TOOLS; do
       found=$(PATH="$CALLER_PATH" type -P "$t" || true)
       [ "$found" = "$ROOT/bin/$t" ] || fail "this terminal's PATH finds $t at '${found:-nowhere}', not at $ROOT/bin/$t (paste the PATH line of the guide first)"
     done
+    for t in $HELPERS; do
+      found=$(PATH="$CALLER_PATH" type -P "$t" || true)
+      ok=0
+      for dir in $SYSTEM_DIRS; do [ "$found" = "$dir/$t" ] && ok=1; done
+      [ "$ok" = 1 ] || fail "this terminal's PATH finds the helper $t at '${found:-nowhere}', not in macOS's own $SYSTEM_DIRS"
+    done
+    # 5. No variable that redirects or reconfigures a program (the list and the reasons are at the top).
+    out=$(printf '%s\n' "$CALLER_ENV" | /usr/bin/grep -E "$REFUSED_ENV" | /usr/bin/cut -d= -f1 | /usr/bin/tr '\n' ' ')
+    [ -z "$out" ] || fail "these variables are set in this terminal and must not be (open a new terminal, or unset them): $out"
   fi
   return $bad
 }
@@ -170,19 +232,31 @@ EOF
 # run_tools: each program through its launcher, from this script (macOS removes DYLD_* variables when a script
 # starts, exactly as when deploy.sh starts forge), compared with the pinned version text.
 run_tools() {
-  local bad=0 sum name url out
+  local bad=0 sum name url out repo
   while read -r sum name url; do
     [ -n "$name" ] || continue
-    # The pinned text is the first line of the program's --version, with "_" for each space.
+    # The pinned text is one of the first three lines of the program's --version, with "_" for each space.
     url=$(echo "$url" | /usr/bin/tr _ ' ')
-    out=$("$ROOT/bin/$name" --version 2>&1 </dev/null | /usr/bin/head -1) || true
-    if [ "$out" != "$url" ]; then
-      echo "FAIL $ROOT/bin/$name --version starts with '$out', not '$url'"
+    out=$("$ROOT/$name" --version 2>&1 </dev/null | /usr/bin/head -3) || true
+    if ! printf '%s\n' "$out" | /usr/bin/grep -qxF "$url"; then
+      echo "FAIL $ROOT/$name --version does not print the line '$url' (it starts: $(printf '%s' "$out" | /usr/bin/head -1))"
       bad=1
     fi
   done <<EOF
 $(pins version)
 EOF
+  # The compiler forge will run (R402-2): asked of forge itself, in this repository (whose foundry.toml names the
+  # version): it must be the pinned file inside the tools directory, with fetching another one switched off.
+  repo=$(cd "$HERE/../.." && pwd -P)
+  out=$(cd "$repo" && "$ROOT/bin/forge" config --json 2>&1 </dev/null) || true
+  if ! printf '%s\n' "$out" | /usr/bin/grep -qxF "  \"solc\": \"$ROOT/$SOLC\","; then
+    echo "FAIL forge would not compile with $ROOT/$SOLC: forge config says: $(printf '%s\n' "$out" | /usr/bin/grep '"solc"' | /usr/bin/head -1)"
+    bad=1
+  fi
+  if ! printf '%s\n' "$out" | /usr/bin/grep -qxF '  "offline": true,'; then
+    echo "FAIL forge is not offline (it could fetch or pick another compiler)"
+    bad=1
+  fi
   return $bad
 }
 
@@ -280,6 +354,11 @@ if [ -n "$A" ]; then
   /usr/bin/tar -xzf "$IN/$A" -C "$IN/libusb" "$MEMBER" || abort "cannot unpack $MEMBER from $A"
   /bin/mv "$IN/libusb/$MEMBER" "$ROOT/libusb/lib/libusb-1.0.0.dylib" || abort "cannot place the libusb library"
 fi
+A=$(archive_of solc-)
+[ -n "$A" ] || abort "no compiler pinned for $PLATFORM"
+/bin/mkdir "$ROOT/solc" || abort "cannot create the compiler's directory"
+/bin/mv "$IN/$A" "$ROOT/$SOLC" || abort "cannot place the compiler"
+/bin/chmod 700 "$ROOT/$SOLC" || abort "cannot set the compiler's access"
 /bin/rm -rf "$IN"
 
 # 3. The launchers (the only files not taken from an archive; their text is fixed here and covered by the pinned
@@ -287,11 +366,21 @@ fi
 #    launcher starts its program with exactly the one library path below and nothing injected. The Foundry binaries
 #    for Intel Macs look for libusb at a Homebrew path; the launcher points them at this directory's verified copy
 #    (on Apple silicon the path does not exist and nothing is loaded from it).
-for t in forge cast anvil; do
-  printf '#!/bin/sh\nd=$(cd "${0%%/*}/.." && pwd -P) || exit 1\nDYLD_LIBRARY_PATH="$d/libusb/lib" exec "$d/foundry/%s" "$@"\n' "$t" > "$ROOT/bin/$t" || abort "cannot write the launcher of $t"
+#    Every launcher first drops the variables of REFUSED_ENV that reach a program (R402-6). The forge launcher
+#    names the compiler: the pinned file in this directory, and offline, so forge neither uses the copy in the
+#    user's Library folder nor fetches one (R402-2).
+SCRUB='for v in $(/usr/bin/env | /usr/bin/sed -nE '"'"'s/^((NODE|NPM|npm|FOUNDRY|DAPP|ETH|SSL_CERT|GIT_CONFIG)_[A-Za-z0-9_]*|[A-Za-z_]*_(PROXY|proxy)|OPENSSL_CONF|SSLKEYLOGFILE|GIT_EXEC_PATH|GIT_SSH|GIT_SSH_COMMAND|GIT_DIR|GIT_WORK_TREE|BASH_ENV|ENV|PYTHONPATH|PYTHONSTARTUP|PYTHONHOME|PERL5LIB|PERL5OPT)=.*/\1/p'"'"'); do unset "$v"; done'
+HEAD='d=$(cd "${0%/*}/.." && pwd -P) || exit 1'
+launcher() {
+  # $1: name, $2: the last line
+  printf '#!/bin/sh\n%s\n%s\n%s\n' "$HEAD" "$SCRUB" "$2" > "$ROOT/bin/$1" || abort "cannot write the launcher of $1"
+}
+launcher forge "FOUNDRY_SOLC=\"\$d/$SOLC\" FOUNDRY_OFFLINE=true DYLD_LIBRARY_PATH=\"\$d/libusb/lib\" exec \"\$d/foundry/forge\" \"\$@\""
+for t in cast anvil; do
+  launcher "$t" "DYLD_LIBRARY_PATH=\"\$d/libusb/lib\" exec \"\$d/foundry/$t\" \"\$@\""
 done
-printf '#!/bin/sh\nd=$(cd "${0%%/*}/.." && pwd -P) || exit 1\nunset NODE_OPTIONS NODE_PATH\nexec "$d/node/bin/node" "$@"\n' > "$ROOT/bin/node" || abort "cannot write the launcher of node"
-printf '#!/bin/sh\nd=$(cd "${0%%/*}/.." && pwd -P) || exit 1\nunset NODE_OPTIONS NODE_PATH\nexec "$d/node/bin/node" "$d/node/lib/node_modules/npm/bin/npm-cli.js" "$@"\n' > "$ROOT/bin/npm" || abort "cannot write the launcher of npm"
+launcher node 'exec "$d/node/bin/node" "$@"'
+launcher npm 'exec "$d/node/bin/node" "$d/node/lib/node_modules/npm/bin/npm-cli.js" "$@"'
 /bin/chmod -R go-rwx "$ROOT" || abort "cannot close the directory to group and others"
 /bin/chmod 700 "$ROOT" "$ROOT/bin"/* || abort "cannot set the launchers' access"
 
