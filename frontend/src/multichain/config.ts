@@ -30,7 +30,21 @@ const LOOPBACK = /^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped JSON, checked field by field
 type AnyRecord = Record<string, any>;
 
-export type ChainToken = { address: Address; symbol: string; decimals: number; codeHash: Hex };
+/**
+ * `symbol` is the token contract's own symbol (what `--pair` and the pins use). `label`, when the network file
+ * gives one, is what the page SHOWS instead, with `note` as one line about it: a token whose symbol says more
+ * than is true is never shown under that symbol alone (BNB Smart Chain: "USDC (Binance-Peg)", not "USDC").
+ */
+export type ChainToken = {
+  address: Address;
+  symbol: string;
+  decimals: number;
+  codeHash: Hex;
+  label?: string;
+  note?: string;
+};
+/** The name the page shows for a token. */
+export const shownSymbol = (t: ChainToken): string => t.label ?? t.symbol;
 export type Chain = {
   key: string;
   network: MainnetNetwork;
@@ -46,6 +60,8 @@ export type Chain = {
   confirmationNote: string;
   /** The network file's `confirmation.blockSeconds` (the measured block time), or null without the block. */
   blockSeconds: number | null;
+  /** One line per listed token that carries a note (network file `tokens[].note`), shown with the route. */
+  tokenNotes: string[];
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
   load: () => Promise<MainnetState>;
 };
@@ -59,7 +75,31 @@ function token(value: AnyRecord, field: string): ChainToken {
   refuse(HASH.test(value.codeHash ?? ''), `${field}.codeHash`);
   const decimals = value.decimals ?? 18;
   refuse(Number.isInteger(decimals) && decimals >= 0 && decimals <= 36, `${field}.decimals`);
-  return { address: value.address, symbol: value.symbol, decimals, codeHash: value.codeHash };
+  const shown: { label?: string; note?: string } = {};
+  if (value.label !== undefined || value.note !== undefined) {
+    refuse(
+      typeof value.label === 'string' &&
+        /^[A-Za-z0-9. ()-]{2,24}$/.test(value.label) &&
+        value.label.startsWith(value.symbol),
+      `${field}.label`,
+    );
+    refuse(
+      typeof value.note === 'string' &&
+        value.note.length >= 10 &&
+        value.note.length <= 160 &&
+        !/[<>\n]/.test(value.note),
+      `${field}.note`,
+    );
+    shown.label = value.label;
+    shown.note = value.note;
+  }
+  return {
+    address: value.address,
+    symbol: value.symbol,
+    decimals,
+    codeHash: value.codeHash,
+    ...shown,
+  };
 }
 
 function url(value: unknown, field: string, rehearsal: boolean): string {
@@ -288,7 +328,8 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     confirmation,
     confirmationNote,
     blockSeconds,
-    planned: { caps: [], pairs: tokens.map((t) => [wrapped.symbol, t.symbol]) },
+    tokenNotes: tokens.flatMap((t) => (t.note ? [t.note] : [])),
+    planned: { caps: [], pairs: tokens.map((t) => [wrapped.symbol, shownSymbol(t)]) },
   };
   const state = parseRecord(recordInput, chain, rehearsal);
   return { ...chain, load: () => Promise.resolve(state) };
@@ -389,7 +430,8 @@ export function parseRecord(
     codeHashes,
     tokens: [...listed.values()].map((t) => ({
       address: t.address,
-      symbol: t.symbol,
+      // What the route shows: the label where the network file gives one.
+      symbol: shownSymbol(t),
       cap: caps.get(t.address) ?? 0n,
       wrapped: t.address === chain.wrapped.address,
     })),

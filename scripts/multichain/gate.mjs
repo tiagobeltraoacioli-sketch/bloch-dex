@@ -9,7 +9,12 @@
 // pre   before deploying: the chain is the pinned one (chain id and genesis hash, on every endpoint that serves
 //       block 0, at least one), `finalized` is served, the CREATE2 deployer, the wrapped native token, every listed
 //       token and Multicall3 have the pinned code and answer name()/symbol()/decimals() as listed, the fee address
-//       is an externally owned account (no code, or an EIP-7702 delegation, which is reported), the depositing
+//       is an externally owned account: no code, or an EIP-7702 delegation to an IDENTIFIED delegate
+//       (deployments/multichain.json feeTo.delegation.accepted, with the code recorded for this chain; any other
+//       delegate fails the gate; the designator seen is recorded and a WARNING is printed when it is not the one
+//       recorded in that file), the owner's signed proof of control of the fee address is recorded and valid
+//       (deployments/fee-address-proof.json, verified offline by fee-proof.mjs; required on a public chain, not
+//       on a loopback rehearsal), the depositing
 //       account (the factory's first depositor) is a plain key account with NO code and NO delegation that has
 //       never sent a transaction on this chain while the factory is not deployed (a dedicated key: the pair
 //       accepts a first mint by transaction origin, review R328-1), and each planned address is empty or already
@@ -36,8 +41,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse, retrying,
+  EIP7702_PREFIX, EMPTY_CODE_HASH, FEE_PROOF_FILE, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, feeDelegationOn, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse, retrying,
 } from "./lib.mjs";
+import { loadFeeProof } from "./fee-proof.mjs";
 import { openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
@@ -81,8 +87,14 @@ export function gateConfig(shared, chain) {
       wrappedNative: { address: chain.wrappedNative.address, symbol: chain.wrappedNative.symbol, codeHash: chain.wrappedNative.codeHash },
       tokens: chain.tokens.map((t) => ({ address: t.address, symbol: t.symbol, decimals: t.decimals, codeHash: t.codeHash })),
       multicall3: chain.multicall3,
-      feeTo: { address: shared.feeTo.address, mustBe: "externally owned account (an EIP-7702 delegation is reported, not refused)" },
-      firstDepositor: { mustBe: "a dedicated key account: not the fee address, no code, no EIP-7702 delegation, no transaction on the chain before the factory is deployed" },
+      feeTo: {
+        address: shared.feeTo.address,
+        mustBe: "externally owned account; an EIP-7702 delegation only to an identified delegate holding its recorded code (any other is refused); a designator other than the recorded one is a warning",
+        acceptedDelegates: shared.feeTo.delegation.accepted.map((a) => ({ delegate: a.delegate, name: a.name, codeHash: a.codeHash[chain.chain.key] ?? null })),
+        recordedDesignator: shared.feeTo.delegation.recorded[chain.chain.key] ?? null,
+        proofOfControl: `${FEE_PROOF_FILE}: required by the pre gate on the public chain`,
+      },
+      firstDepositor: { mustBe: "the address check-depositor.mjs recorded: a dedicated key account, not the fee address, no code, no EIP-7702 delegation, no transaction on the chain before the factory is deployed" },
       pairInitCodeHash: shared.source.pairInitCodeHash,
     },
     ownerChoices: { firstDepositor: shared.firstDepositor, reserveCaps: chain.reserveCaps, openingPrice: chain.openingPrice },
@@ -95,9 +107,10 @@ export function gateConfig(shared, chain) {
  * Evaluate the gate. `request(method, params)` is one endpoint's JSON-RPC; `others` are further endpoints that must
  * agree on the chain. Returns the report; `report.decision` is "pass" or "fail".
  */
-export async function evaluateGate({ shared, chain, plan, phase, request, others = [], identityOnly = [], rehearsal = false, openings = {} }) {
+export async function evaluateGate({ shared, chain, plan, phase, request, others = [], identityOnly = [], rehearsal = false, openings = {}, feeProof = null }) {
   const checks = [];
   const waiting = [];
+  const warnings = [];
   const check = (name, ok, detail) => {
     checks.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });
     return Boolean(ok);
@@ -143,10 +156,22 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
   check("Multicall3 holds the pinned code", (await codeAt(chain.multicall3.address)) === chain.multicall3.codeHash);
   const multicallChain = await soft(() => call(chain.multicall3.address, "getChainId", [], at));
   check("Multicall3 answers getChainId() with the chain id", typeof multicallChain === "bigint" && Number(multicallChain) === chain.chain.chainId, typeof multicallChain === "bigint" ? multicallChain.toString() : multicallChain);
+  // The fee address. Minting fee shares to it and paying tokens to it never runs code at it; redeeming to it in
+  // the native coin does (docs/MULTICHAIN-DEPLOY.md section 6). A delegation is accepted only to an identified
+  // delegate that holds the code recorded for this chain; the designator seen is recorded either way.
   const feeCode = await request("eth_getCode", [shared.feeTo.address, at]);
-  const delegated = feeCode.toLowerCase().startsWith(EIP7702_PREFIX) && feeCode.length === 2 + 46;
-  check("the fee address is an externally owned account (no code, or an EIP-7702 delegation)", feeCode === "0x" || delegated, feeCode.slice(0, 60));
-  const feeTo = { address: shared.feeTo.address, code: feeCode === "0x" ? "none" : delegated ? "EIP-7702 delegation" : "contract", delegate: delegated ? `0x${feeCode.slice(8)}` : null };
+  const named = /^0xef0100[0-9a-f]{40}$/i.test(feeCode) ? `0x${feeCode.slice(8).toLowerCase()}` : null;
+  const delegation = feeDelegationOn(shared, chain.chain.key, feeCode, named ? await codeAt(named) : null);
+  check("the fee address is an externally owned account: no code, or an EIP-7702 delegation to an identified delegate that holds its recorded code", delegation.accepted, delegation.problem ?? undefined);
+  if (delegation.accepted && delegation.changed)
+    warnings.push(`the fee address's EIP-7702 designator on ${chain.chain.name} is ${delegation.designator ?? "none (no delegation)"}; deployments/multichain.json records ${delegation.recorded ?? "none"}. ${delegation.kind === "delegation" ? `The delegate is the identified ${delegation.name}, so this is accepted` : "No delegation is always accepted"}; update feeTo.delegation.recorded if this is what the owner intends.`);
+  const feeTo = { address: shared.feeTo.address, code: delegation.kind === "none" ? "none" : delegation.kind === "delegation" ? "EIP-7702 delegation" : "contract", delegate: delegation.delegate, designator: delegation.designator, delegateName: delegation.name, recordedDesignator: delegation.recorded, differsFromRecorded: delegation.changed };
+  // Proof of control of the fee address: one EIP-191 message signed by its key, verified offline (fee-proof.mjs).
+  // The factory's feeTo can never be changed, so no public chain is deployed to without it. A loopback rehearsal
+  // does not need it (nobody can sign for the owner there) and says so.
+  feeTo.proofOfControl = feeProof?.valid === true ? "valid" : rehearsal ? "not required (rehearsal)" : "missing or not valid";
+  if (phase === "pre" && !rehearsal)
+    check(`the owner's signed proof of control of the fee address is recorded and valid (${FEE_PROOF_FILE})`, feeProof?.valid === true, feeProof?.problems ?? ["no proof was given to the gate"]);
 
   // 3. The deployment.
   const contracts = {};
@@ -260,6 +285,7 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       pairs,
       l2Only: { ...shared.l2Only },
       waiting,
+      warnings,
       checks,
       failed,
     };
@@ -301,7 +327,8 @@ export async function main(argv) {
   // A later run of the post gate needs the opening transactions again: those of the report already at --out (same
   // chain, same factory) are used when the option does not name the pair. They are verified again like any other.
   const openings = { ...previousOpenings(options, chain, plan), ...options.openings };
-  const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, identityOnly, rehearsal: options.rehearsal, openings });
+  const feeProof = await loadFeeProof(shared);
+  const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, identityOnly, rehearsal: options.rehearsal, openings, feeProof });
   if (options.out) writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
   for (const c of report.checks) console.log(`${c.ok ? "ok  " : "FAIL"} ${c.name}${c.ok || c.detail === undefined ? "" : ` (${JSON.stringify(c.detail)})`}`);
   for (const p of report.pairs) {
@@ -309,8 +336,9 @@ export async function main(argv) {
     if (p.opening?.proven) console.log(`  opened by ${p.opening.by} in ${p.opening.transaction} (block ${p.opening.blockNumber}): ${p.opening.joined.native} native + ${p.opening.joined.token} token base units joined${p.opening.gift.native !== "0" || p.opening.gift.token !== "0" ? `, of which ${p.opening.gift.native} + ${p.opening.gift.token} were at the pair's address before the deposit (a gift to the pool; opening price moved by ${(p.opening.priceShiftBps / 100).toFixed(2)}%)` : ""}`);
     else if (p.state === "open") console.log(`  NOT PROVEN who opened this pool: ${p.opening?.problems.join("; ")}`);
   }
+  for (const w of report.warnings) console.log(`WARNING: ${w}`);
   if (report.waiting.length) console.log(`WAIT: ${report.waiting.join(", ")} ${report.waiting.length === 1 ? "has" : "have"} the planned code at the latest block but not at the finalized block yet. Nothing is wrong; run this gate again later (docs/MULTICHAIN-DEPLOY.md gives the wait per chain).`);
-  console.log(`multichain gate ${options.key} ${options.phase}: ${report.decision.toUpperCase()}${report.finalized ? ` at finalized block ${report.finalized.number}` : ""}${plan.reference ? " (reference plan)" : ""}${report.feeTo?.delegate ? `; fee address has an EIP-7702 delegation to ${report.feeTo.delegate}` : ""}`);
+  console.log(`multichain gate ${options.key} ${options.phase}: ${report.decision.toUpperCase()}${report.finalized ? ` at finalized block ${report.finalized.number}` : ""}${plan.reference ? " (reference plan)" : ""}${report.feeTo?.delegate ? `; fee address has an EIP-7702 delegation to ${report.feeTo.delegate}${report.feeTo.delegateName ? ` (${report.feeTo.delegateName})` : " (NOT IDENTIFIED)"}` : ""}; fee address proof of control: ${report.feeTo?.proofOfControl ?? "not read"}`);
   return report.decision === "pass" ? 0 : 1;
 }
 

@@ -80,8 +80,60 @@
       "tokenB": "USDC"
     }
   ],
-  "reserveCaps": "TBD-owner",
-  "openingPrice": "TBD-owner",
+  "reserveCaps": [],
+  "reserveCapsReason": "No caps (coordinator's technical decision, 2026-11-17): an ordinary constant-product exchange. The caps exist on the Bloch L2 to bound what a fault of the bridge can drain through a pool of a bridged asset; the assets listed here are the chain's own native coin and a token issued on this chain, so that risk does not exist, and a pool capped on both sides would leak its fees to whoever calls skim first (docs/MULTICHAIN-DEPLOY.md section 2).",
+  "openingPrice": {
+    "rule": "market",
+    "maxDeviationBps": 50,
+    "referencesAgreeBps": 100,
+    "minimumNative": "0.1",
+    "minimumReason": "At least 0.1 ETH and its USDC at the market price: as OP Mainnet. Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+    "references": [
+      {
+        "kind": "chainlink",
+        "name": "Chainlink ETH / USD over USDC / USD",
+        "base": {
+          "proxy": "0x3c6Cd9Cc7c7a4c2Cf5a82734CD249D7D593354dA",
+          "description": "ETH / USD",
+          "decimals": 8,
+          "heartbeatSeconds": 86400,
+          "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+        },
+        "quote": {
+          "proxy": "0xAADAa473C1bDF7317ec07c915680Af29DeBfdCb5",
+          "description": "USDC / USD",
+          "decimals": 8,
+          "heartbeatSeconds": 86400,
+          "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+        },
+        "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+        "sourceChecked": {
+          "url": "https://reference-data-directory.vercel.app/feeds-ethereum-mainnet-linea-1.json",
+          "fetched": "2026-11-17",
+          "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): ETH / USD path eth-usd, USDC / USD path usdc-usd"
+        }
+      },
+      {
+        "kind": "v3-twap",
+        "name": "PancakeSwap v3 WETH/USDC 0.05% pool, 5-minute mean",
+        "protocol": "PancakeSwap v3",
+        "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+        "factoryCodeHash": "0x8191d3ab1d55d3da9822199f28865415c99566b6f1aee4a4b16713f57930678c",
+        "fee": 500,
+        "pool": "0xd5539D0360438a66661148c633A9F0965E482845",
+        "poolCodeHash": "0xcb38d298b19b18e977bdacdc09ecc131544ce7d49eb16d7fe7319372a632d7d4",
+        "windowSeconds": 300,
+        "minimumWrapped": "5",
+        "chosen": "the 0.05% pool is the deepest of the publisher's pools (18.8 WETH when measured): THIN; Uniswap publishes no v3 deployment page for Linea",
+        "source": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+        "sourceChecked": {
+          "url": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+          "fetched": "2026-11-17",
+          "found": "the publisher's address table, row PancakeV3Factory, column \"BSC, ETH, ARB, Linea, Base, opBNB\"; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+        }
+      }
+    ]
+  },
   "notes": [
     "Multicall3 at the canonical address has another runtime code hash than on the other five chains (another build); its interface is checked by call"
   ],

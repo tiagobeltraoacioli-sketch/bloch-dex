@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "domain": "postern.dex.multichain.v1",
-  "note": "The DEX on public EVM chains other than the Bloch L2. Contracts are the Bloch L2 release candidate byte for byte; this file and deployments/<chain>/chain.json hold every chain-specific value. TBD-owner marks an economic choice only the owner can make; tools refuse to plan a real deployment while one is left.",
+  "note": "The DEX on public EVM chains other than the Bloch L2. Contracts are the Bloch L2 release candidate byte for byte; this file and deployments/<chain>/chain.json hold every chain-specific value. TBD-owner marks a choice only the owner can make; tools refuse to plan a real deployment while one is left. firstDepositor is written by scripts/multichain/check-depositor.mjs --record, never by hand.",
   "source": {
     "compiler": {
       "solc": "0.8.24",
@@ -20,9 +20,183 @@
   },
   "feeTo": {
     "address": "0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544",
-    "kind": "externally owned address (owner's choice, 2026-11-16)"
+    "kind": "externally owned address (owner's choice, 2026-11-16)",
+    "proofOfControl": {
+      "file": "deployments/fee-address-proof.json",
+      "domain": "postern.dex.multichain.fee-address-proof.v1",
+      "rule": "one EIP-191 signed message by the address's own key, verified offline by scripts/multichain/fee-proof.mjs; the pre gate of every chain refuses without it"
+    },
+    "delegation": {
+      "rule": "EIP-7702: a delegation at the fee address is accepted only to a delegate listed under `accepted` (a published wallet delegator with verified source), holding the code hash recorded for the chain; the gate refuses any other delegate, records the designator it saw, and warns when it differs from `recorded`",
+      "accepted": [
+        {
+          "delegate": "0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
+          "name": "MetaMask EIP7702StatelessDeleGator 1.3.0",
+          "what": "The delegator that the MetaMask wallet sets on an account that is switched to a smart account (MetaMask Delegation Framework). Stateless: no owner and no signer other than the account's own key; execute and redeemDelegations are callable only by the ERC-4337 EntryPoint or the account itself, executeFromExecutor only by the DelegationManager, and both of those paths need a signature of the account's key (a user operation, or a delegation the key signed).",
+          "codeBytes": 11185,
+          "codeHash": {
+            "op-mainnet": "0x076ce337739f2c16aff0d81341b32ec5826a0050060e54b1346f36c79d89b246",
+            "base": "0x6af675ac126c441bec5d5013da3331a52e7465fc0d5a662a8708a9f33ce497ba",
+            "arbitrum-one": "0xa6603bc6f9f203be551ce8fcfe13b7802e3b6574828780b4c4fe05d1768d17de",
+            "linea": "0xeef4fc75d341d7b9b0ae6748cb847a4e6558f34e0d9f441b636c39e82b9a6082",
+            "bnb-smart-chain": "0x2f40923fc79da9330c663341d8a52823ea02372b7da66175a0a9bfc76270d55f",
+            "ethereum": "0x0b77e469f5603ed1e9ff0e7ee56238b61a8cf7cb3185b33e53e2eeaad50109ab"
+          },
+          "codeHashNote": "the runtime code differs per chain only in its immutables (the cached EIP-712 domain holds the chain id); 11,185 bytes on all six; each hash read from two endpoints on 2026-11-17",
+          "immutablesOnBase": {
+            "delegationManager": "0xdb9B1e94B5b69Df7e401DDbedE43491141047dB3",
+            "entryPoint": "0x0000000071727De22E5E9d8BAf0edAc6f37da032"
+          },
+          "source": "https://github.com/MetaMask/delegation-framework/blob/main/documents/Deployments.md",
+          "sourceChecked": {
+            "url": "https://raw.githubusercontent.com/MetaMask/delegation-framework/main/documents/Deployments.md",
+            "fetched": "2026-11-17",
+            "found": "section v1.3.0, line \"EIP7702StatelessDeleGatorImpl: 0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B\"; the chain list of the same page names Ethereum, Binance Smart Chain, Optimism, Arbitrum One, Linea and Base"
+          },
+          "verifiedSource": {
+            "url": "https://sourcify.dev/server/v2/contract/8453/0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
+            "fetched": "2026-11-17",
+            "found": "exact match of creation and runtime code on chains 8453, 1, 10, 42161, 59144 and 56: src/EIP7702/EIP7702StatelessDeleGator.sol:EIP7702StatelessDeleGator, solc 0.8.23, the same 53 source files on Base and Ethereum"
+          }
+        }
+      ],
+      "recorded": {
+        "op-mainnet": null,
+        "base": "0xef010063c0c19a282a1b52b07dd5a65b58948a07dae32b",
+        "arbitrum-one": null,
+        "linea": null,
+        "bnb-smart-chain": null,
+        "ethereum": null
+      },
+      "recordedAt": "2026-11-17"
+    }
   },
-  "firstDepositor": "TBD-owner",
+  "firstDepositor": "0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3",
+  "firstDepositorCheck": {
+    "address": "0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3",
+    "tool": "scripts/multichain/check-depositor.mjs",
+    "at": "2026-11-17T02:01:57Z",
+    "found": "no code, no EIP-7702 delegation, nonce 0 and no pending transaction on every endpoint listed; not the fee address, and not an address written under deployments/",
+    "chains": {
+      "op-mainnet": [
+        {
+          "endpoint": "mainnet.optimism.io",
+          "block": 159641044,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "optimism-rpc.publicnode.com",
+          "block": 159641046,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        }
+      ],
+      "base": [
+        {
+          "endpoint": "mainnet.base.org",
+          "block": 58452504,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "base-rpc.publicnode.com",
+          "block": 58452511,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        }
+      ],
+      "arbitrum-one": [
+        {
+          "endpoint": "arb1.arbitrum.io",
+          "block": 524912323,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "arbitrum-one.public.blastapi.io",
+          "block": 524912331,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "arbitrum-one-rpc.publicnode.com",
+          "block": 524912339,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        }
+      ],
+      "linea": [
+        {
+          "endpoint": "rpc.linea.build",
+          "block": 32628057,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "linea.drpc.org",
+          "block": 32628057,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "linea-rpc.publicnode.com",
+          "block": 32628057,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        }
+      ],
+      "bnb-smart-chain": [
+        {
+          "endpoint": "bsc-rpc.publicnode.com",
+          "block": 134036003,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "bsc-mainnet.public.blastapi.io",
+          "block": 134036024,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "bsc-dataseed.bnbchain.org",
+          "block": 134036029,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        }
+      ],
+      "ethereum": [
+        {
+          "endpoint": "ethereum-rpc.publicnode.com",
+          "block": 26431646,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "eth.drpc.org",
+          "block": 26431646,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        }
+      ]
+    }
+  },
   "chains": [
     "op-mainnet",
     "base",

@@ -1,0 +1,34 @@
+PosternDEX
+Copyright (C) 2026 TBD-owner
+
+Licences: see LICENSE (which path is under which licence) and docs/LICENSING.md (why).
+
+This product includes software derived from the following works.
+
+1. Uniswap V2 Core (package @uniswap/v2-core, https://github.com/Uniswap/v2-core)
+   Licence: GPL-3.0-or-later (the package's own declaration; its LICENSE file is the GNU GPL version 3).
+   Derived here (Solidity 0.8.24 ports with the changes listed in docs/AUDIT-SCOPE-DEX.md section 3):
+     contracts/UniswapV2Pair.sol, contracts/UniswapV2ERC20.sol, contracts/UniswapV2Factory.sol,
+     contracts/libraries/Math.sol, contracts/libraries/UQ112x112.sol (both "ported verbatim"),
+     contracts/interfaces/IUniswapV2Pair.sol, IUniswapV2ERC20.sol, IUniswapV2Factory.sol, IUniswapV2Callee.sol,
+     IERC20.sol.
+
+2. Uniswap V2 Periphery (package @uniswap/v2-periphery, https://github.com/Uniswap/v2-periphery)
+   Licence: GPL-3.0-or-later (the package's own declaration; its LICENSE file is the GNU GPL version 3).
+   Derived here: contracts/periphery/BDexRouter.sol (from UniswapV2Router02), contracts/periphery/BDexLibrary.sol
+   (from UniswapV2Library), contracts/periphery/interfaces/IBDexRouter.sol, IWBLCH.sol.
+
+   Changes made in this repository to both works: 2026, see `git log -- contracts` and docs/AUDIT-SCOPE-DEX.md.
+
+The other files under contracts/ (BDexLens.sol, TreasuryFeeCollector.sol, assets/BlochAsset.sol,
+assets/WBLCH.sol) were written for this project. They are compiled and distributed together with the derived
+files and are licensed under GPL-3.0-or-later with them.
+
+3. Bridge token sources under test/vendor/bridge-v3/ are verbatim copies from the project's own bridge
+   repository, for tests only (test/vendor/bridge-v3/SOURCE.txt).
+
+4. The frontend bundles third-party packages, each under its own licence; the list and the licence texts are in
+   frontend/public/THIRD-PARTY-NOTICES.txt. Among them:
+     Inter (font), Copyright (c) The Inter Project Authors, SIL Open Font License 1.1 (@fontsource-variable/inter).
+     Reown AppKit and WalletConnect: Portions (c) 2025 Reown, Inc. All Rights Reserved (Reown Community License
+     Agreement and WalletConnect Community License Agreement; not open-source licences).

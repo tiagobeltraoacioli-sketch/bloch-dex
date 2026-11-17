@@ -3,8 +3,10 @@
 //
 //   node scripts/multichain/plan.mjs <chain>|all [--reference] [--env] [--json]
 //
-// --reference  every owner choice that is still TBD-owner takes its reference rehearsal value (the fee address
-//              as first depositor, no reserve caps); such a plan is marked `reference: true` and deploy.sh refuses to broadcast it.
+// --reference  every owner choice that is still TBD-owner takes its reference rehearsal value (the keyless reference
+//              address as first depositor, no reserve caps); such a plan is marked `reference: true` and deploy.sh
+//              refuses to broadcast it. With every choice made (as committed: the owner's depositing account,
+//              recorded by check-depositor.mjs, and no caps) the option changes nothing.
 // --env        print the MC_* environment of script/DeployMultichain.s.sol (one chain).
 // --json       print the plan as JSON (without transaction data).
 // --write-gate-config  write deployments/<chain>/gate.json (the gate's pins and switches; no plan, so it is the same

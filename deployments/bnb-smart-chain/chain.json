@@ -41,13 +41,15 @@
       "name": "USD Coin",
       "decimals": 18,
       "codeHash": "0x56069ff2fd59ae482f7984aa894b6d3bc84cb910354dcda9cd6c828d61526914",
-      "kind": "NOT Circle-issued: Binance-Peg USD Coin (a token issued by Binance against USDC it holds), 18 decimals; upgradeable proxy. Circle issues no native USDC on BNB Smart Chain. Listing it is an owner decision",
+      "kind": "NOT Circle-issued: Binance-Peg USD Coin (a token issued by Binance against USDC it holds), 18 decimals; upgradeable proxy. Circle issues no native USDC on BNB Smart Chain. Listed under the label \"USDC (Binance-Peg)\", never as plain USDC (coordinator's decision, 2026-11-17)",
       "source": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
       "sourceChecked": {
         "url": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
         "fetched": "2026-11-16",
         "found": "Binance's public network list, coin USDC, network BSC: the Binance-Peg token; Circle's table has no BNB Smart Chain row"
-      }
+      },
+      "label": "USDC (Binance-Peg)",
+      "note": "USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals."
     }
   ],
   "multicall3": {
@@ -78,8 +80,60 @@
       "tokenB": "USDC"
     }
   ],
-  "reserveCaps": "TBD-owner",
-  "openingPrice": "TBD-owner",
+  "reserveCaps": [],
+  "reserveCapsReason": "No caps (coordinator's technical decision, 2026-11-17): an ordinary constant-product exchange. The caps exist on the Bloch L2 to bound what a fault of the bridge can drain through a pool of a bridged asset; the assets listed here are the chain's own native coin and a token issued on this chain, so that risk does not exist, and a pool capped on both sides would leak its fees to whoever calls skim first (docs/MULTICHAIN-DEPLOY.md section 2).",
+  "openingPrice": {
+    "rule": "market",
+    "maxDeviationBps": 50,
+    "referencesAgreeBps": 100,
+    "minimumNative": "0.5",
+    "minimumReason": "At least 0.5 BNB and its USDC at the market price: as OP Mainnet, in BNB (0.5 BNB was about 296 USD when measured). Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+    "references": [
+      {
+        "kind": "chainlink",
+        "name": "Chainlink BNB / USD over USDC / USD",
+        "base": {
+          "proxy": "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE",
+          "description": "BNB / USD",
+          "decimals": 8,
+          "heartbeatSeconds": 27,
+          "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+        },
+        "quote": {
+          "proxy": "0x51597f405303C4377E36123cBc172b13269EA163",
+          "description": "USDC / USD",
+          "decimals": 8,
+          "heartbeatSeconds": 900,
+          "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+        },
+        "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+        "sourceChecked": {
+          "url": "https://reference-data-directory.vercel.app/feeds-bsc-mainnet.json",
+          "fetched": "2026-11-17",
+          "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): BNB / USD path bnb-usd, USDC / USD path usdc-usd"
+        }
+      },
+      {
+        "kind": "v3-twap",
+        "name": "PancakeSwap v3 WBNB/USDC 0.01% pool, 5-minute mean",
+        "protocol": "PancakeSwap v3",
+        "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+        "factoryCodeHash": "0x8191d3ab1d55d3da9822199f28865415c99566b6f1aee4a4b16713f57930678c",
+        "fee": 100,
+        "pool": "0xf2688Fb5B81049DFB7703aDa5e770543770612C4",
+        "poolCodeHash": "0x285d0fa1489b5cef81ee638b9400ed7da9883e6df77c02fd7bdbbc94fd2656bb",
+        "windowSeconds": 300,
+        "minimumWrapped": "500",
+        "chosen": "the 0.01% pool is the deepest (2,250 WBNB when measured), and it prices the listed Binance-Peg token itself",
+        "source": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+        "sourceChecked": {
+          "url": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+          "fetched": "2026-11-17",
+          "found": "the publisher's address table, row PancakeV3Factory, column \"BSC, ETH, ARB, Linea, Base, opBNB\"; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+        }
+      }
+    ]
+  },
   "notes": [
     "there is no Circle-native USDC on this chain; the listed token is Binance-Peg USDC with 18 decimals"
   ],
