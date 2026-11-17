@@ -189,6 +189,8 @@ try {
     await delay(700);
   };
   const swapLabel = (chain) => `Swap ${AMOUNT} ${chain.native} for ${chain.token.shown ?? chain.token.symbol}`;
+  // The label is matched inside a regular expression: its characters are literal ("USDC (Binance-Peg)").
+  const swapPattern = (chain) => swapLabel(chain).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
   const swapsOn = (chain) => wallet.sent.filter((s) => s.chainId === chain.chainId);
   const disabled = async (name) => (await page.button(name))?.disabled === true;
 
@@ -243,7 +245,7 @@ try {
       record.leftPending = true;
       continue;
     }
-    const settled = await settleAtChainPace(chain, page, sent[0].hash, `/${swapLabel(chain)}: mined/`, sentAt);
+    const settled = await settleAtChainPace(chain, page, sent[0].hash, `/${swapPattern(chain)}: mined/`, sentAt);
     record.settle = settled;
     check(
       `${chain.key}: the swap flow completed ${settled.seconds} s after the wallet request, with ${settled.blocksMined} block${settled.blocksMined === 1 ? '' : 's'} at this chain's ${settled.blockSeconds} s block time (rule: ${JSON.stringify(settled.rule)}; chain time ${settled.expectedSeconds} s, plus at most ${SETTLE_MARGIN_SECONDS} s for the page)`,
@@ -263,7 +265,7 @@ try {
       check(`${first.key}: after a swap on ${second.key}, this chain's own pending swap still holds it (Swap disabled)`, await disabled('Swap'));
       check(`${first.key}: no second transaction was asked for this chain`, swapsOn(first).length === 1, swapsOn(first).length);
       const tokenBeforeFirst = await tokenBalance(first, address);
-      evidence.chains[0].settle = await settleAtChainPace(first, page, swapsOn(first)[0].hash, `/${swapLabel(first)}: mined/`, Date.now());
+      evidence.chains[0].settle = await settleAtChainPace(first, page, swapsOn(first)[0].hash, `/${swapPattern(first)}: mined/`, Date.now());
       if ('depth' in first.confirmation.settle) check(`${first.key}: its held swap was released ${evidence.chains[0].settle.seconds} s after its block, by the chain's rule, without waiting for finality`, evidence.chains[0].settle.seconds <= evidence.chains[0].settle.expectedSeconds + SETTLE_MARGIN_SECONDS && evidence.chains[0].settle.finalizedBehindTheSwap, evidence.chains[0].settle);
       const firstReceipt = await rpc(first, 'eth_getTransactionReceipt', [swapsOn(first)[0].hash]);
       check(`${first.key}: its swap was then mined on its own fork and ${first.token.symbol} arrived`, firstReceipt?.status === '0x1' && (await tokenBalance(first, address)) > tokenBeforeFirst, firstReceipt?.status);
