@@ -7,7 +7,7 @@
 // everything above held, and the fork stays up, with its liquidity, while FILE exists.
 //
 // It starts `anvil --fork-url <the chain's first reviewed endpoint>` on loopback, runs the owner's command exactly as
-// documented (scripts/multichain/deploy.sh <chain> broadcast, with a throwaway key and the reference plan), passes
+// documented (scripts/multichain/deploy.sh <chain> broadcast, with a throwaway key and the committed plan), passes
 // the post gate at the fork's finalized block, and then plays the whole flow with throwaway accounts and the chain's
 // real wrapped native token and listed token:
 //   - review R328-1, on a snapshot of the fork that is reverted afterwards: the depositing account calls a hostile
@@ -99,7 +99,7 @@ const evidence = {
   schema: "postern.dex.multichain-fork-rehearsal.v1",
   chain: plan.chain,
   forkOf: forkUrl,
-  what: "anvil fork on loopback; throwaway keys; reference plan (first deposits by the reference depositing account only, an address nobody holds a key for; no reserve caps; no pair created at deployment); the depositing account and the fee address are impersonated",
+  what: "anvil fork on loopback; throwaway keys; the committed plan (first deposits by the configured depositing account only; no reserve caps; no pair created at deployment); the depositing account and the fee address are impersonated on the fork (no key of either is used or needed); the opening price is the fork's market price, read by the tool from the chain's two references",
   anvil: spawnSync("anvil", ["--version"], { encoding: "utf8" }).stdout.split("\n")[0],
   feeTo: shared.feeTo.address,
   addresses: Object.fromEntries(Object.values(plan.contracts).map((c) => [c.name, c.address])),
@@ -245,10 +245,19 @@ try {
   const pair = plan.pairs[0].address;
   const unit = 10n ** BigInt(token.decimals);
   const deadline = BigInt((await rpc("eth_getBlockByNumber", ["latest", false])).timestamp) + 86_400n;
-  // Rehearsal figures only (an opening price is the owner's choice): 10 native against 30,000 token units.
+  // The size is a rehearsal figure (10 native); the PRICE is the chain's market price as the fork has it, read by
+  // market.mjs from the chain's two references (a Chainlink feed pair and a v3 pool's time-weighted price), exactly
+  // as first-deposit.mjs prepare reads it. Every other figure below is a fraction of that token amount.
   const SEED_NATIVE = 10n * 10n ** 18n;
-  const SEED_TOKEN = 30_000n * unit;
-  evidence.rehearsalFigures = { seedNative: SEED_NATIVE, seedToken: SEED_TOKEN, note: "not a price recommendation" };
+  const marketRun = spawnSync("node", ["scripts/multichain/market.mjs", key, "--native", "10", "--json", "--rpc", url, "--rehearsal"], { cwd: ROOT, encoding: "utf8" });
+  writeFileSync(join(opt.out, "market.log"), `${marketRun.stdout}\n${marketRun.stderr}`);
+  const marketRead = marketRun.status === 0 ? JSON.parse(marketRun.stdout) : null;
+  check("market.mjs reads the chain's market price on the fork: the two references agree", marketRun.status === 0 && marketRead.ok === true && marketRead.references.length === 2 && marketRead.spreadBps <= marketRead.referencesAgreeBps, `${marketRun.stdout}\n${marketRun.stderr}`.slice(-400));
+  if (marketRun.status !== 0) throw new Error("no market price on the fork");
+  const SEED_TOKEN = BigInt(marketRead.amounts.token);
+  const seedText = formatUnits(SEED_TOKEN, token.decimals);
+  evidence.market = { price: marketRead.market, spreadBps: marketRead.spreadBps, references: marketRead.references.map((r) => ({ name: r.name, price: r.price })), block: marketRead.block };
+  evidence.rehearsalFigures = { seedNative: SEED_NATIVE, seedToken: SEED_TOKEN, note: "10 native at the fork's market price; the size is not a recommendation" };
 
   /** Give `holder` a token balance by writing the balance mapping's slot (found by trying slots). */
   async function fund(holder, amount) {
@@ -262,8 +271,8 @@ try {
     }
     throw new Error(`no balance slot found for ${token.symbol}`);
   }
-  evidence.tokenBalanceSlot = await fund(lp.address, 100_000n * unit);
-  await fund(trader.address, 10_000n * unit);
+  evidence.tokenBalanceSlot = await fund(lp.address, SEED_TOKEN * 4n);
+  await fund(trader.address, SEED_TOKEN / 2n);
   await fund(stranger.address, 100n * unit);
   const call = (functionName, args) => encodeFunctionData({ abi: ABI, functionName, args });
   const feeAccount = { address: shared.feeTo.address, sign: false };
@@ -276,18 +285,21 @@ try {
 
   // 3a. the opening of the pool (reviews R309-MC-1, R328-1, R328-2, R328-3)
   const depositor = plan.arguments.firstDepositor;
-  refuse(lower(depositor) === lower(REFERENCE_FIRST_DEPOSITOR) && lower(depositor) !== lower(shared.feeTo.address), "the reference plan's first depositor is the reference address, not the fee address");
+  // The configured depositing account (deployments/multichain.json), or the reference address while that choice
+  // is open. Never the fee address. It is impersonated here: the rehearsal holds no key for it.
+  refuse(lower(depositor) === lower(plan.reference ? REFERENCE_FIRST_DEPOSITOR : shared.firstDepositor) && lower(depositor) !== lower(shared.feeTo.address), "the plan's first depositor is not the configured depositing account");
   await rpc("anvil_impersonateAccount", [depositor]);
   evidence.depositor = depositor;
   evidence.depositorNativeBefore = await nativeOf(depositor);
   await rpc("anvil_setBalance", [depositor, hex(1000n * 10n ** 18n)]);
   await fund(depositor, SEED_TOKEN);
-  await fund(attacker.address, 10_000n * unit);
+  await fund(attacker.address, SEED_TOKEN / 2n);
   const pairName = `${wrapped.symbol}/${token.symbol}`;
   /** scripts/multichain/first-deposit.mjs, as the owner runs it; `name` names the files it leaves in DIR. */
-  const tool = (mode, name, { native = "10", amount = "30000", extra = [] } = {}) => {
+  const tool = (mode, name, { native = "10", amount = seedText, extra = [] } = {}) => {
     const out = join(opt.out, `${name}.json`);
-    const run = spawnSync("node", ["scripts/multichain/first-deposit.mjs", key, mode, "--pair", pairName, "--native", native, "--token", amount, "--reference", "--rpc", url, "--rehearsal", "--out", out, ...extra], { cwd: ROOT, encoding: "utf8" });
+    // `amount: null`: one side only, as the owner runs prepare; the tool computes the token amount from the market.
+    const run = spawnSync("node", ["scripts/multichain/first-deposit.mjs", key, mode, "--pair", pairName, "--native", native, ...(amount === null ? [] : ["--token", amount]), "--reference", "--rpc", url, "--rehearsal", "--out", out, ...extra], { cwd: ROOT, encoding: "utf8" });
     const text = `${run.stdout}\n${run.stderr}`;
     writeFileSync(join(opt.out, `${name}.log`), text);
     return { status: run.status, text, result: run.status !== 2 && existsSync(out) ? JSON.parse(readFileSync(out, "utf8")) : null };
@@ -374,21 +386,33 @@ try {
     // The rehearsal takes the dust out, so that the figures below are those of the deposit alone.
     await send(lp, { to: pair, data: call("skim", [lp.address]) }, "the dust is skimmed out (anyone may)");
   }
-  const prepared = tool("prepare", "first-deposit-prepare", { extra: gateReport });
-  check(`first-deposit.mjs prepare passes and prints the two transactions (the pair is ${opt.hold ? "not created yet" : "empty"})`, prepared.status === 0 && prepared.result?.transactions.length === 2 && prepared.result.pair.state === (opt.hold ? "absent" : "empty"), prepared.text.slice(-400));
+  if (!opt.hold) {
+    // ---- the opening price is the market's (decision of 2026-11-17): amounts 5% away are refused, and so is a
+    // deposit below the chain's minimum; nothing is printed in either case.
+    const off = tool("prepare", "opening-price-5-percent-off", { amount: formatUnits((SEED_TOKEN * 105n) / 100n, token.decimals), extra: gateReport });
+    check("first-deposit.mjs prepare refuses amounts whose price is 5% from the chain's market, and prints nothing to send", off.status === 1 && /from the chain's market price/.test(off.text) && !/cast send/.test(off.text) && !off.result?.transactions, off.text.slice(-400));
+    const edge = tool("prepare", "opening-price-0.4-percent-off", { amount: formatUnits((SEED_TOKEN * 996n) / 1000n, token.decimals), extra: gateReport });
+    check("first-deposit.mjs prepare accepts amounts 0.4% from the market (the limit is 0.5%)", edge.status === 0 && edge.result?.amounts.fromMarketBps >= 39 && edge.result.amounts.fromMarketBps <= 41, edge.text.slice(-400));
+    const small = tool("prepare", "opening-below-minimum", { native: "0.01", amount: null, extra: gateReport });
+    check("first-deposit.mjs prepare refuses a deposit below the chain's minimum", small.status === 1 && /below this chain's minimum/.test(small.text) && !/cast send/.test(small.text), small.text.slice(-400));
+  }
+  // As the owner runs it: ONE side (10 native); the tool reads the market and computes the token amount.
+  const prepared = tool("prepare", "first-deposit-prepare", { amount: null, extra: gateReport });
+  check(`first-deposit.mjs prepare, given the native amount alone, computes the token amount at the market price and prints the two transactions (the pair is ${opt.hold ? "not created yet" : "empty"})`, prepared.status === 0 && prepared.result?.transactions.length === 2 && prepared.result.pair.state === (opt.hold ? "absent" : "empty") && prepared.result.amounts.computed === "token" && prepared.result.amounts.token === SEED_TOKEN.toString() && prepared.result.market.ok === true, prepared.text.slice(-400));
   if (prepared.status !== 0) throw new Error("first-deposit.mjs prepare failed");
   let opening;
-  for (const t of prepared.result.transactions) opening = await send(depositorAccount, { to: t.to, data: t.data, value: BigInt(t.value) }, t.step === "approve" ? `first depositor approves exactly 30,000 ${token.symbol} to the router` : `first deposit: 10 ${chain.nativeCurrency.symbol} + 30,000 ${token.symbol}, minimums equal to the amounts${opt.hold ? "; the same transaction creates the pair" : ""} (addLiquidityBLCH)`);
+  for (const t of prepared.result.transactions) opening = await send(depositorAccount, { to: t.to, data: t.data, value: BigInt(t.value) }, t.step === "approve" ? `first depositor approves exactly ${seedText} ${token.symbol} to the router` : `first deposit: 10 ${chain.nativeCurrency.symbol} + ${seedText} ${token.symbol} (the market price), minimums equal to the amounts${opt.hold ? "; the same transaction creates the pair" : ""} (addLiquidityBLCH)`);
   let s = await state();
   check("the first deposit set the reserves to exactly the intended amounts and locked the minimum liquidity", s.reserveNative === SEED_NATIVE && s.reserveToken === SEED_TOKEN && s.totalSupply > 1000n && s.feeToLp === 0n, s);
   if (!opt.hold) {
-    // The second half of the reviewer's attack: 600 token no longer buys the native side (0.2 native at this price).
+    // The second half of the reviewer's attack: 2% of the token side (600 of 30,000 in the reviewer's test) no
+    // longer buys the native side (0.2 native at this price).
     // It also moves the reserves before verify runs: verify reads the opening from its transaction, not from them.
     const before = await nativeOf(attacker.address);
-    const swap = await send(attacker, { to: router, data: call("swapExactTokensForBLCH", [600n * unit, 0n, [token.address, wrapped.address], attacker.address, deadline]) }, `attacker swaps 600 ${token.symbol} for the native coin`);
+    const swap = await send(attacker, { to: router, data: call("swapExactTokensForBLCH", [SEED_TOKEN / 50n, 0n, [token.address, wrapped.address], attacker.address, deadline]) }, `attacker swaps ${formatUnits(SEED_TOKEN / 50n, token.decimals)} ${token.symbol} (2% of the token side) for the native coin`);
     const taken = (await nativeOf(attacker.address)) - before + swap.feeWei;
-    evidence.attack = { tokenIn: `600 ${token.symbol}`, nativeOut: formatUnits(taken, 18), reviewerResultWithOpenFirstDeposits: "more than 9.6 of 10" };
-    check("R309-MC-1: the attacker's 600 token buy less than 0.2 native (the reviewer's attack took more than 9.6 of 10)", taken < 2n * 10n ** 17n && taken > 19n * 10n ** 16n, formatUnits(taken, 18));
+    evidence.attack = { tokenIn: `${formatUnits(SEED_TOKEN / 50n, token.decimals)} ${token.symbol}`, nativeOut: formatUnits(taken, 18), reviewerResultWithOpenFirstDeposits: "more than 9.6 of 10" };
+    check("R309-MC-1: the attacker's 2% of the token side buys less than 0.2 native (the reviewer's attack took more than 9.6 of 10)", taken < 2n * 10n ** 17n && taken > 19n * 10n ** 16n, formatUnits(taken, 18));
   }
   const verified = tool("verify", "first-deposit-verify", { extra: ["--tx", opening.hash] });
   check(`first-deposit.mjs verify proves the opening from its transaction${opt.hold ? "" : " (after a swap has already moved the reserves)"}: sent by the first depositor to the router, strict minimums, exactly the deposited amounts joined`, verified.status === 0 && verified.result?.opening?.proven === true && verified.result.opening.joined.native === SEED_NATIVE.toString() && verified.result.opening.joined.token === SEED_TOKEN.toString() && verified.result.opening.priceShiftBps === 0, verified.text.slice(-400));
@@ -412,14 +436,14 @@ try {
   check(`the trader received ${token.symbol} for the native coin`, got > 0n, formatUnits(got, token.decimals));
   await send(trader, { to: token.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `trader approves ${token.symbol} to the router`);
   const nativeBefore = await nativeOf(trader.address);
-  const out = await send(trader, { to: router, data: call("swapExactTokensForBLCH", [3_000n * unit, 0n, [token.address, wrapped.address], trader.address, deadline]) }, `swap 3,000 ${token.symbol} for ${chain.nativeCurrency.symbol} (swapExactTokensForBLCH: the router unwraps and pays the native coin)`);
+  const out = await send(trader, { to: router, data: call("swapExactTokensForBLCH", [SEED_TOKEN / 10n, 0n, [token.address, wrapped.address], trader.address, deadline]) }, `swap ${formatUnits(SEED_TOKEN / 10n, token.decimals)} ${token.symbol} for ${chain.nativeCurrency.symbol} (swapExactTokensForBLCH: the router unwraps and pays the native coin)`);
   const nativeGot = (await nativeOf(trader.address)) - nativeBefore + out.feeWei;
   check("the trader received the native coin (the wrapped token's withdraw pays the router, the router pays the trader)", nativeGot > 0n, formatUnits(nativeGot, 18));
   await send(trader, { to: wrapped.address, data: call("deposit", []), value: 10n ** 18n }, `trader wraps 1 ${chain.nativeCurrency.symbol} (deposit)`);
   await send(trader, { to: wrapped.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `trader approves ${wrapped.symbol} to the router`);
   await send(trader, { to: router, data: call("swapExactTokensForTokens", [10n ** 18n, 0n, [wrapped.address, token.address], trader.address, deadline]) }, `swap 1 ${wrapped.symbol} for ${token.symbol} (swapExactTokensForTokens)`);
   const wrappedBefore = await read(wrapped.address, "balanceOf", [trader.address]);
-  await send(trader, { to: router, data: call("swapExactTokensForTokens", [2_000n * unit, 0n, [token.address, wrapped.address], trader.address, deadline]) }, `swap 2,000 ${token.symbol} for ${wrapped.symbol} (swapExactTokensForTokens)`);
+  await send(trader, { to: router, data: call("swapExactTokensForTokens", [SEED_TOKEN / 15n, 0n, [token.address, wrapped.address], trader.address, deadline]) }, `swap ${formatUnits(SEED_TOKEN / 15n, token.decimals)} ${token.symbol} for ${wrapped.symbol} (swapExactTokensForTokens)`);
   check(`the trader received ${wrapped.symbol}`, (await read(wrapped.address, "balanceOf", [trader.address])) > wrappedBefore);
 
   // 3c. the anchored variant (a recent block of this fork as the anchor)
@@ -434,7 +458,7 @@ try {
   // A deposit into the OPEN pool by an account that is not the first depositor: the restriction is on the first
   // deposit only.
   await send(lp, { to: token.address, data: call("approve", [router, 2n ** 256n - 1n]) }, `LP approves ${token.symbol} to the router`);
-  await send(lp, { to: router, data: call("addLiquidityBLCH", [token.address, 3_000n * unit, 0n, 0n, lp.address, deadline]), value: 10n ** 18n }, "another account adds liquidity to the open pool (a liquidity event settles the protocol fee)");
+  await send(lp, { to: router, data: call("addLiquidityBLCH", [token.address, SEED_TOKEN / 10n, 0n, 0n, lp.address, deadline]), value: 10n ** 18n }, "another account adds liquidity to the open pool (a liquidity event settles the protocol fee)");
   s = await state();
   const feeShareNative = (s.feeToLp * s.reserveNative) / s.totalSupply;
   const feeShareToken = (s.feeToLp * s.reserveToken) / s.totalSupply;
@@ -476,7 +500,7 @@ try {
   }
   // 3g. a later deposit by the owner, as `first-deposit.mjs add` prints it (the pool's price moved with the swaps)
   await rpc("anvil_setBalance", [depositor, hex(100n * 10n ** 18n)]);
-  await fund(depositor, 10_000n * unit);
+  await fund(depositor, SEED_TOKEN / 2n);
   s = await state();
   const fair = (10n ** 18n * s.reserveToken) / s.reserveNative;
   const reportArgs = ["--gate-report", join(opt.out, "gate-report.json"), "--to", lp.address];

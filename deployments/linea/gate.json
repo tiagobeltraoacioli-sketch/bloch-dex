@@ -31,17 +31,77 @@
     },
     "feeTo": {
       "address": "0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544",
-      "mustBe": "externally owned account (an EIP-7702 delegation is reported, not refused)"
+      "mustBe": "externally owned account; an EIP-7702 delegation only to an identified delegate holding its recorded code (any other is refused); a designator other than the recorded one is a warning",
+      "acceptedDelegates": [
+        {
+          "delegate": "0x63c0c19a282a1B52b07dD5a65b58948A07DAE32B",
+          "name": "MetaMask EIP7702StatelessDeleGator 1.3.0",
+          "codeHash": "0xeef4fc75d341d7b9b0ae6748cb847a4e6558f34e0d9f441b636c39e82b9a6082"
+        }
+      ],
+      "recordedDesignator": null,
+      "proofOfControl": "deployments/fee-address-proof.json: required by the pre gate on the public chain"
     },
     "firstDepositor": {
-      "mustBe": "a dedicated key account: not the fee address, no code, no EIP-7702 delegation, no transaction on the chain before the factory is deployed"
+      "mustBe": "the address check-depositor.mjs recorded: a dedicated key account, not the fee address, no code, no EIP-7702 delegation, no transaction on the chain before the factory is deployed"
     },
     "pairInitCodeHash": "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683"
   },
   "ownerChoices": {
-    "firstDepositor": "TBD-owner",
-    "reserveCaps": "TBD-owner",
-    "openingPrice": "TBD-owner"
+    "firstDepositor": "0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3",
+    "reserveCaps": [],
+    "openingPrice": {
+      "rule": "market",
+      "maxDeviationBps": 50,
+      "referencesAgreeBps": 100,
+      "minimumNative": "0.1",
+      "minimumReason": "At least 0.1 ETH and its USDC at the market price: as OP Mainnet. Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+      "references": [
+        {
+          "kind": "chainlink",
+          "name": "Chainlink ETH / USD over USDC / USD",
+          "base": {
+            "proxy": "0x3c6Cd9Cc7c7a4c2Cf5a82734CD249D7D593354dA",
+            "description": "ETH / USD",
+            "decimals": 8,
+            "heartbeatSeconds": 86400,
+            "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+          },
+          "quote": {
+            "proxy": "0xAADAa473C1bDF7317ec07c915680Af29DeBfdCb5",
+            "description": "USDC / USD",
+            "decimals": 8,
+            "heartbeatSeconds": 86400,
+            "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+          },
+          "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+          "sourceChecked": {
+            "url": "https://reference-data-directory.vercel.app/feeds-ethereum-mainnet-linea-1.json",
+            "fetched": "2026-11-17",
+            "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): ETH / USD path eth-usd, USDC / USD path usdc-usd"
+          }
+        },
+        {
+          "kind": "v3-twap",
+          "name": "PancakeSwap v3 WETH/USDC 0.05% pool, 5-minute mean",
+          "protocol": "PancakeSwap v3",
+          "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+          "factoryCodeHash": "0x8191d3ab1d55d3da9822199f28865415c99566b6f1aee4a4b16713f57930678c",
+          "fee": 500,
+          "pool": "0xd5539D0360438a66661148c633A9F0965E482845",
+          "poolCodeHash": "0xcb38d298b19b18e977bdacdc09ecc131544ce7d49eb16d7fe7319372a632d7d4",
+          "windowSeconds": 300,
+          "minimumWrapped": "5",
+          "chosen": "the 0.05% pool is the deepest of the publisher's pools (18.8 WETH when measured): THIN; Uniswap publishes no v3 deployment page for Linea",
+          "source": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+          "sourceChecked": {
+            "url": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+            "fetched": "2026-11-17",
+            "found": "the publisher's address table, row PancakeV3Factory, column \"BSC, ETH, ARB, Linea, Base, opBNB\"; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+          }
+        }
+      ]
+    }
   },
   "expected": "derived by scripts/multichain/plan.mjs from the compiled release candidate and the owner's choices: factory, router, lens and pair addresses and runtime code hashes",
   "l2Only": {

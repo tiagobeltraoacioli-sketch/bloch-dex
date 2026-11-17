@@ -6,7 +6,7 @@
 // code and runtime code hash of each contract, and the pair addresses. Nothing in this file talks to an RPC, signs
 // or broadcasts. The Bloch L2 procedure (scripts/staging) is separate and is not touched by anything here.
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -34,6 +34,10 @@ export const EIP7702_PREFIX = "0xef0100";
  */
 export const REFERENCE_FIRST_DEPOSITOR_PREIMAGE = "postern-dex.multichain.reference-first-depositor";
 export const REFERENCE_FIRST_DEPOSITOR = getAddress(`0x${keccak256(stringToHex(REFERENCE_FIRST_DEPOSITOR_PREIMAGE)).slice(26)}`);
+
+/** The EIP-191 proof that the owner controls the fee address (fee-proof.mjs). */
+export const FEE_PROOF_DOMAIN = "postern.dex.multichain.fee-address-proof.v1";
+export const FEE_PROOF_FILE = "deployments/fee-address-proof.json";
 
 const HASH = /^0x[0-9a-f]{64}$/;
 const ADDRESS_ANY = /^0x[0-9a-fA-F]{40}$/;
@@ -97,6 +101,7 @@ export function validateShared(shared) {
   refuse(shared.create2.salt === keccak256(stringToHex(shared.create2.saltPreimage)), "create2.salt is not keccak256 of create2.saltPreimage");
   checksummed(shared.feeTo?.address, "feeTo.address");
   refuse(lower(shared.feeTo.address) !== ZERO_ADDRESS, "feeTo.address is the zero address (the protocol fee would be off for ever)");
+  validateDelegation(shared.feeTo.delegation);
   if (!isPending(shared.firstDepositor)) {
     checksummed(shared.firstDepositor, "firstDepositor");
     // Review R309-MC-1: on a public chain a factory whose first deposits are open lets anyone open a pool at a
@@ -104,7 +109,13 @@ export function validateShared(shared) {
     refuse(lower(shared.firstDepositor) !== ZERO_ADDRESS, "firstDepositor is the zero address: first deposits would be open to anyone. Name the owner's depositing account (an ordinary key account)");
     refuse(lower(shared.firstDepositor) !== lower(shared.create2.deployer), "firstDepositor is the CREATE2 deployer, not an account");
     refuseDepositorInUse(shared);
-  }
+    // The address is typed nowhere by hand: check-depositor.mjs writes it here together with what it read on the
+    // six chains, and an address without that record, or another address than the recorded one, is refused.
+    const c = shared.firstDepositorCheck;
+    refuse(c && typeof c === "object" && typeof c.address === "string", "firstDepositor has no firstDepositorCheck record: set it with `node scripts/multichain/check-depositor.mjs <address> --record`, never by hand");
+    refuse(c.address === shared.firstDepositor, `firstDepositor ${shared.firstDepositor} is not the address check-depositor.mjs recorded (${c.address}): run check-depositor.mjs <address> --record again`);
+    refuse(typeof c.at === "string" && c.chains && typeof c.chains === "object", "firstDepositorCheck: at and chains are required");
+  } else refuse(shared.firstDepositorCheck === undefined, "firstDepositorCheck is recorded but firstDepositor is open");
   refuse(Array.isArray(shared.chains) && shared.chains.length > 0 && new Set(shared.chains).size === shared.chains.length, "chains");
   const off = shared.l2Only;
   refuse(
@@ -128,6 +139,87 @@ function refuseDepositorInUse(shared) {
   refuse(lower(shared.firstDepositor) !== lower(REFERENCE_FIRST_DEPOSITOR), "firstDepositor is the reference rehearsal address: nobody holds its key");
 }
 
+/**
+ * EIP-7702 at the fee address (decision of 2026-11-17). A delegation is accepted only to a delegate listed here:
+ * a published wallet delegator whose source is verified and whose publisher's own page names the address. Each
+ * accepted delegate carries its runtime code hash per chain (the code has chain-specific immutables); the gate
+ * refuses a delegation to anything else. `recorded` is the designator seen per chain when this file was written
+ * (null: no code); the gate warns when it sees another.
+ */
+function validateDelegation(d) {
+  refuse(d && typeof d === "object" && Array.isArray(d.accepted) && d.recorded && typeof d.recorded === "object", "feeTo.delegation: accepted (a list) and recorded (per chain) are required");
+  for (const [i, a] of d.accepted.entries()) {
+    checksummed(a?.delegate, `feeTo.delegation.accepted[${i}].delegate`);
+    refuse(typeof a.name === "string" && a.name.length > 0 && typeof a.source === "string" && /^https:\/\//.test(a.source) && a.sourceChecked && typeof a.sourceChecked.found === "string", `feeTo.delegation.accepted[${i}]: name, source and sourceChecked are required (what the delegate is, from its publisher)`);
+    refuse(a.codeHash && typeof a.codeHash === "object" && Object.values(a.codeHash).every((h) => HASH.test(h) && h !== EMPTY_CODE_HASH), `feeTo.delegation.accepted[${i}].codeHash: a runtime code hash per chain key`);
+  }
+  for (const [key, value] of Object.entries(d.recorded)) refuse(value === null || /^0xef0100[0-9a-f]{40}$/.test(value), `feeTo.delegation.recorded.${key} must be null or an EIP-7702 designator (0xef0100 and 20 bytes, lowercase)`);
+}
+
+/**
+ * What an EIP-7702 designator at the fee address means on one chain. Pure.
+ * `code`: eth_getCode of the fee address; `delegateCodeHash`: the code hash of the delegate it names (when it names one).
+ * Returns { kind: "none" | "delegation" | "contract", designator, delegate, accepted, name, changed, problem }.
+ */
+export function feeDelegationOn(shared, chainKey, code, delegateCodeHash = null) {
+  const recorded = shared.feeTo.delegation.recorded[chainKey] ?? null;
+  const text = String(code).toLowerCase();
+  if (text === "0x") return { kind: "none", designator: null, delegate: null, accepted: true, name: null, changed: recorded !== null, recorded, problem: null };
+  if (!/^0xef0100[0-9a-f]{40}$/.test(text)) return { kind: "contract", designator: null, delegate: null, accepted: false, name: null, changed: true, recorded, problem: "the fee address holds contract code: it is not an account controlled by a key" };
+  const delegate = `0x${text.slice(8)}`;
+  const known = shared.feeTo.delegation.accepted.find((a) => lower(a.delegate) === delegate);
+  let problem = null;
+  if (!known) problem = `the fee address delegates (EIP-7702) to ${delegate}, which is not an identified delegate (deployments/multichain.json feeTo.delegation.accepted): clear the delegation, or establish what the delegate is from its publisher and record it`;
+  else if (!known.codeHash[chainKey]) problem = `the delegate ${delegate} (${known.name}) has no recorded code hash for ${chainKey}`;
+  else if (delegateCodeHash !== known.codeHash[chainKey]) problem = `the delegate ${delegate} does not hold the code recorded for ${known.name} on ${chainKey} (${delegateCodeHash})`;
+  return { kind: "delegation", designator: text, delegate, accepted: problem === null, name: known?.name ?? null, changed: recorded !== text, recorded, problem };
+}
+
+/**
+ * Every 20-byte address written under deployments/ (and its plain-text files), with where it stands, except the
+ * values of the keys that hold the depositing account itself (`firstDepositor`, `firstDepositorCheck`). Used by
+ * check-depositor.mjs: a depositing account must be an address the repository has never used for anything.
+ */
+export function addressesInDeployments(root = ROOT) {
+  const found = new Map();
+  const note = (address, where) => {
+    const key = address.toLowerCase();
+    if (!found.has(key)) found.set(key, []);
+    if (found.get(key).length < 5) found.get(key).push(where);
+  };
+  const ADDRESS_IN_TEXT = /(?<![0-9a-fA-Fx])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g;
+  const walkJson = (value, where) => {
+    if (typeof value === "string") for (const m of value.match(ADDRESS_IN_TEXT) ?? []) note(m, where);
+    else if (Array.isArray(value)) value.forEach((v, i) => walkJson(v, `${where}[${i}]`));
+    else if (value && typeof value === "object")
+      for (const [k, v] of Object.entries(value)) {
+        for (const m of k.match(ADDRESS_IN_TEXT) ?? []) note(m, `${where} (key)`);
+        if (k !== "firstDepositor" && k !== "firstDepositorCheck") walkJson(v, `${where}.${k}`);
+      }
+  };
+  const walkDir = (dir, rel) => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      const relative = `${rel}/${name}`;
+      if (statSync(path).isDirectory()) walkDir(path, relative);
+      else {
+        const text = readFileSync(path, "utf8");
+        if (name.endsWith(".json")) {
+          try {
+            walkJson(JSON.parse(text), relative);
+            continue;
+          } catch {
+            // not JSON after all: read as text
+          }
+        }
+        for (const m of text.match(ADDRESS_IN_TEXT) ?? []) note(m, relative);
+      }
+    }
+  };
+  walkDir(join(root, "deployments"), "deployments");
+  return found;
+}
+
 function validateToken(token, field) {
   checksummed(token?.address, `${field}.address`);
   refuse(typeof token.symbol === "string" && /^[A-Za-z0-9.]{2,12}$/.test(token.symbol), `${field}.symbol`);
@@ -135,6 +227,39 @@ function validateToken(token, field) {
   refuse(Number.isInteger(token.decimals) && token.decimals >= 0 && token.decimals <= 36, `${field}.decimals`);
   refuse(HASH.test(token.codeHash ?? "") && token.codeHash !== EMPTY_CODE_HASH, `${field}.codeHash`);
   refuse(typeof token.kind === "string" && typeof token.source === "string" && token.source.length > 0, `${field}: kind and source are required`);
+  // Optional: the name the token list and the page show instead of the contract's own symbol, and one line about
+  // it. For a token whose symbol says more than is true (BNB Smart Chain's Binance-Peg "USDC").
+  refuse(token.label === undefined || (typeof token.label === "string" && /^[A-Za-z0-9. ()-]{2,24}$/.test(token.label) && token.label.startsWith(token.symbol)), `${field}.label: 2 to 24 characters, beginning with the symbol`);
+  refuse(token.note === undefined || (typeof token.note === "string" && token.note.length >= 10 && token.note.length <= 160 && !/[<>\n]/.test(token.note)), `${field}.note: one line of 10 to 160 characters`);
+  refuse((token.label === undefined) === (token.note === undefined), `${field}: label and note go together`);
+}
+
+/**
+ * The opening price rule of a chain (decision of 2026-11-17): the price of a pool's first deposit is the chain's
+ * market price, read on that chain from two independent references (market.mjs), never typed by hand.
+ */
+function validateOpeningPrice(o, chain) {
+  refuse(o && typeof o === "object" && o.rule === "market", "openingPrice: the rule is \"market\" (two on-chain references; see scripts/multichain/market.mjs)");
+  refuse(Number.isInteger(o.maxDeviationBps) && o.maxDeviationBps >= 1 && o.maxDeviationBps <= 50, "openingPrice.maxDeviationBps: 1 to 50 (an opening price at most 0.5% from the market)");
+  refuse(Number.isInteger(o.referencesAgreeBps) && o.referencesAgreeBps >= 10 && o.referencesAgreeBps <= 100, "openingPrice.referencesAgreeBps: 10 to 100");
+  refuse(typeof o.minimumNative === "string" && /^[0-9]+(\.[0-9]{1,18})?$/.test(o.minimumNative) && Number(o.minimumNative) > 0 && typeof o.minimumReason === "string" && o.minimumReason.length >= 40, "openingPrice.minimumNative (whole native coin) and minimumReason");
+  refuse(Array.isArray(o.references) && o.references.length === 2 && o.references[0].kind === "chainlink" && o.references[1].kind === "v3-twap", "openingPrice.references: two independent references, a Chainlink feed pair and a v3 pool's time-weighted price");
+  const sourced = (r, field) => refuse(typeof r.name === "string" && typeof r.source === "string" && /^https:\/\//.test(r.source) && r.sourceChecked && typeof r.sourceChecked.url === "string" && typeof r.sourceChecked.fetched === "string" && typeof r.sourceChecked.found === "string", `${field}: name, source and sourceChecked (where the publisher names the address) are required`);
+  const [feeds, pool] = o.references;
+  sourced(feeds, "openingPrice.references[0]");
+  for (const side of ["base", "quote"]) {
+    const f = feeds[side];
+    checksummed(f?.proxy, `openingPrice.references[0].${side}.proxy`);
+    refuse(typeof f.description === "string" && / \/ USD$/.test(f.description) && Number.isInteger(f.decimals) && f.decimals >= 0 && f.decimals <= 18 && Number.isInteger(f.heartbeatSeconds) && f.heartbeatSeconds > 0 && f.heartbeatSeconds <= 86_400 && HASH.test(f.codeHash ?? "") && f.codeHash !== EMPTY_CODE_HASH, `openingPrice.references[0].${side}: description (X / USD), decimals, heartbeatSeconds and codeHash`);
+  }
+  refuse(feeds.base.description.startsWith(`${chain.nativeCurrency.symbol} /`), "openingPrice.references[0].base is not the native coin's USD feed");
+  refuse(lower(feeds.base.proxy) !== lower(feeds.quote.proxy), "openingPrice.references[0]: base and quote are the same feed");
+  sourced(pool, "openingPrice.references[1]");
+  checksummed(pool.factory, "openingPrice.references[1].factory");
+  checksummed(pool.pool, "openingPrice.references[1].pool");
+  refuse(HASH.test(pool.factoryCodeHash ?? "") && HASH.test(pool.poolCodeHash ?? "") && pool.factoryCodeHash !== EMPTY_CODE_HASH && pool.poolCodeHash !== EMPTY_CODE_HASH, "openingPrice.references[1]: factoryCodeHash and poolCodeHash");
+  refuse(Number.isInteger(pool.fee) && pool.fee > 0 && pool.fee <= 10_000 && Number.isInteger(pool.windowSeconds) && pool.windowSeconds >= 60 && pool.windowSeconds <= 3_600, "openingPrice.references[1]: fee and windowSeconds (60 to 3600)");
+  refuse(typeof pool.minimumWrapped === "string" && /^[0-9]+(\.[0-9]{1,18})?$/.test(pool.minimumWrapped) && Number(pool.minimumWrapped) > 0, "openingPrice.references[1].minimumWrapped: the wrapped native coin the pool must hold to count as a reference");
 }
 
 /**
@@ -191,6 +316,7 @@ export function validateChain(chain, key) {
   refuse(Array.isArray(chain.initialPairs) && chain.initialPairs.length <= 4, "initialPairs");
   for (const [i, p] of chain.initialPairs.entries())
     refuse(symbols.includes(p.tokenA) && symbols.includes(p.tokenB) && p.tokenA !== p.tokenB, `initialPairs[${i}] names a token that is not listed`);
+  validateOpeningPrice(chain.openingPrice, chain);
   if (!isPending(chain.reserveCaps)) {
     refuse(Array.isArray(chain.reserveCaps) && chain.reserveCaps.length <= 8, "reserveCaps must be TBD-owner or a list (an empty list means no caps)");
     const seen = new Set();
