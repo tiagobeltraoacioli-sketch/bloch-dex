@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { Modal } from './Modal';
+import { TokenMark } from '../marks/TokenMark';
 
 export type TokenChoice = { key: string; label: string; detail?: string };
 
@@ -33,9 +34,7 @@ export function TokenSheet({
         data-testid={`token-chip-${caption === 'You pay' ? 'pay' : 'receive'}`}
         onClick={() => setOpen(true)}
       >
-        <span className="token-glyph" aria-hidden="true">
-          {(current?.label ?? '?').replace(/^[a-z]+(?=[A-Z])/, '').slice(0, 1)}
-        </span>
+        <TokenMark symbol={current?.label ?? '?'} size={28} />
         <span>{current?.label ?? 'Choose'}</span>
         <ChevronDown size={16} aria-hidden="true" />
       </button>
@@ -54,9 +53,7 @@ export function TokenSheet({
                     if (o.key !== value) onChoose(o.key);
                   }}
                 >
-                  <span className="token-glyph" aria-hidden="true">
-                    {o.label.replace(/^[a-z]+(?=[A-Z])/, '').slice(0, 1)}
-                  </span>
+                  <TokenMark symbol={o.label} size={36} />
                   <span className="token-sheet-name">{o.label}</span>
                   {o.detail && <span className="token-sheet-detail numeric">{o.detail}</span>}
                   {o.key === value && <Check size={16} aria-hidden="true" />}

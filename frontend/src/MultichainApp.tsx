@@ -15,6 +15,7 @@ import { Shell } from './shell/Shell';
 import { NetworkSwitcher } from './shell/NetworkSwitcher';
 import { WalletStatus } from './shell/WalletStatus';
 import { networkEntries } from './shell/networks';
+import { NetworkGlyph } from './marks/NetworkGlyph';
 
 const CHAINS = bundledChains();
 /** A pending swap is looked up this often: these chains settle in seconds, the Bloch L2 route's default is 10 s. */
@@ -93,6 +94,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
       navLabel="Networks"
       nav={chains.map((c) => (
         <a key={c.key} href={`#/${c.key}`} aria-current={c.key === chain.key ? 'page' : undefined}>
+          <NetworkGlyph network={c.key} size={18} />
           {c.network.chainName}
         </a>
       ))}

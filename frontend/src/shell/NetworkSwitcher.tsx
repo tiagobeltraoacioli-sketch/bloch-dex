@@ -2,11 +2,12 @@ import { Check, ChevronDown } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Popover } from '../ui/Popover';
 import type { NetworkEntry, NetworkKey } from './networks';
+import { NetworkGlyph } from '../marks/NetworkGlyph';
 
 export function NetworkTile({ entry }: { entry: Pick<NetworkEntry, 'key' | 'glyph'> }) {
   return (
-    <span className="network-tile" data-network={entry.key} aria-hidden="true">
-      {entry.glyph}
+    <span className="network-tile" aria-hidden="true">
+      <NetworkGlyph network={entry.key} fallback={entry.glyph} size={24} />
     </span>
   );
 }

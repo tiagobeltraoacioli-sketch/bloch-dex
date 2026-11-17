@@ -3,6 +3,7 @@ import { BrandMark } from './BrandMark';
 import { ThemeToggle } from './ThemeToggle';
 import { Toaster } from '../ui/toast';
 import type { NetworkKey } from './networks';
+import { NetworkKeyContext } from './network-context';
 
 /**
  * The frame every route shares: brand, navigation, header actions (network,
@@ -64,13 +65,15 @@ export function Shell({
         <div className="lintel" aria-hidden="true" />
       </header>
       <main id="main-content" ref={mainRef} tabIndex={-1} className="main-content">
-        {children}
+        <NetworkKeyContext.Provider value={network}>{children}</NetworkKeyContext.Provider>
       </main>
       <footer className="footer">
         <div className="footer-inner">{footer}</div>
       </footer>
       {after}
       <Toaster />
+      {/* The wall: lit courses and the lamp's pool of light, placed by the gate (styles/gate.css). */}
+      <div className="wall-light" aria-hidden="true" />
     </div>
   );
 }

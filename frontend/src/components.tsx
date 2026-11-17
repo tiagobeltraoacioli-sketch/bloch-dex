@@ -1,18 +1,17 @@
 import type { ReactNode } from 'react';
 import { ArrowUpRight } from 'lucide-react';
-import { TOKENS } from './data';
+import { TokenMark } from './marks/TokenMark';
 import type { Symbol } from './model';
 
 export { Modal } from './ui/Modal';
 
 export function TokenIcon({ symbol, small = false }: { symbol: Symbol; small?: boolean }) {
   return (
-    <span
-      aria-hidden="true"
+    <TokenMark
+      symbol={symbol}
+      size={0}
       className={`token-icon token-${symbol.toLowerCase()} ${small ? 'small' : ''}`}
-    >
-      {TOKENS[symbol].glyph}
-    </span>
+    />
   );
 }
 

@@ -69,6 +69,8 @@ const STATES = [
   // Second pass: the reference layer docked on the page because a pool carries a notice. Last: it leaves bUSDC
   // above the reserves of the pair.
   'mainnet-docked-pool-notice',
+  // Design pass of round 17: the token sheet of the live route.
+  'mainnet-token-sheet',
 ];
 const VARIANTS = [
   { theme: 'dark', width: 1440, height: 900, dsf: 1, mobile: false },
@@ -654,6 +656,15 @@ group('preview', STATES.filter((s) => s.startsWith('preview-') || s === 'live-po
   await w.step('preview-pools', async () => (await route('#/pools'), page), independent);
   await w.step('preview-portfolio', async () => (await route('#/portfolio'), page), independent);
   await w.step('live-pools-unavailable', async () => (await route('#/live-pools'), page), independent);
+});
+
+group('token-sheet', ['mainnet-token-sheet'], async (w) => {
+  await w.step('mainnet-token-sheet', async () => {
+    const page = await w.begin();
+    if (!(await page.evaluate(`window.__s.click('You pay')`))) throw new Error('no pay token chip');
+    await page.waitText('/Only the tokens of the verified deployment record are listed/');
+    return page;
+  });
 });
 
 group('docked-pool-notice', ['mainnet-docked-pool-notice'], async (w) => {
