@@ -976,7 +976,12 @@ test("licensing: no unfilled template, the GPL governs the contracts, the fronte
   assert.ok(!/<year>|<copyright holders>/.test(license), "the MIT template's placeholders are gone");
   assert.match(license, /contracts\/ {2}script\/ {2}test\/ +GPL-3\.0-or-later/);
   assert.match(license, /where that line and this file differ, this file governs/);
-  assert.match(license, /Copyright \(c\) 2026 TBD-owner/);
+  // Owner decision 2026-11-17: the copyright holder is "Bloch Inc." (was the placeholder TBD-owner). Every file that
+  // names the holder carries the owner's exact line and none still carries the placeholder.
+  for (const path of ["LICENSE", "NOTICE", "LICENSES/MIT.txt", "frontend/LICENSE", "scripts/LICENSE", "script/LICENSE", "test/LICENSE"]) {
+    assert.match(read(path), /Copyright \(c\) 2026 Bloch Inc\./, `${path} names the copyright holder`);
+    assert.ok(!/TBD-owner/.test(read(path)), `${path} has no unfilled holder`);
+  }
   assert.match(read("LICENSES/GPL-3.0-or-later.txt"), /GNU GENERAL PUBLIC LICENSE\s+Version 3, 29 June 2007/);
   assert.match(read("NOTICE"), /Uniswap V2 Core[\s\S]*GPL-3\.0-or-later[\s\S]*Uniswap V2 Periphery/);
   for (const path of ["script/LICENSE", "test/LICENSE"]) assert.match(read(path), /GPL-3\.0-or-later/);
