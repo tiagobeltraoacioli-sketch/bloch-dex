@@ -635,7 +635,11 @@ scripts/multichain/deploy.sh op-mainnet dry-run -- --ledger
 ```
 
 Step 2. Deploy. Three transactions to confirm on the signer: factory, router, lens. **No pair is created**, so no
-empty pool of the owner's ever waits on the chain.
+empty pool of the owner's ever waits on the chain. Before anything is signed the script prints the chain id, the
+RPC host, the target of every transaction (the CREATE2 deployer `0x4e59…956C`, value 0) and the three addresses
+with the fee address, the depositing account and the wrapped token, and asks you to type the chain's key
+(`op-mainnet` here); anything else stops it with nothing sent (review R369-7). Compare the three addresses with
+section 3 first: a hardware wallet shows only the target, the value 0 and the network for these calls.
 
 ```
 scripts/multichain/deploy.sh op-mainnet broadcast -- --ledger

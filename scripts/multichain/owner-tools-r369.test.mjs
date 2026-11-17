@@ -204,3 +204,15 @@ test("R369-6 fixed: deploy.sh removes every MC_* variable of the caller's shell 
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout.trim(), "", "no MC_* variable survives");
 });
+
+test("R369-7 fixed: a public-chain broadcast shows chain id, target, the three addresses and their constructor values, and sends only after the owner types the chain's key", () => {
+  const script = readFileSync(join(ROOT, "scripts/multichain/deploy.sh"), "utf8");
+  const ask = script.indexOf('read -r -p "Type the chain\'s key');
+  const forge = script.indexOf("forge script script/DeployMultichain.s.sol");
+  assert.ok(ask > 0 && ask < forge, "the question comes before forge signs anything");
+  for (const shown of ["$MC_CHAIN_ID", "0x4e59b44847b379578588920cA78FbF26c0B4956C", "$MC_EXPECT_FACTORY", "$MC_EXPECT_ROUTER", "$MC_EXPECT_LENS", "$MC_FEE_TO", "$MC_FIRST_DEPOSITOR"])
+    assert.ok(script.slice(0, ask).includes(shown), `${shown} is shown before the question`);
+  assert.match(script, /\[ "\$TYPED" = "\$CHAIN" \] \|\| \{ echo "stopped; nothing was sent" >&2; exit 1; \}/);
+  assert.match(script, /\[ -t 0 \] \|\| \{ echo "broadcast to a public chain needs a terminal/);
+  assert.match(script, /if \[ "\$MODE" = broadcast \] && \[ -z "\$REHEARSAL_RPC" \]; then/, "only a public-chain broadcast asks; a loopback rehearsal runs unattended");
+});
