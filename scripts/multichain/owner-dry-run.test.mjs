@@ -42,9 +42,9 @@ test("no block carries a private key, a key on the command line, a comment, or a
     assert.ok(!/(^|\s)#/.test(cmd), k);
   }
   for (const key of ORDER) {
-    assert.match(blocks[`${key} deploy-broadcast`], /^scripts\/multichain\/deploy\.sh \S+ broadcast -- --keystore ~\/Desktop\/DEX-CHAVE-DEPLOY\/deployer$/);
+    assert.match(blocks[`${key} deploy-broadcast`], /^scripts\/multichain\/deploy\.sh \S+ broadcast -- --keystore "\$DEX_DEPLOYER_KEYSTORE_DIR\/deployer"$/);
     assert.ok(!text.includes(`<!-- run: ${key} send-suffix -->`), `${key}: the suffix is inline text, not a block to paste (review R369-11)`);
-    assert.match(blocks[`${key} send-suffix`], /^--keystore ~\/Desktop\/DEX-CHAVE-DEPOSITANTE\/depositante --rpc-url https:\/\/\S+$/);
+    assert.match(blocks[`${key} send-suffix`], /^--keystore "\$DEX_DEPOSITOR_KEYSTORE_DIR\/depositante" --rpc-url https:\/\/\S+$/);
     assert.ok(blocks[`${key} send-suffix`].endsWith(loadChain(key).rpc[0]), `${key}: the send endpoint is the chain's first reviewed endpoint`);
   }
 });
@@ -67,6 +67,10 @@ test("the funding amounts are stated for every chain in the form the dry run rea
     const f = fundingOf(text, key, loadChain(key).nativeCurrency.symbol);
     assert.ok(Number(f.deployer) > 0 && Number(f.allowance) > 0, key);
   }
+});
+
+test("no keystore folder of the owner's machine is named (H398-3)", () => {
+  assert.ok(!new RegExp(["CH", "AVE"].join("") + "|~/Desktop/DEX-").test(text));
 });
 
 test("blocksOf refuses a block that appears twice or spans two lines", () => {
