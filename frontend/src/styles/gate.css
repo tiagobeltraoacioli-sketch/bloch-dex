@@ -133,13 +133,13 @@
   inset: 0;
   background: var(--masonry-lit) 50% 66px / 176px 96px;
   -webkit-mask-image: radial-gradient(
-    circle 560px at var(--lamp-x, 50%) var(--lamp-y, 300px),
+    circle 680px at var(--lamp-x, 50%) var(--lamp-y, 300px),
     #000 0,
     rgb(0 0 0 / 0.45) 38%,
     transparent 100%
   );
   mask-image: radial-gradient(
-    circle 560px at var(--lamp-x, 50%) var(--lamp-y, 300px),
+    circle 680px at var(--lamp-x, 50%) var(--lamp-y, 300px),
     #000 0,
     rgb(0 0 0 / 0.45) 38%,
     transparent 100%
@@ -647,6 +647,8 @@
 
 @media (min-width: 1060px) {
   .mainnet-page[data-layout='gate'] {
+    /* Rows of the rail that are empty (no hold, no confirmation rule) leave no gap behind: spacing is the items'. */
+    row-gap: 0;
     grid-template-columns: minmax(0, 480px) minmax(0, 392px);
     grid-template-rows: auto auto auto auto auto 1fr;
     justify-content: center;
@@ -682,10 +684,12 @@
   .mainnet-page[data-layout='gate'] > .rail-slot {
     grid-column: 2;
     grid-row: 3;
+    margin-top: var(--s-5);
   }
   .mainnet-page[data-layout='gate'] > .confirmation-rule {
     grid-column: 2;
     grid-row: 4;
+    margin-top: var(--s-4);
   }
   /* The ledger travels with the gate: it holds under the header while the gate scrolls past (its grid area runs
      down to the gate's foot, so it never leaves the gate's side). */
@@ -695,7 +699,7 @@
     align-self: start;
     position: sticky;
     top: calc(var(--header-h) + var(--s-4));
-    margin-top: var(--s-2);
+    margin-top: var(--s-5);
   }
   .mainnet-page[data-layout='gate'] > .reference[data-mode='docked'] {
     grid-column: 1 / -1;
@@ -1703,6 +1707,37 @@
   animation: quote-sweep 1.5s linear infinite;
 }
 
+/* Without the gate (reads unavailable): the alert takes the column's measure, so it lines up with the Refresh
+   control above it and the reference cards below it. */
+.mainnet-page[data-layout='column'] .read-failure {
+  justify-self: stretch;
+  max-width: none;
+}
+
+/* The pools, docked under the gate on a wide screen: one row per pool, its name, reserves and caps side by side,
+   figures in tabular digits so reserves line up. Notices stay inside the reserves cell, in full. */
+.pool-cards td {
+  font-variant-numeric: tabular-nums;
+}
+@media (min-width: 760px) {
+  .mainnet-page .reference[data-mode='docked'] .pool-cards tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1.5fr);
+    align-items: start;
+    gap: var(--s-5);
+  }
+  .mainnet-page .reference[data-mode='docked'] .pool-cards td {
+    margin-top: 0;
+  }
+}
+
+/* The skim action under a pending-excess notice takes its own line instead of breaking the sentence. */
+[aria-label='Pending excess'] > .button {
+  display: flex;
+  width: fit-content;
+  margin-top: var(--s-3);
+}
+
 /* ---------- Footer ---------- */
 .footer-licences {
   display: inline-flex;
@@ -1766,20 +1801,6 @@
   }
   .quote-list dd {
     max-width: 22ch;
-  }
-  /* Once a quote is on the card, the action stays at the foot of the screen while the receipt and the revert
-     conditions above it are read; it is the card's own last block, so it never leaves the gate and covers
-     nothing once the card's end is reached. */
-  .swap-card[data-phase='quoted'] .swap-actions {
-    position: sticky;
-    bottom: 0;
-    z-index: 2;
-    margin-inline: calc(-1 * var(--s-2));
-    padding: var(--s-3) var(--s-2) calc(var(--s-3) + env(safe-area-inset-bottom, 0px));
-    border-top: 1px solid var(--line);
-    background: color-mix(in srgb, var(--surface) 94%, transparent);
-    -webkit-backdrop-filter: blur(8px);
-    backdrop-filter: blur(8px);
   }
 }
 @keyframes sheet-up {

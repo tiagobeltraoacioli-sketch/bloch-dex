@@ -123,8 +123,8 @@
   --lamp-glass-off: #1d2426;
   --masonry-lit: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='176' height='96' fill='none' stroke='%23d8d6cc' stroke-opacity='.34'%3E%3Cpath d='M0 .5h176M0 48.5h176M.5 0v48M88.5 48v48'/%3E%3C/svg%3E");
   --glow-blend: screen;
-  --glow-wall: 0.3; /* how far the lamp reaches on the wall */
-  --glow-halo: 0.8;
+  --glow-wall: 0.42; /* how far the lamp reaches on the wall */
+  --glow-halo: 0.9;
   --grain-opacity: 0.5;
   --recess: rgb(0 0 0 / 0.5); /* the shade under the arch */
   --gate-shadow:
