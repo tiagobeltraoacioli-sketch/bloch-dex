@@ -75,20 +75,20 @@
   "firstDepositorCheck": {
     "address": "0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3",
     "tool": "scripts/multichain/check-depositor.mjs",
-    "at": "2026-11-17T02:01:57Z",
+    "at": "2026-11-17T03:51:30Z",
     "found": "no code, no EIP-7702 delegation, nonce 0 and no pending transaction on every endpoint listed; not the fee address, and not an address written under deployments/",
     "chains": {
       "op-mainnet": [
         {
           "endpoint": "mainnet.optimism.io",
-          "block": 159641044,
+          "block": 159644257,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "optimism-rpc.publicnode.com",
-          "block": 159641046,
+          "block": 159644260,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
@@ -97,14 +97,14 @@
       "base": [
         {
           "endpoint": "mainnet.base.org",
-          "block": 58452504,
+          "block": 58484684,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "base-rpc.publicnode.com",
-          "block": 58452511,
+          "block": 58484732,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
@@ -113,21 +113,28 @@
       "arbitrum-one": [
         {
           "endpoint": "arb1.arbitrum.io",
-          "block": 524912323,
+          "block": 524932883,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "arbitrum.gateway.tenderly.co",
+          "block": 524932897,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "arbitrum-one.public.blastapi.io",
-          "block": 524912331,
+          "block": 524932933,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "arbitrum-one-rpc.publicnode.com",
-          "block": 524912339,
+          "block": 524933056,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
@@ -136,21 +143,21 @@
       "linea": [
         {
           "endpoint": "rpc.linea.build",
-          "block": 32628057,
+          "block": 32628523,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "linea.drpc.org",
-          "block": 32628057,
+          "block": 32628524,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "linea-rpc.publicnode.com",
-          "block": 32628057,
+          "block": 32628524,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
@@ -159,21 +166,28 @@
       "bnb-smart-chain": [
         {
           "endpoint": "bsc-rpc.publicnode.com",
-          "block": 134036003,
+          "block": 134050571,
+          "nonce": 0,
+          "code": "none",
+          "balanceWei": "0"
+        },
+        {
+          "endpoint": "api.zan.top",
+          "block": 134050591,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "bsc-mainnet.public.blastapi.io",
-          "block": 134036024,
+          "block": 134050608,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "bsc-dataseed.bnbchain.org",
-          "block": 134036029,
+          "block": 134050620,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
@@ -182,14 +196,14 @@
       "ethereum": [
         {
           "endpoint": "ethereum-rpc.publicnode.com",
-          "block": 26431646,
+          "block": 26432190,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
         },
         {
           "endpoint": "eth.drpc.org",
-          "block": 26431646,
+          "block": 26432191,
           "nonce": 0,
           "code": "none",
           "balanceWei": "0"
