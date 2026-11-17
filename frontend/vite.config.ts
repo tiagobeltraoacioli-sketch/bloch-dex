@@ -16,6 +16,10 @@ const mainnetNetwork =
 const mainnetRecord =
   env.POSTERN_MAINNET_RECORD ?? committed('../deployments/mainnet/dex-mainnet.record.json');
 
+// Bridge page inputs (src/bridge/bundle.ts): the committed interface files by default; POSTERN_BRIDGE_BUNDLE points
+// a local render check at one JSON file of the same shape with `rehearsal: true` (loopback stand-ins).
+const bridgeBundle = env.POSTERN_BRIDGE_BUNDLE ?? committed('./src/bridge/bundle.ts');
+
 // Devnet4 live route: the Bloch L2 settled RPC sends no CORS headers, so the
 // dev and preview servers forward /devnet4-rpc to it (normally an SSH tunnel
 // to the devnet4 host's 127.0.0.1:18945; see README).
@@ -46,6 +50,7 @@ const RENDER_OVERRIDES = [
   'POSTERN_MAINNET_RECORD',
   'VITE_MAINNET_RPC_URL',
   'VITE_BRIDGE_ETH_RPC_URL',
+  'POSTERN_BRIDGE_BUNDLE',
 ];
 
 export default defineConfig(({ command, mode }) => ({
@@ -64,6 +69,7 @@ export default defineConfig(({ command, mode }) => ({
       '@postern/mainnet-record': mainnetRecord,
       // Only src/multichain imports it (the multichain site and its tests; not part of this site's bundle).
       '@postern/multichain-bundle': committed('./src/multichain/bundle.ts'),
+      '@postern/bridge-bundle': bridgeBundle,
     },
   },
   server: {
@@ -79,6 +85,7 @@ export default defineConfig(({ command, mode }) => ({
         '../deployments',
         mainnetNetwork,
         mainnetRecord,
+        bridgeBundle,
       ],
     },
     proxy: devnet4Proxy,
