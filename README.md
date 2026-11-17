@@ -1,5 +1,8 @@
 # PosternDEX
 
+
+**Branches pushed on 2026-11-17** (which line is what, audited, reviewed or work in progress, and how to verify it): [BRANCHES.md](BRANCHES.md).
+
 V2 constant-product AMM contracts, an execution router, an immutable treasury
 collector and a read-only integration lens, with a responsive React/TypeScript
 frontend. Protocol fees start **disabled**. The frontend is an interactive
