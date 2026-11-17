@@ -61,16 +61,16 @@
     "cap": "100000000000",
     "window": "10000000000",
     "windowSeconds": 86400,
-    "minDeposit": "11000000",
+    "minDeposit": "101000000",
     "maxDeposit": "10000000000",
-    "l2MinBurn": "10000000",
+    "l2MinBurn": "100000000",
     "l2MaxBurn": "10000000000",
     "mintDelaySeconds": 43200,
     "largeItemThreshold": "0"
   },
   "fee": {
     "depositBps": 5,
-    "releaseBps": 5,
+    "releaseBps": 10,
     "recipient": "0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544",
     "paidOn": "source",
     "collection": "accrued in the vault outside the backing; anyone calls sweepFees() and the vault pays the recipient",
@@ -104,10 +104,11 @@
     "l2Function": "burn(uint64 amount, address sourceRecipient)",
     "recipientEncoding": "20-byte address on the source network",
     "typicalSeconds": 3600,
-    "paysAsset": "USDC, the burned amount less 0.05%",
+    "paysAsset": "USDC, the burned amount less 0.10%",
     "notes": [
       "a recipient blacklisted by the issuer cannot be paid until the issuer lifts it; the burn names the recipient and cannot be redirected"
-    ]
+    ],
+    "gasCeilingGwei": 2
   },
   "explorers": {
     "source": {

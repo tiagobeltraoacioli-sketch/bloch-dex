@@ -6,27 +6,31 @@
       "network": "ethereum",
       "file": "ethereum/bridge.network.json",
       "derived": true,
-      "ref": "cc2511a",
-      "commit": "cc2511aff60056393b92f6dc94e80a045a6c3c37",
+      "ref": "codex/bridge-evm-nets-r17-audit-20261117",
+      "commit": "9187656dd021848bf85b7102605af8720333787d",
       "from": [
         {
           "path": "deployments/mainnet/busdc-vault-mainnet.config.json",
-          "sha256": "58e9492c9d5ab0a9342bd9339e5109b5bc4608d3084651fe38fc8d10ff8d4e45"
+          "sha256": "4ac5860dfda81df6e824c27c2413ababe058e0799be7d07e51dcbcb4951cdc3f"
         },
         {
           "path": "deployments/mainnet/busdc-mainnet.config.json",
-          "sha256": "4975487f2fc705d45e09d5b45327baf2dbdb53bd26523bde33d244b327f38c84"
+          "sha256": "0321109ec1e9052ad5797afb1dbd76852fe0a451bb5a0ba519fa0e396f1b655b"
+        },
+        {
+          "path": "tools/evm-nets/networks.json",
+          "sha256": "b6715a6b7bd464a87fc25c167a8ec87e137c0d3d714390cc91156d81cb5a3217"
         }
       ],
       "template": "ethereum/derive.template.json",
-      "sha256": "c68547abc212dbfad7ecbab158968642620bc877ad496de942f6845bc08b6ef6"
+      "sha256": "619c1182a5ea9e8ce6664cff9e474979caf405e6037144e48bf0ccd395c27b8d"
     },
     {
       "network": "arbitrum-one",
       "file": "arbitrum-one/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-evm-nets-r17-20261117",
-      "commit": "2f22b204f1f772d48da4a9fa4b598fa889dfe118",
+      "commit": "2d73d7caca45064ae970134f1255013f018bc38f",
       "path": "deployments/arbitrum-one/bridge.network.json",
       "sha256": "2d395e478937fa8534740e7461b22a03b17f31bf89047ad31bbe9c66bc07592d"
     },
@@ -35,7 +39,7 @@
       "file": "op-mainnet/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-evm-nets-r17-20261117",
-      "commit": "2f22b204f1f772d48da4a9fa4b598fa889dfe118",
+      "commit": "2d73d7caca45064ae970134f1255013f018bc38f",
       "path": "deployments/op-mainnet/bridge.network.json",
       "sha256": "b6f8a09f1df636f88ebbf4daefe0a3435c3e3e82e63dc9fc7e69a68ef9207290"
     },
@@ -44,7 +48,7 @@
       "file": "linea/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-evm-nets-r17-20261117",
-      "commit": "2f22b204f1f772d48da4a9fa4b598fa889dfe118",
+      "commit": "2d73d7caca45064ae970134f1255013f018bc38f",
       "path": "deployments/linea/bridge.network.json",
       "sha256": "3f5c2cce6eb8feaf5accb264f4716828da4172dc5f6387e3e112c857aaf40b31"
     },
@@ -53,7 +57,7 @@
       "file": "base/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-evm-nets-r17-20261117",
-      "commit": "2f22b204f1f772d48da4a9fa4b598fa889dfe118",
+      "commit": "2d73d7caca45064ae970134f1255013f018bc38f",
       "path": "deployments/base/bridge.network.json",
       "sha256": "4f28f14a2acce100fa04f9b273e0453657cdbd5aae37fdba459b3cab2a8a73e6"
     },
@@ -62,7 +66,7 @@
       "file": "bnb/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-evm-nets-r17-20261117",
-      "commit": "2f22b204f1f772d48da4a9fa4b598fa889dfe118",
+      "commit": "2d73d7caca45064ae970134f1255013f018bc38f",
       "path": "deployments/bnb/bridge.network.json",
       "sha256": "e7cbc6fc93ff3c9d59d105fe49322d2acb4b1bb65f1659f6373eecfb6149538f"
     },
@@ -71,7 +75,7 @@
       "file": "bitcoin/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-btc-r17-20261117",
-      "commit": "c3febdd1e987990659dc9dd1d15f54dbb827ca36",
+      "commit": "91bb6cad3d0856f0526db14afe3f3de0b09d7e75",
       "path": "deployments/bitcoin/bridge.network.json",
       "sha256": "e5f21892a746adf597cb5e4db95e2b42d99d6ab3958aaa924e83c5f261f584f4"
     },
@@ -80,7 +84,7 @@
       "file": "solana/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-solana-r17-20261117",
-      "commit": "3b6c3f45c110540f67d5c20358d88674600271a3",
+      "commit": "b2fa301f41b07a72017656c098f4c44b8441acae",
       "path": "deployments/solana/bridge.network.json",
       "sha256": "afa0d3810e35d7d43f04c394167ea4ca86d1905514e02bd9cc8b59709525140d"
     },
@@ -98,16 +102,16 @@
       "file": "stellar/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-stellar-r17-20261117",
-      "commit": "4ee58b35f76cebaae72c7030649eef4ccda0f549",
+      "commit": "3ce640fccb2a4f6384094346239e82cc6ca4ab94",
       "path": "deployments/stellar/bridge.network.json",
-      "sha256": "9166c55c814a783df502fbe0fae9c203ddfbf277634e1aefe68d4b106812723e"
+      "sha256": "303620b8813c2da178bcb79bb289b864dbd6a3c75dfd32967b85db1a1c4b6248"
     },
     {
       "network": null,
       "file": "schema/bridge.network.schema.json",
       "derived": false,
       "ref": "codex/bridge-evm-nets-r17-20261117",
-      "commit": "2f22b204f1f772d48da4a9fa4b598fa889dfe118",
+      "commit": "2d73d7caca45064ae970134f1255013f018bc38f",
       "path": "deployments/schema/bridge.network.schema.json",
       "sha256": "0ee24ea22fc87dd38fdad8a3fd3ee04eb7219199e50352d3b5b27948e6a08de6"
     }

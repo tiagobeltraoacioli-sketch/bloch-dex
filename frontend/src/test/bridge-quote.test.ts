@@ -77,7 +77,7 @@ describe('Bitcoin fee rules (btc_policy.py)', () => {
   });
 });
 
-describe('bridge fees in basis points (5 each way; 10 on Bitcoin), fixed fees, minimums', () => {
+describe('bridge fees in basis points (fee schedule of 2026-11-17: per route, from its file), fixed fees, minimums', () => {
   it('takes the rate of each route from its own file, never from a constant of the page', () => {
     const files = bundle.files as { network: { id: string }; fee: { depositBps: number; releaseBps: number } }[];
     for (const e of config.entries) {
@@ -88,20 +88,32 @@ describe('bridge fees in basis points (5 each way; 10 on Bitcoin), fixed fees, m
       const a = e.route!.limits.l2MaxBurn;
       if (e.id !== 'bitcoin' && e.id !== 'tron') expect(quoteExit(e.route!, { units: a }).receive!.amount, e.id).toBe((a - (a * BigInt(file.fee.releaseBps)) / 10_000n) * e.route!.asset.unitsPerCustodyUnit);
     }
-    expect(route('ethereum').fee).toMatchObject({ depositBps: 5, releaseBps: 5 });
+    // Fee schedule of 2026-11-17 (restated by agent 363: was 5 + 5 on Ethereum before it): deposit credit 5 bps,
+    // exit 10 bps on Ethereum, 15 bps exit on Linea, 5 + 5 on Arbitrum One and OP Mainnet, 10 + 10 on Bitcoin.
+    expect(route('ethereum').fee).toMatchObject({ depositBps: 5, releaseBps: 10 });
+    expect(route('linea').fee).toMatchObject({ depositBps: 5, releaseBps: 15 });
+    expect(route('arbitrum-one').fee).toMatchObject({ depositBps: 5, releaseBps: 5 });
+    expect(route('op-mainnet').fee).toMatchObject({ depositBps: 5, releaseBps: 5 });
+    expect(route('bitcoin').fee).toMatchObject({ depositBps: 10, releaseBps: 10 });
+    // An Ethereum exit of 100 bUSDC (the smallest) pays 99.9 USDC: the exit rate is the route's own, not 5 bps.
+    expect(quoteExit(route('ethereum'), { units: 100_000_000n }).receive!.amount).toBe(100_000_000n - 100_000n);
   });
   it('a USDC deposit of 1,000 nets 999.5 and the fee rounds down', () => {
     const eth = route('ethereum');
     const q = quoteDeposit(eth, { assetUnits: 1_000_000_000n });
     expect(q.ok && q.receive).toEqual({ amount: 999_500_000n, decimals: 6, symbol: 'bUSDC' });
-    // 11.000001 USDC: fee floor(11000001 * 5 / 10000) = 5500 units.
-    expect(quoteDeposit(eth, { assetUnits: 11_000_001n }).receive!.amount).toBe(11_000_001n - 5_500n);
+    // 101.000001 USDC (the minimum deposit is 101 since 2026-11-17; was 11): fee floor(101000001 * 5 / 10000) =
+    // 50500 units (50500.0005 rounded down): the fee rounds down, the user is never charged a fraction more.
+    expect(quoteDeposit(eth, { assetUnits: 101_000_001n }).receive!.amount).toBe(101_000_001n - 50_500n);
     // The vault's rule, bit for bit: amount - (amount * bps) / 10000.
-    for (const a of [11_000_000n, 12_345_678n, 9_999_999_999n]) expect(quoteDeposit(eth, { assetUnits: a }).receive!.amount).toBe(a - (a * 5n) / 10_000n);
+    for (const a of [101_000_000n, 112_345_678n, 9_999_999_999n]) expect(quoteDeposit(eth, { assetUnits: a }).receive!.amount).toBe(a - (a * 5n) / 10_000n);
   });
   it('refuses below the minimum, above the maximum and past the cap headroom', () => {
     const arb = route('ethereum');
-    expect(quoteDeposit(arb, { assetUnits: 10_999_999n }).problems[0]).toMatch(/smallest deposit is 11 USDC/);
+    // Minimum deposit 101 USDC since the fee schedule of 2026-11-17 (was 11); the boundary is still exact.
+    expect(quoteDeposit(arb, { assetUnits: 100_999_999n }).problems[0]).toMatch(/smallest deposit is 101 USDC/);
+    expect(quoteDeposit(arb, { assetUnits: 101_000_000n }).ok).toBe(true);
+    expect(quoteExit(arb, { units: 99_999_999n }).problems[0]).toMatch(/smallest exit is 100 bUSDC/);
     expect(quoteDeposit(arb, { assetUnits: 10_000_000_001n }).problems[0]).toMatch(/largest single deposit is 10000 USDC/);
     for (const e of config.entries) {
       const r = e.route!;
