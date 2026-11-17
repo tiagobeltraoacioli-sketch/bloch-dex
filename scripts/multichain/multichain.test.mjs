@@ -12,7 +12,7 @@ import {
 } from "./lib.mjs";
 import { DONATION_BPS, MAX_TOLERANCE_BPS, MIN_OPENING_SHARES, addTransactions, giftWithinTolerance, hasStrictMinimums, openingAmounts, openingTransactions } from "./first-deposit.mjs";
 import { checkDepositor, checkRecord, endpointVerdict, offlineProblems } from "./check-depositor.mjs";
-import { chainIdsOf, feeProofMessage, loadFeeProof, verifyFeeProof, verifySignature } from "./fee-proof.mjs";
+import { chainIdsOf, feeProofMessage, loadFeeProof, signingPage, verifyFeeProof, verifySignature } from "./fee-proof.mjs";
 import { STALE_GRACE_SECONDS, chainlinkPrice, combine, deviationBps, nativeFor, priceOf, readMarket, tokenFor, twapPrice } from "./market.mjs";
 import { evaluateGate, gateConfig } from "./gate.mjs";
 import { frontendNetwork, frontendRecord } from "./frontend-files.mjs";
@@ -763,6 +763,13 @@ test("fee address proof: one EIP-191 message, verified offline and strictly; the
   }
   // If the owner's proof is committed, it must be valid for the committed fee address.
   if (existsSync(join(ROOT, "deployments/fee-address-proof.json"))) assert.equal((await loadFeeProof(committed)).valid, true);
+  // The signing page: self-contained (it may load nothing and connect nowhere), asks personal_sign of exactly the
+  // message's bytes by the fee address, and no transaction.
+  const page = signingPage(committed.feeTo.address, text);
+  assert.ok(page.includes(`0x${Buffer.from(text, "utf8").toString("hex")}`));
+  assert.match(page, /default-src 'none'/);
+  assert.ok(!/https?:\/\/(?!127\.0\.0\.1)/.test(page), "no outside URL");
+  assert.ok(page.includes('"personal_sign"') && !/eth_sendTransaction|eth_signTypedData|fetch\(|XMLHttpRequest/.test(page));
   // The tool takes no decision from a subprocess: it starts none.
   const source = readFileSync(join(ROOT, "scripts/multichain/fee-proof.mjs"), "utf8");
   assert.ok(!/child_process|spawn|exec\(/.test(source));

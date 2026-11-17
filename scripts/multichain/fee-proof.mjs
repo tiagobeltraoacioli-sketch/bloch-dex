@@ -5,6 +5,9 @@
 //   node scripts/multichain/fee-proof.mjs message                    print the exact text to sign (one line)
 //   node scripts/multichain/fee-proof.mjs record --signature 0x…     verify the signature and write deployments/fee-address-proof.json
 //   node scripts/multichain/fee-proof.mjs verify                     verify the recorded proof again
+//   node scripts/multichain/fee-proof.mjs page --out DIR             write DIR/index.html: a page that asks a browser
+//                                                                    wallet to sign the text (for a wallet that has no
+//                                                                    "sign message" of its own); serve it on loopback
 //
 // The factory's `feeTo` can never be changed, and it is the same address on all six chains. An externally owned
 // address is controlled by the same key on every EVM chain, so ONE signature proves it everywhere: no transaction
@@ -20,7 +23,7 @@
 // from another program's exit code.
 // Exit status: 0 valid, 1 not valid or not recorded, 2 usage or configuration.
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMain } from "../staging/is-main.mjs";
 import { FEE_PROOF_DOMAIN, FEE_PROOF_FILE, MultichainError, ROOT, loadChain, loadShared, lower, refuse } from "./lib.mjs";
@@ -61,6 +64,45 @@ export async function verifySignature({ address, message, signature }) {
   return { valid: problems.length === 0, problems, signer };
 }
 
+/**
+ * A self-contained page that asks the browser's wallet for a personal_sign of the message by the fee address and
+ * shows the signature. It loads nothing from anywhere, sends nothing anywhere and asks for no transaction; what it
+ * shows is checked afterwards by `record`, so the page itself need not be trusted. Pure.
+ */
+export function signingPage(address, message) {
+  const hex = `0x${Buffer.from(message, "utf8").toString("hex")}`;
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sign the fee address proof</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:52rem;margin:2rem auto;padding:0 1rem}pre{white-space:pre-wrap;word-break:break-all;background:#f3f3f3;padding:1rem}button{font:inherit;padding:.5rem 1rem}</style></head>
+<body><h1>Sign the fee address proof</h1>
+<p>This page asks your wallet to sign one message with the account <code>${address}</code>. It is not a transaction, costs nothing and sends nothing. Compare the text your wallet shows with this text before you confirm:</p>
+<pre id="message"></pre>
+<p><button id="sign">Connect the wallet and sign</button></p>
+<p id="status"></p><pre id="signature"></pre>
+<script>
+const ADDRESS = ${JSON.stringify(address)};
+const MESSAGE = ${JSON.stringify(message)};
+const HEX = ${JSON.stringify(hex)};
+document.getElementById("message").textContent = MESSAGE;
+const say = (text) => { document.getElementById("status").textContent = text; };
+document.getElementById("sign").addEventListener("click", async () => {
+  try {
+    if (!window.ethereum) return say("No browser wallet was found on this page. Open it as http://127.0.0.1:PORT/ in the browser that has the wallet.");
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const account = accounts.find((a) => a.toLowerCase() === ADDRESS.toLowerCase());
+    if (!account) return say("The wallet did not offer the account " + ADDRESS + ". Select that account in the wallet and try again.");
+    const signature = await window.ethereum.request({ method: "personal_sign", params: [HEX, account] });
+    document.getElementById("signature").textContent = signature;
+    say("Signed. Copy the signature below and run: node scripts/multichain/fee-proof.mjs record --signature <the signature>");
+  } catch (error) {
+    say("Not signed: " + (error && error.message ? error.message : error));
+  }
+});
+</script></body></html>
+`;
+}
+
 /** The six chain ids, in the order of deployments/multichain.json. */
 export const chainIdsOf = (shared, root = ROOT) => shared.chains.map((key) => loadChain(key, root).chain.chainId);
 
@@ -95,15 +137,24 @@ export async function loadFeeProof(shared, root = ROOT) {
 }
 
 export async function main(argv, print = console.log) {
-  const usage = "usage: fee-proof.mjs message | record --signature 0xSIGNATURE | verify";
+  const usage = "usage: fee-proof.mjs message | record --signature 0xSIGNATURE | verify | page --out DIR";
   const [mode, ...rest] = argv;
-  refuse(["message", "record", "verify"].includes(mode), usage);
+  refuse(["message", "record", "verify", "page"].includes(mode), usage);
   const shared = loadShared();
   const chainIds = chainIdsOf(shared);
   const message = feeProofMessage(shared.feeTo.address, chainIds);
   if (mode === "message") {
     refuse(rest.length === 0, usage);
     print(message);
+    return 0;
+  }
+  if (mode === "page") {
+    refuse(rest.length === 2 && rest[0] === "--out", usage);
+    mkdirSync(rest[1], { recursive: true });
+    writeFileSync(join(rest[1], "index.html"), signingPage(shared.feeTo.address, message));
+    print(`wrote ${join(rest[1], "index.html")}. Serve it on this machine only and open it in the browser that has the wallet:`);
+    print(`python3 -m http.server 8765 --bind 127.0.0.1 --directory ${rest[1]}`);
+    print("then open http://127.0.0.1:8765/ , sign, and stop the server with Ctrl-C");
     return 0;
   }
   if (mode === "verify") {
