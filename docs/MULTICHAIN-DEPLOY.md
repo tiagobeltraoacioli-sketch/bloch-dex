@@ -153,7 +153,8 @@ script's inputs, the gate and `first-deposit.mjs` all take it from there, and ea
 | post gate | a factory whose `firstDepositor()` is another address |
 | `first-deposit.mjs` | the same, read again at the block of the deposit; code at the account |
 
-Recorded on 2026-11-17 (`firstDepositorCheck`): nonce 0, no code, balance 0 on 15 endpoints of the six chains.
+Recorded on 2026-11-17 at 03:51:30 UTC (`firstDepositorCheck`): nonce 0, no pending transaction, no code, balance 0
+on all 17 endpoints of the six chains (the first record, at 02:01:57 UTC, covered the 15 endpoints listed then).
 
 **Using it.** It signs only the two transactions `first-deposit.mjs prepare` prints, with
 `--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` added (cast asks for the password). Nothing else,
@@ -782,8 +783,8 @@ chain, build and publish:
 npm --prefix frontend run build:multichain
 ```
 
-The build writes `dist-multichain/_headers` with a Content-Security-Policy that names the fifteen reviewed
-endpoints. Hosting is the owner's step and follows `docs/FRONTEND-HOSTING-CHECKLIST.md`.
+The build writes `dist-multichain/_headers` with a Content-Security-Policy that names the seventeen reviewed
+endpoints (two on OP Mainnet, Base and Ethereum, three on Linea, four on Arbitrum One and BNB Smart Chain). Hosting is the owner's step and follows `docs/FRONTEND-HOSTING-CHECKLIST.md`.
 
 What the page does on these chains, by configuration and not by deleted code:
 
@@ -808,20 +809,23 @@ five hours. Each chain's network file now states two rules (`confirmation`, writ
   included releases its hold and shows its outcome. A swap is bound by its signed minimum and its deadline, as on
   every public exchange; the page also compares its quote with the latest block before asking the wallet.
 - **strict**: the block that ends a hold after which the user may send the swap again, so that a mistake could
-  execute it twice: the swap's deadline passed with no transaction seen; another transaction used the same nonce;
-  or the transaction's receipt says **reverted** (the page then offers a retry; review R328-7). These keep the
-  chain's own `finalized` block wherever the chain has a usable one. The cost: after a reverted swap the account
-  is held on that chain for the strict rule's time (15 to 23 minutes on four chains, about an hour on Linea,
-  seconds on BNB Smart Chain) before the page lets the user try again.
+  execute it twice: the swap's deadline passed with no transaction seen, or another transaction used the same
+  nonce. These keep the chain's own `finalized` block wherever the chain has a usable one.
+- **reverted** (review R328-7, then R328-3P-3): the block at which a swap whose receipt says **reverted** releases
+  its hold (the page then offers a retry). It lies between the two rules above; `chain.json` says per chain
+  (`confirmation.revertedWhy`) why a replacement of the block deeper than it is not credible. A reverted approval
+  or skim is settled like a success. The note above the form says that a reverted swap holds the account, until
+  when, and why. The cost: after a reverted swap the account is held on that chain for this rule's time (column
+  "reverted" below) before the page lets the user try again.
 
-| Chain | settle | Time at the measured block time | strict | Residual risk of the choice |
-|---|---|---|---|---|
-| OP Mainnet | 5 blocks on top | about 10 s (2 s blocks) | chain's `finalized` (15 to 23 min) | A sequencer reorganisation deeper than 5 blocks after the page showed an outcome: the page then shows a result the chain replaced; the transaction stays valid and is normally included again; the page creates no second transaction |
-| Base | 50 blocks | about 10 s (0.2 s blocks) | chain's `finalized` | as OP Mainnet, deeper than 50 blocks |
-| Arbitrum One | 32 blocks | about 10 s (0.31 s blocks) | chain's `finalized` (about 20 min) | as OP Mainnet, deeper than 32 blocks |
-| Linea | 1 block | about 11 s on average; Linea makes a block only when there is work (3 to 82 s apart when measured), so longer when the chain is quiet | **300 blocks** (about an hour) | The two reviewed endpoints disagree on `finalized` (the first answers the block proven on Ethereum, 1 h 40 min to 5 h behind; the second answers the head), so the tag is used for neither rule. The strict rule is **not the chain's finality**: a sequencer reorganisation deeper than 300 blocks could let a swap execute after the page ended its hold |
-| BNB Smart Chain | chain's `finalized` | about 1 s (the chain's fast finality is one or two blocks behind) | chain's `finalized` | Fast finality stalling: the page says so and waits, as on the Bloch L2 |
-| Ethereum | 2 blocks | about 24 s (12 s blocks) | chain's `finalized` (about 15 min) | A reorganisation deeper than 2 blocks: rare since the merge, not impossible; as OP Mainnet |
+| Chain | settle | Time at the measured block time | strict | reverted | Residual risk of the choice |
+|---|---|---|---|---|---|
+| OP Mainnet | 5 blocks on top | about 10 s (2 s blocks) | chain's `finalized` (15 to 23 min) | chain's `safe` (its batch is on Ethereum; about half a minute behind the head when measured) | A sequencer reorganisation deeper than 5 blocks after the page showed an outcome: the page then shows a result the chain replaced; the transaction stays valid and is normally included again; the page creates no second transaction |
+| Base | 50 blocks | about 10 s (0.2 s blocks) | chain's `finalized` | chain's `safe` (about a minute and a half behind the head when measured) | as OP Mainnet, deeper than 50 blocks |
+| Arbitrum One | 32 blocks | about 10 s (0.31 s blocks) | chain's `finalized` (about 20 min) | chain's `safe` (12 to 15 min when measured) | as OP Mainnet, deeper than 32 blocks |
+| Linea | 1 block | about 11 s on average; Linea makes a block only when there is work (3 to 82 s apart when measured), so longer when the chain is quiet | **300 blocks** (about an hour) | 30 blocks (about 6 to 9 min) | The two reviewed endpoints disagree on `finalized` (the first answers the block proven on Ethereum, 1 h 40 min to 5 h behind; the second answers the head), so the tag is used for neither rule. The strict rule is **not the chain's finality**: a sequencer reorganisation deeper than 300 blocks could let a swap execute after the page ended its hold |
+| BNB Smart Chain | chain's `finalized` | about 1 s (the chain's fast finality is one or two blocks behind) | chain's `finalized` | chain's `finalized` (seconds) | Fast finality stalling: the page says so and waits, as on the Bloch L2 |
+| Ethereum | 2 blocks | about 24 s (12 s blocks) | chain's `finalized` (about 15 min) | chain's `safe` (12 to 15 min when measured; finality 19 to 22) | A reorganisation deeper than 2 blocks: rare since the merge, not impossible; as OP Mainnet |
 
 Where `finalized` still protects the user, on every chain: the deployment record is written from a post gate read
 at the chain's `finalized` block; the page refuses a settled block older than that record; and the two strict
@@ -835,90 +839,81 @@ page says "finalized" on this network, it means that. …". Shown by the page re
 blocks are mined at the chain's measured block time and only as many as the rule asks; the swap's outcome appears
 within seconds while the fork's `finalized` block is still behind the swap.
 
-### Third revision of the page's rules (review R328-3P-1 to 3P-5, 2026-11-17)
+### Two endpoints must agree (reviews R309-MC-3, R328-4 to R328-6, R328-3P-1, R328-3P-4, R328-3P-5)
 
-Where this section and the lines below it differ, this paragraph is the current state.
+Every endpoint is a third party here. **Nothing the page shows or signs comes from one endpoint, by construction**
+(review R328-3P-4). The page's RPC layer (`frontend/src/multichain/rpc.ts`, `agreeingRpc`) never sends a state
+read (`eth_call`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, the account nonce) by tag, by number or
+without a block: it first resolves the block to one that two endpoints report with the same hash and the same
+timestamp, then reads at that HASH from two endpoints and uses the answer only when both give the same bytes; when
+they differ the page shows `DISAGREEMENT` and sends nothing. This covers the reserves, the binding quote, balances,
+allowances, code hashes and the comparison quote at the latest block that becomes the signed quote after
+"reconfirm" (before the third revision that one was a read at the tag `latest` answered by the first endpoint
+alone). The rest:
 
-- **Nothing that is signed comes from one endpoint, by construction** (R328-3P-4). The comparison quote at the
-  latest block, which becomes the signed quote after "reconfirm", was an `eth_call` at the tag `latest` answered by
-  the first endpoint alone. The page's RPC layer now never sends a state read by tag, by number or without a
-  block: it first resolves the block from two endpoints (hash and timestamp must be the same on both) and reads at
-  that hash from two endpoints. The pending nonce is the higher of two answers; a block by number needs two
-  endpoints. Left to one endpoint: the chain id (compared with the pinned one) and fee data (the wallet sets the
-  fee). `frontend/src/test/multichain-provenance.test.ts` fails when a method the route names is not classified,
-  when a lying endpoint's answer comes through in any position, or when any endpoint receives a state read by tag.
-- **A reverted swap** (R328-3P-3) is settled by the chain's own rule for it (`confirmation.reverted`), between
-  the settle and the strict rule; `chain.json` says per chain why a deeper replacement is not credible. OP Mainnet
-  and Base: the chain's `safe` block (its batch is on Ethereum; about half a minute and a minute and a half
-  behind the head when measured). Arbitrum One and Ethereum: `safe` (12 to 15 minutes when measured; finality was
-  19 to 22). Linea: 30 blocks (about 6 to 9 minutes; the strict rule stays 300). BNB Smart Chain: its `finalized`
-  (seconds). A reverted approval is settled like a success. The note above the form now says that a reverted swap
-  holds the account, until when, and why.
-- **The submission boundary** (R328-3P-1) is the block settled by the chain's rule, not the head: a one-block
-  reorganisation of the head no longer leaves a hold that can never end.
-- **Heads** (R328-3P-5): two heads count as apart only when they are more than 2 blocks and more than 90 seconds
-  of chain time apart (a quiet Linea is not "behind"); a third endpoint is asked when one of the first two fails
-  or lags; a refused request is asked again with a growing pause.
-- **Endpoints**: Arbitrum One and BNB Smart Chain list four. Added, each measured to serve pinned state 45 minutes
-  old and a browser's preflight: `arbitrum.gateway.tenderly.co` (Tenderly) and `api.zan.top/bsc-mainnet` (ZAN),
-  placed second so that strict reads no longer depend on blastapi's shared anonymous quota. Operator independence
-  is judged from the hostnames and response headers only. The CSP names seventeen origins.
-- **Snapshot renewal** (R328-3P-2): every four minutes in the background, not every 30 seconds (a snapshot kept
-  300 to 600 seconds was still answered on all six chains). The route must also renew on demand and never under a
-  user who is typing; on this branch's plain route a renewal still resets the form, and the redesigned route
-  (agent 327's line) is the one that keeps it.
+- **heads** (`latest`): two endpoints are asked; the head used is the **older** of the two, so it is a block both
+  have. Two heads count as apart only when they are more than 2 blocks (`HEAD_GAP_BLOCKS`) AND more than 90
+  seconds of chain time (`HEAD_GAP_SECONDS`) apart, so a quiet Linea is not "behind"; apart, the page stops with
+  `BEHIND` instead of holding the user on a true but old state. A third endpoint is asked when one of the first
+  two fails or lags; a refused request is asked again after a growing pause. The confirmation depth is counted
+  from that head, and the binding quote is compared with it before the wallet is asked.
+- **`finalized` and `safe`** are the **older** of two answers, and both endpoints must answer (`UNCONFIRMED`
+  otherwise): one endpoint alone cannot make the page treat a newer block as final.
+- **a block by number or hash** needs two endpoints (block 0: one); one that does not have it yet, or has pruned
+  it, is not a disagreement: a further listed endpoint stands in.
+- **a transaction and its receipt** count only when two endpoints report the same inclusion (block hash and
+  number) and the same status; until then the page treats the transaction as not seen yet, which never ends a
+  hold. One endpoint's false "reverted" cannot free the account for a second swap (review R328-6).
+- **the pending nonce** is the higher of two answers.
+- **left to one endpoint**: the chain id (compared with the pinned one) and fee data (the wallet sets the fee).
+- **the submission boundary** (review R328-3P-1) saved with a sent swap is the block settled by the chain's rule,
+  not the head, so a one-block reorganisation of the head can no longer leave a hold that never ends.
 
-### Two endpoints must agree (review R309-MC-3)
-
-Every endpoint is a third party here. Everything the page shows and signs from (reserves, the binding quote,
-balances, allowances, code hashes, the account nonce) is read at a block hash, and such a read is asked of both
-reviewed endpoints and used only when both give the same answer; when they differ, or the second cannot answer
-after three tries, the page shows an error and sends nothing.
-
-Which block those reads are pinned to is taken from both endpoints too:
-
-- the head (`latest`) is the **older** of the two endpoints' heads, so it is a block both have, and it is used
-  only while the two heads are at most 90 seconds of chain time apart. An endpoint that lags further, or
-  withholds new blocks, makes the page stop with a message instead of holding it on a true but old state. The
-  confirmation depth is counted from that head, and the binding quote is compared with it before the wallet is
-  asked. (In the second edition the head came from the first endpoint alone, and the page accepts a head up to
-  10 minutes old without a notice.)
-- `finalized` and `safe` are the **older** of the two answers, and both endpoints must answer: one endpoint alone
-  cannot make the page treat a newer block as final (BNB Smart Chain's settle rule and the strict rule of four
-  chains use the tag).
-- **a transaction and its receipt** count only when two endpoints report the same inclusion and the same status;
-  until then the page treats the transaction as not seen yet, which never ends a hold. One endpoint's false
-  "reverted" cannot free the account for a second swap (review R328-6).
+`frontend/src/test/multichain-provenance.test.ts` fails when a JSON-RPC method the route names is not classified
+in one of the lines above, when a lying endpoint's answer comes through in any position, or when any endpoint
+receives a state read by tag.
 
 **Public endpoints do not keep a block's state for long (reviews R328-4, R328-5).** Measured on 2026-11-17, for
 reads pinned to a block hash: some endpoints answer for a block a day old, others only for about a minute
 (`bsc-dataseed.bnbchain.org`, publicnode on Arbitrum One), 10 minutes (publicnode on Linea), 20 minutes (Arbitrum's
 own endpoint) or an hour (publicnode on BNB Smart Chain). The second edition, which asked two endpoints for a
 block the page kept as long as it stayed open, therefore stopped answering quotes after about a minute on
-Arbitrum One and BNB Smart Chain, and could never end a hold by its deadline on Arbitrum One and Linea. Three
-things changed:
+Arbitrum One and BNB Smart Chain, and could never end a hold by its deadline on Arbitrum One and Linea. What the
+page does now:
 
-- the page takes a new snapshot block every 30 seconds while it is visible, so what it pins to is never older
-  than the chain's confirmation rule plus half a minute;
-- an endpoint that cannot answer for a block (not there yet, or pruned) is not a disagreement: a further listed
-  endpoint stands in, and three chains now list three endpoints, ordered so that the first two keep state
-  longest: Arbitrum One (its own endpoint, blastapi, publicnode), Linea (its own endpoint, dRPC, publicnode), BNB
-  Smart Chain (publicnode, blastapi, the chain's dataseed);
-- the strict decisions and a reverted receipt read through both endpoints at the strict block, which those lists
-  serve: about 20 minutes old on four chains, about 80 minutes (300 blocks) on Linea.
+- **snapshot renewal** (R328-5, then R328-3P-2): the page takes a new snapshot block every four minutes while it
+  is visible (`SNAPSHOT_MAX_AGE_MS` = 240,000 in `frontend/src/MultichainApp.tsx`; the second revision renewed
+  every 30 seconds, which emptied the swap form under the user). With the endpoint lists below a snapshot 300 to
+  600 seconds old was still answered on all six chains. The route must also renew ON DEMAND, before a quote when
+  the snapshot is older than that bound and once when a pinned read fails with `UNCONFIRMED`, and never under a
+  user mid-entry. On this branch's plain route a renewal still resets the form; the redesigned route (agent
+  327's line, continued by 361) is the one that keeps the inputs and owns this behaviour;
+- **endpoint lists**, ordered so that the first two keep state longest: OP Mainnet, Base and Ethereum two each;
+  Linea three (its own endpoint, dRPC, publicnode); Arbitrum One four (its own endpoint,
+  `arbitrum.gateway.tenderly.co`, blastapi, publicnode); BNB Smart Chain four (publicnode,
+  `api.zan.top/bsc-mainnet`, blastapi, the chain's dataseed). The two added in the third revision (Tenderly, ZAN)
+  were each measured to serve pinned state 45 minutes old and a browser's preflight, and are placed second so
+  that strict reads no longer depend on blastapi's shared anonymous quota. Operator independence is judged from
+  the hostnames and response headers only (reviewer 364 checks it against the operators' own documentation);
+- the strict decisions and a reverted receipt read through two endpoints at the strict (or reverted) block, which
+  those lists serve: about 20 minutes old on four chains, about 80 minutes (300 blocks) on Linea.
 
 No fork can show any of this (a fork keeps every state), so the package has a read-only check that runs the
 page's own RPC code against the real endpoints of all six chains, with no wallet and no transaction
 (section 11, "Live check"). Run it before the page is published and whenever an endpoint list changes. The
 weakest place it showed: Arbitrum One's strict block is 16 to 20 minutes old and its own endpoint answers for
 about 20 to 30; if it stops answering, a hold on Arbitrum One that must end by its deadline waits (nothing is
-sent; the third endpoint does not keep state that long). The owner's own endpoint in the list removes that.
+sent). The owner's own endpoint in the list removes that.
 
-A block asked by number or hash that the first endpoint does not have yet is asked of the next. The pending nonce
-and fee data come from the first endpoint that answers, as before; the route re-checks every block it uses by
-number and hash. Measured on 2026-11-17 on the endpoints of the second edition (16 rounds per chain, seconds
-apart): the two heads were the same block in 69 of 96 rounds and at most 5 blocks apart in the others, and a read
-pinned to a head and to the settle block got equal answers from both endpoints in all 96.
+Measured on 2026-11-17 on the endpoints of the second edition (16 rounds per chain, seconds apart): the two heads
+were the same block in 69 of 96 rounds and at most 5 blocks apart in the others, and a read pinned to a head and
+to the settle block got equal answers from both endpoints in all 96.
+
+Revisions of these rules, for a reader of older reports: first edition (`4f2427b`): reads at `finalized` from the
+first endpoint. Second (`0566af3`, `711e3ad`, `ab1bd1c`; R309-MC-3, R328-4 to R328-7): hash-pinned reads from two
+endpoints, heads and tags from two, receipts from two, a 30-second snapshot renewal, three endpoints on three
+chains. Third (`9e4b5d1`; R328-3P-1 to 3P-5): no state read by tag at all, the reverted rule, the settled
+submission boundary, heads apart only by blocks AND seconds, four endpoints on two chains, the 240-second renewal.
 
 Selecting a network asks nothing of the wallet; "Add or switch to …" and every transaction ask the wallet to
 switch (`wallet_switchEthereumChain`, then `wallet_addEthereumChain` if the wallet does not know the chain). A
@@ -1078,8 +1073,10 @@ endpoint answered one trial with a rate limit (HTTP 429); the run of record pass
     of each choice. On Linea even the strict rule is a depth, because its public endpoints do not agree on
     `finalized`.
 12. **Trust in the endpoints** (reviews R309-MC-3, R328-4 to R328-6, section 9). The page uses a hash-pinned
-    read, a transaction and a receipt only when two endpoints agree, takes the head and a finality tag from the
-    older of two answers, and stops when the two heads are more than 90 seconds apart. One lying or lagging
+    read, a transaction and a receipt only when two endpoints agree, sends no state read by tag (every read is
+    resolved to a block two endpoints agree on, then read at its hash from two), takes the head and a finality
+    tag from the older of two answers, and stops when the two heads are more than 2 blocks and more than 90
+    seconds apart. One lying or lagging
     endpoint can therefore neither show a false price or outcome nor hold the page on an old state; it can stop
     the page. Two endpoints that lie alike can deceive it, and so can a party that controls two of a chain's
     listed endpoints. Availability needs two working endpoints that keep the state the page asks for; public
@@ -1092,15 +1089,15 @@ Recorded, not fixed in this package:
 
 | Issue | Where it matters | What to do |
 |---|---|---|
-| **The route's texts say "finalized"** on chains where the page settles on a depth ("Pools at finalized block", "verified canonical and finalized", "Finalized balances"). The page states above the form what the word means on that network, but the texts themselves are the Bloch L2 route's | Users of the five depth chains | The UI redesign (agent 318's line) owns the route's texts; it should say "confirmed" there |
+| **The route's texts say "finalized"** on this branch's plain route on chains where the page settles on a depth ("Pools at finalized block", "verified canonical and finalized", "Finalized balances"). The page states above the form what the word means on that network | Users of the five depth chains, on this branch's route only | Closed in the redesigned route (agent 327's `adc8702`, merged into `main` at `7ae5006`): it says "confirmed" on depth chains; the route published is that one |
 | **Arbitrum One: fixed gas limit under an L1 fee spike** (review R309-MC-8). The page asks 250,000 gas per hop; on Arbitrum the limit must also cover the L1 data charge. Measured: execution 158,109, which leaves 91,891; the L1 component was about 1.5 gas per calldata byte at the hour of the cost run (a swap is a few hundred bytes: some hundreds of gas), so the limit holds until that component is on the order of 150 times that hour's. Not measured under a spike | A swap on Arbitrum One during an Ethereum fee spike could run out of gas (the user loses the fee of a failed transaction, not the swap) | A per-chain gas limit, or an estimate on Arbitrum, in a later change to the route |
 | **Anchored swaps revert on Arbitrum One** (section 5) | Direct callers only; the page does not use them | None in this package |
 | **Fee address** (review R309-MC-7): closed by the decisions of 2026-11-17. Control is proven by one signed message (section 2.2; **the owner's signature is still missing**); the delegate on Base is identified and the gate refuses any other (section 2.3). The delegate's own code was identified, not audited, here | The fee shares on Base move by the key's transaction, or by a user operation or delegation the key signed | The owner signs the proof; signs no "permission" with the fee wallet |
 | **The opening price depends on two outside references** (section 2.5) | Chainlink's feeds and one pool per chain; on Linea the pool is thin and the ETH / USD feed moves only on 0.5%, so `prepare` may answer "no market price" there on a volatile day | Try again later; the tool never falls back to one reference or to a typed price |
 | **The first-depositor rule accepts the transaction origin** (review R328-1; frozen contracts) | A contract the depositing account calls can open a pool in its name | A dedicated key and the tools' refusals (sections 2, 8 and 10); a new pair contract would be the only real fix and is not part of this package |
 | **A gift in front of the first deposit moves the opening price** (review R328-2; the frozen router does not look at tokens already at the pair) | The pool can open at a price that differs from the intended one by the size of what someone chose to give away | `prepare` refuses above 0.1% that is already there; `verify` and the gate report it; section 10 |
-| **After a reverted swap the account is held for the strict rule's time** (review R328-7; section 9) | A user whose swap reverted on its minimum waits 15 to 23 minutes on four chains, about an hour on Linea, before the page lets them retry | A third rule for this case (the chain's `safe` tag where it is close: the reviewer measured under 30 s on OP Mainnet and about a minute on Base) in a later change |
-| **The page was never run in a browser against the real endpoints** | The live check runs the page's RPC code in Node; the browser rehearsals use forks. All fifteen endpoints answered a browser's CORS preflight when measured, but a page load against them was not rehearsed | A real page load by the owner on the first chain before publishing |
+| **After a reverted swap the account is held for the reverted rule's time** (reviews R328-7, R328-3P-3; section 9). The third rule was added in `9e4b5d1`: `safe` on OP Mainnet, Base, Arbitrum One and Ethereum, 30 blocks on Linea, `finalized` on BNB Smart Chain | A user whose swap reverted waits about half a minute (OP Mainnet), a minute and a half (Base), 12 to 15 minutes (Arbitrum One, Ethereum), 6 to 9 minutes (Linea) or seconds (BNB Smart Chain) before the page lets them retry. Whether `safe` from a sequencer-run endpoint is decisive at that depth is reviewer 364's open question | The page says so in the note above the form; the redesigned route renders "reverted; this account can send again at HH:MM" (agent 361) |
+| **The page was never run in a browser against the real endpoints with a wallet** | The live check runs the page's RPC code in Node; the browser rehearsals use forks. Reviewer 328 loaded the page read-only in headless Chrome against the then fifteen endpoints (no CSP or CORS refusal); the two added in `9e4b5d1` answered a browser's preflight when measured. A wallet flow against them was not rehearsed | A real page load and a small swap by the owner on the first chain before publishing |
 | **A hold that cannot be decided says nothing new** (review R328-4): when the strict reads are refused the page keeps its hold text and tries again | The user sees a hold without a reason | The route's texts belong to the UI line (agent 327); the endpoint lists and the live check keep the case from being permanent |
 | **Linea's `finalized`** differs between the two reviewed endpoints | The gate reads the first (the proven block); the page uses the tag for nothing on Linea | Stated in sections 8 and 9 |
 | **No real wallet and no real transaction** were used anywhere (section 5) | The rehearsals show the code paths, not a wallet's behaviour or a chain's inclusion | A small real swap by the owner on the first chain before publishing the page |
