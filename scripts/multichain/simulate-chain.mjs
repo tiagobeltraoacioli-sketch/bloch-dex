@@ -62,6 +62,8 @@ const TRADER = "0x0000000000000000000000000000000000000b0b";
 const STRANGER = "0x00000000000000000000000000000000000ca401";
 const SENDER = "0x000000000000000000000000000000000000d0e5";
 const FEE = shared.feeTo.address;
+// The reference plan's depositing account: an address nobody holds a key for, never the fee address (review R328-1).
+const DEPOSITOR = plan.arguments.firstDepositor;
 const wrapped = chain.wrappedNative;
 const token = chain.tokens[0];
 const unit = 10n ** BigInt(token.decimals);
@@ -77,7 +79,8 @@ async function simulateWith(request, slot, latest) {
     [STRANGER]: { balance: hex(10n ** 18n) },
     [SENDER]: { balance: hex(10n ** 18n) },
     [FEE]: { balance: hex(1000n * 10n ** 18n) },
-    [token.address]: { stateDiff: { [slotOf(FEE)]: word(30_000n * unit), [slotOf(LP)]: word(100_000n * unit), [slotOf(TRADER)]: word(10_000n * unit), [slotOf(STRANGER)]: word(100n * unit) } },
+    [DEPOSITOR]: { balance: hex(1000n * 10n ** 18n) },
+    [token.address]: { stateDiff: { [slotOf(DEPOSITOR)]: word(30_000n * unit), [slotOf(LP)]: word(100_000n * unit), [slotOf(TRADER)]: word(10_000n * unit), [slotOf(STRANGER)]: word(100n * unit) } },
   };
   const deadline = BigInt(latest.timestamp) + 86_400n;
   const steps = [];
@@ -94,8 +97,8 @@ async function simulateWith(request, slot, latest) {
   add(0, "a stranger calls mint on the empty pair", STRANGER, pair.address, data("mint", [STRANGER]), 0n, "revert FIRST_DEPOSITOR");
   add(0, `the stranger approves ${token.symbol}`, STRANGER, token.address, data("approve", [router.address, 2n ** 256n - 1n]));
   add(0, "a stranger's first deposit through the router, with dust and no minimums", STRANGER, router.address, data("addLiquidityBLCH", [token.address, unit, 0n, 0n, STRANGER, deadline]), 10n ** 12n, "revert FIRST_DEPOSITOR");
-  add(0, `the first depositor approves exactly 30,000 ${token.symbol}`, FEE, token.address, data("approve", [router.address, 30_000n * unit]));
-  add(0, "first deposit by the first depositor (addLiquidityBLCH: 10 native + 30,000 token, minimums equal to the amounts)", FEE, router.address, data("addLiquidityBLCH", [token.address, 30_000n * unit, 30_000n * unit, 10n * 10n ** 18n, LP, deadline]), 10n * 10n ** 18n);
+  add(0, `the first depositor approves exactly 30,000 ${token.symbol}`, DEPOSITOR, token.address, data("approve", [router.address, 30_000n * unit]));
+  add(0, "first deposit by the first depositor (addLiquidityBLCH: 10 native + 30,000 token, minimums equal to the amounts)", DEPOSITOR, router.address, data("addLiquidityBLCH", [token.address, 30_000n * unit, 30_000n * unit, 10n * 10n ** 18n, LP, deadline]), 10n * 10n ** 18n);
   add(0, "pair.getReserves() after the first deposit", SENDER, pair.address, data("getReserves"));
   add(0, `LP approves ${token.symbol}`, LP, token.address, data("approve", [router.address, 2n ** 256n - 1n]));
   add(0, "swap 1 native for the token (swapExactBLCHForTokens)", TRADER, router.address, data("swapExactBLCHForTokens", [0n, [wrapped.address, token.address], TRADER, deadline]), 10n ** 18n);
