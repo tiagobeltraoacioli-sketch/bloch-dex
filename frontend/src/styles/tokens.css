@@ -43,6 +43,7 @@
   --text-body: 1rem; /* 16 */
   --text-lead: 1.125rem; /* 18 */
   --text-title: 1.375rem; /* 22 */
+  --text-figure: 1.75rem; /* 28: a headline figure inside a card (preview screens) */
   --text-display: clamp(1.75rem, 1.2rem + 2vw, 2.5rem); /* 28 to 40 */
   --text-numeral: clamp(1.75rem, 1.3rem + 2vw, 2.375rem); /* amount inputs */
 
@@ -207,16 +208,4 @@
 }
 :root[data-theme='light'] [data-network='preview'] {
   --net: #486f00;
-}
-
-/* Names the pre-redesign stylesheet uses, mapped onto the tokens above. */
-:root {
-  --panel: var(--surface);
-  --panel-hover: var(--surface-2);
-  --muted: var(--text-2);
-  --subtle: var(--text-3);
-  --accent: var(--net);
-  --accent-hover: var(--net);
-  --blue: var(--info);
-  --radius: var(--r-3);
 }

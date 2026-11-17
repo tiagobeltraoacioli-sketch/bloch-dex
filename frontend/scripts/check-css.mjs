@@ -33,5 +33,24 @@ for (const file of files.filter((f) => f.endsWith('.css'))) {
     }
   }
 }
+// The preview screens' stylesheet stays in the token system (tokens.css): type sizes, spacing, radii, colours and
+// the font come from tokens; no name of the pre-redesign stylesheet.
+{
+  const file = join(src, 'styles/preview.css');
+  const css = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const problem = (line, why) => {
+    dead++;
+    console.log(`styles/preview.css: ${why}: ${line.trim()}`);
+  };
+  for (const [, prop, value] of css.matchAll(/(?<![\w-])([a-z-]+): ([^;{}]+);/g)) {
+    const line = `${prop}: ${value}`;
+    if (prop === 'font-size' && !/^var\(--text-[a-z]+\)$/.test(value.trim())) problem(line, 'a type size outside the scale');
+    if (/^(gap|row-gap|column-gap|padding|margin)(-(top|right|bottom|left))?$/.test(prop) && /(?<![\w.-])-?(?:[3-9]|\d{2,})px/.test(value)) problem(line, 'spacing outside the 4-point scale');
+    if (prop === 'border-radius' && /\dpx/.test(value)) problem(line, 'a radius outside the tokens');
+    if (prop === 'font-family' && !/^var\(--font-/.test(value.trim())) problem(line, 'a font outside the tokens');
+    if (/#[0-9a-f]{3,8}\b|\brgba?\(|\bhsla?\(/i.test(value)) problem(line, 'a colour outside the tokens');
+    if (/var\(--(muted|subtle|accent|accent-hover|panel|panel-hover|blue|radius)\)/.test(value)) problem(line, 'a name of the pre-redesign stylesheet');
+  }
+}
 console.log(`${classes} class selectors checked, ${dead} problem(s)`);
 process.exit(dead ? 1 : 0);
