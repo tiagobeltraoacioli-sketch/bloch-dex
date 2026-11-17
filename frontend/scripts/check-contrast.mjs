@@ -54,5 +54,9 @@ for (const [name, { tokens: t, net }] of Object.entries(themes)) {
 // Brand mark and network tiles: the bright lamp and the tile letter on the dark tile, in both themes.
 for (const n of NETWORKS) check('tile', `lamp ${n} on the tile`, themes.dark.net(n), '#14191a', 3);
 check('tile', 'tile letter', '#eceae3', '#14191a', 4.5);
+// Network glyphs (marks/NetworkGlyph.tsx): the ink monogram on the gate filled with the network's bright lamp,
+// in both themes; and the badges of the networks a bridged token comes from.
+const ORIGINS = ['bitcoin', 'solana', 'tron', 'stellar'];
+for (const n of [...NETWORKS, ...ORIGINS]) check('glyph', `monogram on the ${n} gate`, '#0b0e0f', themes.dark.net(n), 4.5);
 console.log(`${checked} pairs checked, ${failed} below WCAG AA`);
 process.exit(failed ? 1 : 0);

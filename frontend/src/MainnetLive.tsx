@@ -10,6 +10,7 @@
 // worse price needs an explicit reconfirmation. A sent swap holds the Swap button
 // until its outcome is known (mainnet/pendingswap.ts).
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -17,9 +18,13 @@ import {
   useState,
   type CSSProperties,
   type MutableRefObject,
+  type ReactNode,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowDownUp,
   ArrowUpRight,
   CircleCheck,
   Layers,
@@ -27,9 +32,18 @@ import {
   LoaderCircle,
   RefreshCw,
   ShieldCheck,
+  TimerOff,
+  TrendingDown,
   Wallet,
 } from 'lucide-react';
 import { GateGlyph } from './shell/BrandMark';
+import { GateArch } from './gate/GateArch';
+import { lampState } from './gate/lamp';
+import { Passage, passageStage } from './gate/Passage';
+import { PoolDepth } from './gate/PoolDepth';
+import { poolDepth } from './gate/pool-depth';
+import { Figure } from './ui/Figure';
+import { useWide } from './ui/use-wide';
 import { CopyButton } from './ui/CopyButton';
 import { nextStep } from './ui/next-step';
 import { TokenSheet } from './ui/TokenSheet';
@@ -339,6 +353,10 @@ export default function MainnetLive({
   // (excess above the reserves, a side at its cap, the k ceiling, held bUSDC exits) or the wallet is on
   // another chain; then it stays on the page.
   const [detailsOpen, setDetailsOpen] = useState(false);
+  // Presentation: where the gate sets a hold's recovery controls on a wide screen (beside it, in the rail), and
+  // the outcome of the last transaction tracked in this visit, which the lamp shows once the form is at rest.
+  const [railSlot, setRailSlot] = useState<HTMLDivElement | null>(null);
+  const lastOutcome = useRef<string | null>(null);
   const attention =
     exitsBlocked(hold) ||
     // A wallet on another chain: the network block with its switch button stays on the page.
@@ -351,7 +369,11 @@ export default function MainnetLive({
         headroom(p.reserve1 + (p.excess?.excess1 ?? 0n), p.cap1) === 0n,
     );
   return (
-    <section className="page devnet4-page mainnet-page" aria-labelledby="mainnet-title">
+    <section
+      className="page devnet4-page mainnet-page"
+      aria-labelledby="mainnet-title"
+      data-layout={ready ? 'gate' : 'column'}
+    >
       <div className="section-heading">
         <div>
           <span className="badge">
@@ -366,47 +388,56 @@ export default function MainnetLive({
             {wording.launch}
           </p>
         </div>
+      </div>
+      {/* The page's status: what block it reads, the Refresh, and every page-wide alert, above the gate. */}
+      <div className="page-status">
         {live && (
-          <button className="button secondary" onClick={() => setGeneration((g) => g + 1)}>
+          <button
+            className="button secondary page-refresh"
+            onClick={() => setGeneration((g) => g + 1)}
+          >
             <RefreshCw size={16} /> Refresh
           </button>
         )}
+        {failure && readFailure ? (
+          <ReadFailureBlock
+            failure={readFailure}
+            retryAt={retryAt}
+            now={now}
+            onRetry={() => setGeneration((g) => g + 1)}
+          >
+            {wording.reads} are unavailable: {failure.replace(/\.$/, '')}. No transaction can be
+            sent from this page.
+          </ReadFailureBlock>
+        ) : !state ? (
+          <p className="muted" role="status">
+            <LoaderCircle size={16} className="spin" /> Checking the bundled deployment record…
+          </p>
+        ) : state.status === 'not-live' ? (
+          <NotLive reasons={state.reasons} planned={planned} />
+        ) : !snapshot ? (
+          <p className="muted" role="status">
+            <LoaderCircle size={16} className="spin" /> Verifying the deployment at the{' '}
+            {wording.settled} block…
+          </p>
+        ) : (
+          <>
+            <FinalityAge finalizedAt={snapshot.finalized} now={now} />
+            <BridgeHoldBanner hold={hold} network={network} />
+          </>
+        )}
+        {confirmation && ready && (
+          <button
+            type="button"
+            className="settle-jump"
+            onClick={() =>
+              document.querySelector('.confirmation-rule')?.scrollIntoView({ block: 'start' })
+            }
+          >
+            <ArrowDown size={14} aria-hidden="true" /> Settlement rule of this network
+          </button>
+        )}
       </div>
-      {failure && readFailure ? (
-        <ReadFailureBlock
-          failure={readFailure}
-          retryAt={retryAt}
-          now={now}
-          onRetry={() => setGeneration((g) => g + 1)}
-        >
-          {wording.reads} are unavailable: {failure.replace(/\.$/, '')}. No transaction can be sent
-          from this page.
-        </ReadFailureBlock>
-      ) : !state ? (
-        <p className="muted" role="status">
-          <LoaderCircle size={16} className="spin" /> Checking the bundled deployment record…
-        </p>
-      ) : state.status === 'not-live' ? (
-        <NotLive reasons={state.reasons} planned={planned} />
-      ) : !snapshot ? (
-        <p className="muted" role="status">
-          <LoaderCircle size={16} className="spin" /> Verifying the deployment at the{' '}
-          {wording.settled} block…
-        </p>
-      ) : (
-        <>
-          <FinalityAge finalizedAt={snapshot.finalized} now={now} />
-          <BridgeHoldBanner hold={hold} network={network} />
-        </>
-      )}
-      {confirmation && <ConfirmationRule note={confirmation.note} />}
-      {ready && state.status === 'live' && snapshot && (
-        <TrustStrip
-          snapshot={snapshot}
-          attention={attention}
-          onDetails={() => setDetailsOpen(true)}
-        />
-      )}
       {/* The swap card is the page; verification and reference sit in the layer after it. */}
       {ready && state.status === 'live' && snapshot ? (
         <div className="live-hero">
@@ -427,11 +458,23 @@ export default function MainnetLive({
             onRefresh={() => setGeneration((g) => g + 1)}
             memory={snapshotMaxAgeMs ? formMemory : undefined}
             busyRef={cardBusy}
+            railSlot={railSlot}
+            lastOutcome={lastOutcome}
           />
         </div>
       ) : (
         loading && <LoadingBlocks />
       )}
+      {ready && <div className="rail-slot" ref={setRailSlot} />}
+      {/* The verification rail: beside the gate on a wide screen, after it on a narrow one. */}
+      {ready && state.status === 'live' && snapshot && (
+        <TrustStrip
+          snapshot={snapshot}
+          attention={attention}
+          onDetails={() => setDetailsOpen(true)}
+        />
+      )}
+      {confirmation && <ConfirmationRule note={confirmation.note} />}
       {/* Docked (part of the page) until the route is live, and whenever a pool carries a notice. */}
       <ReferencePanel
         docked={!ready || attention}
@@ -461,6 +504,28 @@ export default function MainnetLive({
 }
 
 /**
+ * A text of the logic modules set one sentence to a line, word for word (nothing is edited or dropped); the
+ * sentence that tells the user what not to do is marked for the stylesheet.
+ */
+function Lines({ text }: { text: string }) {
+  return (
+    <>
+      {text
+        .trim()
+        .split(/(?<=[.!?])\s+(?=[A-Z])/)
+        .map((sentence, i) => (
+          <Fragment key={i}>
+            {i > 0 && ' '}
+            <span className="hold-line" data-warn={/^Do not /.test(sentence) || undefined}>
+              {sentence}
+            </span>
+          </Fragment>
+        ))}
+    </>
+  );
+}
+
+/**
  * What "confirmed" means on this network, always on the page (review R309-MC-2). One paragraph with the note's
  * full text; its first sentence, the rule itself, is set in the reading colour.
  */
@@ -484,7 +549,8 @@ function ConfirmationRule({ note }: { note: string }) {
 function LoadingBlocks() {
   return (
     <div className="live-hero" aria-hidden="true">
-      <div className="card skeleton-card">
+      <div className="card skeleton-card swap-card" data-lamp="idle">
+        <GateArch />
         <span className="skeleton skeleton-title" />
         <span className="skeleton skeleton-leg" />
         <span className="skeleton skeleton-leg" />
@@ -514,9 +580,25 @@ function TrustStrip({
         <ShieldCheck size={16} aria-hidden="true" /> Record verified
       </span>
       {snapshot.pools.map((p) => (
-        <span className="trust-item" key={p.address}>
+        <span className="trust-item trust-pool" key={p.address}>
           {p.token0.symbol}/{p.token1.symbol} caps in use: {percent(p.reserve0, p.cap0)}% ·{' '}
           {percent(p.reserve1, p.cap1)}%
+          <span className="trust-meters" aria-hidden="true">
+            {(
+              [
+                [p.reserve0, p.cap0],
+                [p.reserve1, p.cap1],
+              ] as const
+            ).map(([reserve, cap], i) => (
+              <span
+                key={i}
+                className="cap-meter"
+                style={
+                  { '--used': `${Math.min(100, Number(percent(reserve, cap)))}%` } as CSSProperties
+                }
+              />
+            ))}
+          </span>
         </span>
       ))}
       {attention ? (
@@ -1004,6 +1086,8 @@ function SwapPanel({
   onRefresh,
   memory,
   busyRef,
+  railSlot,
+  lastOutcome,
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
@@ -1023,6 +1107,10 @@ function SwapPanel({
   memory?: MutableRefObject<FormMemory | null>;
   /** Told while a wallet request of this card is in flight, so a timed renewal waits. */
   busyRef?: MutableRefObject<boolean>;
+  /** Layout: on a wide screen a hold's recovery controls are drawn here, beside the gate. */
+  railSlot?: HTMLElement | null;
+  /** Layout: the state of the last transaction tracked in this visit, for the lamp. */
+  lastOutcome?: MutableRefObject<string | null>;
 }) {
   const [holdAccepted, setHoldAccepted] = useState(false);
   const [quoting, setQuoting] = useState(false);
@@ -1538,6 +1626,27 @@ function SwapPanel({
   const earlier = history.filter(
     (h) => !steps.some((x) => x.hash === h.hash) && tracked?.hash !== h.hash,
   );
+  // Presentation only: the lamp over the gate (gate/lamp.ts) and the pool-depth picture of the quote
+  // (gate/pool-depth.ts), both from values this card already holds. Nothing reads them back.
+  const wide = useWide();
+  const beside = (node: ReactNode) => (wide && railSlot ? createPortal(node, railSlot) : node);
+  if (lastOutcome && tracked) lastOutcome.current = tracked.state;
+  const lamp = lampState({
+    quoting,
+    hasQuote: !!quote,
+    busy,
+    holdOpen: pendingSwap.open,
+    tracked: tracked?.state ?? lastOutcome?.current ?? undefined,
+    lastStep: steps[steps.length - 1]?.state,
+    refused:
+      !!quoteNote ||
+      blocked.length > 0 ||
+      blocksSwap(check) ||
+      shortBalance ||
+      !!pendingSwap.storageProblem,
+    caution: holdBlocksSend || !!pendingSwap.unreadable || (!!wallet.account && !onChain),
+  });
+  const depth = signed ? poolDepth(snapshot.pools, signed.path, signed.amounts) : null;
 
   // The tracked transaction's text, with the idle-chain explanation (the exact sentence pendingswap.ts appended)
   // set apart so it can sit behind "Why is this waiting?". No word is changed or dropped.
@@ -1617,6 +1726,7 @@ function SwapPanel({
                   <ExplorerLink network={network} kind="tx" value={s.hash} />
                 </>
               )}
+              {s.state === 'waiting' && <Passage stage="wallet" settled={wording.settled} />}
               {s.detail && <span className="muted"> {worded(s.detail)}</span>}
             </li>
           ))}
@@ -1624,7 +1734,14 @@ function SwapPanel({
             <li data-state={tracked.state}>
               <strong>{tracked.label}</strong>: <span className="state-pill">{tracked.state}</span>{' '}
               {tracked.hash && <ExplorerLink network={network} kind="tx" value={tracked.hash} />}
-              <span className="muted"> {worded(held.visible)}</span>
+              <Passage
+                stage={passageStage(tracked.state, !!tracked.hash)}
+                settled={wording.settled}
+              />
+              <span className="muted">
+                {' '}
+                <Lines text={worded(held.visible)} />
+              </span>
               {holdTrouble && (
                 <span className="confirm-trouble hold-trouble" role="status">
                   <strong>{holdTrouble.title}.</strong> The page keeps trying by itself; the hold
@@ -1688,7 +1805,9 @@ function SwapPanel({
       data-phase={quote ? 'quoted' : 'form'}
       data-quoting={quoting || undefined}
       data-hold={pendingSwap.open || undefined}
+      data-lamp={lamp}
     >
+      <GateArch anchor />
       <h2>Swap</h2>
       <div className="devnet4-form swap-form">
         <div className="swap-leg" data-leg="pay">
@@ -1709,7 +1828,10 @@ function SwapPanel({
             </select>
           </label>
           <TokenSheet caption="You pay" value={inKey} options={choices} onChoose={choosePay} />
-          <label className="field-label amount-field">
+          <label
+            className="field-label amount-field"
+            style={{ '--chars': Math.max(1, amount.length) } as CSSProperties}
+          >
             Amount
             <input
               className="text-input amount-input"
@@ -1723,9 +1845,21 @@ function SwapPanel({
             />
           </label>
         </div>
-        <div className="swap-gate" aria-hidden="true">
+        {/* The same two handlers the token sheets call, with the two tokens exchanged. */}
+        <button
+          type="button"
+          className="swap-gate"
+          aria-label="Exchange the pay and receive tokens"
+          title="Exchange the pay and receive tokens"
+          onClick={() => {
+            const [pay, receive] = [inKey, outKey];
+            choosePay(receive);
+            chooseReceive(pay);
+          }}
+        >
           <GateGlyph />
-        </div>
+          <ArrowDownUp size={12} aria-hidden="true" className="swap-gate-arrows" />
+        </button>
         <div className="swap-leg" data-leg="receive">
           <label className="field-label token-field">
             You receive
@@ -1751,11 +1885,15 @@ function SwapPanel({
           />
           {/* Mirror of "Expected output" in the quote below, which is the accessible figure. */}
           <div className="amount-field amount-mirror" aria-hidden="true">
-            <span className="amount-output" data-empty={!(quote && signed && output) || undefined}>
-              {quote && signed && output
-                ? formatAmount(signed.amountOut, output.token.decimals)
-                : '\u2014'}
-            </span>
+            <Figure
+              className="amount-output"
+              empty={!(quote && signed && output)}
+              text={
+                quote && signed && output
+                  ? formatAmount(signed.amountOut, output.token.decimals)
+                  : '\u2014'
+              }
+            />
           </div>
         </div>
         <Disclosure
@@ -1807,12 +1945,16 @@ function SwapPanel({
             void getQuote().finally(() => setQuoting(false));
           }}
         >
-          {quoting && <LoaderCircle size={16} className="spin" aria-hidden="true" />}
+          {quoting ? (
+            <LoaderCircle size={16} className="spin" aria-hidden="true" />
+          ) : (
+            quote && <RefreshCw size={14} aria-hidden="true" className="requote-icon" />
+          )}
           Get quote
         </button>
       </div>
       {balances && (
-        <p className="microcopy" aria-label={`${settledCapital()} balances`}>
+        <p className="microcopy balances-line" aria-label={`${settledCapital()} balances`}>
           Your balances at {wording.settled} block {snapshot.finalized.number.toString()}:{' '}
           {options
             .map((o) =>
@@ -1855,7 +1997,7 @@ function SwapPanel({
           {staleAlerts}
           {nextLine}
           {activityBlock}
-          {recoveryBlock}
+          {beside(recoveryBlock)}
         </>
       )}
       {quote && signed && input && output && (
@@ -1914,6 +2056,7 @@ function SwapPanel({
               <dt>Deadline</dt>
               <dd>{deadlineMinutes} minutes after you confirm (wall-clock seconds)</dd>
             </dl>
+            {depth && <PoolDepth depth={depth} />}
           </Expander>
           {!pendingSwap.open && staleAlerts}
           {check?.status === 'unknown' && (
@@ -1922,13 +2065,29 @@ function SwapPanel({
               cross-checked. Your minimum received still applies on chain.
             </p>
           )}
-          <div className="notice" aria-label="Revert conditions">
-            The swap can still revert, and then only the gas is spent, if before it executes: other
-            swaps or deposits fill a pool past its reserve cap (BDEX: RESERVE_CAP); the price moves
-            more than your slippage tolerance (BDEX: INSUFFICIENT_OUTPUT_AMOUNT); or the deadline
-            passes (BDEX: EXPIRED).
-            {uses.some((u) => u.bps >= 8_000n) &&
-              ' This swap uses most of the remaining cap headroom, so a revert is more likely.'}
+          {/* The same sentence, word for word, set as a lead and its three conditions. */}
+          <div className="notice revert-panel" aria-label="Revert conditions">
+            <span className="revert-lead">
+              The swap can still revert, and then only the gas is spent, if before it executes:
+            </span>{' '}
+            <span className="revert-item">
+              <Layers size={15} aria-hidden="true" />
+              other swaps or deposits fill a pool past its reserve cap (BDEX: RESERVE_CAP);
+            </span>{' '}
+            <span className="revert-item">
+              <TrendingDown size={15} aria-hidden="true" />
+              the price moves more than your slippage tolerance (BDEX: INSUFFICIENT_OUTPUT_AMOUNT);
+            </span>{' '}
+            <span className="revert-item">
+              <TimerOff size={15} aria-hidden="true" />
+              or the deadline passes (BDEX: EXPIRED).
+            </span>
+            {uses.some((u) => u.bps >= 8_000n) && (
+              <span className="revert-more">
+                {' '}
+                This swap uses most of the remaining cap headroom, so a revert is more likely.
+              </span>
+            )}
           </div>
           {buysHeld && (
             <HoldSwapNotice hold={hold} accepted={holdAccepted} onAccept={setHoldAccepted} />
