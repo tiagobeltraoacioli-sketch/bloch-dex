@@ -34,8 +34,10 @@ export const DOC = "docs/OWNER-DEPLOY-NOW.md";
 export const CHAIN_STEPS = ["pre-gate", "deployer-balance", "gas-price", "deploy-dry-run", "deploy-broadcast", "post-gate-deployed", "market", "depositor-native", "depositor-token", "prepare", "send-suffix", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
 export const ONCE_STEPS = ["kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
 export const ORDER = ["op-mainnet", "base", "arbitrum-one", "linea", "bnb-smart-chain", "ethereum"];
-const DEPOSITOR_KEYSTORE = "--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante";
-const DEPLOYER_DIR = "~/Desktop/DEX-CHAVE-DEPLOY";
+const DEPOSITOR_KEYSTORE = '--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"';
+// The document names the deploying key's directory only as DEX_DEPLOYER_KEYSTORE_DIR (H398-3); the dry run sets it
+// to its own throwaway directory in every command's environment and keeps the command text as written.
+const DEPLOYER_DIR = '"$DEX_DEPLOYER_KEYSTORE_DIR"';
 
 /** The marked command blocks of the document: { "<scope> <step>": command }. */
 export function blocksOf(text) {
@@ -95,7 +97,7 @@ async function main() {
   const sh = (step, original, command, { timeoutMs = 900_000 } = {}) => {
     appendFileSync(log, `\n## ${step}\n# document: ${original}\n$ ${command}\n`);
     const started = Date.now();
-    const r = spawnSync("bash", ["-c", command], { cwd: ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1" } });
+    const r = spawnSync("bash", ["-c", command], { cwd: ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1", DEX_DEPLOYER_KEYSTORE_DIR: keyDir, DEX_DEPOSITOR_KEYSTORE_DIR: join(out, "no-depositor-key") } });
     const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     appendFileSync(log, `${output}\n# exit ${r.status} after ${Math.round((Date.now() - started) / 1000)} s\n`);
     writeFileSync(join(out, `${step}.log`), output);
@@ -243,7 +245,7 @@ async function main() {
 
     // The deploying key: the owner's commands of section 2.4 (cast wallet new), with a throwaway password.
     mkdirSync(keyDir, { recursive: true });
-    const made = sh("deployer-new", "cast wallet new ~/Desktop/DEX-CHAVE-DEPLOY deployer", `cast wallet new ${keyDir} deployer --unsafe-password "$(cat ${pwFile})"`);
+    const made = sh("deployer-new", 'cast wallet new "$DEX_DEPLOYER_KEYSTORE_DIR" deployer', `cast wallet new ${keyDir} deployer --unsafe-password "$(cat ${pwFile})"`);
     const deployer = made.output.match(/Address:\s+(0x[0-9a-fA-F]{40})/)?.[1];
     refuse(deployer, "no throwaway deploying key");
     values.DEPLOYER_ADDRESS = deployer;
