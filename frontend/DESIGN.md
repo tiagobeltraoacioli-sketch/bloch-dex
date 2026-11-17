@@ -143,3 +143,40 @@ all of them use the existing blocks (rail notice, bordered status line, bar), no
 It may not change what is sent to a wallet or an RPC, weaken or hide a safety message, or show a number the page did
 not read from the chain or from the reviewed files. Where there is no data source (volume, TVL, APR on live routes)
 there is an empty state or nothing, never a placeholder figure.
+
+## Art direction: the gate (version 4, agents 346 and 362, November 2026)
+
+The owner's brief: "the most beautiful DEX frontend that has ever existed", keeping Postern's identity. Version 4
+keeps every rule above and draws the idea literally.
+
+- **The swap card is the gate.** `src/gate/GateArch.tsx` draws a segmental arch of dressed voussoirs (keystone,
+  springers on two jambs) over the card in design units of a 480-wide gate; the jambs are the card's own
+  `::before` / `::after`. The arch is decorative (`aria-hidden`); everything it shows is also written on the card.
+- **The lamp on the keystone is the page's light source and its state.** `src/gate/lamp.ts` names the state from
+  facts the card already holds (it decides nothing; nothing reads it back): `idle` (dim), `kindling` (a quote is
+  being read; flickers), `lit` (a live quote), `pending` (a wallet request or a held swap; breathes, and a dashed
+  ring stands round the lamp so the state is visible without motion), `settled` (the last tracked swap is final; a
+  solid ring), `warn` (amber: attention, an unknown outcome under a hold) and `danger` (red: a refusal or a failure).
+  The wall around the gate (`.wall-light`, placed at the lamp by `--lamp-x/--lamp-y`) and the stones of the arch
+  (`.gate-fall`) are lit from it; the level and colour are typed custom properties so light eases between states.
+- **Dark is the wall at night (the flagship); light is the same wall by day** (multiply instead of screen blending,
+  lower reach). Each network keeps its lamp colour (`[data-network]` in `tokens.css`).
+- **Marks.** In-house SVG coins for BLCH and every bridged asset (one base mark per asset plus a network badge) and a
+  gate-shaped glyph per network (`src/marks/`); no third-party logos. Letters are drawn as paths so they never enter
+  the page text.
+- **Figures.** Amounts are the UI face with tabular, unambiguous digits (Fraunces made "0.01" read "0.0l"); a received
+  amount wraps rather than truncate; digits roll in when a quote arrives (off under reduced motion).
+- **The quote is a receipt**: scalloped edges, dotted leaders, the optional pool-depth curve computed from reserves
+  already read (`src/gate/pool-depth.ts`), then the revert conditions, typeset as three lines with their contract
+  reasons.
+- **The passage**: a tracked swap shows Wallet, Sent and the chain's settled word as a track through the gate
+  (`src/gate/Passage.tsx`).
+- **Desktop: a verification rail beside the gate** (headline, a hold's recovery controls beside the tracked swap,
+  the confirmation rule, and the trust strip, which stays in view under the header while the gate scrolls).
+  **Phone: the gate first**; once a quote is on the card its action block (wallet line, Approve / Swap, the
+  next-step line) stays at the foot of the screen while the receipt above it is read, within the card only.
+- **Finish**: footer link "Licences" to `/THIRD-PARTY-NOTICES.txt` on both sites; 404 page; print stylesheet (no
+  arch, no light); `check-contrast.mjs` covers the new pairs.
+
+The iterations, each with screenshots and a written critique, are in the coordination folder
+(`agents/346-evidence/iter-N/CRITIQUE.md`).

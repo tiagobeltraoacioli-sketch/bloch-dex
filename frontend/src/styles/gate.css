@@ -1703,6 +1703,13 @@
   animation: quote-sweep 1.5s linear infinite;
 }
 
+/* Without the gate (reads unavailable): the alert takes the column's measure, so it lines up with the Refresh
+   control above it and the reference cards below it. */
+.mainnet-page[data-layout='column'] .read-failure {
+  justify-self: stretch;
+  max-width: none;
+}
+
 /* ---------- Footer ---------- */
 .footer-licences {
   display: inline-flex;
