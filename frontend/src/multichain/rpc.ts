@@ -64,6 +64,8 @@ export type Confirmation = {
   settle: ConfirmationRule;
   /** The release of a hold WITHOUT that receipt: the deadline passed, or another transaction used the nonce. */
   strict: ConfirmationRule;
+  /** The release of a hold by a REVERTED swap's receipt (the user may then retry); absent: the strict rule. */
+  reverted?: ConfirmationRule;
 };
 export const FINALIZED_ONLY: Confirmation = Object.freeze({
   settle: Object.freeze({ tag: 'finalized' as const }),
@@ -134,33 +136,41 @@ export const UNCONFIRMED =
   'chain: a second RPC endpoint could not confirm this read. Nothing is shown from it and nothing is sent; try again shortly.';
 
 /**
- * Review R309-MC-3: on a public chain every endpoint is a third party. Everything the page shows and signs from
- * (reserves, the binding quote, balances, allowances, code hashes, the account nonce) is read at a block hash;
- * such a read is asked of TWO endpoints and used only when both give the same answer. One endpoint alone (a
- * rehearsal file) is used as it is.
+ * THE RULE OF THIS FILE (reviews R309-MC-3, R328-4 to R328-6, R328-3P-4): on a public chain every endpoint is a
+ * third party, and nothing that can become, or bound, what the user signs, and nothing that ends a hold, is ever
+ * one endpoint's word. With two or more endpoints listed (one alone, a rehearsal file, is used as it is):
  *
- * Which block those reads are pinned to is also taken from two endpoints, so that one endpoint cannot hold the
- * page on a true but old state (the binding quote is compared with the head before the wallet is asked):
- *   `latest`              the OLDER of the two heads, so that it is a block both endpoints have (a read pinned to
- *                         it, or to a block a confirmation depth behind it, is answered by both), and only while
- *                         the two heads are at most HEAD_GAP_SECONDS of chain time apart: an endpoint that lags
- *                         further, or withholds new blocks, makes the page stop (BEHIND) instead of holding it on
- *                         an old state. With one endpoint unreachable the other's head is used; the pinned
- *                         reads then need a further endpoint.
- *   `finalized`, `safe`   the OLDER of the two answers, and both must answer. These tags are a claim about
- *                         finality; one endpoint alone cannot make the page treat a newer block as final.
- * A transaction and its receipt (`eth_getTransactionByHash`, `eth_getTransactionReceipt`) release a hold, so they
- * count only when two endpoints report the same inclusion (and, for a receipt, the same status): until then the
- * answer is `null`, "not known yet", which never ends a hold; two different inclusions are a disagreement
- * (review R328-6: one endpoint's false "reverted" must not free the account for a second swap).
- * Other requests (blocks by number or hash, fee data, the pending nonce) go to the first endpoint that answers,
- * as before: the route re-checks blocks by number and hash itself.
- * A second endpoint that does not know the block yet is asked again (twice, half a second apart); a further
- * endpoint, when the file lists one, stands in for an endpoint that keeps failing.
+ *   state at a block hash   (`eth_call`, `eth_getCode`, `eth_getBalance`, `eth_getStorageAt`,
+ *                           `eth_getTransactionCount` with `{ blockHash }`): asked of two endpoints, used only
+ *                           when both give the same answer.
+ *   state at a TAG or NUMBER the same methods with `latest`, `finalized`, `safe`, a block number, or no block at
+ *                           all: never sent as they are. The block is first resolved by the rules below, and
+ *                           the read is then made at its HASH, as above. (At `c462735` such a read went to the
+ *                           first endpoint alone, and the route's latest-block comparison quote, which becomes
+ *                           the signed quote after "reconfirm", was one.)
+ *   `pending` nonce         asked of two endpoints; the HIGHER answer (it only ever makes the page refuse).
+ *   the block of a tag      `latest`: among the heads answered, the two newest must be close (at most
+ *                           HEAD_GAP_BLOCKS blocks or HEAD_GAP_SECONDS of chain time apart, else BEHIND); the
+ *                           OLDER of the two is used, a block both have. `finalized`, `safe`: the OLDER of two
+ *                           answers. In each case the other endpoint must report the SAME block (hash and
+ *                           timestamp) at that height, so the header, with the time a deadline is counted from,
+ *                           is not one endpoint's either. A third endpoint is asked when one of the first two
+ *                           fails or lags.
+ *   a block by number/hash  two endpoints must report the same hash and timestamp; block 0, which many nodes
+ *                           have pruned and which is compared with the pinned genesis, needs one.
+ *   a transaction, receipt  two endpoints must report the same inclusion and status; until then `null`, "not
+ *                           seen yet", which never ends a hold.
+ * Left to the first endpoint that answers: the chain id (compared with the pinned one), fee data and gas
+ * estimates (the wallet sets the fee on these chains; the page states its own gas limits).
+ * An endpoint that cannot answer (a rate limit, a block it does not have or has pruned) is asked again with a
+ * growing pause, then a further listed endpoint stands in; that is UNCONFIRMED, never a disagreement.
  */
+export const HEAD_GAP_BLOCKS = 2n;
 export function agreeingRpc(endpoints: Rpc[], retryDelayMs = 500): Rpc {
   const fallback = fallbackRpc(endpoints);
   if (endpoints.length < 2) return fallback;
+  const pause = (attempt: number) =>
+    new Promise((resolve) => setTimeout(resolve, retryDelayMs * 2 ** attempt));
   type Answer = { ok: true; value: string } | { ok: false; reverted: boolean; error: unknown };
   const ask = async (endpoint: Rpc, method: string, params: unknown[]): Promise<Answer> => {
     for (let attempt = 0; ; attempt++) {
@@ -169,50 +179,117 @@ export function agreeingRpc(endpoints: Rpc[], retryDelayMs = 500): Rpc {
       } catch (error) {
         if (isExecutionError(error)) return { ok: false, reverted: true, error };
         if (attempt === 2) return { ok: false, reverted: false, error };
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        await pause(attempt);
       }
     }
   };
-  type TagAnswer = { number: bigint; time: bigint; block: unknown } | null;
-  const tagged = async (endpoint: Rpc, params: unknown[], tries: number): Promise<TagAnswer> => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        const block = (await endpoint('eth_getBlockByNumber', params)) as {
-          number?: unknown;
-          hash?: unknown;
-          timestamp?: unknown;
-        } | null;
-        const number = quantityOf(block?.number);
-        if (number !== null && typeof block?.hash === 'string')
-          return { number, time: quantityOf(block.timestamp) ?? 0n, block };
-      } catch {
-        // An endpoint that cannot answer is asked again below.
-      }
-      if (attempt >= tries) return null;
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
-  };
-  const tagBlock = async (params: unknown[]): Promise<unknown> => {
-    const newest = params[0] === 'latest';
-    // The head: one try each; a finality tag: both must answer.
-    const answers = await Promise.all(
-      endpoints.slice(0, 2).map((endpoint) => tagged(endpoint, params, newest ? 1 : 3)),
+  /** Two endpoints, the same answer; a further endpoint stands in for one that cannot answer. */
+  const agreed = async (method: string, params: unknown[]): Promise<unknown> => {
+    const answers: Answer[] = await Promise.all(
+      endpoints.slice(0, 2).map((endpoint) => ask(endpoint, method, params)),
     );
     for (const endpoint of endpoints.slice(2)) {
-      if (answers.filter(Boolean).length >= 2) break;
-      answers.push(await tagged(endpoint, params, newest ? 1 : 3));
+      if (answers.filter((a) => a.ok || a.reverted).length >= 2) break;
+      answers.push(await ask(endpoint, method, params));
     }
-    const given = answers.filter((a): a is NonNullable<TagAnswer> => a !== null);
-    if (newest) {
-      if (given.length === 0) return fallback('eth_getBlockByNumber', params);
-      if (given.length === 1) return given[0].block;
-      const [a, b] = given;
-      const [older, newer] = a.number <= b.number ? [a, b] : [b, a];
-      if (newer.time - older.time > HEAD_GAP_SECONDS) throw new ChainError(BEHIND);
-      return older.block;
-    }
+    const given = answers.filter((a) => a.ok || a.reverted);
     if (given.length < 2) throw new ChainError(UNCONFIRMED);
-    return given.slice(0, 2).reduce((a, b) => (b.number < a.number ? b : a)).block;
+    const [a, b] = given;
+    if (a.ok && b.ok && a.value === b.value) return JSON.parse(a.value) as unknown;
+    if (!a.ok && !b.ok) throw a.error;
+    throw new ChainError(DISAGREEMENT);
+  };
+  type Header = { number: bigint; time: bigint; hash: string; block: unknown; from: Rpc };
+  const header = (block: unknown, from: Rpc): Header | null => {
+    const b = block as { number?: unknown; hash?: unknown; timestamp?: unknown } | null;
+    const number = quantityOf(b?.number);
+    const time = quantityOf(b?.timestamp);
+    return number !== null && time !== null && typeof b?.hash === 'string'
+      ? { number, time, hash: b.hash, block, from }
+      : null;
+  };
+  const headerOf = async (
+    endpoint: Rpc,
+    tag: unknown,
+    rest: unknown[],
+    tries: number,
+  ): Promise<Header | null> => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const found = header(await endpoint('eth_getBlockByNumber', [tag, ...rest]), endpoint);
+        if (found) return found;
+      } catch {
+        // Asked again below.
+      }
+      if (attempt + 1 >= tries) return null;
+      await pause(attempt);
+    }
+  };
+  /** `chosen` must be the block the other endpoint has at that height. */
+  const confirm = async (chosen: Header, other: Header, rest: unknown[]): Promise<unknown> => {
+    const same =
+      other.number === chosen.number
+        ? other
+        : await headerOf(other.from, `0x${chosen.number.toString(16)}`, rest, 3);
+    if (!same) throw new ChainError(UNCONFIRMED);
+    if (same.hash !== chosen.hash || same.time !== chosen.time) throw new ChainError(DISAGREEMENT);
+    return chosen.block;
+  };
+  const tagBlock = async (params: unknown[]): Promise<unknown> => {
+    const [tag, ...rest] = params;
+    const newest = tag === 'latest';
+    const tries = newest ? 2 : 3;
+    const answers = await Promise.all(
+      endpoints.slice(0, 2).map((endpoint) => headerOf(endpoint, tag, rest, tries)),
+    );
+    const usable = () => {
+      const given = answers
+        .filter((a): a is Header => a !== null)
+        .sort((a, b) => (a.number < b.number ? 1 : a.number > b.number ? -1 : 0));
+      if (given.length < 2) return null;
+      const [newer, older] = given;
+      // A head far behind the other is a lagging endpoint, not a block to settle on.
+      const apart =
+        newest &&
+        newer.number - older.number > HEAD_GAP_BLOCKS &&
+        newer.time - older.time > HEAD_GAP_SECONDS;
+      return apart
+        ? ('apart' as const)
+        : { newer, older: newest ? older : given[given.length - 1] };
+    };
+    for (const endpoint of endpoints.slice(2)) {
+      const now = usable();
+      if (now !== null && now !== 'apart') break;
+      answers.push(await headerOf(endpoint, tag, rest, tries));
+    }
+    const pair = usable();
+    if (pair === null) throw new ChainError(UNCONFIRMED);
+    if (pair === 'apart') throw new ChainError(BEHIND);
+    return confirm(pair.older, pair.newer, rest);
+  };
+  const lookup = async (method: string, params: unknown[]): Promise<unknown> => {
+    if (method === 'eth_getBlockByNumber' && params[0] === '0x0') return fallback(method, params);
+    const one = async (endpoint: Rpc) => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          return header(await endpoint(method, params), endpoint);
+        } catch {
+          await pause(attempt);
+        }
+      }
+      return null;
+    };
+    const answers = await Promise.all(endpoints.slice(0, 2).map(one));
+    for (const endpoint of endpoints.slice(2)) {
+      if (answers.filter(Boolean).length >= 2) break;
+      answers.push(await one(endpoint));
+    }
+    const known = answers.filter((a): a is Header => a !== null);
+    // A block only one endpoint has is not a block yet.
+    if (known.length < 2) return null;
+    if (known[0].hash !== known[1].hash || known[0].time !== known[1].time)
+      throw new ChainError(DISAGREEMENT);
+    return known[0].block;
   };
   /** What two endpoints must say alike about a transaction or its receipt. */
   const inclusion = (value: unknown): string | null => {
@@ -239,39 +316,64 @@ export function agreeingRpc(endpoints: Rpc[], retryDelayMs = 500): Rpc {
     if (known[0].key !== known[1].key) throw new ChainError(DISAGREEMENT);
     return known[0].value;
   };
-  return async (method, params) => {
-    if (
-      method === 'eth_getBlockByNumber' &&
-      (params[0] === 'latest' || params[0] === 'finalized' || params[0] === 'safe')
-    )
-      return tagBlock(params);
-    if (method === 'eth_getTransactionReceipt' || method === 'eth_getTransactionByHash')
-      return included(method, params);
-    if (!isPinned(method, params)) return fallback(method, params);
-    const answers: Answer[] = await Promise.all(
-      endpoints.slice(0, 2).map((endpoint) => ask(endpoint, method, params)),
+  /** The highest pending nonce two endpoints report: a queued transaction one of them hides still counts. */
+  const pendingCount = async (params: unknown[]): Promise<unknown> => {
+    const answers = await Promise.all(
+      endpoints.slice(0, 2).map((endpoint) => ask(endpoint, 'eth_getTransactionCount', params)),
     );
     for (const endpoint of endpoints.slice(2)) {
-      if (answers.filter((a) => a.ok || a.reverted).length >= 2) break;
-      answers.push(await ask(endpoint, method, params));
+      if (answers.filter((a) => a.ok).length >= 2) break;
+      answers.push(await ask(endpoint, 'eth_getTransactionCount', params));
     }
-    const given = answers.filter((a) => a.ok || a.reverted);
-    if (given.length < 2) throw new ChainError(UNCONFIRMED);
-    const [a, b] = given;
-    if (a.ok && b.ok && a.value === b.value) return JSON.parse(a.value) as unknown;
-    if (!a.ok && !b.ok) throw a.error;
-    throw new ChainError(DISAGREEMENT);
+    const counts = answers
+      .map((a) => (a.ok ? quantityOf(JSON.parse(a.value)) : null))
+      .filter((n): n is bigint => n !== null);
+    if (counts.length < 2) throw new ChainError(UNCONFIRMED);
+    return `0x${counts.reduce((a, b) => (b > a ? b : a)).toString(16)}`;
+  };
+  return async (method, params) => {
+    if (method === 'eth_getBlockByNumber') {
+      const tag = params[0];
+      if (tag === 'latest' || tag === 'finalized' || tag === 'safe') return tagBlock(params);
+      return lookup(method, params);
+    }
+    if (method === 'eth_getBlockByHash') return lookup(method, params);
+    if (method === 'eth_getTransactionReceipt' || method === 'eth_getTransactionByHash')
+      return included(method, params);
+    if (!PINNED_METHODS.has(method)) return fallback(method, params);
+    if (isPinned(method, params)) return agreed(method, params);
+    // State by tag, by number, or with no block named: resolved to a block two endpoints agree on, then read at
+    // its hash. Never one endpoint's `latest`.
+    const arity = method === 'eth_getStorageAt' ? 3 : 2;
+    const at = params.length >= arity ? params[arity - 1] : 'latest';
+    if (at === 'pending' && method === 'eth_getTransactionCount') return pendingCount(params);
+    if (typeof at !== 'string' || at === 'pending' || at === 'earliest')
+      throw new ChainError('chain: this read names no block that two endpoints can agree on');
+    const block = (
+      at === 'latest' || at === 'finalized' || at === 'safe'
+        ? await tagBlock([at, false])
+        : await lookup('eth_getBlockByNumber', [at, false])
+    ) as { hash?: string } | null;
+    if (!block?.hash) throw new ChainError(UNCONFIRMED);
+    return agreed(method, [...params.slice(0, arity - 1), { blockHash: block.hash }]);
   };
 }
 
-/** The route's RPC of one public chain: agreeing endpoints, settled by the chain's rule, with its strict reader. */
-export type ChainRpc = Rpc & { strict: Rpc };
+/**
+ * The route's RPC of one public chain: agreeing endpoints, settled by the chain's rule, with its strict reader
+ * and, when the chain states one, the reader that settles a REVERTED swap (review R328-3P-3).
+ */
+export type ChainRpc = Rpc & { strict: Rpc; reverted: Rpc };
 export function chainRpc(endpoints: Rpc[], confirmation: Confirmation = FINALIZED_ONLY): ChainRpc {
   const base = agreeingRpc(endpoints);
   const settled = settledRpc(base, confirmation.settle);
   // A new function object even when the rule is `finalized`, so `strict` is never put on a shared function.
   const rpc: Rpc = (method, params) => settled(method, params);
-  return Object.assign(rpc, { strict: settledRpc(base, confirmation.strict) });
+  const strict = settledRpc(base, confirmation.strict);
+  return Object.assign(rpc, {
+    strict,
+    reverted: confirmation.reverted ? settledRpc(base, confirmation.reverted) : strict,
+  });
 }
 export const chainHttpRpc = (urls: string[], confirmation?: Confirmation): ChainRpc =>
   chainRpc(

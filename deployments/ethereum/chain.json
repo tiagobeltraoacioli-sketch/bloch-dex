@@ -59,6 +59,8 @@
     "strict": {
       "tag": "finalized"
     },
+    "reverted": { "tag": "safe" },
+    "revertedWhy": "The safe block is a justified checkpoint: replacing it needs a third of the stake to be slashed. Measured 2026-11-17: 8 to 9 minutes behind the head.",
     "measured": {
       "at": "2026-11-16",
       "blockSeconds": 12,

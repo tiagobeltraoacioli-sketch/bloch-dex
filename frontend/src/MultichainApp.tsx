@@ -15,8 +15,14 @@ import { useWallet } from './useWallet';
 const CHAINS = bundledChains();
 /** A pending swap is looked up this often: these chains settle in seconds, the Bloch L2 route's default is 10 s. */
 const RECEIPT_POLL_MS = 4_000;
-/** The snapshot block is renewed this often: public endpoints keep a block's state for about a minute (R328-5). */
-const SNAPSHOT_MAX_AGE_MS = 30_000;
+/**
+ * Background renewal of the snapshot block (reviews R328-5, R328-3P-2). Every chain's first two endpoints, and a
+ * third where listed, answered reads pinned to a block 300 s old and older (the reviewer's probe and the live
+ * check with a snapshot kept ten minutes), so the pin is renewed every four minutes, not every 30 s. The route
+ * must renew on demand as well (before a quote when the snapshot is older than this, and when a pinned read is
+ * refused as UNCONFIRMED) and must never renew under a user who is typing or reading a quote.
+ */
+export const SNAPSHOT_MAX_AGE_MS = 240_000;
 export const MULTICHAIN_RENDER_BANNER =
   'Local rehearsal build against loopback forks: not for publication.';
 

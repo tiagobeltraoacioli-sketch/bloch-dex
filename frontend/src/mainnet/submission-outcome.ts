@@ -165,9 +165,14 @@ export async function submissionBoundary(rpc: Rpc, context: SubmissionContext, a
     'The canonical head changed while preparing the wallet request. Nothing was sent. Refresh and review again.',
   );
   await recheckFinality(rpc, finalized, head);
+  // The boundary only has to lie before the transaction's inclusion, and every later decision requires it to be
+  // canonical still. On a public chain the head can be replaced by a one-block reorganisation, and the hold
+  // could then never end (review R328-3P-1): there the boundary is the block already settled by the chain's
+  // confirmation rule. The Bloch L2 (an RPC without a strict reader) keeps the head.
+  const boundary = (rpc as Rpc & { strict?: Rpc }).strict ? finalized : head;
   return {
-    afterBlockNumber: head.number.toString(),
-    afterBlockHash: head.hash,
+    afterBlockNumber: boundary.number.toString(),
+    afterBlockHash: boundary.hash,
     nonce: nonce.toString(),
   };
 }
@@ -243,6 +248,9 @@ export function savedSwapDeadline(data: Hex): bigint | null {
  * none, so nothing changes there: `finalized` for everything.
  */
 const strictOf = (rpc: Rpc): Rpc => (rpc as Rpc & { strict?: Rpc }).strict ?? rpc;
+/** The reader that settles a REVERTED swap: the chain's own rule for it, else the strict rule (R328-3P-3). A
+ * reverted approval or skim is settled like a success: sending it again cannot hurt. */
+const revertedOf = (rpc: Rpc): Rpc => (rpc as Rpc & { reverted?: Rpc }).reverted ?? strictOf(rpc);
 
 export type ExpiredSwap = {
   /** The canonical finalized block whose timestamp is past the deadline. */
@@ -458,7 +466,7 @@ async function finalizedTransactionReceipt(
   // minimum): if its block were replaced, the first transaction and the retry could both execute. Like the two
   // decisions that end a hold without a receipt, it therefore waits for the strict rule where the RPC carries
   // one (review R328-7). A success is released by the settle rule: nothing is sent again after it.
-  const settling = r.status === 'reverted' ? strictOf(rpc) : rpc;
+  const settling = r.status === 'reverted' && intent.kind === 'swap' ? revertedOf(rpc) : rpc;
   const finalized = block(await settling('eth_getBlockByNumber', ['finalized', false]));
   if (finalized.number < r.blockNumber) return null;
   const included = { number: r.blockNumber, hash: r.blockHash };
