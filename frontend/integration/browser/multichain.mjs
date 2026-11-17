@@ -176,7 +176,7 @@ try {
     for (let attempt = 0; ; attempt++) {
       await fresh(chain);
       await page.select('You pay', chain.native);
-      await page.select('You receive', chain.token.symbol);
+      await page.select('You receive', chain.token.shown ?? chain.token.symbol);
       await page.fill('Amount', AMOUNT);
       await page.click('Get quote');
       try {
@@ -188,7 +188,7 @@ try {
     }
     await delay(700);
   };
-  const swapLabel = (chain) => `Swap ${AMOUNT} ${chain.native} for ${chain.token.symbol}`;
+  const swapLabel = (chain) => `Swap ${AMOUNT} ${chain.native} for ${chain.token.shown ?? chain.token.symbol}`;
   const swapsOn = (chain) => wallet.sent.filter((s) => s.chainId === chain.chainId);
   const disabled = async (name) => (await page.button(name))?.disabled === true;
 
@@ -205,7 +205,10 @@ try {
     }
     const text = await flat();
     check(`${chain.key}: the page shows this network's words and none of the Bloch L2's`, new RegExp(`PosternDEX on ${chain.name}`).test(text) && !L2_WORDS.test(text), L2_WORDS.exec(text)?.[0]);
-    check(`${chain.key}: the pool of ${chain.wrapped.symbol} and ${chain.token.symbol} is shown and the native coin is ${chain.native}`, text.includes(`${chain.wrapped.symbol}/${chain.token.symbol}`) || text.includes(`${chain.token.symbol}/${chain.wrapped.symbol}`), text.slice(text.indexOf('Pools at finalized'), text.indexOf('Pools at finalized') + 300));
+    const shown = chain.token.shown ?? chain.token.symbol;
+    check(`${chain.key}: the pool of ${chain.wrapped.symbol} and ${shown} is shown and the native coin is ${chain.native}`, text.includes(`${chain.wrapped.symbol}/${shown}`) || text.includes(`${shown}/${chain.wrapped.symbol}`), text.slice(text.indexOf('Pools at finalized'), text.indexOf('Pools at finalized') + 300));
+    // Review R344-UI-16: a token with a label is printed under its label, with its note on screen.
+    if (chain.token.note) check(`${chain.key}: the token's note is on screen ("${chain.token.note}") and the pool is never named with the bare symbol`, text.includes(chain.token.note) && !((bare) => bare.includes(`${chain.wrapped.symbol}/${chain.token.symbol}`) || bare.includes(`${chain.token.symbol}/${chain.wrapped.symbol}`))(text.split(shown).join("")), text.slice(0, 400));
     const depth = chain.confirmation.settle.depth;
     check(
       `${chain.key}: the page says what "finalized" means on this network (${depth ? `${depth} block${depth === 1 ? '' : 's'} on top` : "the chain's own finalized block"})`,
