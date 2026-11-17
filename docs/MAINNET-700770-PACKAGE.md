@@ -306,10 +306,22 @@ That exact address is the only Bloch Inc the tools accept without code (`OWNER_F
 pinned Safe. `deploy-dex.mjs preflight` and `run` then need `--rpc2 <second endpoint, another operator>`:
 the address's code is read from both endpoints at one block hash and must be empty (an EIP-7702
 delegation is refused), and the deploy script refuses it again on chain. `verify-deployment.mjs` and
-`check-finality-gate-mainnet.mjs` are run without `--safe-plan`. The fee is then redeemed by that address
-itself (`pair.transfer(pair, fee)`, `pair.burn(address)`), signed with the owner's own wallet. Keep the
-address free of any EIP-7702 delegation: it is the permanent fee recipient. Rehearsal:
-`BLOCH_INC_MODE=owner-eoa scripts/staging/rehearse-deploy-anvil.sh <revision> 700770 <port>`.
+`check-finality-gate-mainnet.mjs` are run without `--safe-plan`. A rehearsal plan (`network.rehearsal`, which
+chain 700770 also permits for a private L2) may run with one endpoint only when `--rpc` is loopback: a literal
+`127.x.y.z` or `[::1]` address, or `localhost`, which is resolved, checked and replaced by the address it
+resolved to; against any other endpoint the second endpoint is required there too (review R369-15). The fee
+is then redeemed by that address itself, signed with the owner's own wallet, with the two transactions
+`scripts/ops/dex-fee-redeem.mjs plan` writes for it: `approve` for the exact shares, then one
+`removeLiquidity` to the address ([OPS-FEE-REDEMPTION.md](OPS-FEE-REDEMPTION.md)). Never `pair.transfer(pair,
+fee)` followed by `pair.burn(address)` as two transactions: anyone can burn the shares to themselves in
+between (until round 19 this page named that pair; finding R400-1). The opening form takes the same pin with
+`safeOwners: []`, and the monitor runs as `bloch-dex-monitor-owner-address.service` with
+`--owner-fee-address` instead of `--safe-plan` ([OPS-DEX-MONITOR-KEEPER.md](OPS-DEX-MONITOR-KEEPER.md)). Keep the
+address free of any EIP-7702 delegation: it is the permanent fee recipient, and the monitor goes CRIT
+(`owner_fee_address`) if it ever has code. Rehearsals:
+`BLOCH_INC_MODE=owner-eoa scripts/staging/rehearse-deploy-anvil.sh <revision> 700770 <port>` (two endpoints)
+and `BLOCH_INC_MODE=owner-eoa scripts/staging/rehearse-deploy-anvil.sh <revision> 700771 <port>` (one loopback
+endpoint; one endpoint off loopback refused).
 
 0. Fill `deployer.address` in `infra.config.json` with a fresh key and fund it
    with gas only. Run `deploy-infra.mjs validate`, `plan --write`, `preflight`

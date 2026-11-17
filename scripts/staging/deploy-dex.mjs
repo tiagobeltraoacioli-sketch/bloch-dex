@@ -10,6 +10,9 @@
 //            [--rehearsal] [--out-dir out] --write G
 //   pending  --config C                    list every TBD-owner/null field
 //   preflight --config C --plan P --rpc URL [--rpc2 URL2] [--rehearsal]   read-only checks only
+//            (one endpoint is accepted only for a rehearsal plan AND a loopback --rpc: a literal 127.0.0.0/8
+//             address, [::1], or `localhost` resolved, checked and pinned to the address it resolved to; review
+//             R369-15. A rehearsal-flagged plan on chain 700770 against any other endpoint needs --rpc2 too)
 //            (--rpc2, a second endpoint run by another operator, is required on the mainnet when Bloch Inc
 //            is the owner's plain fee address: its "no code, no EIP-7702 delegation" is read from both at
 //            one block hash; `run` takes it too)
@@ -25,6 +28,7 @@
 // created addresses, status) and writes the schema-2 finality gate config.
 
 import { spawnSync } from "node:child_process";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { BUCKET_CAPACITY_SELECTOR, createJsonRpcRequest, GATE_DOMAIN, OWNER_FEE_EOA, verifySafe } from "./finality-gate.mjs";
@@ -131,9 +135,48 @@ export async function checkOwnerFeeEoa(address, requests) {
   return { block: { number: BigInt(head.number).toString(), hash: head.hash } };
 }
 
+const OCTET = "(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])";
+const LOOPBACK_V4 = new RegExp(`^127\\.${OCTET}\\.${OCTET}\\.${OCTET}$`);
+const LOOPBACK_URL = new RegExp(`^(https?)://(127\\.${OCTET}\\.${OCTET}\\.${OCTET}|\\[::1\\]|localhost)(?::([1-9][0-9]{0,4}))?(/[A-Za-z0-9._~/-]*)?$`);
+
+/// Review R369-15: is this RPC URL a loopback endpoint? Decided on the URL text itself, never on what a URL parser
+/// makes of it (WHATWG parsing turns `http://2130706433/`, `http://0x7f.1/` or `http://127.1/` into 127.0.0.1; none
+/// of those spellings is accepted here). Loopback is exactly:
+///   - a literal IPv4 address in 127.0.0.0/8, four decimal octets without leading zeros;
+///   - the literal `[::1]`;
+///   - the name `localhost` (lower case), RESOLVED: every address it resolves to must itself be 127.0.0.0/8 or ::1,
+///     and the returned URL names the first such address instead of the name, so the address that was checked is
+///     the address that is contacted (no second resolution, no rebinding between the check and the request).
+/// No credentials, query or fragment; http or https; port 1-65535. Anything else is not loopback (with the reason).
+/// A loopback endpoint that redirects is refused by the transport itself (rpc-transport.mjs: `redirect: "error"`),
+/// so a loopback URL cannot hand the request to a public host.
+/// Returns { loopback: true, url } (url = the endpoint to contact) or { loopback: false, reason }.
+export async function loopbackEndpoint(url, { lookup = dnsLookup } = {}) {
+  const no = (reason) => ({ loopback: false, reason });
+  if (typeof url !== "string") return no("the RPC URL is not a string");
+  const match = LOOPBACK_URL.exec(url);
+  if (!match) return no(`${url} is not http(s)://127.x.y.z, http(s)://[::1] or http(s)://localhost with an optional port and path`);
+  const [, scheme, host, port, path = ""] = match;
+  if (port !== undefined && Number(port) > 65535) return no(`${url} has no valid port`);
+  let parsed;
+  try { parsed = new URL(url); } catch { return no(`${url} is not a URL`); }
+  if (parsed.hostname !== host || parsed.username || parsed.password || parsed.search || parsed.hash) return no(`${url} does not parse to the host it names`);
+  if (host !== "localhost") return { loopback: true, url };
+  let addresses;
+  try { addresses = await lookup("localhost", { all: true }); } catch (error) { return no(`localhost could not be resolved (${error.message})`); }
+  if (!Array.isArray(addresses) || addresses.length === 0) return no("localhost resolves to no address");
+  const isLoopback = ({ address, family } = {}) => (family === 4 && typeof address === "string" && LOOPBACK_V4.test(address)) || (family === 6 && address === "::1");
+  const outside = addresses.filter((entry) => !isLoopback(entry));
+  if (outside.length) return no(`localhost resolves to ${outside.map((entry) => entry?.address).join(", ")}, which is not loopback`);
+  const chosen = addresses.find((entry) => entry.family === 4) ?? addresses[0];
+  return { loopback: true, url: `${scheme}://${chosen.family === 4 ? chosen.address : "[::1]"}${port === undefined ? "" : `:${port}`}${path}` };
+}
+
 /// Read-only checks against the target RPC before forge is started. `second` is the request function of a
-/// second endpoint; it is required on the mainnet when Bloch Inc is the owner's plain fee address.
-export async function preflight(plan, request, { second = null } = {}) {
+/// second endpoint; it is required on the mainnet when Bloch Inc is the owner's plain fee address. `loopback` is
+/// true only when `request` was created for a URL that loopbackEndpoint accepted (main does that): without a
+/// second endpoint the owner's-address check runs only for a rehearsal plan on such an endpoint (R369-15).
+export async function preflight(plan, request, { second = null, loopback = false } = {}) {
   refuse(BigInt(await request("eth_chainId", [])) === BigInt(plan.chain.id), "RPC chain ID does not match the plan");
   const genesis = await request("eth_getBlockByNumber", ["0x0", false]);
   refuse(genesis?.hash === plan.chain.genesisHash, "RPC genesis hash does not match the pinned value");
@@ -168,8 +211,13 @@ export async function preflight(plan, request, { second = null } = {}) {
         refuse((await second("eth_getBlockByNumber", ["0x0", false]))?.hash === plan.chain.genesisHash, "the second RPC's genesis hash does not match the pinned value");
       }
       refuse(second || plan.chain.rehearsal === true, "Bloch Inc is the owner's plain fee address: pass --rpc2 (a second endpoint) on the mainnet");
+      // R369-15: `network.rehearsal` is a configuration flag, and chain 700770 permits it (a private L2 built on
+      // the mainnet rules). The flag alone must never let one endpoint vouch for the permanent fee recipient: the
+      // one-endpoint path exists only on a loopback RPC, whatever the chain ID, 700770 included.
+      refuse(second || loopback === true, `Bloch Inc is the owner's plain fee address: one endpoint is accepted only for a rehearsal on a loopback RPC (http://127.x.y.z:PORT, http://[::1]:PORT, or localhost resolving to loopback); --rpc is not loopback, so pass --rpc2 (a second endpoint)${Number(plan.chain.id) === 700770 ? ": chain 700770 is never read from one non-loopback endpoint" : ""}`);
       ownerFeeEoa = await checkOwnerFeeEoa(address, second ? [request, second] : [request, request]);
       ownerFeeEoa.endpoints = second ? 2 : 1;
+      if (!second) ownerFeeEoa.loopback = true;
       continue;
     }
     const observed = codeHashOf(await request("eth_getCode", [address, "latest"]));
@@ -260,6 +308,21 @@ function runForge(plan, options) {
   refuse(result.status === 0, `forge exited with ${result.status ?? result.signal}`);
 }
 
+/// R369-15: decide loopback on the URL text. A `localhost` URL is replaced in `options` by the checked address it
+/// resolved to, for this tool and for forge alike (runForge reads options.rpc), and --rpc2 must still differ from
+/// --rpc after that (localhost and 127.0.0.1 on one port are one endpoint, not two).
+export async function resolveEndpoints(options, { lookup = dnsLookup } = {}) {
+  refuse(!options.rpc2 || options.rpc2 !== options.rpc, "--rpc2 must be a different endpoint from --rpc");
+  const first = await loopbackEndpoint(options.rpc, { lookup });
+  if (first.loopback) options.rpc = first.url;
+  if (options.rpc2) {
+    const other = await loopbackEndpoint(options.rpc2, { lookup });
+    if (other.loopback) options.rpc2 = other.url;
+    refuse(options.rpc2 !== options.rpc, "--rpc2 must be a different endpoint from --rpc (both name the same loopback address and port)");
+  }
+  return first;
+}
+
 export async function main(argv) {
   const options = parseArgs(argv);
   if (options.command === "pending") {
@@ -289,15 +352,21 @@ export async function main(argv) {
     return { decision: "transactions-written", file: options.write, count: txs.transactions.length, configSha256: plan.configSha256 };
   }
   refuse(options.plan && options.rpc, "--plan and --rpc are required");
+  const first = await resolveEndpoints(options);
+  if (options.command === "preflight" || options.command === "run") {
+    // R369-15, before any node is contacted: the owner's-address check with one endpoint needs a loopback --rpc.
+    const pin = plan.roles?.blochInc;
+    refuse(!(pin?.address === OWNER_FEE_EOA && !options.rpc2 && plan.chain.rehearsal === true) || first.loopback,
+      `Bloch Inc is the owner's plain fee address: one endpoint is accepted only for a rehearsal on a loopback RPC; ${first.reason}. Pass --rpc2 (a second endpoint)${Number(plan.chain.id) === 700770 ? ": chain 700770 is never read from one non-loopback endpoint" : ""}`);
+  }
   const request = createJsonRpcRequest(options.rpc);
-  refuse(!options.rpc2 || options.rpc2 !== options.rpc, "--rpc2 must be a different endpoint from --rpc");
   const second = options.rpc2 ? createJsonRpcRequest(options.rpc2) : null;
   if (options.command === "preflight") {
-    return { decision: "preflight-ok", configSha256: plan.configSha256, ...(await preflight(plan, request, { second })) };
+    return { decision: "preflight-ok", configSha256: plan.configSha256, ...(await preflight(plan, request, { second, loopback: first.loopback })) };
   }
   if (options.command === "run") {
     refuse(!options.broadcast || options.confirm === plan.configSha256, `--broadcast needs --confirm ${plan.configSha256}`);
-    const checked = await preflight(plan, request, { second });
+    const checked = await preflight(plan, request, { second, loopback: first.loopback });
     runForge(plan, options);
     return { decision: options.broadcast ? "broadcast" : "dry-run", configSha256: plan.configSha256, ...checked };
   }

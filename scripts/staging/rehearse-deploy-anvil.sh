@@ -19,12 +19,19 @@
 # two pilot counter-assets (wGSMH, bUSDC) are test-only tokens exposing the
 # bridge's bucketCapacity(); the caps are the committed mainnet values.
 #
-# BLOCH_INC_MODE=owner-eoa (mainnet path only; owner decision of 2026-11-17): Bloch Inc is the owner's
-# pinned plain fee address 0x775a…0544 instead of the Safe (no SAFE_ARTIFACTS needed). The preflight
-# then reads "no code, no EIP-7702 delegation" from two endpoints at one block hash (--rpc2; here the
-# finality shim in front of the same anvil, so it proves the wiring, not operator independence); the
-# rehearsal shows the refusals (no --rpc2; a delegation designator set on the address) and redeems the
-# protocol fee from the address by anvil impersonation (the owner signs it with the real key).
+# BLOCH_INC_MODE=owner-eoa (owner decision of 2026-11-17): Bloch Inc is the owner's pinned plain fee
+# address 0x775a…0544 instead of the Safe (no SAFE_ARTIFACTS needed).
+#   On the mainnet path (chain 700770) the preflight reads "no code, no EIP-7702 delegation" from two
+#   endpoints at one block hash (--rpc2; here the finality shim in front of the same anvil, so it proves
+#   the wiring, not operator independence); the rehearsal shows the refusals (no --rpc2; the same
+#   loopback endpoint named twice as localhost and 127.0.0.1; a delegation designator on the address).
+#   On the --rehearsal path (700771 or 31337; round 19, review R369-15) one endpoint is accepted only
+#   because it is loopback: the rehearsal shows the refusal of one endpoint off loopback before any node
+#   is contacted (a TEST-NET-1 address that is never reached), then passes with `localhost`, resolved,
+#   checked and pinned to the loopback address, and refuses a delegation there too.
+#   In both, the protocol fee is redeemed by the address itself with the transactions that
+#   scripts/ops/dex-fee-redeem.mjs plans for it (approve for the exact shares, then one removeLiquidity),
+#   sent by anvil impersonation (the owner signs them with the real key); never transfer + burn.
 set -euo pipefail
 
 REVISION=${1:?usage: rehearse-deploy-anvil.sh <40-hex revision> [chain-id] [port]}
@@ -67,8 +74,7 @@ OWNER_FEE_EOA=0x775a993f09bd80aecf8f8c2ade0c84158e3a0544
 EMPTY_CODE_HASH=0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470
 case "$MODE" in safe|owner-eoa) ;; *) echo "BLOCH_INC_MODE must be safe or owner-eoa" >&2; exit 2 ;; esac
 case "$CHAIN_ID" in
-  700771|31337) FLAG=--rehearsal; NAME=local-rehearsal; REHEARSAL=true
-     [ "$MODE" = safe ] || { echo "BLOCH_INC_MODE=owner-eoa is a mainnet-path rehearsal (chain 700770)" >&2; exit 2; } ;;
+  700771|31337) FLAG=--rehearsal; NAME=local-rehearsal; REHEARSAL=true ;;
   *) FLAG=; NAME=bloch-l2-mainnet; REHEARSAL=false
      [ "$MODE" = owner-eoa ] || [ -d "${SAFE_ARTIFACTS:-}/contracts" ] || {
        echo "the mainnet path needs SAFE_ARTIFACTS=<@safe-global/safe-contracts@1.4.1 build/artifacts>: Bloch Inc is the pinned Safe v1.4.1" >&2; exit 1; } ;;
@@ -146,8 +152,30 @@ if [ -n "$FLAG" ]; then
   cat "$WORK/refusal.txt"
 fi
 RPC2=()
-if [ "$MODE" = owner-eoa ]; then
+if [ "$MODE" = owner-eoa ] && [ -n "$FLAG" ]; then
+  # R369-15: the one-endpoint path of a rehearsal plan exists only on a loopback RPC.
+  echo "== owner-eoa, rehearsal chain: one endpoint off loopback is refused before any node is contacted"
+  for REMOTE in "http://192.0.2.1:$PORT" "http://2130706433:$PORT" "http://127.1:$PORT" "http://127.0.0.1.example.invalid:$PORT"; do
+    if $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$REMOTE" $FLAG 2> "$WORK/refusal.txt"; then echo "FAIL: one endpoint off loopback accepted ($REMOTE)"; exit 1; fi
+    grep -q "one endpoint is accepted only for a rehearsal on a loopback RPC" "$WORK/refusal.txt" || { echo "FAIL: $REMOTE was not refused by the loopback rule:"; cat "$WORK/refusal.txt"; exit 1; }
+    cat "$WORK/refusal.txt"
+  done
+  echo "== owner-eoa, rehearsal chain: an EIP-7702 delegation on the fee address is refused (one loopback endpoint)"
+  cast rpc anvil_setCode "$BLOCH_INC" 0xef010063c0c19a282a1b52b07dd5a65b58948a07dae32b --rpc-url "$RPC" > /dev/null
+  if $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" $FLAG 2> "$WORK/refusal.txt"; then echo "FAIL: delegated fee address accepted"; exit 1; fi
+  grep -q "EIP-7702 delegated" "$WORK/refusal.txt" || { echo "FAIL: not refused as a delegation:"; cat "$WORK/refusal.txt"; exit 1; }
+  cat "$WORK/refusal.txt"
+  cast rpc anvil_setCode "$BLOCH_INC" 0x --rpc-url "$RPC" > /dev/null
+  echo "== owner-eoa, rehearsal chain: preflight from one loopback endpoint (literal, then localhost resolved and pinned)"
+  for LOCAL in "$RPC" "http://localhost:$PORT"; do
+    $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$LOCAL" $FLAG | node -e 'const r=JSON.parse(require("fs").readFileSync(0,"utf8")); if(!r.ownerFeeEoa||r.ownerFeeEoa.endpoints!==1||r.ownerFeeEoa.loopback!==true){console.error("FAIL: not the one-endpoint loopback check");process.exit(1)} console.log("owner fee address: no code at block", r.ownerFeeEoa.block.number, "from one loopback endpoint ("+process.argv[1]+")")' "$LOCAL"
+  done
+elif [ "$MODE" = owner-eoa ]; then
   RPC2=(--rpc2 "$SHIM")
+  echo "== owner-eoa: the same loopback endpoint named twice (127.0.0.1 and localhost) is not a second endpoint"
+  if $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" --rpc2 "http://localhost:$PORT" 2> "$WORK/refusal.txt"; then echo "FAIL: one endpoint under two names accepted"; exit 1; fi
+  grep -q "both name the same loopback address and port" "$WORK/refusal.txt" || { echo "FAIL: not refused as the same endpoint:"; cat "$WORK/refusal.txt"; exit 1; }
+  cat "$WORK/refusal.txt"
   echo "== owner-eoa: a preflight without a second endpoint is refused"
   if $D preflight --config "$CONFIG" --plan "$WORK/plan.json" --rpc "$RPC" 2> "$WORK/refusal.txt"; then echo "FAIL: one endpoint accepted"; exit 1; fi
   cat "$WORK/refusal.txt"
@@ -231,9 +259,28 @@ if [ "$MODE" = owner-eoa ]; then
   # The owner's plain address sends the two calls itself (here by anvil impersonation; for real, with the owner's key).
   cast rpc anvil_impersonateAccount "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
   cast rpc anvil_setBalance "$BLOCH_INC" 0x16345785d8a0000 --rpc-url "$RPC" > /dev/null
-  cast send "$PAIR" "transfer(address,uint256)" "$PAIR" "$FEE" --unlocked --from "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
-  cast send "$PAIR" "burn(address)" "$BLOCH_INC" --unlocked --from "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
+  # Round 19: the two transactions are the ones dex-fee-redeem.mjs plans for the owner's address (approve for the
+  # exact shares, then one removeLiquidity to the address). Before round 19 this step sent transfer + burn, which
+  # docs/OPS-FEE-REDEMPTION.md forbids on a real chain (anyone can burn the shares in between); the Safe and
+  # test-multisig modes below still send that pair, as before (a rehearsal with no third party).
+  # A plan for the address while it is delegated is refused (the planner reads its code at the plan's block).
+  cast rpc anvil_setCode "$BLOCH_INC" 0xef010063c0c19a282a1b52b07dd5a65b58948a07dae32b --rpc-url "$RPC" > /dev/null
+  if node scripts/ops/dex-fee-redeem.mjs plan --config "$WORK/gate.json" --rpc "$RPC" --pair "$PAIR" --out "$WORK/redeem-delegated" > /dev/null 2> "$WORK/refusal.txt"; then echo "FAIL: a redemption was planned for a delegated fee address"; exit 1; fi
+  grep -q "EIP-7702 delegation" "$WORK/refusal.txt" || { echo "FAIL: not refused as a delegation:"; cat "$WORK/refusal.txt"; exit 1; }
+  cat "$WORK/refusal.txt"
+  cast rpc anvil_setCode "$BLOCH_INC" 0x --rpc-url "$RPC" > /dev/null
+  node scripts/ops/dex-fee-redeem.mjs plan --config "$WORK/gate.json" --rpc "$RPC" --pair "$PAIR" --out "$WORK/redeem" > "$WORK/redeem.json"
+  node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+if (r.decision !== "send-from-the-owner-address" || r.signer !== process.argv[2] || r.transactions.length !== 2 || r.liquidity !== process.argv[3]) { console.error("FAIL: unexpected redemption plan", JSON.stringify(r)); process.exit(1); }
+for (const t of r.transactions) { const tx = JSON.parse(require("fs").readFileSync(t.tx, "utf8")); console.log(tx.to, tx.data); }
+' "$WORK/redeem.json" "$BLOCH_INC" "$FEE" > "$WORK/redeem.txs"
+  while read -r TO DATA; do
+    cast send "$TO" "$DATA" --unlocked --from "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
+  done < "$WORK/redeem.txs"
   cast rpc anvil_stopImpersonatingAccount "$BLOCH_INC" --rpc-url "$RPC" > /dev/null
+  [ "$(cast call "$PAIR" "allowance(address,address)(uint256)" "$BLOCH_INC" "$ROUTER" --rpc-url "$RPC" | awk '{print $1}')" = 0 ] || { echo "FAIL: an LP allowance to the router is left"; exit 1; }
+  [ "$(cast call "$PAIR" "balanceOf(address)(uint256)" "$PAIR" --rpc-url "$RPC" | awk '{print $1}')" = 0 ] || { echo "FAIL: LP shares are left in the pair"; exit 1; }
 fi
 for CALL in "$TRANSFER" "$BURN"; do
   [ "$MODE" = owner-eoa ] && break
@@ -261,6 +308,6 @@ USD_OUT=$(cast call "$ASSET" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-ur
 W_OUT=$(cast call "$WRAPPED" "balanceOf(address)(uint256)" "$BLOCH_INC" --rpc-url "$RPC" | awk '{print $1}')
 [ "$USD_OUT" != 0 ] && [ "$W_OUT" != 0 ] || { echo "FAIL: Bloch Inc could not redeem its fee"; exit 1; }
 [ -n "$FLAG" ] || [ "$MODE" = owner-eoa ] || echo "Bloch Inc Safe v1.4.1 $BLOCH_INC (3 of 5) redeemed with execTransaction; two signatures were refused"
-[ "$MODE" != owner-eoa ] || echo "Bloch Inc = the owner's plain fee address $BLOCH_INC (no code at deployment, read from two endpoints); fee redeemed by the address itself"
+[ "$MODE" != owner-eoa ] || echo "Bloch Inc = the owner's plain fee address $BLOCH_INC (no code at deployment, read from $([ -n "$FLAG" ] && echo "one loopback endpoint" || echo "two endpoints")); fee redeemed by the address itself with the planned approve + removeLiquidity"
 echo "Bloch Inc fee: $FEE LP -> $W_OUT WBLCH base units + $USD_OUT bUSDC base units"
 echo "REHEARSAL OK ($WORK)"

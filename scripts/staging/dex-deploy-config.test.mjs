@@ -23,7 +23,9 @@ import {
   validateDeployConfig,
 } from "./dex-deploy-config.mjs";
 import { GATE_DOMAIN, validateGateConfig } from "./finality-gate.mjs";
-import { parseArgs, preflight, verifyBroadcast } from "./deploy-dex.mjs";
+import { createServer } from "node:http";
+import { loopbackEndpoint, parseArgs, preflight, resolveEndpoints, verifyBroadcast } from "./deploy-dex.mjs";
+import { createRpcTransport } from "./rpc-transport.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, getContractAddress } = requireFromFrontend("viem");
@@ -663,7 +665,138 @@ test("preflight: the owner's plain fee address is read from two endpoints at one
   ]) {
     await assert.rejects(preflight(mainnet, endpoint(mainnet, first).request, { second: endpoint(mainnet, second).request }), pattern);
   }
-  // A rehearsal may run on one endpoint; the result says so.
+  // A rehearsal may run on one endpoint; the result says so. Restated in round 19 (review R369-15): the one
+  // endpoint must be a loopback RPC, which the caller states with `loopback: true` (main derives it from the URL);
+  // the old property (one endpoint accepted for a rehearsal, reported as endpoints: 1) is kept under that condition.
   const rehearsal = planDeployment(config((c) => { devnet(c); eoa(c); }), artifacts(), { rehearsal: true });
-  assert.equal((await preflight(rehearsal, endpoint(rehearsal).request)).ownerFeeEoa.endpoints, 1);
+  const one = (await preflight(rehearsal, endpoint(rehearsal).request, { loopback: true })).ownerFeeEoa;
+  assert.equal(one.endpoints, 1);
+  assert.equal(one.loopback, true);
+});
+
+test("R369-15: the one-endpoint rehearsal path needs a loopback RPC, on every chain, and never chain 700770 off loopback", async () => {
+  const HEAD = { number: "0x10", hash: hash("d") };
+  const endpoint = (plan) => {
+    const base = chain(plan, { code: { [ASSET]: "0xaa" } }).request;
+    let calls = 0;
+    const request = async (method, params) => {
+      calls += 1;
+      if (method === "eth_getBlockByNumber" && params[0] === "latest") return HEAD;
+      if (method === "eth_getBlockByHash") return params[0] === HEAD.hash ? HEAD : null;
+      if (method === "eth_getCode" && params[0] === OWNER_FEE_EOA) return "0x";
+      return base(method, params);
+    };
+    return { request, calls: () => calls };
+  };
+  const eoa = (c) => { c.blochInc = { address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH }; c.reserveCaps[1].codeHash = keccak256("0xaa"); };
+  const devnetPlan = planDeployment(config((c) => { devnet(c); eoa(c); }), artifacts(), { rehearsal: true });
+  // The configuration the review names: chain 700770 with network.rehearsal true (a name that says so and the
+  // --rehearsal flag are all validateDeployConfig asks for).
+  const flagged = config((c) => { eoa(c); c.network = { ...c.network, name: "private-l2-rehearsal", rehearsal: true }; });
+  const flaggedPlan = planDeployment(flagged, artifacts(), { rehearsal: true });
+  assert.equal(flaggedPlan.chain.id, 700770);
+  assert.equal(flaggedPlan.chain.rehearsal, true);
+  const mainnetPlan = planDeployment(config(eoa), artifacts());
+
+  // Direction 1: refused (the defect of R369-15: before round 19 both were accepted). The same plans and the same node answers, the endpoint not loopback (the default, an
+  // explicit false, and anything that is not exactly true).
+  for (const options of [undefined, {}, { loopback: false }, { loopback: "true" }, { loopback: 1 }, { second: null }]) {
+    await assert.rejects(preflight(devnetPlan, endpoint(devnetPlan).request, options), /one endpoint is accepted only for a rehearsal on a loopback RPC .*--rpc is not loopback, so pass --rpc2 \(a second endpoint\)$/, JSON.stringify(options));
+    await assert.rejects(preflight(flaggedPlan, endpoint(flaggedPlan).request, options), /--rpc is not loopback, so pass --rpc2 \(a second endpoint\): chain 700770 is never read from one non-loopback endpoint$/, JSON.stringify(options));
+  }
+  // Direction 2: accepted. A rehearsal plan, one endpoint, loopback: both chains.
+  for (const plan of [devnetPlan, flaggedPlan]) {
+    assert.deepEqual((await preflight(plan, endpoint(plan).request, { loopback: true })).ownerFeeEoa, { block: { number: "16", hash: HEAD.hash }, endpoints: 1, loopback: true });
+  }
+  // Off loopback the rehearsal-flagged 700770 plan passes only with a second endpoint, as the mainnet does.
+  const two = await preflight(flaggedPlan, endpoint(flaggedPlan).request, { second: endpoint(flaggedPlan).request });
+  assert.deepEqual(two.ownerFeeEoa, { block: { number: "16", hash: HEAD.hash }, endpoints: 2 });
+  // Loopback never replaces the second endpoint on the mainnet plan (rehearsal false): unchanged.
+  await assert.rejects(preflight(mainnetPlan, endpoint(mainnetPlan).request, { loopback: true }), /pass --rpc2 \(a second endpoint\) on the mainnet/);
+  // A Safe Bloch Inc is not touched by the rule: no endpoint count is asked of it.
+  const safePlan = planDeployment(config((c) => { devnet(c); delete c.blochInc.safe; c.blochInc.codeHash = keccak256("0xbb"); c.reserveCaps[1].codeHash = keccak256("0xaa"); }), artifacts(), { rehearsal: true });
+  assert.deepEqual(await preflight(safePlan, chain(safePlan).request), { nonce: "0" });
+});
+
+test("R369-15: loopback is decided on the URL text: 127.0.0.0/8 and [::1] literals, or localhost resolved, checked and pinned", async () => {
+  const never = async () => { throw new Error("a literal address must not be resolved"); };
+  for (const url of ["http://127.0.0.1:8545", "http://127.0.0.1", "http://127.0.0.1:8545/", "http://127.255.255.254:1/rpc/v1", "https://127.0.0.2:65535", "http://[::1]:8545", "https://[::1]/x"]) {
+    assert.deepEqual(await loopbackEndpoint(url, { lookup: never }), { loopback: true, url }, url);
+  }
+  for (const url of [
+    "http://2130706433:8545", "http://0x7f000001:8545", "http://0x7f.0.0.1:8545", "http://127.1:8545", "http://0177.0.0.1:8545", "http://127.0.0.01:8545", "http://127.0.0.256:8545", // other spellings a URL parser reads as 127.0.0.1, and a non-address
+    "http://127.0.0.1.example.org:8545", "http://example.org:8545", "http://128.0.0.1:8545", "http://126.255.255.255:8545", "http://10.0.0.1:8545", "http://0.0.0.0:8545", "http://192.168.1.1:8545",
+    "http://[::ffff:127.0.0.1]:8545", "http://[::]:8545", "http://[0:0:0:0:0:0:0:1]:8545", "http://[fe80::1]:8545",
+    "http://user@127.0.0.1:8545", "http://user:pw@127.0.0.1:8545", "http://127.0.0.1@example.org:8545", "http://127.0.0.1:8545?to=example.org", "http://127.0.0.1:8545#x", "http://127.0.0.1:8545/a b",
+    "http://127.0.0.1:0", "http://127.0.0.1:65536", "http://127.0.0.1:99999", "http://127.0.0.1:", "ws://127.0.0.1:8545", "ftp://127.0.0.1", "//127.0.0.1:8545", "127.0.0.1:8545", "http://127.0.0.1:8545\n", " http://127.0.0.1:8545",
+    "http://LOCALHOST:8545", "http://localhost.:8545", "http://localhost.example.org:8545", "http://sub.localhost:8545", "", null, undefined, 8545,
+  ]) {
+    const result = await loopbackEndpoint(url, { lookup: never });
+    assert.equal(result.loopback, false, String(url));
+    assert.equal(typeof result.reason, "string");
+    assert.equal(result.url, undefined);
+  }
+  // localhost: every address it resolves to must be loopback; the URL returned names the checked address.
+  const resolving = (addresses) => async (name, options) => { assert.equal(name, "localhost"); assert.deepEqual(options, { all: true }); return addresses; };
+  assert.deepEqual(await loopbackEndpoint("http://localhost:8545", { lookup: resolving([{ address: "127.0.0.1", family: 4 }]) }), { loopback: true, url: "http://127.0.0.1:8545" });
+  assert.deepEqual(await loopbackEndpoint("http://localhost:8545/rpc", { lookup: resolving([{ address: "::1", family: 6 }, { address: "127.0.0.1", family: 4 }]) }), { loopback: true, url: "http://127.0.0.1:8545/rpc" });
+  assert.deepEqual(await loopbackEndpoint("https://localhost", { lookup: resolving([{ address: "::1", family: 6 }]) }), { loopback: true, url: "https://[::1]" });
+  assert.deepEqual(await loopbackEndpoint("http://localhost:1", { lookup: resolving([{ address: "127.9.9.9", family: 4 }]) }), { loopback: true, url: "http://127.9.9.9:1" });
+  for (const [addresses, pattern] of [
+    [[{ address: "93.184.216.34", family: 4 }], /localhost resolves to 93\.184\.216\.34, which is not loopback/],
+    // One public address among loopback ones is enough to refuse: the request could go to it.
+    [[{ address: "127.0.0.1", family: 4 }, { address: "10.0.0.5", family: 4 }], /localhost resolves to 10\.0\.0\.5, which is not loopback/],
+    [[{ address: "127.0.0.1", family: 4 }, { address: "2001:db8::1", family: 6 }], /2001:db8::1, which is not loopback/],
+    [[{ address: "::ffff:127.0.0.1", family: 6 }], /not loopback/],
+    [[{ address: "127.0.0.1", family: 6 }], /not loopback/],
+    [[{ address: "127.0.0.1" }], /not loopback/],
+    [[], /localhost resolves to no address/],
+    [null, /localhost resolves to no address/],
+  ]) {
+    const result = await loopbackEndpoint("http://localhost:8545", { lookup: resolving(addresses) });
+    assert.equal(result.loopback, false, JSON.stringify(addresses));
+    assert.match(result.reason, pattern);
+  }
+  const failing = await loopbackEndpoint("http://localhost:8545", { lookup: async () => { throw new Error("ENOTFOUND localhost"); } });
+  assert.deepEqual(failing, { loopback: false, reason: "localhost could not be resolved (ENOTFOUND localhost)" });
+
+  // The command line's endpoints: localhost is pinned in the options forge and the tool read; a second endpoint
+  // that is the same loopback address and port under another name is not a second endpoint.
+  const local = resolving([{ address: "127.0.0.1", family: 4 }]);
+  const options = { rpc: "http://localhost:8545" };
+  assert.deepEqual(await resolveEndpoints(options, { lookup: local }), { loopback: true, url: "http://127.0.0.1:8545" });
+  assert.equal(options.rpc, "http://127.0.0.1:8545");
+  const remote = { rpc: "https://rpc.example.org", rpc2: "https://other.example.org" };
+  assert.equal((await resolveEndpoints(remote, { lookup: never })).loopback, false);
+  assert.deepEqual(remote, { rpc: "https://rpc.example.org", rpc2: "https://other.example.org" });
+  await assert.rejects(resolveEndpoints({ rpc: "http://localhost:8545", rpc2: "http://127.0.0.1:8545" }, { lookup: local }), /--rpc2 must be a different endpoint from --rpc \(both name the same loopback address and port\)/);
+  await assert.rejects(resolveEndpoints({ rpc: "http://127.0.0.1:8545", rpc2: "http://127.0.0.1:8545" }, { lookup: never }), /--rpc2 must be a different endpoint from --rpc$/);
+  const pair = { rpc: "http://127.0.0.1:8545", rpc2: "http://localhost:8546" };
+  await resolveEndpoints(pair, { lookup: local });
+  assert.deepEqual(pair, { rpc: "http://127.0.0.1:8545", rpc2: "http://127.0.0.1:8546" });
+});
+
+test("R369-15: a loopback endpoint that redirects is refused by the transport; the redirect target is never contacted", async () => {
+  // Two loopback servers: the first answers every request with a redirect to the second, which stands in for a
+  // public host (nothing outside loopback is contacted by this test) and counts what reaches it.
+  let reached = 0;
+  const target = createServer((req, res) => { reached += 1; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0xab162" })); });
+  await new Promise((resolve) => target.listen(0, "127.0.0.1", resolve));
+  const servers = [target];
+  try {
+    for (const status of [301, 302, 303, 307, 308]) {
+      const redirecting = createServer((req, res) => { res.writeHead(status, { location: `http://127.0.0.1:${target.address().port}/` }); res.end(); });
+      await new Promise((resolve) => redirecting.listen(0, "127.0.0.1", resolve));
+      servers.push(redirecting);
+      const url = `http://127.0.0.1:${redirecting.address().port}`;
+      assert.deepEqual(await loopbackEndpoint(url), { loopback: true, url });
+      await assert.rejects(createRpcTransport(url, { timeoutMs: 5_000 })("eth_chainId", []), undefined, `status ${status}`);
+    }
+    assert.equal(reached, 0);
+    // The target itself answers when asked directly: the refusal above was the redirect, not a dead server.
+    assert.equal(await createRpcTransport(`http://127.0.0.1:${target.address().port}`, { timeoutMs: 5_000 })("eth_chainId", []), "0xab162");
+    assert.equal(reached, 1);
+  } finally {
+    for (const server of servers) { server.closeAllConnections?.(); await new Promise((resolve) => server.close(resolve)); }
+  }
 });
