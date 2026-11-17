@@ -43,6 +43,34 @@ Batching with MultiSend would be safe, but it is not deployed. The router needs 
 
 6. Run the monitor. `safe_allowance` and `lp_in_pair` must be OK at latest. Book the result only when finalized.
 
+## When Bloch Inc is the owner's plain fee address
+
+Owner decision of 2026-11-17: on the Bloch L2 DEX Bloch Inc may be the owner's plain address
+`0x775a993f09bd80aecf8f8c2ade0c84158e3a0544` (pinned in the gate file as that address with the empty-code hash
+and no Safe pin). There is then no Safe transaction, no typed data and nothing to assemble; the same two calls
+are sent by that address itself. The rule above does not change: **never `transfer` + `burn`.**
+
+1. Check first, as above. The monitor's `owner_fee_address` rows must be OK (no code, no EIP-7702 delegation).
+2. Plan. It reads at `latest`, sends nothing, and refuses if the address has code at that block:
+
+   ```
+   node scripts/ops/dex-fee-redeem.mjs plan --config deployments/mainnet/finality-gate.mainnet.json --rpc http://127.0.0.1:18955 --out fee-redemption
+   ```
+
+   - The decision is `send-from-the-owner-address`. The plan writes `owner-tx-1.json` (`approve` of the router for
+     exactly the shares; left out when the allowance is already enough) and `owner-tx-2.json` (`removeLiquidity`
+     to the address, with minimums, 1% slippage by default, and a deadline, 24 h by default), and prints one
+     `cast send <to> <data>` line for each.
+   - `assemble` refuses this Bloch Inc by name.
+
+3. Compare `to` and `data` of each file with the printed line, then send them in order from the fee address
+   with the owner's own wallet, the second only after the first is mined. Between them only an allowance
+   exists, and nobody but the address can use it through the router.
+4. Run the monitor. `safe_allowance` and `lp_in_pair` must be OK at latest. Book the result only when finalized.
+
+Any other plain address is refused by the tool: only the pinned one is ever a plain signer, and every other
+Bloch Inc must carry its Safe pin.
+
 ## What to expect
 
 - **Remainder.** The burn mints the pending fee first, and those new shares stay in the Safe for the next redemption. So a "full" redemption can leave LP shares in the Safe.
@@ -63,3 +91,9 @@ Batching with MultiSend would be safe, but it is not deployed. The router needs 
 ## Tested
 
 `rehearse-ops.sh`: 2 of 5 refused by `assemble`; 3 of 5 EIP-712 signatures from `cast wallet sign --data --from-file` with throwaway keys executed through the real Safe v1.4.1; allowance back to 0, no shares in the pair. A hardware wallet was **not** tested.
+
+The owner's-address form: `scripts/ops/r19-owner-fee-address.test.mjs` (the two planned calls decoded, the
+recipient, the minimums, refusal of a delegated address) and
+`BLOCH_INC_MODE=owner-eoa scripts/staging/rehearse-deploy-anvil.sh <revision> 700770|700771 <port>`: the planned
+transactions sent from the address by anvil impersonation, the fee received, allowance 0, no shares in the
+pair, a plan for a delegated address refused. The owner's real wallet was **not** tested.

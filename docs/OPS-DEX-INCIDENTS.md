@@ -143,6 +143,12 @@ If USDC itself depegged while the bridge is sound, bUSDC tracks USDC: the pool r
 
 1. Compare with the other backend and a public RPC. If only one disagrees, that node is bad; take it out of the gateway.
 2. If `safe_pinned` differs everywhere: owners, threshold, guard or module changed. That took 3 of 5 signatures. Treat it as a key compromise until every owner has confirmed. Do not sign anything. The fee recipient is immutable, so the fee follows the Safe.
+   When Bloch Inc is the owner's plain fee address the row is `owner_fee_address` instead: CRIT means the
+   address has code at that block, which for a plain account is an EIP-7702 delegation signed with its key.
+   Whoever controls the delegate can move what the address holds, the fee shares included. Do not redeem
+   (`dex-fee-redeem.mjs plan` refuses); from a clean machine, clear the delegation with the wallet that
+   holds the key, and treat the key as exposed if the owner did not sign that delegation. The fee recipient
+   is immutable: it cannot be moved to another address.
 3. Contract code cannot change on this chain. A difference on every node means a chain-level fault: stop the UI and escalate to the L2 runbook.
 
 ## Stranded LP shares

@@ -27,6 +27,7 @@ import {
   parseArgs, readBlock, readGate, readPair, recoverAddress, stringify,
 } from "./dex-ops-lib.mjs";
 import { isMain } from "../staging/is-main.mjs";
+import { OWNER_FEE_EOA } from "../staging/finality-gate.mjs";
 
 export function safeTxTypedData({ chainId, safe, to, data, nonce }) {
   return {
@@ -77,12 +78,41 @@ export function redemptionMinimums({ liquidity, totalSupply, pending, reserve0, 
   return { amount0, amount1, min0: (amount0 * keep) / 10_000n, min1: (amount1 * keep) / 10_000n };
 }
 
-async function plan(args, deployment) {
-  const request = createRequest(args.rpc);
+/// Who signs a redemption: "safe" (the pinned Bloch Inc Safe: typed data, 3 of 5, execTransaction) or
+/// "owner-address" (owner decision 2026-11-17: Bloch Inc is the owner's plain fee address, constant OWNER_FEE_EOA,
+/// pinned without a Safe; that address sends the same two calls itself). Only that exact address is ever a plain
+/// signer; any other Bloch Inc must carry its Safe pin, as before, or the tool refuses.
+export function redeemSigner(deployment) {
+  const address = deployment?.safe?.address;
+  if (typeof address === "string" && address.toLowerCase() === OWNER_FEE_EOA) {
+    if (address !== OWNER_FEE_EOA || deployment.safe.safe !== undefined || deployment.feeTo !== OWNER_FEE_EOA) {
+      throw new Error(`the gate file names the owner's plain fee address ${OWNER_FEE_EOA} as Bloch Inc, but not exactly (lower case, no Safe pin, fee recipient that address): refused`);
+    }
+    return "owner-address";
+  }
+  if (!deployment?.safe?.safe || !Array.isArray(deployment.safe.safe.owners)) throw new Error(`Bloch Inc ${address} has no Safe pin in the gate file: this tool signs through the pinned Safe only (the only plain address accepted is the owner's ${OWNER_FEE_EOA})`);
+  return "safe";
+}
+
+/// `assemble` packs Safe owner signatures; with the owner's plain fee address there is nothing to assemble.
+export function refuseAssembleForOwnerAddress(deployment) {
+  if (redeemSigner(deployment) === "owner-address") {
+    throw new Error(`Bloch Inc is the owner's plain fee address ${OWNER_FEE_EOA}: there is no Safe transaction to assemble. Run plan; the address sends the planned approve and then the one removeLiquidity itself (docs/OPS-FEE-REDEMPTION.md), never a transfer to the pair followed by burn as two transactions`);
+  }
+}
+
+export async function plan(args, deployment, request = createRequest(args.rpc)) {
+  const signer = redeemSigner(deployment);
   await checkIdentity(request, deployment);
   const latest = await readBlock(request, "latest");
   const at = blockRef(latest);
   const safe = deployment.feeTo;
+  if (signer === "owner-address") {
+    // The plain account must still be plain at the block the plan is read at: code there (an EIP-7702 delegation
+    // designator is code) could act for the fee recipient, and the monitor's owner_fee_address row would be CRIT.
+    const code = await request("eth_getCode", [safe, at]);
+    if (code !== "0x") throw new Error(`the owner's fee address ${safe} has code${typeof code === "string" && code.toLowerCase().startsWith("0xef0100") ? " (an EIP-7702 delegation)" : ""} at block ${latest.number}: do not sign; remove the delegation first`);
+  }
   const pair = deployment.pairs.find((p) => !args.pair || p.address === args.pair.toLowerCase());
   if (!pair) throw new Error("the pair is not in the gate file");
   const state = await readPair(request, pair, at);
@@ -110,7 +140,7 @@ async function plan(args, deployment) {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600 * Number(args["deadline-h"] ?? 24));
   const router = deployment.router.address;
   const allowance = await call(request, pair.address, "allowance", [safe, router], at);
-  const nonce = await call(request, safe, "nonce", [], at);
+  const nonce = signer === "safe" ? await call(request, safe, "nonce", [], at) : null;
 
   const steps = [];
   if (allowance < liquidity) {
@@ -123,6 +153,30 @@ async function plan(args, deployment) {
   });
 
   mkdirSync(args.out, { recursive: true });
+  if (signer === "owner-address") {
+    // Plain transactions from the owner's address, in this order; the second only after the first is mined. Between
+    // them only an allowance exists, which nobody but that address can use through the router (as for the Safe).
+    const transactions = steps.map((step, index) => {
+      const path = join(args.out, `owner-tx-${index + 1}.json`);
+      const tx = { from: safe, to: step.to, value: "0", data: step.data, chainId: deployment.chainId, description: step.description };
+      writeFileSync(path, `${stringify(tx)}\n`);
+      return { order: index + 1, description: step.description, tx: path, command: `cast send ${step.to} ${step.data} --rpc-url ${args.rpc} --from ${safe} <the signer option of the owner's wallet>` };
+    });
+    console.log(stringify({
+      decision: "send-from-the-owner-address",
+      signer: safe,
+      block: latest.number,
+      pair: pair.address,
+      liquidity,
+      heldByBlochInc: held,
+      pendingLiquidityLeft: position.pendingProtocolLiquidity,
+      expected: { token0: pair.token0, amount0: minimums.amount0, token1: pair.token1, amount1: minimums.amount1 },
+      minimum: { amount0: minimums.min0, amount1: minimums.min1 },
+      deadline,
+      transactions,
+    }));
+    return OK;
+  }
   const files = [];
   for (const [index, step] of steps.entries()) {
     const txNonce = nonce + BigInt(index);
@@ -187,6 +241,7 @@ async function main() {
     if (!args.rpc || !args.out) throw new Error("plan needs --rpc and --out");
     return plan(args, deployment);
   }
+  refuseAssembleForOwnerAddress(deployment);
   const tx = JSON.parse(readFileSync(args.tx, "utf8"));
   if (tx.safe !== deployment.feeTo) throw new Error("this transaction is for another Safe");
   const assembled = await assembleSignatures({

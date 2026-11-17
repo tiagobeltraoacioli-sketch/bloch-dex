@@ -178,3 +178,84 @@ test("generated environment and commands retain literal paths and URL query argu
     assert.equal(words[words.indexOf("--eth-rpc") + 1], form.bridgeStatus.ethRpcUrl);
   }
 });
+
+// Owner decision of 2026-11-17: Bloch Inc on the Bloch L2 DEX is the owner's plain fee address, no Safe.
+const OWNER_FEE_EOA = "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544";
+const EMPTY_CODE_HASH = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+const ownerPin = { address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH };
+const eoaForm = (change = () => {}) => { const f = filled(); f.fromEarlierSteps.safeOwners = []; change(f); return f; };
+
+test("Bloch Inc as the owner's plain fee address: exactly that pin, no Safe owners, one role per key", (context) => {
+  const { problems, values } = check(eoaForm(), { blochInc: ownerPin });
+  assert.deepEqual(problems, []);
+  assert.equal(values.safe, OWNER_FEE_EOA);
+  assert.deepEqual(values.owners, []);
+  assert.deepEqual(values.dexConfig.blochInc, ownerPin);
+  assert.match(values.dexConfigSha256, /^0x[0-9a-f]{64}$/);
+  for (const [form, pin, pattern] of [
+    // The five Safe owners make no sense with a plain address: listing them is a contradiction, refused.
+    [filled(), ownerPin, /safeOwners must be empty .*owner's plain fee address/],
+    // Any other pin than exactly {address, empty code hash}.
+    [eoaForm(), { ...ownerPin, codeHash: H }, /--bloch-inc names the owner's plain fee address: it must be exactly \{"address": "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544", "codeHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"\}/],
+    [eoaForm(), { ...ownerPin, safe: blochInc.safe }, /--bloch-inc names the owner's plain fee address: it must be exactly/],
+    // The checksummed spelling is the same address but not the exact pin every other tool requires: refused here too.
+    [eoaForm(), { ...ownerPin, address: "0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544" }, /--bloch-inc names the owner's plain fee address: it must be exactly/],
+    [eoaForm(), { ...ownerPin, extra: 1 }, /--bloch-inc names the owner's plain fee address: it must be exactly/],
+    // A form that lists owners for the owner's pin, or leaves the list out, is a mismatch.
+    [eoaForm((f) => { delete f.fromEarlierSteps.safeOwners; }), ownerPin, /safeOwners must be empty .*owner's plain fee address/],
+    [eoaForm((f) => { f.fromEarlierSteps.safeOwners = [a(0x101)]; }), ownerPin, /safeOwners must be empty .*owner's plain fee address/],
+    // Another plain address is never Bloch Inc: with no owner list the Safe rule refuses it, and with five owners
+    // deploy-dex's own validation refuses the empty-code pin (only the owner's address may have no code).
+    [eoaForm(), { address: a(0xe0a), codeHash: EMPTY_CODE_HASH }, /safeOwners must list exactly 5 distinct nonzero Safe owners/],
+    [filled(), { address: a(0xe0a), codeHash: EMPTY_CODE_HASH }, /safeOwners differs from the owners in --bloch-inc/],
+    [filled(), { address: a(0xe0a), codeHash: EMPTY_CODE_HASH, safe: blochInc.safe }, /deploy-dex validate would refuse: deploy config: blochInc must be a multisig contract, not an externally owned account \(the only plain address accepted is the owner.s 0x775a993f09bd80aecf8f8c2ade0c84158e3a0544\)/],
+    // The neighbour of the owner's address is not the owner's address.
+    [eoaForm(), { address: `${OWNER_FEE_EOA.slice(0, -1)}5`, codeHash: EMPTY_CODE_HASH }, /safeOwners must list exactly 5 distinct nonzero Safe owners/],
+    // An empty owner list without the owner's pin is refused.
+    [eoaForm(), null, /safeOwners must list exactly 5/],
+    // The depositor, the keeper and the deployer must not be the fee address.
+    [eoaForm((f) => { f.firstDepositor = OWNER_FEE_EOA; }), ownerPin, /firstDepositor equals Bloch Inc/],
+    [eoaForm((f) => { f.keeper.address = OWNER_FEE_EOA; }), ownerPin, /keeper.address must be its own hot key/],
+    [eoaForm((f) => { f.fromEarlierSteps.dexDeployer = OWNER_FEE_EOA; }), ownerPin, /each key and contract has one role/],
+  ]) {
+    const { problems: p } = check(form, { blochInc: pin });
+    assert.ok(p.some((x) => pattern.test(x)), `${pattern}: ${JSON.stringify(p)}`);
+  }
+  // apply: the env names the owner's address (no Safe plan) and the printed commands pass it, never --safe-plan.
+  const directory = mkdtempSync(join(tmpdir(), "dex-opening-eoa-"));
+  context.after(() => rmSync(directory, { recursive: true, force: true }));
+  writeFileSync(join(directory, "form.json"), JSON.stringify(eoaForm()));
+  writeFileSync(join(directory, "pin.json"), JSON.stringify(ownerPin));
+  const result = spawnSync(process.execPath, [new URL("./opening-form.mjs", import.meta.url).pathname, "apply", "--form", join(directory, "form.json"),
+    "--bloch-inc", join(directory, "pin.json"), "--out", join(directory, "out")], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  const env = readFileSync(join(directory, "out/dex-ops.env"), "utf8");
+  assert.match(env, new RegExp(`^DEX_OWNER_FEE_ADDRESS=${OWNER_FEE_EOA}$`, "m"));
+  assert.doesNotMatch(env, /DEX_SAFE_PLAN/);
+  const commands = readFileSync(join(directory, "out/OPENING-COMMANDS.md"), "utf8");
+  assert.doesNotMatch(commands, /--safe-plan/);
+  assert.match(commands, new RegExp(`dex-monitor\\.mjs .*--owner-fee-address ${OWNER_FEE_EOA}`));
+  assert.match(commands, /bloch-dex-monitor-owner-address\.service/);
+  assert.match(commands, new RegExp(`check-finality-gate-mainnet\\.mjs --config \\S+ --bridge-plan`));
+  // The derived values name which Bloch Inc the files were written for, and the written config carries the exact pin.
+  const opening = JSON.parse(readFileSync(join(directory, "out/opening.json"), "utf8"));
+  assert.deepEqual(opening.blochInc, { kind: "owner-fee-address", address: OWNER_FEE_EOA });
+  assert.deepEqual(JSON.parse(readFileSync(join(directory, "out/dex-mainnet.config.json"), "utf8")).blochInc, ownerPin);
+  // The Safe path, same command: the Safe plan in the env and in the printed commands, never the owner's option.
+  writeFileSync(join(directory, "safe-form.json"), JSON.stringify(filled()));
+  writeFileSync(join(directory, "safe-pin.json"), JSON.stringify(blochInc));
+  const safeRun = spawnSync(process.execPath, [new URL("./opening-form.mjs", import.meta.url).pathname, "apply", "--form", join(directory, "safe-form.json"),
+    "--bloch-inc", join(directory, "safe-pin.json"), "--out", join(directory, "safe-out")], { encoding: "utf8" });
+  assert.equal(safeRun.status, 0, safeRun.stderr + safeRun.stdout);
+  const safeEnv = readFileSync(join(directory, "safe-out/dex-ops.env"), "utf8");
+  assert.match(safeEnv, /^DEX_SAFE_PLAN=\/etc\/bloch-dex-ops\/safe\.plan\.json$/m);
+  assert.doesNotMatch(safeEnv, /DEX_OWNER_FEE_ADDRESS/);
+  const safeCommands = readFileSync(join(directory, "safe-out/OPENING-COMMANDS.md"), "utf8");
+  assert.doesNotMatch(safeCommands, /--owner-fee-address|bloch-dex-monitor-owner-address/);
+  assert.match(safeCommands, /dex-monitor\.mjs .*--safe-plan deployments\/mainnet\/700770\/safe\.plan\.json/);
+  assert.match(safeCommands, /check-finality-gate-mainnet\.mjs .*--safe-plan deployments\/mainnet\/700770\/safe\.plan\.json/);
+  assert.match(safeCommands, /`scripts\/ops\/systemd\/bloch-dex-monitor\.service`/);
+  assert.deepEqual(JSON.parse(readFileSync(join(directory, "safe-out/opening.json"), "utf8")).blochInc, { kind: "safe", address: blochInc.address });
+  // The Safe path still writes the Safe plan.
+  assert.match(readFileSync(new URL("./systemd/dex-monitor.env.example", import.meta.url), "utf8"), /^DEX_SAFE_PLAN=/m);
+});

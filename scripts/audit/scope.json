@@ -62,6 +62,7 @@
         "scripts/ops/systemd/bloch-dex-skim-keeper.service",
         "scripts/ops/systemd/bloch-dex-skim-keeper.timer",
         "scripts/ops/systemd/bloch-dex-monitor.service",
+        "scripts/ops/systemd/bloch-dex-monitor-owner-address.service",
         "scripts/ops/systemd/bloch-dex-monitor.timer",
         "scripts/ops/systemd/dex-monitor.env.example"
       ]

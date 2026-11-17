@@ -17,6 +17,9 @@
 //
 //   node scripts/ops/dex-monitor.mjs --config finality-gate.mainnet.json
 //        --safe-plan safe.plan.json --rpc http://127.0.0.1:18955 [--expect-seeded]
+//        (or --owner-fee-address 0x775a…0544 instead of --safe-plan when Bloch Inc is the owner's plain fee
+//         address, owner decision 2026-11-17: the address must then have no code and no EIP-7702 delegation at
+//         latest and at finalized, row owner_fee_address; exactly one of the two, checked against the gate file)
 //        [--lp-recipient 0x… [--lp-min-bps 5000] [--lp-min-shares N], required with --expect-seeded]
 //        [--keeper-state /var/lib/…/state.json] [--rehearsal] [--ref-price 25.5] [--json]
 //        [--eth-rpc <Ethereum RPC> --bridge-vault 0x… [--bridge-vault-code-hash 0x…] [--bridge-token 0x…]]
@@ -24,7 +27,8 @@
 
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { evaluateFinalityGate, verifySafe } from "../staging/finality-gate.mjs";
+import { evaluateFinalityGate, OWNER_FEE_EOA, verifySafe } from "../staging/finality-gate.mjs";
+import { EMPTY_CODE_HASH, stableJson } from "../staging/dex-deploy-config.mjs";
 import { KEEPER_PENDING_TIMEOUT_SECONDS, keeperCharge, keeperNeedsReconciliation, keeperWindow } from "./keeper-accounting.mjs";
 import {
   CRIT, CallReverted, LEVEL_NAMES, OK, RpcError, UNKNOWN, WARN,
@@ -80,6 +84,9 @@ export async function runMonitor(gate, options, request, deps = {}) {
   // Which gate judges this run (review R309-2P-13): the mainnet gate, or the generic one of a rehearsal. The generic
   // gate on the pinned mainnet genesis is a private rehearsal's business only, and every report says so with a WARN.
   if (options.gateMode) add("gate_mode", options.gateMode.level, options.gateMode.detail);
+  // Which Bloch Inc this run was told to expect (the Safe plan, or the owner's plain fee address), checked against
+  // the gate file before any node is contacted (blochIncMode). Every report names it.
+  if (options.blochInc) add("bloch_inc", options.blochInc.level, options.blochInc.detail);
   const identity = await guarded("rpc_identity", async () => {
     await checkIdentity(request, deployment);
     add("rpc_identity", OK, `chain ${deployment.chainId}, genesis ${deployment.genesisHash}`);
@@ -110,6 +117,22 @@ export async function runMonitor(gate, options, request, deps = {}) {
 
   const views = finalized ? [["latest", latest], ["finalized", finalized]] : [["latest", latest]];
   for (const [tag, block] of views) {
+    if (isOwnerFeeAddress(deployment.safe.address)) {
+      // Owner decision 2026-11-17: Bloch Inc is the owner's plain fee address. Only that exact address, pinned as
+      // {address, empty-code hash} with no Safe pin, takes this branch; every other Bloch Inc is judged by the Safe
+      // rules below, unchanged. The address must stay a plain account at both views: code there (an EIP-7702
+      // delegation designator 0xef0100 || delegate is code) would let that code act for the fee recipient. CRIT.
+      await guarded(`owner_fee_address[${tag}]`, async () => {
+        if (stableJson(deployment.safe) !== stableJson(OWNER_FEE_PIN)) throw new Error(`the gate's Bloch Inc pin names the owner's fee address ${OWNER_FEE_EOA} but is not exactly {address, codeHash: the empty-code hash}`);
+        if (deployment.feeTo !== OWNER_FEE_EOA) throw new Error(`the gate's fee recipient ${deployment.feeTo} is not the owner's fee address ${OWNER_FEE_EOA}`);
+        const code = await request("eth_getCode", [OWNER_FEE_EOA, blockRef(block)]);
+        if (typeof code !== "string" || !/^0x(?:[0-9a-fA-F]{2})*$/.test(code)) throw new RpcError(`eth_getCode returned malformed code for ${OWNER_FEE_EOA}`);
+        if (code.toLowerCase().startsWith("0xef0100")) throw new Error(`the owner's fee address ${OWNER_FEE_EOA} is EIP-7702 delegated (code ${code.toLowerCase().slice(0, 48)}): it must stay a plain account`);
+        if (code !== "0x") throw new Error(`the owner's fee address ${OWNER_FEE_EOA} has code (${(code.length - 2) / 2} bytes): it must stay a plain account`);
+        add(`owner_fee_address[${tag}]`, OK, `${OWNER_FEE_EOA}: no code, no EIP-7702 delegation, at block ${block.number}`);
+      });
+      continue;
+    }
     await guarded(`safe_pinned[${tag}]`, async () => {
       const at = blockRef(block);
       const proxy = await codeHash(request, deployment.safe.address, at);
@@ -454,7 +477,9 @@ async function gateFor(args) {
   const bridgeTokens = bridgeTokensFrom(args);
   if (args.rehearsal) return (gate, request) => evaluateFinalityGate(gate, request, { bridgeTokens });
   const { evaluateMainnetGate } = await import("../staging/check-finality-gate-mainnet.mjs");
-  const safePlan = JSON.parse(readFileSync(args["safe-plan"], "utf8"));
+  // --owner-fee-address (owner decision 2026-11-17): no Safe plan; the mainnet gate then requires the gate's
+  // Bloch Inc pin to be exactly the owner's plain fee address (checkPinned), else it refuses.
+  const safePlan = args["safe-plan"] ? JSON.parse(readFileSync(args["safe-plan"], "utf8")) : null;
   return (gate, request) => evaluateMainnetGate(gate, safePlan, request, bridgeTokens);
 }
 
@@ -472,6 +497,32 @@ export function gateMode(args, gate, pinnedGenesis = MAINNET_PINS.l2.genesisHash
   return { level: WARN, detail: "REHEARSAL MODE on the pinned mainnet genesis: the generic gate ran; the pinned Safe build, the bridge deployment record, the launch policy and the bUSDC exit check were NOT required. Never run a production monitor like this" };
 }
 
+/// The owner's plain fee address as a Bloch Inc pin (owner decision 2026-11-17): exactly this, nothing else.
+export const OWNER_FEE_PIN = Object.freeze({ address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH });
+const isOwnerFeeAddress = (address) => typeof address === "string" && address.toLowerCase() === OWNER_FEE_EOA;
+
+/// Which Bloch Inc the command line names, checked against the gate file, as a report row. A mismatch is a
+/// configuration error (the monitor exits UNKNOWN with the reason before any node is contacted), in both directions:
+///   --owner-fee-address with a gate whose Bloch Inc is anything but exactly the owner's pin {address, empty-code
+///     hash} (another address, a Safe pin, another code hash, a capitalised spelling): refused;
+///   --safe-plan with a gate whose Bloch Inc is the owner's plain fee address: refused (one Bloch Inc, never two).
+/// With neither (a rehearsal only; monitorArguments requires exactly one otherwise) the gate file decides.
+export function blochIncMode(args, gate) {
+  const pin = gate?.deployment?.roles?.blochInc;
+  const gateIsOwner = isOwnerFeeAddress(pin?.address);
+  if (args["owner-fee-address"]) {
+    if (!gateIsOwner) throw new Error(`--owner-fee-address is given, but the gate file's Bloch Inc is ${pin?.address ?? "missing"}, not the owner's plain fee address ${OWNER_FEE_EOA}: for any other Bloch Inc use --safe-plan (bloch-dex-monitor.service)`);
+    if (stableJson(pin) !== stableJson(OWNER_FEE_PIN)) throw new Error(`--owner-fee-address is given, but the gate file's Bloch Inc pin is not exactly {"address": "${OWNER_FEE_EOA}", "codeHash": "${EMPTY_CODE_HASH}"} (lower case, no Safe pin)`);
+    if (gate.deployment.feeTo !== OWNER_FEE_EOA) throw new Error(`--owner-fee-address is given, but the gate file's fee recipient is ${gate.deployment.feeTo}, not ${OWNER_FEE_EOA}`);
+    return { level: OK, detail: `Bloch Inc is the owner's plain fee address ${OWNER_FEE_EOA} (no Safe): it must have no code and no EIP-7702 delegation` };
+  }
+  if (args["safe-plan"]) {
+    if (gateIsOwner) throw new Error(`--safe-plan is given, but the gate file's Bloch Inc is the owner's plain fee address ${OWNER_FEE_EOA}: use --owner-fee-address ${OWNER_FEE_EOA} (bloch-dex-monitor-owner-address.service), without a Safe plan`);
+    return { level: OK, detail: `Bloch Inc is the Safe ${pin?.address ?? "(missing in the gate file)"}, judged against the reviewed Safe plan` };
+  }
+  return { level: OK, detail: gateIsOwner ? `rehearsal: Bloch Inc is the owner's plain fee address ${OWNER_FEE_EOA}, from the gate file` : `rehearsal: Bloch Inc is the multisig ${pin?.address ?? "(missing in the gate file)"}, from the gate file` };
+}
+
 /// --keeper-max-tx: the keeper's own --max-tx, so keeper_budget judges the count the keeper is run with.
 function keeperMaxTx(value) {
   if (value === undefined) return undefined;
@@ -479,9 +530,9 @@ function keeperMaxTx(value) {
   return Number(value);
 }
 
-const MONITOR_OPTIONS = ["config", "rpc", "safe-plan", "bridge-plan", "bridge-record", "lp-recipient", "lp-min-bps", "lp-min-shares", "ref-price",
+const MONITOR_OPTIONS = ["config", "rpc", "safe-plan", "owner-fee-address", "bridge-plan", "bridge-record", "lp-recipient", "lp-min-bps", "lp-min-shares", "ref-price",
   "keeper-state", "keeper-max-tx", "keeper-budget-wei", "keeper-max-age-s", "eth-rpc", "bridge-vault", "bridge-vault-code-hash", "bridge-token"];
-const USAGE = "usage: dex-monitor.mjs --config <gate.json> --rpc <url> --safe-plan <safe.plan.json> --bridge-plan <busdc.plan.json> --bridge-record <busdc.record.json> --eth-rpc <Ethereum RPC> --bridge-vault 0x<vault> --bridge-vault-code-hash 0x<hash> [--expect-seeded --lp-recipient 0x<address> --lp-min-shares <N, 0 = no floor> [--lp-min-bps 5000]] [--keeper-state <state.json> --keeper-max-tx <N> --keeper-budget-wei <wei> [--keeper-max-age-s 900]] [--ref-price P] [--json]; --rehearsal: generic gate, the Safe plan, bridge files, Ethereum RPC and vault become optional";
+const USAGE = "usage: dex-monitor.mjs --config <gate.json> --rpc <url> (--safe-plan <safe.plan.json> | --owner-fee-address 0x775a993f09bd80aecf8f8c2ade0c84158e3a0544) --bridge-plan <busdc.plan.json> --bridge-record <busdc.record.json> --eth-rpc <Ethereum RPC> --bridge-vault 0x<vault> --bridge-vault-code-hash 0x<hash> [--expect-seeded --lp-recipient 0x<address> --lp-min-shares <N, 0 = no floor> [--lp-min-bps 5000]] [--keeper-state <state.json> --keeper-max-tx <N> --keeper-budget-wei <wei> [--keeper-max-age-s 900]] [--ref-price P] [--json]; --rehearsal: generic gate, the Safe plan, bridge files, Ethereum RPC and vault become optional";
 
 /// The command line, checked as a whole before anything is read. Throws with the reason: the monitor then exits
 /// UNKNOWN. Nothing a unit can leave empty or misspell may turn a check off (review R309-C1, R309-C2, R309-C3).
@@ -494,8 +545,13 @@ export function monitorArguments(argv) {
   need(Boolean(args["bridge-plan"]) === Boolean(args["bridge-record"]), "--bridge-plan and --bridge-record go together");
   need(Boolean(args["eth-rpc"]) === Boolean(args["bridge-vault"]), "--eth-rpc and --bridge-vault go together: without both the bUSDC exit check cannot run");
   need(!(args["bridge-vault-code-hash"] || args["bridge-token"]) || args["bridge-vault"], "--bridge-vault-code-hash and --bridge-token need --bridge-vault");
+  // Bloch Inc: the Safe plan or the owner's plain fee address, never both; the address is the pinned one only
+  // (any spelling of its 20 bytes; blochIncMode then requires the gate file to pin it in lower case).
+  need(!(args["safe-plan"] && args["owner-fee-address"]), "--safe-plan (Bloch Inc is the Safe) and --owner-fee-address (Bloch Inc is the owner's plain fee address) exclude each other: one Bloch Inc, never two");
+  need(args["owner-fee-address"] === undefined || isOwnerFeeAddress(args["owner-fee-address"]), `--owner-fee-address must be the owner's pinned fee address ${OWNER_FEE_EOA}: no other plain address is ever Bloch Inc`);
   if (!args.rehearsal) {
-    need(args["safe-plan"] && args["bridge-plan"], "--safe-plan, --bridge-plan and --bridge-record are required (the mainnet gate)");
+    // The old sentence is kept word for word (R309-C2 tests name it); the owner's-address form is added to it.
+    need((args["safe-plan"] || args["owner-fee-address"]) && args["bridge-plan"], `--safe-plan, --bridge-plan and --bridge-record are required (the mainnet gate); when Bloch Inc is the owner's plain fee address, --owner-fee-address ${OWNER_FEE_EOA} replaces --safe-plan`);
     need(args["eth-rpc"], "--eth-rpc and --bridge-vault are required: held bUSDC exits are a CRIT only this check can show");
     need(args["bridge-vault-code-hash"], "--bridge-vault-code-hash is required: the exit check must read the reviewed vault, not whatever code is at that address");
   }
@@ -523,9 +579,10 @@ if (isMain(import.meta.url)) {
     const request = createRequest(args.rpc);
     const gateFile = readGate(args.config);
     const mode = gateMode(args, gateFile);
+    const blochInc = blochIncMode(args, gateFile);
     const result = await runMonitor(
       gateFile,
-      { gateMode: mode, expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"], keeperMaxTx: keeperMaxTx(args["keeper-max-tx"]),
+      { gateMode: mode, blochInc, expectSeeded: Boolean(args["expect-seeded"]), lpRecipient: args["lp-recipient"], lpMinBps: args["lp-min-bps"], lpMinShares: args["lp-min-shares"], refPrice: args["ref-price"], keeperState: args["keeper-state"], keeperMaxTx: keeperMaxTx(args["keeper-max-tx"]),
         keeperBudgetWei: args["keeper-budget-wei"] === undefined ? undefined : BigInt(args["keeper-budget-wei"]),
         keeperMaxAgeSeconds: args["keeper-max-age-s"] === undefined ? undefined : Number(args["keeper-max-age-s"]),
         ethRequest: args["eth-rpc"] ? createRequest(args["eth-rpc"]) : undefined, bridgeVault: args["bridge-vault"],

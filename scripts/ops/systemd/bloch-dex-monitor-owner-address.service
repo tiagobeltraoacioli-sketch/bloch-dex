@@ -1,0 +1,27 @@
+[Unit]
+Description=Read-only health check of the postern-dex deployment on Bloch L2 (Bloch Inc = the owner's plain fee address)
+# Owner decision of 2026-11-17: install this unit INSTEAD of bloch-dex-monitor.service when Bloch Inc is the owner's
+# plain fee address; it differs only in --owner-fee-address ${DEX_OWNER_FEE_ADDRESS} in place of --safe-plan (a test
+# keeps the two units otherwise identical). The monitor refuses any other address there.
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=bloch-dex-ops
+EnvironmentFile=/etc/bloch-dex-ops/env
+ExecStart=/usr/bin/env node ${DEX_OPS_ROOT}/scripts/ops/dex-monitor.mjs --config ${DEX_GATE} --owner-fee-address ${DEX_OWNER_FEE_ADDRESS} --bridge-plan ${DEX_BUSDC_BRIDGE_PLAN} --bridge-record ${DEX_BUSDC_BRIDGE_RECORD} --rpc ${DEX_RPC} --expect-seeded --lp-recipient ${DEX_LP_RECIPIENT} --lp-min-shares ${DEX_LP_MIN_SHARES} --keeper-state /var/lib/bloch-dex-keeper/state.json --keeper-max-tx ${DEX_KEEPER_MAX_TX} --keeper-budget-wei ${DEX_KEEPER_BUDGET_WEI} --eth-rpc ${DEX_ETH_RPC} --bridge-vault ${DEX_BUSDC_VAULT} --bridge-vault-code-hash ${DEX_BUSDC_VAULT_CODE_HASH} --json
+# Every variable expanded above must be set in the environment file: an unset or empty one becomes an empty argument and
+# the monitor then stops with UNKNOWN and the reason (exit 3, a failed unit, an empty report), never with a check
+# silently left out.
+# This unit sends nothing. The report goes to a file that bloch-l2-evm l2_monitor.py reads with
+# --report dex=/var/lib/bloch-dex-monitor/report.json:900 and alerts on, with its deduplication; a stale or empty
+# file there is how a dead or failing DEX monitor is noticed. CRIT is a success here because it is in the report.
+StateDirectory=bloch-dex-monitor
+StateDirectoryMode=0755
+UMask=0022
+StandardOutput=truncate:/var/lib/bloch-dex-monitor/report.json
+SuccessExitStatus=0 1 2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true

@@ -20,6 +20,16 @@ Read-only: it holds no key and its RPC client refuses any method outside a read 
 node scripts/ops/dex-monitor.mjs --config deployments/mainnet/finality-gate.mainnet.json --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan deployments/mainnet/busdc.plan.json --bridge-record deployments/mainnet/busdc.record.json --rpc http://127.0.0.1:18955 --expect-seeded --lp-recipient TBD-owner --lp-min-shares TBD-owner --keeper-state /var/lib/bloch-dex-keeper/state.json --keeper-max-tx 48 --keeper-budget-wei 50000000000000000 --eth-rpc TBD-owner --bridge-vault TBD-owner --bridge-vault-code-hash TBD-owner
 ```
 
+When Bloch Inc is the owner's plain fee address (owner decision of 2026-11-17; the gate file pins
+`0x775a993f09bd80aecf8f8c2ade0c84158e3a0544` with the empty-code hash and no Safe pin), `--safe-plan <file>` is
+replaced by `--owner-fee-address 0x775a993f09bd80aecf8f8c2ade0c84158e3a0544`, and the unit is
+`scripts/ops/systemd/bloch-dex-monitor-owner-address.service` (`DEX_OWNER_FEE_ADDRESS` in the environment file
+instead of `DEX_SAFE_PLAN`; the two units differ in nothing else, and a test keeps it so). Exactly one of the
+two options is given. The option never names another address, and it must agree with the gate file in both
+directions: `--owner-fee-address` with a gate file whose Bloch Inc is anything but exactly that pin, or
+`--safe-plan` with a gate file whose Bloch Inc is the owner's address, stops the monitor with UNKNOWN before a
+node is contacted. Every report names the Bloch Inc it was run for in the `bloch_inc` row.
+
 The command line is checked as a whole before anything is read, and the monitor stops with UNKNOWN (exit 3) and the
 reason when it is not complete (round 15 review). Nothing a unit can leave empty or misspell turns a check off:
 
@@ -31,7 +41,7 @@ reason when it is not complete (round 15 review). Nothing a unit can leave empty
 - `--rehearsal` selects the generic gate and is refused for a gate file of the pinned mainnet genesis. A private
   rehearsal chain built on that genesis adds `--rehearsal-on-pinned-genesis`; every report then carries a WARN row
   `gate_mode`, so such a run is never OK. Every report names its gate in the `gate_mode` row;
-- without `--rehearsal` the Safe plan, the bridge plan and record, `--eth-rpc`, `--bridge-vault` and
+- without `--rehearsal` the Safe plan (or `--owner-fee-address`, above), the bridge plan and record, `--eth-rpc`, `--bridge-vault` and
   `--bridge-vault-code-hash` are all required: held bUSDC exits are a CRIT only that check can show;
 - `--expect-seeded` needs `--lp-recipient` and `--lp-min-shares`. The floor is a whole number of shares; an explicit
   `0` is the only way to say "no floor";
@@ -46,6 +56,8 @@ Exit status is the L2 monitor's: 0 OK, 1 WARN, 2 CRIT, 3 UNKNOWN. UNKNOWN means 
 | `l2_finalized_age` | finalized | 150 min | 240 min, or no finalized block |
 | `finality_gate` | finalized | | the gate refuses. On mainnet this is `evaluateMainnetGate`, the code that opened the gate, with the bUSDC bridge plan and record (`--bridge-plan`, `--bridge-record`): a change of the token's signers, guardians, thresholds or T is CRIT |
 | `safe_pinned[latest\|finalized]` | both | | proxy code, singleton, handler, guard, modules, owners, threshold or version differ |
+| `owner_fee_address[latest\|finalized]` (instead of `safe_pinned`, only when the gate file's Bloch Inc is the owner's plain fee address) | both | | the address has code or an EIP-7702 delegation at that block; the gate's pin is not exactly `{address, empty-code hash}`; the fee recipient is another address. A malformed code reading is UNKNOWN |
+| `bloch_inc` | | | (a row that names the Bloch Inc of this run; a mismatch with the gate file is UNKNOWN, exit 3, before any read) |
 | `contract_code` | latest | | any runtime hash or the pair init code hash differs |
 | `pair_count` | latest | more pairs than planned (DEX-03) | |
 | `preseed` | latest | unsynced donation; empty with `--expect-seeded` | synced donation (DEX-04); bricked (DEX-09) |

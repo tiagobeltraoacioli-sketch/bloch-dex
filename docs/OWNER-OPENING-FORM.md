@@ -26,6 +26,15 @@ Optional: `seed.fractionBps` (default 5000, at most 7000, the planner's limit: a
 
 `fromEarlierSteps.dexDeployer` (kit item 8), `safeOwners` (items 1-5, for the key-reuse check), `busdcToken` and `busdcCodeHash` (bridge deployment), `busdcBucketCapacity` (`10000000000`). The Safe address comes from `deploy-safe.mjs blochinc`.
 
+When Bloch Inc is the owner's plain fee address (owner decision of 2026-11-17), `--bloch-inc` is a file with
+exactly `{"address": "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544", "codeHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"}`
+(lower case, nothing else) and `safeOwners` is `[]`: there is no Safe. Owners listed with that pin, that pin
+with any other field or code hash, an empty list with any other `--bloch-inc`, or the depositor, keeper or
+deployer equal to the fee address are refused. `apply` then writes `DEX_OWNER_FEE_ADDRESS` instead of
+`DEX_SAFE_PLAN` into `dex-ops.env`, prints the gate and monitor commands without `--safe-plan`, names the unit
+`bloch-dex-monitor-owner-address.service`, and records `blochInc.kind: "owner-fee-address"` in `opening.json`.
+No other plain address is accepted. For every other Bloch Inc the rules below are unchanged.
+
 `safeOwners` must contain exactly five distinct addresses and match the owner
 set in `--bloch-inc`, irrespective of order. The keeper and first depositor
 are checked against that supplied Safe pin as well as the copied list.

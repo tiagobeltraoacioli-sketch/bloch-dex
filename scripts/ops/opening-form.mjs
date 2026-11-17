@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequest, encodeFunctionData, isAddress, isqrt, keccak256, parseAbi, parseArgs, parseUnits } from "./dex-ops-lib.mjs";
-import { PENDING, configSha256, validateDeployConfig } from "../staging/dex-deploy-config.mjs";
+import { EMPTY_CODE_HASH, OWNER_FEE_EOA, PENDING, configSha256, stableJson, validateDeployConfig } from "../staging/dex-deploy-config.mjs";
 import { MAX_FRACTION_BPS, SEEDER_FLOOR_BPS } from "./dex-seed-plan.mjs";
 import { isMain } from "../staging/is-main.mjs";
 
@@ -134,8 +134,16 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   const token = addr(earlier.busdcToken, "fromEarlierSteps.busdcToken");
   const tokenCodeHash = pending(earlier.busdcCodeHash) ? (problems.push("fromEarlierSteps.busdcCodeHash is not filled"), null)
     : (need(HASH.test(earlier.busdcCodeHash), "fromEarlierSteps.busdcCodeHash must be a lowercase 32-byte hash") ? earlier.busdcCodeHash : null);
-  const owners = Array.isArray(earlier.safeOwners) ? earlier.safeOwners.map((o, i) => addr(o, `fromEarlierSteps.safeOwners[${i}]`)) : (problems.push("fromEarlierSteps.safeOwners must list the 5 Safe owners"), []);
-  need(owners.length === 5 && new Set(owners).size === 5 && owners.every(Boolean), "fromEarlierSteps.safeOwners must list exactly 5 distinct nonzero Safe owners");
+  // Owner decision 2026-11-17: Bloch Inc may be the owner's plain fee address (OWNER_FEE_EOA), given as the
+  // --bloch-inc pin {address, codeHash: empty-code hash} and nothing else. Then there is no Safe and no owner
+  // list; the same exact-address rule as deploy-dex.mjs, the forge script and the gates.
+  const ownerEoa = blochInc?.address?.toLowerCase?.() === OWNER_FEE_EOA;
+  if (ownerEoa) {
+    need(stableJson(blochInc) === stableJson({ address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH }), `--bloch-inc names the owner's plain fee address: it must be exactly {"address": "${OWNER_FEE_EOA}", "codeHash": "${EMPTY_CODE_HASH}"}`);
+    need(Array.isArray(earlier.safeOwners) && earlier.safeOwners.length === 0, "fromEarlierSteps.safeOwners must be empty ([]) when Bloch Inc is the owner's plain fee address: there is no Safe");
+  }
+  const owners = ownerEoa ? [] : Array.isArray(earlier.safeOwners) ? earlier.safeOwners.map((o, i) => addr(o, `fromEarlierSteps.safeOwners[${i}]`)) : (problems.push("fromEarlierSteps.safeOwners must list the 5 Safe owners"), []);
+  if (!ownerEoa) need(owners.length === 5 && new Set(owners).size === 5 && owners.every(Boolean), "fromEarlierSteps.safeOwners must list exactly 5 distinct nonzero Safe owners");
   const pinnedOwners = Array.isArray(blochInc?.safe?.owners) ? blochInc.safe.owners.map((o) => typeof o === "string" ? o.toLowerCase() : null) : [];
   if (blochInc) {
     need(pinnedOwners.length === owners.length && owners.every((o) => pinnedOwners.includes(o)), "fromEarlierSteps.safeOwners differs from the owners in --bloch-inc");
@@ -144,10 +152,11 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   // named by the independently supplied Safe deployment pin.
   const authorityOwners = [...new Set([...owners, ...pinnedOwners])];
   const safe = blochInc?.address ? blochInc.address.toLowerCase() : null;
-  if (!blochInc) notes.push("no --bloch-inc file: the Safe address is not checked against the other keys");
+  const blochIncName = ownerEoa ? "Bloch Inc (the owner's plain fee address)" : "the Bloch Inc Safe";
+  if (!blochInc) notes.push("no --bloch-inc file: the Bloch Inc address (the Safe, or the owner's plain fee address) is not checked against the other keys");
   if (depositor) {
     // L1 (OPS-INITIAL-LIQUIDITY.md): a single-purpose key, nothing else may share it.
-    const clash = [["lpRecipient", lp], ["keeper.address", keeper], ["fromEarlierSteps.dexDeployer", deployer], ["the Bloch Inc Safe", safe], ["fromEarlierSteps.busdcToken", token],
+    const clash = [["lpRecipient", lp], ["keeper.address", keeper], ["fromEarlierSteps.dexDeployer", deployer], [blochIncName, safe], ["fromEarlierSteps.busdcToken", token],
       ...authorityOwners.map((o, i) => [`Safe owner ${i + 1}`, o])].filter(([, a]) => a === depositor);
     for (const [name] of clash) problems.push(`firstDepositor equals ${name}: the depositor must be a new key that sends only the approve and the seed`);
   }
@@ -155,12 +164,12 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   // One key, one role (review R309-C7): the deployer, the depositor, the keeper, the Safe, its owners and the two
   // bridge contracts are pairwise distinct. (Depositor and keeper clashes are reported above with their reason.)
   const vaultAddress = typeof form.bridgeStatus?.vault === "string" && ADDRESS.test(form.bridgeStatus.vault) ? form.bridgeStatus.vault.toLowerCase() : null;
-  const roles = [["fromEarlierSteps.dexDeployer", deployer], ["keeper.address", keeper], ["the Bloch Inc Safe", safe], ["fromEarlierSteps.busdcToken", token], ["bridgeStatus.vault", vaultAddress],
+  const roles = [["fromEarlierSteps.dexDeployer", deployer], ["keeper.address", keeper], [blochIncName, safe], ["fromEarlierSteps.busdcToken", token], ["bridgeStatus.vault", vaultAddress],
     ...authorityOwners.map((o, i) => [`Safe owner ${i + 1}`, o])].filter(([, a]) => a);
   for (let i = 0; i < roles.length; i++) {
     for (let j = i + 1; j < roles.length; j++) {
       const [[one, a], [two, b]] = [roles[i], roles[j]];
-      const reported = one === "keeper.address" && (two === "the Bloch Inc Safe" || two.startsWith("Safe owner"));
+      const reported = one === "keeper.address" && (two === blochIncName || two.startsWith("Safe owner"));
       if (a === b && !(one.startsWith("Safe owner") && two.startsWith("Safe owner")) && !reported) problems.push(`${one} equals ${two}: each key and contract has one role`);
     }
   }
@@ -170,7 +179,7 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   }
   // The deployer is a hot key used once; it must not end up holding the seed position (review R309-2P-15).
   if (lp && deployer && lp === deployer) problems.push("lpRecipient equals fromEarlierSteps.dexDeployer: each key has one role, and the single-use deployer key would hold the whole seed position");
-  if (lp && safe && lp === safe) notes.push("lpRecipient is the Safe: allowed, but the kit recommends a separate address (principal and protocol fee mix, every exit needs 3 of 5)");
+  if (lp && safe && lp === safe) notes.push(ownerEoa ? "lpRecipient is the owner's fee address: allowed, but the kit recommends a separate address (principal and protocol fee mix)" : "lpRecipient is the Safe: allowed, but the kit recommends a separate address (principal and protocol fee mix, every exit needs 3 of 5)");
   if (lp && authorityOwners.includes(lp)) notes.push("lpRecipient is a Safe owner key: allowed, but that key then holds the seed position alone");
 
   // 3. Seed, exit policy, floor.
@@ -235,7 +244,7 @@ export function checkForm(form, { blochInc = null, committedConfig, wrappedCap =
   const floorShares = policy === "keep-floor" ? (seed.shares * floorBps) / 10_000n : 0n;
   const values = {
     price, priceText: String(form.openingPrice), quoteCap, bucket, fractionBps, deadlineMin, depositor, lp, keeper, deployer, token, tokenCodeHash,
-    owners, safe, policy, floorBps, floorShares, seed, keystore, passwordFile, budgetWei, maxTx, status, site,
+    owners, safe, ownerEoa, policy, floorBps, floorShares, seed, keystore, passwordFile, budgetWei, maxTx, status, site,
   };
   // The DEX configuration: the committed file with the owner's values. validateDeployConfig is the
   // same check deploy-dex.mjs validate runs, including the 75-125% band and the 1/10 bucket rule.
@@ -331,7 +340,8 @@ function envFile(v) {
     "# Goes to /etc/bloch-dex-ops/env on the monitor and keeper host (see dex-monitor.env.example).",
     "DEX_OPS_ROOT=/opt/bloch/postern-dex",
     "DEX_GATE=/etc/bloch-dex-ops/finality-gate.mainnet.json",
-    "DEX_SAFE_PLAN=/etc/bloch-dex-ops/safe.plan.json",
+    // Bloch Inc: the Safe plan, or the owner's plain fee address (unit bloch-dex-monitor-owner-address.service).
+    v.ownerEoa ? `DEX_OWNER_FEE_ADDRESS=${OWNER_FEE_EOA}` : "DEX_SAFE_PLAN=/etc/bloch-dex-ops/safe.plan.json",
     "DEX_BUSDC_BRIDGE_PLAN=/etc/bloch-dex-ops/busdc.plan.json",
     "DEX_BUSDC_BRIDGE_RECORD=/etc/bloch-dex-ops/busdc.record.json",
     "DEX_RPC=http://127.0.0.1:18955",
@@ -375,7 +385,7 @@ function commandsFile(v) {
     "",
     "0. The finality gate, with the bridge's own deployment files for bUSDC (it compares the token's signers, guardians, thresholds and T with them):",
     "",
-    block(`node scripts/staging/check-finality-gate-mainnet.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R}`),
+    block(`node scripts/staging/check-finality-gate-mainnet.mjs --config ${G}${v.ownerEoa ? "" : " --safe-plan deployments/mainnet/700770/safe.plan.json"} --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R}`),
     "1. Check the depositor is fresh (nonce 0) and funded:",
     "",
     block(`cast nonce ${v.depositor} --rpc-url ${R}`),
@@ -390,8 +400,9 @@ function commandsFile(v) {
     "",
     block(`node scripts/ops/dex-seed-plan.mjs verify --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp}`),
     "5. Monitor. The unit runs these checks with `dex-ops.env`, plus the keeper's state (`--keeper-state`, `--keeper-max-tx`, `--keeper-budget-wei`), and without `--ref-price`: a reference price is a figure of the day, so run this command by hand with the current price when you want that check:",
+    `   Install ${v.ownerEoa ? "`scripts/ops/systemd/bloch-dex-monitor-owner-address.service` (Bloch Inc is the owner's plain fee address; `DEX_OWNER_FEE_ADDRESS` in `dex-ops.env`)" : "`scripts/ops/systemd/bloch-dex-monitor.service` (Bloch Inc is the Safe; `DEX_SAFE_PLAN` in `dex-ops.env`)"}.`,
     "",
-    block(`node scripts/ops/dex-monitor.mjs --config ${G} --safe-plan deployments/mainnet/700770/safe.plan.json --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${shellArgument(v.status.ethRpcUrl)} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
+    block(`node scripts/ops/dex-monitor.mjs --config ${G} ${v.ownerEoa ? `--owner-fee-address ${OWNER_FEE_EOA}` : "--safe-plan deployments/mainnet/700770/safe.plan.json"} --bridge-plan ${BP} --bridge-record ${BR} --rpc ${R} --expect-seeded --lp-recipient ${v.lp} --lp-min-shares ${v.floorShares} --eth-rpc ${shellArgument(v.status.ethRpcUrl)} --bridge-vault ${v.status.vault}${v.status.vaultCodeHash ? ` --bridge-vault-code-hash ${v.status.vaultCodeHash}` : ""} --bridge-token ${v.token} --ref-price ${v.priceText}`),
     "6. Any later removal by the LP recipient goes through the planner, which refuses to go below the floor (the same shares as the monitor's `--lp-min-shares`). Example, half of the position:",
     "",
     block(`node scripts/ops/dex-seed-plan.mjs remove --config ${G} --rpc ${R} --price ${v.priceText} --to ${v.lp} --bps 5000 --fraction-bps ${v.fractionBps} --floor-shares ${v.floorShares}`),
@@ -435,6 +446,8 @@ async function main() {
     seed: { fractionBps: values.fractionBps, wrapped: values.seed.wrapped, quote: values.seed.quote, expectedShares: values.seed.shares, human: `${fmt(values.seed.wrapped, 18)} WBLCH + ${fmt(values.seed.quote, 6)} bUSDC` },
     seederExit: { policy: values.policy, floorBps: values.floorBps, floorShares: values.floorShares },
     firstDepositor: values.depositor, lpRecipient: values.lp, keeper: values.keeper,
+    // Which Bloch Inc these files were written for (the monitor unit and its option differ; see OPENING-COMMANDS.md).
+    blochInc: values.safe ? { kind: values.ownerEoa ? "owner-fee-address" : "safe", address: values.safe } : undefined,
     bridgeStatus: values.status, dexConfigSha256: values.dexConfigSha256, notes,
   };
   if (command === "apply") {
