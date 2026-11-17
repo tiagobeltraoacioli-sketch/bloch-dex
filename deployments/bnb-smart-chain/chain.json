@@ -15,6 +15,7 @@
   },
   "rpc": [
     "https://bsc-rpc.publicnode.com",
+    "https://api.zan.top/bsc-mainnet",
     "https://bsc-mainnet.public.blastapi.io",
     "https://bsc-dataseed.bnbchain.org"
   ],

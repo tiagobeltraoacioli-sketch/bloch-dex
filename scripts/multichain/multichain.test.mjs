@@ -385,7 +385,12 @@ test("R309-MC-2: every chain states its confirmation rule, what was measured and
     assert.ok(chain.confirmation.residualRisk.length > 40);
     assert.match(chain.confirmation.measured.at, /^2026-/);
     const file = frontendNetwork(shared, chain);
-    assert.deepEqual(file.confirmation, { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds });
+    assert.deepEqual(file.confirmation, { settle: chain.confirmation.settle, strict: chain.confirmation.strict, ...(chain.confirmation.reverted ? { reverted: chain.confirmation.reverted } : {}), blockSeconds: chain.confirmation.measured.blockSeconds });
+    // Review R328-3P-3: the rule that settles a reverted swap lies between the two, and says why it is enough.
+    if (chain.chain.key !== "bnb-smart-chain") assert.ok(chain.confirmation.reverted && chain.confirmation.revertedWhy.length >= 40, chain.chain.key);
+    const early = clone(chain);
+    early.confirmation.reverted = { depth: 1 };
+    if (chain.chain.key === "ethereum") assert.throws(() => validateChain(early, early.chain.key), /between confirmation.settle and confirmation.strict/);
     assert.deepEqual(file.swap, { deadlineMinutes: 20 });
     // A settle depth is seconds, not minutes: at most 30 s at the measured block time.
     if ("depth" in chain.confirmation.settle) assert.ok(chain.confirmation.settle.depth * chain.confirmation.measured.blockSeconds <= 30, chain.chain.key);

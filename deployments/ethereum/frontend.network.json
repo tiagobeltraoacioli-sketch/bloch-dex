@@ -54,6 +54,9 @@
     "strict": {
       "tag": "finalized"
     },
+    "reverted": {
+      "tag": "safe"
+    },
     "blockSeconds": 12
   },
   "swap": {

@@ -59,6 +59,8 @@
     "strict": {
       "tag": "finalized"
     },
+    "reverted": { "tag": "safe" },
+    "revertedWhy": "The safe block's batch is on Ethereum: replacing it needs an Ethereum reorganisation or a new sequencer window, not a sequencer restart. Measured 2026-11-17: 26 to 28 s behind the head.",
     "measured": {
       "at": "2026-11-16",
       "blockSeconds": 2,

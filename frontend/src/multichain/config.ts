@@ -164,7 +164,7 @@ export function parseConfirmation(
     v &&
       typeof v === 'object' &&
       !Array.isArray(v) &&
-      Object.keys(v).every((k) => ['settle', 'strict', 'blockSeconds'].includes(k)),
+      Object.keys(v).every((k) => ['settle', 'strict', 'reverted', 'blockSeconds'].includes(k)),
     'confirmation has an unknown field',
   );
   const settle = rule(v.settle, 'confirmation.settle');
@@ -176,6 +176,12 @@ export function parseConfirmation(
   // The strict rule ends a hold without a receipt; it is never weaker than the settle rule.
   const rank = (r: ConfirmationRule) => ('depth' in r ? r.depth : r.tag === 'safe' ? 1e6 : 1e7);
   refuse(rank(strict) >= rank(settle), 'confirmation.strict is weaker than confirmation.settle');
+  // Optional (review R328-3P-3): the rule that settles a REVERTED swap, between the two.
+  const reverted = v.reverted === undefined ? undefined : rule(v.reverted, 'confirmation.reverted');
+  refuse(
+    reverted === undefined || (rank(reverted) >= rank(settle) && rank(reverted) <= rank(strict)),
+    'confirmation.reverted must lie between settle and strict',
+  );
   const tagWords = (r: { tag: 'finalized' | 'safe' }) => `the chain's own ${r.tag} block`;
   const strictWords =
     'depth' in strict
@@ -187,7 +193,20 @@ export function parseConfirmation(
       : settle.tag === 'finalized' && 'tag' in strict && strict.tag === 'finalized'
         ? `On ${chainName} this page reads and settles at the chain's own finalized block.`
         : `On ${chainName} this page reads and settles at ${tagWords(settle)}. Where this page says "finalized" on this network, it means that. A hold that ends without your transaction's own receipt waits for ${strictWords}.`;
-  return { confirmation: { settle, strict }, note };
+  const retryRule = reverted ?? strict;
+  const retryWords =
+    'depth' in retryRule
+      ? `${blocks(retryRule.depth)} are on top of it (${span(retryRule.depth * v.blockSeconds)})`
+      : `it is under ${tagWords(retryRule)}`;
+  // What a user must know before a swap reverts: the page holds the account, for how long, and why.
+  const retry =
+    'depth' in settle || 'depth' in retryRule || settle.tag !== retryRule.tag
+      ? ` If your swap reverts, this page holds this account on ${chainName} until ${retryWords}, and only then lets you swap again: were the reverted block replaced earlier, the first swap and a second one could both execute.`
+      : '';
+  return {
+    confirmation: { settle, strict, ...(reverted ? { reverted } : {}) },
+    note: note + retry,
+  };
 }
 
 export function parseChain(networkInput: unknown, recordInput: unknown): Chain {

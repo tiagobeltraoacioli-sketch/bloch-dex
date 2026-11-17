@@ -283,6 +283,12 @@ function validateConfirmation(c) {
   // The strict rule ends a hold without a receipt: it is never weaker than the settle rule.
   const rank = (r) => ("depth" in r ? r.depth : r.tag === "safe" ? 1e6 : 1e7);
   refuse(rank(c.strict) >= rank(c.settle), "confirmation.strict is weaker than confirmation.settle");
+  // Optional: the rule that settles a REVERTED swap (after it the user may retry); between the two (R328-3P-3).
+  if (c.reverted !== undefined) {
+    validateRule(c.reverted, "confirmation.reverted");
+    refuse(rank(c.reverted) >= rank(c.settle) && rank(c.reverted) <= rank(c.strict), "confirmation.reverted must lie between confirmation.settle and confirmation.strict");
+    refuse(typeof c.revertedWhy === "string" && c.revertedWhy.length >= 40, "confirmation.revertedWhy: say why a deeper replacement is not credible on this chain");
+  }
   refuse(typeof c.residualRisk === "string" && c.residualRisk.length >= 40, "confirmation.residualRisk: state the residual risk of the choice");
 }
 

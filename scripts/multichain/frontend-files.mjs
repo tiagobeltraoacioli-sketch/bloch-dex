@@ -40,7 +40,7 @@ export function frontendNetwork(shared, chain, { rpc = null } = {}) {
     l2Only: { ...shared.l2Only },
     // Optional fields (added by review R309-MC-2 and MC-6; a page that does not know them keeps `finalized` and
     // its own default deadline).
-    confirmation: { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds },
+    confirmation: { settle: chain.confirmation.settle, strict: chain.confirmation.strict, ...(chain.confirmation.reverted ? { reverted: chain.confirmation.reverted } : {}), blockSeconds: chain.confirmation.measured.blockSeconds },
     swap: { deadlineMinutes: chain.swap.deadlineMinutes },
   };
 }

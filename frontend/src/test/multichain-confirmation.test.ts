@@ -152,11 +152,11 @@ describe('two endpoints must agree on every read pinned to a block hash', () => 
       await agreeingRpc([answers('0x2a'), failing(), answers('0x2a')], 0)('eth_call', pinned),
     ).toBe('0x2a');
   });
-  it('reads that are not pinned to a hash go to the first endpoint that answers; one endpoint alone is used as it is', async () => {
+  it('only fee data and the chain id go to the first endpoint that answers; one endpoint alone is used as it is', async () => {
     const [a, b] = [answers('0x1'), answers('0x2')];
     const rpc = agreeingRpc([a, b], 0);
-    expect(await rpc('eth_call', [{ to: h(1).slice(0, 42) }, 'latest'])).toBe('0x1');
     expect(await rpc('eth_gasPrice', [])).toBe('0x1');
+    expect(await rpc('eth_chainId', [])).toBe('0x1');
     expect(b).not.toHaveBeenCalled();
     expect(await agreeingRpc([a], 0)('eth_call', pinned)).toBe('0x1');
   });
@@ -200,18 +200,47 @@ describe('the block a tag names is taken from two endpoints', () => {
       await agreeingRpc([node(910).rpc, b.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
     ).toMatchObject({ number: q(910) });
   });
-  it('a head only one endpoint answers is used (the pinned reads then need the other)', async () => {
+  it('a head needs two endpoints; a third is asked when one fails or lags; a quiet chain is not "behind"', async () => {
     const down = vi.fn<Rpc>(async () => {
       throw new Error('network');
     });
     const up = node(1_000);
-    expect(
-      await agreeingRpc([down, up.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
-    ).toMatchObject({ number: q(1_000) });
-    expect(down).toHaveBeenCalledTimes(1);
     await expect(
-      agreeingRpc([down, down], 0)('eth_getBlockByNumber', ['latest', false]),
-    ).rejects.toThrow('network');
+      agreeingRpc([down, up.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).rejects.toThrow(UNCONFIRMED);
+    expect(
+      await agreeingRpc([down, up.rpc, node(1_000).rpc], 0)('eth_getBlockByNumber', [
+        'latest',
+        false,
+      ]),
+    ).toMatchObject({ number: q(1_000) });
+    // R328-3P-5: the second endpoint is far behind; the healthy third is asked, and the page goes on.
+    expect(
+      await agreeingRpc([up.rpc, node(700).rpc, node(999).rpc], 0)('eth_getBlockByNumber', [
+        'latest',
+        false,
+      ]),
+    ).toMatchObject({ number: q(999) });
+    // One block apart is never "behind", however much chain time lies between two blocks (a quiet Linea).
+    const slow = (head: number) => {
+      const n = node(head);
+      const rpc = vi.fn<Rpc>(async (method, params) => {
+        const block = (await n.rpc(method, params)) as { number: string; timestamp: string } | null;
+        return block && { ...block, timestamp: q(Number(BigInt(block.number)) * 95) };
+      });
+      return rpc;
+    };
+    expect(
+      await agreeingRpc([slow(1_000), slow(999)], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).toMatchObject({ number: q(999) });
+    // The header itself is agreed: the same height with another hash or time is a disagreement.
+    const other = vi.fn<Rpc>(async (method, params) => {
+      const block = (await node(1_000).rpc(method, params)) as { timestamp: string } | null;
+      return block && { ...block, timestamp: q(9) };
+    });
+    await expect(
+      agreeingRpc([up.rpc, other], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).rejects.toThrow(DISAGREEMENT);
   });
   it('`finalized` and `safe` are the older of the two answers, and both endpoints must answer', async () => {
     // One endpoint claims a newer block is final (Linea's public endpoints did exactly this for `finalized`).
@@ -327,12 +356,20 @@ describe('the network file states the rule, the deadline, and the page says both
   it('every bundled chain has a rule; five settle on a depth and decide lost requests more strictly', () => {
     const rules = Object.fromEntries(bundledChains().map((c) => [c.key, c.confirmation]));
     expect(rules).toEqual({
-      ethereum: { settle: { depth: 2 }, strict: { tag: 'finalized' } },
-      base: { settle: { depth: 50 }, strict: { tag: 'finalized' } },
-      'arbitrum-one': { settle: { depth: 32 }, strict: { tag: 'finalized' } },
-      'op-mainnet': { settle: { depth: 5 }, strict: { tag: 'finalized' } },
-      // Linea's endpoints disagree on `finalized`: the tag is used for neither rule.
-      linea: { settle: { depth: 1 }, strict: { depth: 300 } },
+      ethereum: { settle: { depth: 2 }, strict: { tag: 'finalized' }, reverted: { tag: 'safe' } },
+      base: { settle: { depth: 50 }, strict: { tag: 'finalized' }, reverted: { tag: 'safe' } },
+      'arbitrum-one': {
+        settle: { depth: 32 },
+        strict: { tag: 'finalized' },
+        reverted: { tag: 'safe' },
+      },
+      'op-mainnet': {
+        settle: { depth: 5 },
+        strict: { tag: 'finalized' },
+        reverted: { tag: 'safe' },
+      },
+      // Linea's endpoints disagree on `finalized`: no tag is used for any rule.
+      linea: { settle: { depth: 1 }, strict: { depth: 300 }, reverted: { depth: 30 } },
       'bnb-smart-chain': { settle: { tag: 'finalized' }, strict: { tag: 'finalized' } },
     });
     for (const chain of bundledChains()) expect(chain.network.defaultDeadlineMinutes).toBe(20);
@@ -340,10 +377,10 @@ describe('the network file states the rule, the deadline, and the page says both
   it('says in words what "finalized" means on the chain', () => {
     const notes = Object.fromEntries(bundledChains().map((c) => [c.key, c.confirmationNote]));
     expect(notes.ethereum).toBe(
-      "On Ethereum this page treats a block as settled once 2 blocks are on top of it (about 24 seconds), not at the chain's own finality. Where this page says \"finalized\" on this network, it means that. Prices and balances are read at that block and your swap is bound by its minimum and its deadline. A hold that ends without your transaction's own receipt (its deadline passed, or another transaction used its nonce) waits for the chain's own finalized block.",
+      "On Ethereum this page treats a block as settled once 2 blocks are on top of it (about 24 seconds), not at the chain's own finality. Where this page says \"finalized\" on this network, it means that. Prices and balances are read at that block and your swap is bound by its minimum and its deadline. A hold that ends without your transaction's own receipt (its deadline passed, or another transaction used its nonce) waits for the chain's own finalized block. If your swap reverts, this page holds this account on Ethereum until it is under the chain's own safe block, and only then lets you swap again: were the reverted block replaced earlier, the first swap and a second one could both execute.",
     );
     expect(notes.linea).toMatch(
-      /once 1 block is on top of it \(about 12 seconds\).*waits for 300 blocks on top \(about 58 minutes; this is not the chain's own finality\)\.$/,
+      /once 1 block is on top of it \(about 12 seconds\).*waits for 300 blocks on top \(about 58 minutes; this is not the chain's own finality\)\. If your swap reverts, this page holds this account on Linea until 30 blocks are on top of it \(about 6 minutes\), and only then lets you swap again: .*could both execute\.$/,
     );
     expect(notes['bnb-smart-chain']).toBe(
       "On BNB Smart Chain this page reads and settles at the chain's own finalized block.",
