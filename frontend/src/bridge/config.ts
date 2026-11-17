@@ -44,14 +44,31 @@ export type SolanaPolicy = {
  *                  (tag 0 text, 1 off-chain envelope, 2 envelope with domain and signer); every signer verifies it.
  * With `router`, the page also reads the router's own `exitMessage` and refuses to go on unless it is the same line.
  */
-export type SolanaProofFormat = { template: string; carriedBy: 'page' | 'router' };
+export type SolanaProofFormat = {
+  template: string;
+  carriedBy: 'page' | 'router';
+  /**
+   * The line the NEW destination signs to take over a held burn (or a burn made directly on the token) with
+   * `redirectHeldBurn(burnId, recipient, nonce, proof)`; it names {burnId}, {burner}, {wallet}, {nonce}, {router},
+   * {chainId} and {route}. null: the route's router has no redirect and the page offers none.
+   */
+  redirectTemplate: string | null;
+};
 export type TronPolicy = {
   releaseFlat: bigint;
   depositTrxEstimate: string;
   issuerFeeMaxBps: number;
   issuerFeeMaxUnits: bigint;
 };
-export type StellarPolicy = { worstCaseGuardianDelaySeconds: number };
+export type StellarPolicy = {
+  worstCaseGuardianDelaySeconds: number;
+  /**
+   * `router`: a burn made directly on the token is paid only after its burner names a Stellar address with
+   * `claimDirectBurn(uint64 burnNonce, string stellarAddress)` on the exit router (set once, final on the L2;
+   * readable as `claimOf(burner, burnNonce)`). `none`: the page offers no claim (the route's older rule).
+   */
+  directBurnClaim: 'router' | 'none';
+};
 
 export type Route = {
   id: string;
@@ -228,26 +245,45 @@ function parseBitcoinScript(value: unknown, what: string, rehearsal: boolean): B
   return { threshold, publicKeys, vaultId: value.vaultId as Hex, hrp };
 }
 
-const PROOF_FIELDS = ['wallet', 'burner', 'router', 'chainId', 'amount', 'nonce', 'route', 'issued'] as const;
+const PROOF_FIELDS = ['wallet', 'burner', 'router', 'chainId', 'amount', 'nonce', 'route', 'issued', 'burnId'] as const;
 /** The interface file's own text at the imported commit (docs/SOLANA-VAULT.md 11.3): checked by the page only. */
 export const SOLANA_PROOF_PAGE_V0: SolanaProofFormat = {
   template:
     'Bloch bridge exit: pay bUSDC.sol exits to my Solana wallet {wallet}. L2 account {burner}. Router {router}. Chain {chainId}. Issued {issued}.',
   carriedBy: 'page',
+  redirectTemplate: null,
+};
+const templateFields = (template: string, what: string): string[] => {
+  refuse(/^[\x20-\x7e]+$/.test(template), `${what} is not one line of printable ASCII`);
+  const named = [...template.matchAll(/\{([A-Za-z0-9]+)\}/g)].map((m) => m[1]);
+  refuse(named.every((n) => (PROOF_FIELDS as readonly string[]).includes(n)) && new Set(named).size === named.length, `${what} names a field the page does not know, or one twice`);
+  return named;
 };
 function parseSolanaProof(value: unknown, what: string): SolanaProofFormat {
   if (value === undefined) return SOLANA_PROOF_PAGE_V0;
   refuse(isObject(value), what);
   const template = text(value.template, `${what}.template`, 600);
-  refuse(/^[\x20-\x7e]+$/.test(template), `${what}.template is not one line of printable ASCII`);
-  const named = [...template.matchAll(/\{([A-Za-z0-9]+)\}/g)].map((m) => m[1]);
-  refuse(named.every((n) => (PROOF_FIELDS as readonly string[]).includes(n)) && new Set(named).size === named.length, `${what}.template names a field the page does not know, or one twice`);
+  const named = templateFields(template, `${what}.template`);
   for (const field of ['wallet', 'burner', 'router', 'chainId']) refuse(named.includes(field), `${what}.template must name {${field}}`);
+  // An exit line never names a burn id; a redirect line always does: one signature cannot serve as the other.
+  refuse(!named.includes('burnId'), `${what}.template must not name {burnId}`);
   refuse(value.carriedBy === 'page' || value.carriedBy === 'router', `${what}.carriedBy`);
   // A proof the router carries is bound to one burn: it must name the amount and the burner's nonce.
   if (value.carriedBy === 'router') refuse(named.includes('amount') && named.includes('nonce') && named.includes('route'), `${what}.template must name {amount}, {nonce} and {route} when the router carries the proof`);
   else refuse(named.includes('issued'), `${what}.template must name {issued} when only the page checks the proof`);
-  return { template, carriedBy: value.carriedBy };
+  let redirectTemplate: string | null = null;
+  if (value.redirectTemplate !== undefined) {
+    refuse(value.carriedBy === 'router', `${what}.redirectTemplate needs carriedBy router`);
+    redirectTemplate = text(value.redirectTemplate, `${what}.redirectTemplate`, 600);
+    const r = templateFields(redirectTemplate, `${what}.redirectTemplate`);
+    for (const field of ['burnId', 'burner', 'wallet', 'nonce', 'router', 'chainId', 'route']) refuse(r.includes(field), `${what}.redirectTemplate must name {${field}}`);
+    refuse(!r.includes('amount') && !r.includes('issued'), `${what}.redirectTemplate names a field a redirect does not carry`);
+    // Each line opens with its own label (the text before the first colon, before any field), and the labels differ:
+    // what a wallet shows first says which of the two it is asked to sign.
+    const label = (t: string) => (t.indexOf(':') > 0 && t.indexOf(':') < t.indexOf('{') ? t.slice(0, t.indexOf(':')) : null);
+    refuse(label(template) !== null && label(redirectTemplate) !== null && label(template) !== label(redirectTemplate), `${what}.redirectTemplate begins like the exit template`);
+  }
+  return { template, carriedBy: value.carriedBy, redirectTemplate };
 }
 
 function parseRoute(file: unknown, launch: AnyRecord, page: AnyRecord, source: Route['source'], rehearsal: boolean): Route {
@@ -420,7 +456,9 @@ function parseRoute(file: unknown, launch: AnyRecord, page: AnyRecord, source: R
   if (kind === 'stellar') {
     const pol = p.policy;
     refuse(isObject(pol), 'page.json stellar.policy');
-    route.stellar = { policy: { worstCaseGuardianDelaySeconds: whole(pol.worstCaseGuardianDelaySeconds, 'worstCaseGuardianDelaySeconds') } };
+    const claim = pol.directBurnClaim === undefined ? 'none' : pol.directBurnClaim;
+    refuse(claim === 'router' || claim === 'none', 'page.json stellar.policy.directBurnClaim is router or none');
+    route.stellar = { policy: { worstCaseGuardianDelaySeconds: whole(pol.worstCaseGuardianDelaySeconds, 'worstCaseGuardianDelaySeconds'), directBurnClaim: claim } };
   }
   return route;
 }

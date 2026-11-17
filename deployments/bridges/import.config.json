@@ -26,7 +26,7 @@
     { "id": "base", "ref": "codex/bridge-evm-nets-r17-20261117", "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"], "path": "deployments/base/bridge.network.json" },
     { "id": "bnb", "ref": "codex/bridge-evm-nets-r17-20261117", "fallbackRefs": ["codex/bridge-evm-nets-r16b-20261117"], "path": "deployments/bnb/bridge.network.json" },
     { "id": "bitcoin", "ref": "codex/bridge-btc-r17-20261117", "path": "deployments/bitcoin/bridge.network.json" },
-    { "id": "solana", "ref": "codex/bridge-solana-r17-20261117", "path": "deployments/solana/bridge.network.json" },
+    { "id": "solana", "ref": "codex/bridge-solana-r17-20261117", "path": "deployments/solana/bridge.network.json", "extras": [{ "path": "deployments/solana/exit-proof-vectors.json", "file": "exit-proof-vectors.json" }] },
     { "id": "tron", "ref": "codex/bridge-tron-r17-20261117", "path": "deployments/tron/bridge.network.json" },
     { "id": "stellar", "ref": "codex/bridge-stellar-r17-20261117", "path": "deployments/stellar/bridge.network.json" }
   ]

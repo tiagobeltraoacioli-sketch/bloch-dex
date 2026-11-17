@@ -154,6 +154,14 @@ for (const entry of config.networks) {
     put(target, bytes);
     sources.push({ network: entry.id, file: target, derived: false, ref, commit, path: entry.path, sha256: sha256(bytes) });
   }
+  // Other published files of the same route at the same commit (test vectors), byte for byte.
+  for (const extra of entry.extras ?? []) {
+    const bytes = show(commit, extra.path);
+    JSON.parse(bytes);
+    const file = `${entry.id}/${extra.file}`;
+    put(file, bytes);
+    sources.push({ network: entry.id, file, derived: false, ref, commit, path: extra.path, sha256: sha256(bytes) });
+  }
 }
 {
   const ref = [config.schema.ref, ...(config.schema.fallbackRefs ?? [])].find(refExists);

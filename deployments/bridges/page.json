@@ -31,9 +31,10 @@
       "routerCodeHash": "TBD-deploy",
       "read": "TBD-owner",
       "exitProof": {
-        "source": "contracts/solana/SolanaBurnRouter.sol exitMessage() on codex/bridge-solana-r17-20261117 (work in progress at 3b6c3f4: the destination-key proof is part of the router call; coordinator's decision of round 17). PROVISIONAL until agent 336 posts the final format; the page also reads the router's own exitMessage and refuses to continue unless it is this line.",
+        "source": "contracts/solana/SolanaBurnRouter.sol exitMessage() and redirectMessage() on codex/bridge-solana-r17-20261117 (b2fa301, work in progress of agents 336/371; vectors deployments/solana/exit-proof-vectors.json, imported as solana/exit-proof-vectors.json). PROVISIONAL until agent 371 posts the final format in the cross-area log; the page also reads the router's own exitMessage / redirectMessage and refuses to continue unless it is this line.",
         "template": "Bloch bridge exit v1: pay {amount} units burned by {burner} to my Solana wallet {wallet}. Nonce {nonce}. Router {router}. Chain {chainId}. Route {route}.",
-        "carriedBy": "router"
+        "carriedBy": "router",
+        "redirectTemplate": "Bloch bridge redirect v1: pay burn {burnId} made by {burner} to my Solana wallet {wallet}. Nonce {nonce}. Router {router}. Chain {chainId}. Route {route}."
       },
       "policy": {
         "source": "notes and fee.networkFee of deployments/solana/bridge.network.json",
@@ -59,8 +60,9 @@
       "routerCodeHash": "TBD-deploy",
       "read": "TBD-owner",
       "policy": {
-        "source": "notes of deployments/stellar/bridge.network.json",
-        "worstCaseGuardianDelaySeconds": 806400
+        "source": "notes of deployments/stellar/bridge.network.json (direct-burn claim: the note on StellarBurnRouter.claimDirectBurn at 3ce640f, revision 4 of agent 338/373)",
+        "worstCaseGuardianDelaySeconds": 806400,
+        "directBurnClaim": "router"
       }
     }
   }

@@ -89,6 +89,15 @@
       "sha256": "afa0d3810e35d7d43f04c394167ea4ca86d1905514e02bd9cc8b59709525140d"
     },
     {
+      "network": "solana",
+      "file": "solana/exit-proof-vectors.json",
+      "derived": false,
+      "ref": "codex/bridge-solana-r17-20261117",
+      "commit": "b2fa301f41b07a72017656c098f4c44b8441acae",
+      "path": "deployments/solana/exit-proof-vectors.json",
+      "sha256": "452a7ea74c6841beb363fca8380e2ccb21afc88f49674a662a19445f9d06364b"
+    },
+    {
       "network": "tron",
       "file": "tron/bridge.network.json",
       "derived": false,
@@ -102,7 +111,7 @@
       "file": "stellar/bridge.network.json",
       "derived": false,
       "ref": "codex/bridge-stellar-r17-20261117",
-      "commit": "3ce640fccb2a4f6384094346239e82cc6ca4ab94",
+      "commit": "48a776053cf174ff093a876a38611d2512469f21",
       "path": "deployments/stellar/bridge.network.json",
       "sha256": "303620b8813c2da178bcb79bb289b864dbd6a3c75dfd32967b85db1a1c4b6248"
     },

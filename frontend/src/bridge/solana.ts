@@ -46,7 +46,7 @@ export function solanaCommitment(key: Bytes): Address {
 }
 
 /** What the template of a proof may name. `amount`, `nonce`, `route` and `issued` are needed only if it names them. */
-export type ProofFields = { wallet: string; burner: Address; router: Address; amount?: bigint; nonce?: bigint; route?: Hex; issued?: number };
+export type ProofFields = { wallet: string; burner: Address; router: Address; amount?: bigint; nonce?: bigint; route?: Hex; issued?: number; burnId?: Hex };
 
 /** The one line the destination wallet signs, from the format the route carries. */
 export function exitProofMessage(format: SolanaProofFormat, fields: ProofFields): string {
@@ -59,6 +59,7 @@ export function exitProofMessage(format: SolanaProofFormat, fields: ProofFields)
     nonce: fields.nonce?.toString(),
     route: fields.route?.toLowerCase(),
     issued: fields.issued === undefined ? undefined : String(fields.issued),
+    burnId: fields.burnId?.toLowerCase(),
   };
   const line = format.template.replace(/\{([A-Za-z0-9]+)\}/g, (_, name: string) => {
     const value = values[name];
@@ -75,14 +76,35 @@ const OFFCHAIN_DOMAIN = concat(Uint8Array.of(0xff), utf8('solana offchain'));
  * each: 0 the text (a wallet's signMessage), 1 the off-chain message envelope (solana sign-offchain-message),
  * 2 the envelope with an application domain (all zero here) and the signer.
  */
-export function proofEnvelopes(message: string, publicKey: Bytes): { name: string; tag: number; bytes: Bytes }[] {
+export function proofEnvelopes(message: string, publicKey: Bytes, applicationDomain: Bytes = new Uint8Array(32)): { name: string; tag: number; bytes: Bytes }[] {
   const body = utf8(message);
   const length = Uint8Array.of(body.length & 0xff, body.length >> 8);
   return [
     { name: 'text', tag: 0, bytes: body },
     { name: 'offchain-v0', tag: 1, bytes: concat(OFFCHAIN_DOMAIN, Uint8Array.of(0, 0), length, body) },
-    { name: 'offchain-v0-with-signers', tag: 2, bytes: concat(OFFCHAIN_DOMAIN, Uint8Array.of(0), new Uint8Array(32), Uint8Array.of(0, 1), publicKey, length, body) },
+    { name: 'offchain-v0-with-signers', tag: 2, bytes: concat(OFFCHAIN_DOMAIN, Uint8Array.of(0), applicationDomain, Uint8Array.of(0, 1), publicKey, length, body) },
   ];
+}
+
+/**
+ * A proof as the router carries it and publishes it in its log (tag | 64-byte signature [| 32-byte application
+ * domain]), checked the way every signer checks it (sol_proof): the router's shape rule (tag 0 or 1 with 65 bytes,
+ * tag 2 with 97), then the signature over the ONE byte string its own tag names. A right signature under another
+ * tag is refused. This is the page's own reading; it never stands in for the signers' decision.
+ */
+export async function verifyCarriedProof(message: string, wallet: string, proof: Hex): Promise<{ ok: true; envelope: string } | { ok: false; reason: string }> {
+  let key: Bytes;
+  try {
+    key = pubkey(wallet);
+  } catch {
+    return { ok: false, reason: 'the destination is not a Solana address' };
+  }
+  if (!/^0x([0-9a-f]{2})*$/i.test(proof)) return { ok: false, reason: 'the proof is not bytes' };
+  const bytes = fromHex(proof.slice(2));
+  const tag = bytes[0];
+  if (!((tag === 0 || tag === 1) && bytes.length === 65) && !(tag === 2 && bytes.length === 97)) return { ok: false, reason: 'the proof does not have the router\'s shape' };
+  const envelope = proofEnvelopes(message, key, tag === 2 ? bytes.slice(65, 97) : undefined).find((e) => e.tag === tag)!;
+  return (await verify(key, envelope.bytes, bytes.slice(1, 65))) ? { ok: true, envelope: envelope.name } : { ok: false, reason: 'the signature is not by the destination wallet over this exit\'s line' };
 }
 
 /** Exactly 64 bytes from base58, hex or base64 text (as wallets and the Solana CLI print a signature). */
