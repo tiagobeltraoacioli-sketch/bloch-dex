@@ -23,7 +23,7 @@
 import { verifyExistingPair } from "./deploy-dex.mjs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { createJsonRpcRequest, verifySafe } from "./finality-gate.mjs";
+import { createJsonRpcRequest, OWNER_FEE_EOA, verifySafe } from "./finality-gate.mjs";
 import { BRIDGE_BUCKET_DIVISOR, EMPTY_CODE_HASH, loadArtifacts, stableJson } from "./dex-deploy-config.mjs";
 import { verifyInfra } from "./infra-deploy-config.mjs";
 import { isMain } from "./is-main.mjs";
@@ -107,7 +107,10 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
 
   const chainId = BigInt(await request("eth_chainId", []));
   const genesis = await request("eth_getBlockByNumber", ["0x0", false]);
-  for (const plan of [safePlan, dexPlan, ...(infraPlan ? [infraPlan] : [])]) {
+  // Owner decision 2026-11-17: Bloch Inc may be the owner's pinned plain fee address; then there is no Safe plan.
+  const ownerEoa = dexPlan.roles?.blochInc?.address === OWNER_FEE_EOA;
+  refuse(ownerEoa ? !safePlan : Boolean(safePlan), ownerEoa ? "Bloch Inc is the owner's plain fee address: do not pass a Safe plan" : "--safe-plan is required (Bloch Inc is the Safe)");
+  for (const plan of [...(safePlan ? [safePlan] : []), dexPlan, ...(infraPlan ? [infraPlan] : [])]) {
     refuse(chainId === BigInt(plan.chain.id), `RPC chain ID ${chainId} differs from the plan`);
     refuse(genesis?.hash === plan.chain.genesisHash, `RPC genesis ${genesis?.hash} differs from the plan's ${plan.chain.genesisHash}`);
   }
@@ -118,7 +121,17 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
   // Chain utility contracts.
   if (infraPlan) await verifyInfra(infraPlan, request, block, ok);
 
+  if (ownerEoa) {
+    // The owner's plain fee address: exactly that pin, the fee recipient, and no code at the checked block.
+    refuse(stableJson(dexPlan.roles.blochInc) === stableJson({ address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH }), "the DEX plan's Bloch Inc pin is not exactly the owner's plain fee address with no code");
+    refuse(dexPlan.feeTo === OWNER_FEE_EOA, "the DEX fee recipient is not the owner's plain fee address");
+    const code = await request("eth_getCode", [OWNER_FEE_EOA, block]);
+    refuse(code === "0x", `the owner's fee address has code${typeof code === "string" && code.toLowerCase().startsWith("0xef0100") ? " (an EIP-7702 delegation)" : ""}`);
+    ok("fee recipient = the owner's plain fee address, no code", OWNER_FEE_EOA);
+    report.ownerFeeAddress = OWNER_FEE_EOA;
+  }
   // The fee recipient pinned in the DEX plan is exactly the planned Safe.
+  if (!ownerEoa) {
   refuse(stableJson(dexPlan.roles.blochInc) === stableJson(safePlan.blochInc), "the DEX plan's Bloch Inc pin differs from the Safe plan");
   refuse(dexPlan.feeTo === safePlan.contracts.proxy.address, "the DEX fee recipient is not the planned Safe");
   ok("fee recipient = planned Safe", dexPlan.feeTo);
@@ -131,6 +144,7 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
   const safe = await verifySafe(safePlan.blochInc.safe, safePlan.contracts.proxy.address, request, block);
   ok("safe singleton/handler/guard/modules/threshold/owners/VERSION", `${safe.threshold} of ${safe.owners.length}`);
   report.safe = { address: safe.address, threshold: safe.threshold, owners: safe.owners, nonce: (await call(safe.address, "nonce")).toString() };
+  }
 
   // DEX contracts and immutables.
   const { contracts } = dexPlan;
@@ -187,7 +201,7 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
   }
 
   // Keys: nonces consumed exactly as planned; transactions as planned.
-  const keys = [["bootstrap", safePlan, safePlan.bootstrap], ["deployer", dexPlan, dexPlan.deployer]];
+  const keys = [...(safePlan ? [["bootstrap", safePlan, safePlan.bootstrap]] : []), ["deployer", dexPlan, dexPlan.deployer]];
   if (infraPlan) keys.push(["infra deployer", infraPlan, infraPlan.deployer]);
   for (const [name, plan, from] of keys) {
     const nonce = BigInt(await request("eth_getTransactionCount", [from, block]));
@@ -196,7 +210,7 @@ export async function verifyDeployment({ safePlan, dexPlan, infraPlan, artifacts
     report[`${name}Balance`] = balance.toString();
     ok(`${name} nonce`, `${from} ${nonce}`);
   }
-  const recorded = [["safe", safePlan, safePlan.bootstrap, safeHashes], ["dex", dexPlan, dexPlan.deployer, dexHashes]];
+  const recorded = [...(safePlan ? [["safe", safePlan, safePlan.bootstrap, safeHashes]] : []), ["dex", dexPlan, dexPlan.deployer, dexHashes]];
   if (infraPlan) recorded.push(["infra", infraPlan, infraPlan.deployer, infraHashes]);
   for (const [name, plan, from, hashes] of recorded) {
     if (!hashes) continue;
@@ -236,7 +250,8 @@ function parse(argv) {
     refuse(key && i + 1 < argv.length, `unknown or incomplete argument ${argv[i]}`);
     options[key] = argv[++i];
   }
-  refuse(options.safePlan && options.dexPlan && options.infraPlan && options.rpc, "--safe-plan, --dex-plan, --infra-plan and --rpc are required");
+  // --safe-plan is required unless Bloch Inc is the owner's plain fee address (verifyDeployment decides).
+  refuse(options.dexPlan && options.infraPlan && options.rpc, "--dex-plan, --infra-plan and --rpc are required (and --safe-plan unless Bloch Inc is the owner's plain fee address)");
   refuse(["latest", "finalized"].includes(options.at), "--at must be latest or finalized");
   return options;
 }
@@ -252,7 +267,7 @@ if (isMain(import.meta.url)) {
   try {
     const o = parse(process.argv.slice(2));
     const report = await verifyDeployment({
-      safePlan: JSON.parse(await readFile(o.safePlan, "utf8")),
+      safePlan: o.safePlan ? JSON.parse(await readFile(o.safePlan, "utf8")) : null,
       dexPlan: JSON.parse(await readFile(o.dexPlan, "utf8")),
       infraPlan: JSON.parse(await readFile(o.infraPlan, "utf8")),
       artifacts: await loadArtifacts(o.outDir),

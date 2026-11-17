@@ -293,6 +293,24 @@ Preconditions:
 
 The sequence:
 
+**Owner decision of 2026-11-17: Bloch Inc is the owner's plain address
+`0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544` (no Safe).** Steps 1 to 4 (the Safe) are then
+skipped, and step 5 sets, in `dex-mainnet.config.json`:
+
+```
+"blochInc": { "address": "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544", "codeHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470" }
+```
+
+That exact address is the only Bloch Inc the tools accept without code (`OWNER_FEE_EOA` in
+`script/DeployMainnet.s.sol` and `scripts/staging/finality-gate.mjs`); any other address must still be the
+pinned Safe. `deploy-dex.mjs preflight` and `run` then need `--rpc2 <second endpoint, another operator>`:
+the address's code is read from both endpoints at one block hash and must be empty (an EIP-7702
+delegation is refused), and the deploy script refuses it again on chain. `verify-deployment.mjs` and
+`check-finality-gate-mainnet.mjs` are run without `--safe-plan`. The fee is then redeemed by that address
+itself (`pair.transfer(pair, fee)`, `pair.burn(address)`), signed with the owner's own wallet. Keep the
+address free of any EIP-7702 delegation: it is the permanent fee recipient. Rehearsal:
+`BLOCH_INC_MODE=owner-eoa scripts/staging/rehearse-deploy-anvil.sh <revision> 700770 <port>`.
+
 0. Fill `deployer.address` in `infra.config.json` with a fresh key and fund it
    with gas only. Run `deploy-infra.mjs validate`, `plan --write`, `preflight`
    and `txs`, then `sign-and-publish.sh`, and commit the plan and the hashes.

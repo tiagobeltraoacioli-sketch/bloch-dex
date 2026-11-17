@@ -8,7 +8,9 @@ import {
   EMPTY_CODE_HASH,
   MAINNET_CHAIN_ID,
   NETWORKS,
+  OWNER_FEE_EOA,
   RETIRED_CHAIN_IDS,
+  isOwnerFeeEoaPin,
   SAFE_V141,
   configSha256,
   dexTransactions,
@@ -592,4 +594,76 @@ test("the first depositor is never a Safe owner", () => {
     c.firstDepositor = c.blochInc.safe.owners[0];
     assert.throws(() => validateDeployConfig(c), /must not be a Bloch Inc Safe owner/);
   }
+});
+
+// Owner decision of 2026-11-17: Bloch Inc on the Bloch L2 DEX is the owner's plain address 0x775a…0544.
+test("blochInc: exactly the owner's pinned plain address is accepted without code; any other address keeps the Safe rule", async () => {
+  assert.equal(OWNER_FEE_EOA, "0x775a993f09bd80aecf8f8c2ade0c84158e3a0544");
+  const source = await readFile(new URL("../../script/DeployMainnet.s.sol", import.meta.url), "utf8");
+  assert.equal(source.match(/OWNER_FEE_EOA = (0x[0-9a-fA-F]{40});/)[1].toLowerCase(), OWNER_FEE_EOA, "DeployMainnet.s.sol mirrors the pinned address");
+  const eoa = (change = () => {}) => config((c) => { c.blochInc = { address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH }; change(c); });
+  validateDeployConfig(eoa());
+  assert.ok(isOwnerFeeEoaPin(eoa().blochInc));
+  const plan = planDeployment(eoa(), artifacts());
+  assert.equal(plan.feeTo, OWNER_FEE_EOA);
+  assert.deepEqual(plan.roles.blochInc, { address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH });
+  assert.equal(forgeEnvironment(plan).DEX_BLOCH_INC, OWNER_FEE_EOA);
+  assert.equal(forgeEnvironment(plan).DEX_BLOCH_INC_CODEHASH, EMPTY_CODE_HASH);
+  const gate = gateConfigFromPlan(plan, plan.steps.map((_, i) => hash(String(i + 1))), GATE_DOMAIN);
+  validateGateConfig(gate);
+  for (const [change, error] of [
+    [(c) => { c.blochInc.codeHash = hash("7"); }, /owner's plain fee address: its codeHash must be the empty-code hash/],
+    [(c) => { c.blochInc.safe = structuredClone(SAFE_PIN); }, /owner's plain fee address: it has no Safe pin/],
+    [(c) => { c.blochInc.address = addr("e"); }, /multisig contract, not an externally owned account/],
+    [(c) => { c.blochInc.address = OWNER_FEE_EOA.toUpperCase().replace("0X", "0x"); }, /blochInc.address must be a nonzero lowercase address/],
+    [(c) => { c.firstDepositor = OWNER_FEE_EOA; }, /first depositor must be a fresh EOA, not Bloch Inc|distinct/],
+  ]) assert.throws(() => validateDeployConfig(eoa(change)), error);
+  // The gate keeps the same rule: an empty-code pin is accepted only for the owner's address.
+  const other = structuredClone(gate);
+  other.deployment.roles.blochInc.address = addr("e");
+  other.deployment.feeTo = addr("e");
+  assert.throws(() => validateGateConfig(other), /safe is required on the mainnet|multisig contract/);
+  const withSafe = structuredClone(gate);
+  withSafe.deployment.roles.blochInc.codeHash = hash("7");
+  assert.throws(() => validateGateConfig(withSafe), /owner's plain fee address/);
+});
+
+test("preflight: the owner's plain fee address is read from two endpoints at one block hash (no code, no EIP-7702 delegation)", async () => {
+  const HEAD = { number: "0x10", hash: hash("d") };
+  // An endpoint: the shared fixture plus the head block, the block by hash and the code at a block hash.
+  const endpoint = (plan, { code = "0x", knowsHead = true, chainId } = {}) => {
+    const base = chain(plan, { code: { [ASSET]: "0xaa" }, ...(chainId ? { chainId } : {}) }).request;
+    const calls = [];
+    const request = async (method, params) => {
+      calls.push([method, params]);
+      if (method === "eth_getBlockByNumber" && params[0] === "latest") return HEAD;
+      if (method === "eth_getBlockByHash") return knowsHead && params[0] === HEAD.hash ? HEAD : null;
+      if (method === "eth_getCode" && params[0] === OWNER_FEE_EOA) {
+        assert.deepEqual(params[1], { blockHash: HEAD.hash, requireCanonical: true }, "read at the agreed block hash");
+        return code;
+      }
+      return base(method, params);
+    };
+    return { request, calls };
+  };
+  const eoa = (c) => { c.blochInc = { address: OWNER_FEE_EOA, codeHash: EMPTY_CODE_HASH }; c.reserveCaps[1].codeHash = keccak256("0xaa"); };
+  const mainnet = planDeployment(config(eoa), artifacts());
+  const a = endpoint(mainnet), b = endpoint(mainnet);
+  const ok = await preflight(mainnet, a.request, { second: b.request });
+  assert.deepEqual(ok.ownerFeeEoa, { block: { number: "16", hash: HEAD.hash }, endpoints: 2 });
+  assert.ok(b.calls.some(([m]) => m === "eth_getCode"), "the second endpoint was asked for the code");
+  await assert.rejects(preflight(mainnet, endpoint(mainnet).request), /pass --rpc2/);
+  const delegated = `0xef0100${"63c0c19a282a1b52b07dd5a65b58948a07dae32b"}`;
+  for (const [first, second, pattern] of [
+    [{}, { code: delegated }, /EIP-7702 delegated \(endpoint 2\)/],
+    [{ code: delegated }, {}, /EIP-7702 delegated \(endpoint 1\)/],
+    [{}, { code: "0x6000" }, /has code \(endpoint 2\)/],
+    [{}, { knowsHead: false }, /endpoint 2 does not know block/],
+    [{}, { chainId: "0x1" }, /second RPC's chain ID/],
+  ]) {
+    await assert.rejects(preflight(mainnet, endpoint(mainnet, first).request, { second: endpoint(mainnet, second).request }), pattern);
+  }
+  // A rehearsal may run on one endpoint; the result says so.
+  const rehearsal = planDeployment(config((c) => { devnet(c); eoa(c); }), artifacts(), { rehearsal: true });
+  assert.equal((await preflight(rehearsal, endpoint(rehearsal).request)).ownerFeeEoa.endpoints, 1);
 });

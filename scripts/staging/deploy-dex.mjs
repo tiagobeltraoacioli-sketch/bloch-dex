@@ -9,7 +9,10 @@
 //   record   --config C --plan P --rpc URL (--broadcast-file F | --tx-hashes H)
 //            [--rehearsal] [--out-dir out] --write G
 //   pending  --config C                    list every TBD-owner/null field
-//   preflight --config C --plan P --rpc URL [--rehearsal]   read-only checks only
+//   preflight --config C --plan P --rpc URL [--rpc2 URL2] [--rehearsal]   read-only checks only
+//            (--rpc2, a second endpoint run by another operator, is required on the mainnet when Bloch Inc
+//            is the owner's plain fee address: its "no code, no EIP-7702 delegation" is read from both at
+//            one block hash; `run` takes it too)
 //   txs      --config C --plan P --write T [--rehearsal]    unsigned transactions
 //   check-pair --plan P --rpc URL   is the planned pair, created by anyone, identical?
 //
@@ -24,7 +27,7 @@
 import { spawnSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { BUCKET_CAPACITY_SELECTOR, createJsonRpcRequest, GATE_DOMAIN, verifySafe } from "./finality-gate.mjs";
+import { BUCKET_CAPACITY_SELECTOR, createJsonRpcRequest, GATE_DOMAIN, OWNER_FEE_EOA, verifySafe } from "./finality-gate.mjs";
 import {
   BRIDGE_BUCKET_DIVISOR,
   EMPTY_CODE_HASH,
@@ -72,7 +75,7 @@ export function parseArgs(argv) {
       options[arg === "--rehearsal" ? "rehearsal" : "broadcast"] = true;
       continue;
     }
-    const key = { "--config": "config", "--plan": "plan", "--rpc": "rpc", "--write": "write", "--confirm": "confirm",
+    const key = { "--config": "config", "--plan": "plan", "--rpc": "rpc", "--rpc2": "rpc2", "--write": "write", "--confirm": "confirm",
       "--out-dir": "outDir", "--broadcast-file": "broadcastFile", "--tx-hashes": "txHashes" }[arg];
     refuse(key && i + 1 < own.length, `unknown or incomplete argument ${arg}`);
     refuse(options[key] === undefined || key === "outDir", `${arg} given twice`);
@@ -107,8 +110,30 @@ function codeHashOf(code) {
   return code === "0x" ? EMPTY_CODE_HASH : keccak256(code);
 }
 
-/// Read-only checks against the target RPC before forge is started.
-export async function preflight(plan, request) {
+/// Owner decision 2026-11-17: Bloch Inc may be the owner's plain fee address. The fee recipient is fixed in
+/// the factory forever, so "no code and no EIP-7702 delegation" is read from TWO endpoints at ONE block:
+/// the first endpoint's head block is fetched by hash from both (same number and hash), then both return
+/// the account's code at that block hash, which must be exactly empty ("0x"). A delegation designator
+/// (0xef0100 || delegate) is code and is refused by name. Returns the block the check was made at.
+export async function checkOwnerFeeEoa(address, requests) {
+  refuse(address === OWNER_FEE_EOA, `${address} is not the owner's pinned fee address`);
+  refuse(Array.isArray(requests) && requests.length >= 2, "the owner's fee address must be read from two endpoints (--rpc and --rpc2)");
+  const head = await requests[0]("eth_getBlockByNumber", ["latest", false]);
+  refuse(head && /^0x[0-9a-f]{64}$/.test(head.hash), "the first endpoint returned no head block");
+  for (const [index, request] of requests.entries()) {
+    const seen = await request("eth_getBlockByHash", [head.hash, false]);
+    refuse(seen?.hash === head.hash && seen.number === head.number, `endpoint ${index + 1} does not know block ${head.hash}`);
+    const code = await request("eth_getCode", [address, { blockHash: head.hash, requireCanonical: true }]);
+    refuse(typeof code === "string", `endpoint ${index + 1} returned no code reading for Bloch Inc`);
+    refuse(!code.toLowerCase().startsWith("0xef0100"), `Bloch Inc ${address} is EIP-7702 delegated (endpoint ${index + 1}): refused`);
+    refuse(code === "0x", `Bloch Inc ${address} has code (endpoint ${index + 1}): the owner's fee address must be a plain account`);
+  }
+  return { block: { number: BigInt(head.number).toString(), hash: head.hash } };
+}
+
+/// Read-only checks against the target RPC before forge is started. `second` is the request function of a
+/// second endpoint; it is required on the mainnet when Bloch Inc is the owner's plain fee address.
+export async function preflight(plan, request, { second = null } = {}) {
   refuse(BigInt(await request("eth_chainId", [])) === BigInt(plan.chain.id), "RPC chain ID does not match the plan");
   const genesis = await request("eth_getBlockByNumber", ["0x0", false]);
   refuse(genesis?.hash === plan.chain.genesisHash, "RPC genesis hash does not match the pinned value");
@@ -134,12 +159,24 @@ export async function preflight(plan, request) {
     refuse(BigInt(result) === BigInt(bridgeBucketCapacity), `${symbol} bridge bucket capacity differs from the config`);
     refuse(caps.get(token) * BRIDGE_BUCKET_DIVISOR <= BigInt(result), `${symbol} cap exceeds 1/${BRIDGE_BUCKET_DIVISOR} of its bridge bucket`);
   }
+  let ownerFeeEoa = null;
   for (const [name, { address, codeHash, safe }] of Object.entries(plan.roles)) {
+    if (name === "blochInc" && address === OWNER_FEE_EOA && codeHash === EMPTY_CODE_HASH && !safe) {
+      // A second endpoint is required on the mainnet; a rehearsal may run with one (stated in the result).
+      if (second) {
+        refuse(BigInt(await second("eth_chainId", [])) === BigInt(plan.chain.id), "the second RPC's chain ID does not match the plan");
+        refuse((await second("eth_getBlockByNumber", ["0x0", false]))?.hash === plan.chain.genesisHash, "the second RPC's genesis hash does not match the pinned value");
+      }
+      refuse(second || plan.chain.rehearsal === true, "Bloch Inc is the owner's plain fee address: pass --rpc2 (a second endpoint) on the mainnet");
+      ownerFeeEoa = await checkOwnerFeeEoa(address, second ? [request, second] : [request, request]);
+      ownerFeeEoa.endpoints = second ? 2 : 1;
+      continue;
+    }
     const observed = codeHashOf(await request("eth_getCode", [address, "latest"]));
     refuse(observed !== EMPTY_CODE_HASH && observed === codeHash, `${name} code hash differs (it must be the reviewed multisig)`);
     if (safe) await verifySafe(safe, address, request, "latest");
   }
-  return { nonce: latest.toString() };
+  return { nonce: latest.toString(), ...(ownerFeeEoa ? { ownerFeeEoa } : {}) };
 }
 
 /// Verify broadcast transactions on chain and order them by nonce.
@@ -253,12 +290,14 @@ export async function main(argv) {
   }
   refuse(options.plan && options.rpc, "--plan and --rpc are required");
   const request = createJsonRpcRequest(options.rpc);
+  refuse(!options.rpc2 || options.rpc2 !== options.rpc, "--rpc2 must be a different endpoint from --rpc");
+  const second = options.rpc2 ? createJsonRpcRequest(options.rpc2) : null;
   if (options.command === "preflight") {
-    return { decision: "preflight-ok", configSha256: plan.configSha256, ...(await preflight(plan, request)) };
+    return { decision: "preflight-ok", configSha256: plan.configSha256, ...(await preflight(plan, request, { second })) };
   }
   if (options.command === "run") {
     refuse(!options.broadcast || options.confirm === plan.configSha256, `--broadcast needs --confirm ${plan.configSha256}`);
-    const checked = await preflight(plan, request);
+    const checked = await preflight(plan, request, { second });
     runForge(plan, options);
     return { decision: options.broadcast ? "broadcast" : "dry-run", configSha256: plan.configSha256, ...checked };
   }

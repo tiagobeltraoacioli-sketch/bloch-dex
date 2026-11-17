@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { validateSafePin } from "./finality-gate.mjs";
+import { OWNER_FEE_EOA, validateSafePin } from "./finality-gate.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, getContractAddress, encodeAbiParameters, encodeFunctionData, encodePacked } = requireFromFrontend("viem");
@@ -52,6 +52,13 @@ export const SAFE_V141 = Object.freeze({
 });
 export const UINT112_MAX = (1n << 112n) - 1n;
 export const EMPTY_CODE_HASH = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470";
+/// Owner decision of 2026-11-17: Bloch Inc (the fee recipient) on the Bloch L2 DEX is the owner's plain
+/// address. Only this exact address may be Bloch Inc without code (pin {address, codeHash: EMPTY_CODE_HASH},
+/// no Safe pin); every other address must be the pinned Safe. Mirrored by DeployMainnet.s.sol OWNER_FEE_EOA.
+export { OWNER_FEE_EOA };
+/// True when a Bloch Inc pin is the owner's plain address (and nothing else).
+export const isOwnerFeeEoaPin = (pin) =>
+  Boolean(pin) && pin.address === OWNER_FEE_EOA && pin.codeHash === EMPTY_CODE_HASH && !Object.hasOwn(pin, "safe");
 export const MAX_CAP_TOKENS = 8;
 export const MAX_INITIAL_PAIRS = 4;
 /// Compiler settings the artifacts must have been built with (foundry.toml).
@@ -231,12 +238,20 @@ export function validateDeployConfig(config, { rehearsal = false } = {}) {
   exactKeys(config.blochInc, blochIncKeys, "blochInc");
   address(config.blochInc.address, "blochInc.address");
   hash(config.blochInc.codeHash, "blochInc.codeHash");
-  refuse(config.blochInc.codeHash !== EMPTY_CODE_HASH, "blochInc must be a multisig contract, not an externally owned account");
+  // The owner's pinned plain address (owner decision 2026-11-17) is the only Bloch Inc without code; it
+  // carries no Safe pin. Any other address keeps every multisig rule below.
+  const ownerEoa = config.blochInc.address === OWNER_FEE_EOA;
+  if (ownerEoa) {
+    refuse(config.blochInc.codeHash === EMPTY_CODE_HASH, "blochInc is the owner's plain fee address: its codeHash must be the empty-code hash (no code, no EIP-7702 delegation)");
+    refuse(!Object.hasOwn(config.blochInc, "safe"), "blochInc is the owner's plain fee address: it has no Safe pin");
+  } else {
+    refuse(config.blochInc.codeHash !== EMPTY_CODE_HASH, `blochInc must be a multisig contract, not an externally owned account (the only plain address accepted is the owner's ${OWNER_FEE_EOA})`);
+  }
   refuse(config.blochInc.address !== config.deployer.address, "the deployer and Bloch Inc must be distinct accounts");
   // F1, limit L1: the first depositor is single-purpose, so it is never one of the Safe's owners.
   refuse(!(config.blochInc.safe?.owners ?? []).includes(config.firstDepositor), "the first depositor must not be a Bloch Inc Safe owner: use a fresh EOA made only for the seed");
   const { safe } = config.blochInc;
-  refuse(network.rehearsal || safe, "blochInc.safe is required on the mainnet (the pinned Bloch Inc Safe v1.4.1)");
+  refuse(network.rehearsal || ownerEoa || safe, "blochInc.safe is required on the mainnet (the pinned Bloch Inc Safe v1.4.1)");
   if (safe) {
     validateSafePin(safe, "blochInc.safe", refuse);
     // On the mainnet the code must be the official v1.4.1 release; a rehearsal

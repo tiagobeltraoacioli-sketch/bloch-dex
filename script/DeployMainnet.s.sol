@@ -50,6 +50,10 @@ contract DeployMainnet {
     /// @dev Same technical ceiling as the deploy config validator and the gate.
     uint256 public constant MAX_WRAPPED_CAP = 10 ether;
     bytes32 public constant EMPTY_CODE_HASH = keccak256("");
+    /// Owner decision of 2026-11-17: Bloch Inc (the fee recipient) on the Bloch L2 DEX is the owner's
+    /// plain address, pinned here. Only this address may be Bloch Inc without code; every other
+    /// address must still be the pinned multisig contract.
+    address public constant OWNER_FEE_EOA = 0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544;
 
     struct Planned {
         address wrapped;
@@ -185,17 +189,25 @@ contract DeployMainnet {
 
     /// @dev Nothing may already live at a planned address, Bloch Inc must be
     ///      the reviewed multisig contract (never an EOA: the fee recipient is
-    ///      permanent, so it must not hinge on one key), and the wrapper cap
+    ///      permanent, so it must not hinge on one key) except the owner's one
+    ///      pinned plain address OWNER_FEE_EOA (owner decision, 2026-11-17),
+    ///      which must have no code at all; and the wrapper cap
     ///      must be present and inside the technical ceiling.
     function _checkPreconditions(Settings memory s, Planned memory p) private view {
         require(
             s.firstDepositor.code.length == 0 && vm.getNonce(s.firstDepositor) == 0, "MAINNET: FIRST_DEPOSITOR_USED"
         );
-        require(
-            s.blochIncCodeHash != EMPTY_CODE_HASH && s.blochInc.code.length > 0
-                && s.blochInc.codehash == s.blochIncCodeHash,
-            "MAINNET: BLOCH_INC_CODE"
-        );
+        if (s.blochInc == OWNER_FEE_EOA) {
+            // The owner's pinned plain address: the pin must say "no code" and the account must have
+            // none (an EIP-7702 delegation designator is code, so a delegated account is refused).
+            require(s.blochIncCodeHash == EMPTY_CODE_HASH && s.blochInc.code.length == 0, "MAINNET: BLOCH_INC_CODE");
+        } else {
+            require(
+                s.blochIncCodeHash != EMPTY_CODE_HASH && s.blochInc.code.length > 0
+                    && s.blochInc.codehash == s.blochIncCodeHash,
+                "MAINNET: BLOCH_INC_CODE"
+            );
+        }
         if (s.deployWrapped) {
             require(p.wrapped.code.length == 0, "MAINNET: WRAPPED_OCCUPIED");
         } else {
