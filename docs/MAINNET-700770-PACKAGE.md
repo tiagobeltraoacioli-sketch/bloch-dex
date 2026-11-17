@@ -280,7 +280,7 @@ The two runs differ as follows:
   prove L1 settlement.
 
 The run results are in the agent report
-(`~/Desktop/BLOCH-L2-DEX-BRIDGE-20261030/agents/15-dex-deploy.md`).
+(agent 15's report, `agents/15-dex-deploy.md` in the coordination folder, not in this repository).
 
 ## Mainnet sequence (owner)
 

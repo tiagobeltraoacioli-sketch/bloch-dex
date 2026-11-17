@@ -115,15 +115,20 @@ has done nothing and will do nothing but the deposits this package prints.
 - It is **not** the fee address and has no claim on the protocol fee.
 
 **How it was made (the owner did this on 2026-11-17; kept here as the procedure).** On a machine that can be
-offline while the key is created, with Foundry installed. The directory is an example (it is where the owner
-keeps this one); any private directory will do.
+offline while the key is created, with Foundry installed. The keystore lives in a private directory of the
+owner's choice, named here only through the variable `DEX_DEPOSITOR_KEYSTORE_DIR`; this repository never names
+the real one (replace `<owner-keystore-dir>` by it, once per terminal):
 
 ```
-mkdir -p ~/Desktop/DEX-CHAVE-DEPOSITANTE
+export DEX_DEPOSITOR_KEYSTORE_DIR=<owner-keystore-dir>
 ```
 
 ```
-cast wallet new ~/Desktop/DEX-CHAVE-DEPOSITANTE depositante
+mkdir -p "$DEX_DEPOSITOR_KEYSTORE_DIR"
+```
+
+```
+cast wallet new "$DEX_DEPOSITOR_KEYSTORE_DIR" depositante
 ```
 
 `cast` asks for a password twice (nothing is shown while typing), writes one file, the encrypted keystore
@@ -131,7 +136,7 @@ cast wallet new ~/Desktop/DEX-CHAVE-DEPOSITANTE depositante
 `Address: 0x…`. The private key is never shown and is never typed anywhere. To read the address again later:
 
 ```
-cast wallet address --keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante
+cast wallet address --keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"
 ```
 
 Then, online, check the address (an address, never the key or the file) and record it:
@@ -161,7 +166,7 @@ Recorded on 2026-11-17 at 03:51:30 UTC (`firstDepositorCheck`): nonce 0, no pend
 on all 17 endpoints of the six chains (the first record, at 02:01:57 UTC, covered the 15 endpoints listed then).
 
 **Using it.** It signs only the two transactions `first-deposit.mjs prepare` prints, with
-`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` added (cast asks for the password). Nothing else,
+`--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"` added (cast asks for the password). Nothing else,
 ever: no other site, no claim, no other token, no transfer to a contract. It is not the deploying account
 (section 8): deploying from it would break "nonce 0 before the factory exists", and the pre gate would say so.
 
@@ -690,7 +695,7 @@ address, establishes the market price from the chain's two references (section 2
 mean), and prints two `cast send` commands. If it says there is no market price, or that the deposit is below
 the minimum, nothing is printed: nothing is wrong on the chain; try again later, or with a larger amount.
 Send the two printed commands as they are, adding only your signer option
-(`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` for the keystore of section 2.1) and `--rpc-url`;
+(`--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"` for the keystore of section 2.1) and `--rpc-url`;
 they carry `--chain`, so each is signed for this chain's id only (EIP-155) and any other chain's node rejects it
 (`cast` itself does not compare the id with the URL's chain: review R369-8). **Send them with `cast send`, one at
 a time, exactly as printed** (review R369-3): never import the depositing key into a browser wallet, never accept
