@@ -119,6 +119,10 @@ offline while the key is created, with Foundry installed. The directory is an ex
 keeps this one); any private directory will do.
 
 ```
+mkdir -p ~/Desktop/DEX-CHAVE-DEPOSITANTE
+```
+
+```
 cast wallet new ~/Desktop/DEX-CHAVE-DEPOSITANTE depositante
 ```
 
