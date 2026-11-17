@@ -71,17 +71,39 @@ function deriveEthereum(commit, entry) {
   same(vault.policy.windowLimit, token.limits.bucketCapacity, 'the window');
   same(vault.policy.l2MinBurn, token.limits.minBurn, 'the minimum burn');
   same(token.network.chainId, 700770, 'the L2 chain id');
+  // The relayer's gas ceiling (fee schedule of 2026-11-17) lives in the EVM routes' network table; it must state the
+  // same fees and minimums as the vault configuration, else the import stops (one source of truth, cross-checked).
+  let gasCeilingGwei;
+  if (entry.derive.networks) {
+    const cost = JSON.parse(show(commit, entry.derive.networks)).relayCost?.ethereum;
+    if (!cost) throw new Error('ethereum: tools/evm-nets/networks.json has no relayCost.ethereum');
+    same(cost.chainId, 1, 'the chain id in relayCost.ethereum');
+    same(cost.feeBps?.deposit, vault.provenance.fees.depositBps, 'the deposit fee (relayCost.ethereum)');
+    same(cost.feeBps?.release, vault.provenance.fees.releaseBps, 'the release fee (relayCost.ethereum)');
+    same(cost.minDeposit, vault.policy.minDeposit, 'the minimum deposit (relayCost.ethereum)');
+    same(cost.l2MinBurn, token.limits.minBurn, 'the minimum burn (relayCost.ethereum)');
+    if (typeof cost.gasCeilingGwei !== 'number' || !(cost.gasCeilingGwei > 0)) throw new Error('ethereum: relayCost.ethereum.gasCeilingGwei is not a positive number');
+    gasCeilingGwei = cost.gasCeilingGwei;
+  }
+  // Percent texts are written from the configured basis points (the template holds placeholders, never a number).
+  const percent = (bps) => {
+    if (!Number.isInteger(bps) || bps < 0 || bps > 30) throw new Error(`ethereum: fee ${bps} bps is outside 0..30 (the vault's ceiling)`);
+    return `${(bps / 100).toFixed(2)}%`;
+  };
+  const fill = (text) => text.replaceAll('{depositPercent}', percent(vault.provenance.fees.depositBps)).replaceAll('{releasePercent}', percent(vault.provenance.fees.releaseBps));
+  const filled = JSON.parse(fill(JSON.stringify(template)));
+  if (/\{(deposit|release)Percent\}/.test(JSON.stringify(filled))) throw new Error('ethereum: a percent placeholder was left unfilled');
   return {
-    ...template,
-    asset: { ...template.asset, id: vault.token },
-    custody: { ...template.custody, contract: vault.contract },
+    ...filled,
+    asset: { ...filled.asset, id: vault.token },
+    custody: { ...filled.custody, contract: vault.contract },
     committee: {
-      ...template.committee,
+      ...filled.committee,
       threshold: vault.signers.threshold,
       switchThreshold: vault.policy.switchThreshold,
       pauseSeconds: vault.guard.pauseDuration,
     },
-    l2: { ...template.l2, name: token.token.name, symbol: token.token.symbol },
+    l2: { ...filled.l2, name: token.token.name, symbol: token.token.symbol },
     limits: {
       cap: String(vault.cap),
       window: String(vault.policy.windowLimit),
@@ -95,11 +117,12 @@ function deriveEthereum(commit, entry) {
       ...(vault.provenance.releaseDelay ? { releaseDelaySeconds: vault.provenance.releaseDelay } : {}),
     },
     fee: {
-      ...template.fee,
+      ...filled.fee,
       depositBps: vault.provenance.fees.depositBps,
       releaseBps: vault.provenance.fees.releaseBps,
       recipient: vault.provenance.fees.recipient,
     },
+    release: { ...filled.release, ...(gasCeilingGwei !== undefined ? { gasCeilingGwei } : {}) },
   };
 }
 
@@ -118,7 +141,7 @@ for (const entry of config.networks) {
       derived: true,
       ref,
       commit,
-      from: [entry.derive.vaultConfig, entry.derive.tokenConfig].map((path) => ({
+      from: [entry.derive.vaultConfig, entry.derive.tokenConfig, ...(entry.derive.networks ? [entry.derive.networks] : [])].map((path) => ({
         path,
         sha256: sha256(show(commit, path)),
       })),
@@ -130,6 +153,14 @@ for (const entry of config.networks) {
     JSON.parse(bytes);
     put(target, bytes);
     sources.push({ network: entry.id, file: target, derived: false, ref, commit, path: entry.path, sha256: sha256(bytes) });
+  }
+  // Other published files of the same route at the same commit (test vectors), byte for byte.
+  for (const extra of entry.extras ?? []) {
+    const bytes = show(commit, extra.path);
+    JSON.parse(bytes);
+    const file = `${entry.id}/${extra.file}`;
+    put(file, bytes);
+    sources.push({ network: entry.id, file, derived: false, ref, commit, path: extra.path, sha256: sha256(bytes) });
   }
 }
 {

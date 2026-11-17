@@ -19,6 +19,7 @@ const FORMAT = SOLANA_PROOF_PAGE_V0;
 const ROUTER_FORMAT = {
   template: 'Bloch bridge exit v1: pay {amount} units burned by {burner} to my Solana wallet {wallet}. Nonce {nonce}. Router {router}. Chain {chainId}. Route {route}.',
   carriedBy: 'router' as const,
+  redirectTemplate: null,
 };
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 

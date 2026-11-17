@@ -75,7 +75,7 @@
     "steps": [
       "approve the vault for the amount on the USDC contract",
       "call deposit(amount, l2Recipient) on the vault",
-      "after source finality and the 12 hour mint delay the L2 token credits amount less 0.05% to l2Recipient"
+      "after source finality and the 12 hour mint delay the L2 token credits amount less {depositPercent} to l2Recipient"
     ],
     "refusals": [
       "an amount below minDeposit or above maxDeposit, or one that would pass the cap",
@@ -87,7 +87,7 @@
     "l2Function": "burn(uint64 amount, address sourceRecipient)",
     "recipientEncoding": "20-byte address on the source network",
     "typicalSeconds": 3600,
-    "paysAsset": "USDC, the burned amount less 0.05%",
+    "paysAsset": "USDC, the burned amount less {releasePercent}",
     "notes": [
       "a recipient blacklisted by the issuer cannot be paid until the issuer lifts it; the burn names the recipient and cannot be redirected"
     ]

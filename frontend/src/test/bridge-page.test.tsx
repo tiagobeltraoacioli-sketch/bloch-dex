@@ -71,7 +71,9 @@ describe('the bridge route with nothing deployed', () => {
     expect(rpc).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
     expect(fetchImpl).not.toHaveBeenCalled();
-  });
+    // 20 full renders of the route (10 networks x 2 directions) in one synchronous test: about 2 s unloaded, 17 s on
+    // the shared Mac at load 380 (agent 363, 2026-11-17). The timeout is raised; no assertion changed.
+  }, 60_000);
   it('says the L2 itself is not published while it is not', () => {
     setup();
     expect(screen.getByTestId('route-state').textContent).toMatch(/public RPC of the Bloch L2 is not published yet/);
