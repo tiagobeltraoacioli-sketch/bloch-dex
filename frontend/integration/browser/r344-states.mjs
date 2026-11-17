@@ -17,6 +17,9 @@ const hex = (n) => `0x${BigInt(n).toString(16)}`;
 const say = (line) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
 const chain = config.chains[0];
 const AMOUNT = '0.01';
+// R344_ONLY=8,9,7 runs only those numbered sections (1, 2 and 10 always run).
+const ONLY = (process.env.R344_ONLY ?? '').split(',').filter(Boolean);
+const on = (n) => ONLY.length === 0 || ONLY.includes(String(n));
 const out = { revision: config.revision, chain: chain.key, observations: {} };
 const note = (key, value) => {
   out.observations[key] = value;
@@ -179,7 +182,7 @@ try {
   await page.fill('Amount', '');
 
   // ---- 3. what an idle, visible page asks of the endpoints per renewal ----
-  {
+  if (on(3)) {
     const before = await counts();
     const b0 = await settledBlock();
     await delay(65_000);
@@ -188,7 +191,7 @@ try {
   }
 
   // ---- 4. a quote on screen when the snapshot is renewed ----
-  {
+  if (on(4)) {
     await quote();
     const first = await page.evaluate(cardState);
     await rpc('anvil_mine', [hex(60)]);
@@ -199,7 +202,7 @@ try {
   }
 
   // ---- 5. a quote refused inside the card (the second endpoint has no state for the snapshot block) ----
-  {
+  if (on(5)) {
     await modes('ok');
     await page.click('Refresh');
     await delay(2500);
@@ -217,7 +220,7 @@ try {
   }
 
   // ---- 6. the endpoints limit requests while a quote is on screen: the automatic re-read ----
-  {
+  if (on(6)) {
     await modes('ok');
     if (await page.button('Read now')) await page.click('Read now');
     await page.waitFor('the form back', `!!window.__h.button('Get quote')`, 60_000);
@@ -252,23 +255,8 @@ try {
     await page.evaluate(`(delete document.hidden, delete document.visibilityState, document.dispatchEvent(new Event('visibilitychange')), true)`);
   }
 
-  // ---- 7. one endpoint is behind the other ----
-  {
-    await modes('ok');
-    await rpc('anvil_mine', [hex(12), hex(30)]);
-    await modes('ok', { mode: 'behind', lag: 6 });
-    if (await page.button('Refresh')) await page.click('Refresh');
-    await page.waitVisibleText('/One endpoint is behind the other/', 60_000).catch(() => {});
-    const text = await visible();
-    const positions = await shots('07-behind', VARIANTS, where(KEYS));
-    note('7-behind', { shown: text.includes('One endpoint is behind the other'), text: text.slice(Math.max(0, text.indexOf('One endpoint is behind')), text.indexOf('One endpoint is behind') + 700), countdown: /Reading again in \d:\d\d/.test(text), swapReachable: await reach('Swap'), getQuoteReachable: await reach('Get quote'), noteOnScreen: text.includes(`On ${chain.name} this page treats a block as settled once`), positions });
-    await modes('ok');
-    if (await page.button('Read now')) await page.click('Read now');
-    await page.waitFor('the form back', `!!window.__h.button('Get quote')`, 150_000);
-  }
-
   // ---- 8. a held swap: what is on screen, keyboard order, the endpoint line, and the form after it is mined ----
-  {
+  if (on(8)) {
     await quote();
     await page.click('Swap');
     await page.waitText('/Do not resend with a new nonce/', 60_000);
@@ -301,7 +289,7 @@ try {
   }
 
   // ---- 9. the side panel and the token sheet with the keyboard ----
-  {
+  if (on(9)) {
     await page.evaluate(`(document.querySelector('.trust-details').focus(), true)`);
     await page.cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' });
     await page.cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
@@ -324,6 +312,21 @@ try {
     note('9-token-sheet', await page.evaluate(`(() => { const d = document.querySelector('dialog[open]'); return d ? { modal: d.matches(':modal'), text: d.innerText.replace(/\\s+/g, ' ').slice(0, 200) } : null; })()`));
     await page.cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
     await page.cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  }
+
+  // ---- 7. one endpoint is behind the other ----
+  if (on(7)) {
+    await modes('ok');
+    await rpc('anvil_mine', [hex(12), hex(30)]);
+    await modes('ok', { mode: 'behind', lag: 6 });
+    if (await page.button('Refresh')) await page.click('Refresh');
+    await page.waitVisibleText('/One endpoint is behind the other/', 60_000).catch(() => {});
+    const text = await visible();
+    const positions = await shots('07-behind', VARIANTS, where(KEYS));
+    note('7-behind', { shown: text.includes('One endpoint is behind the other'), text: text.slice(Math.max(0, text.indexOf('One endpoint is behind')), text.indexOf('One endpoint is behind') + 700), countdown: /Reading again in \d:\d\d/.test(text), swapReachable: await reach('Swap'), getQuoteReachable: await reach('Get quote'), noteOnScreen: text.includes(`On ${chain.name} this page treats a block as settled once`), positions });
+    await modes('ok');
+    if (await page.button('Read now')) await page.click('Read now');
+    await page.waitFor('the form back', `!!window.__h.button('Get quote')`, 150_000);
   }
 
   // ---- 10. every origin the page contacted, and the console ----
