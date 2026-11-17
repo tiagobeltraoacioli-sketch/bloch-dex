@@ -32,7 +32,7 @@ const { keccak256, encodeAbiParameters, encodeFunctionData, decodeFunctionResult
 
 export const DOC = "docs/OWNER-DEPLOY-NOW.md";
 export const CHAIN_STEPS = ["pre-gate", "deployer-balance", "gas-price", "deploy-dry-run", "deploy-broadcast", "post-gate-deployed", "market", "depositor-native", "depositor-token", "prepare", "send-suffix", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
-export const ONCE_STEPS = ["clone", "env-dyld", "env-path", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
+export const ONCE_STEPS = ["clone", "shim-dir", "shims", "env-path", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
 export const ORDER = ["op-mainnet", "base", "arbitrum-one", "linea", "bnb-smart-chain", "ethereum"];
 const DEPOSITOR_KEYSTORE = '--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"';
 // The document names the deploying key's directory only as DEX_DEPLOYER_KEYSTORE_DIR (H398-3); the dry run sets it
@@ -89,7 +89,16 @@ async function main() {
     return Boolean(ok);
   };
   const save = () => writeFileSync(join(out, "evidence.json"), `${JSON.stringify(evidence, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2)}\n`);
-  const envPrefix = `${blocks["once env-dyld"]}; ${blocks["once env-path"]}; `;
+  // The document's launchers (once) and its "every new terminal" PATH line, with the launcher directory moved into
+  // this run's own directory (the owner's ~/.local/share/dex-tools/shim is not written by a dry run).
+  const shimDir = join(out, "shim");
+  const shimmed = (cmd) => cmd.replaceAll("~/.local/share/dex-tools/shim", shimDir).replaceAll("$HOME/.local/share/dex-tools/shim", shimDir);
+  rmSync(shimDir, { recursive: true, force: true });
+  for (const step of ["shim-dir", "shims"]) {
+    const r = spawnSync("bash", ["-c", shimmed(blocks[`once ${step}`])], { encoding: "utf8" });
+    refuse(r.status === 0, `the document's ${step} block failed: ${r.stderr}`);
+  }
+  const envPrefix = `${shimmed(blocks["once env-path"])}; `;
   const keyDir = join(out, "deployer-key");
   // A fresh throwaway key per run (a keystore left by an earlier run has another password).
   rmSync(keyDir, { recursive: true, force: true });
@@ -123,9 +132,11 @@ async function main() {
     const reviewed = spawnSync("git", ["-C", join(out, "postern-dex"), "merge-base", "--is-ancestor", "a99f761", "origin/main"], { encoding: "utf8" });
     check("0 the clone succeeds and its main contains the reviewed a99f761", r.status === 0 && reviewed.status === 0, `${r.output.slice(-200)} ${reviewed.stderr}`);
     rmSync(join(out, "postern-dex"), { recursive: true, force: true });
-    r = sh("env-tools", `${blocks["once env-dyld"]} + ${blocks["once env-path"]}`, "command -v node; command -v forge; command -v cast; node --version; forge --version; cast --version");
+    // Through a script (as deploy.sh runs forge): the launcher must survive macOS removing DYLD_* variables.
+    writeFileSync(join(out, "tools-check.sh"), "#!/usr/bin/env bash\ncommand -v node; command -v forge; command -v cast; node --version; forge --version; cast --version\n", { mode: 0o755 });
+    r = sh("env-tools", `${blocks["once shims"]} + ${blocks["once env-path"]}`, join(out, "tools-check.sh"));
     const home = process.env.HOME;
-    check("0 the two terminal lines give Node v24.21.0 and Foundry 1.7.1 from ~/.local/share/dex-tools", r.status === 0 && r.output.includes(`${home}/.local/share/dex-tools/node/node-v24.21.0-darwin-x64/bin/node`) && r.output.includes(`${home}/.local/share/dex-tools/foundry/forge`) && /v24\.21\.0/.test(r.output) && /forge Version: 1\.7\.1/.test(r.output) && /cast Version: 1\.7\.1/.test(r.output), r.output);
+    check("0 the launchers and the PATH line give Node v24.21.0 and Foundry 1.7.1, also inside a script", r.status === 0 && r.output.includes(`${home}/.local/share/dex-tools/node/node-v24.21.0-darwin-x64/bin/node`) && r.output.includes(`${shimDir}/forge`) && /v24\.21\.0/.test(r.output) && /forge Version: 1\.7\.1/.test(r.output) && /cast Version: 1\.7\.1/.test(r.output), r.output);
     r = run("kit-tests");
     check("2.1 kit tests: fail 0", r.status === 0 && /ℹ fail 0/.test(r.output), r.output.slice(-400));
     r = run("check-depositor");
