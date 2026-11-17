@@ -1433,8 +1433,13 @@
     .page-subtitle {
       font-size: var(--text-small);
     }
+    /* The pair's name stays on one line; the period switch takes the next row when both do not fit. */
     .market-top {
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
+    }
+    .market-top .token-title h2,
+    .market-top .token-title p {
+      white-space: nowrap;
     }
     .market-top .token-title > .token-icon {
       width: 36px;

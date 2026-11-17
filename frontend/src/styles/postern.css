@@ -2525,6 +2525,11 @@ p.finality-line.microcopy {
   .mainnet-page:has(.live-hero) > .trust-strip {
     grid-row: 1;
   }
+  /* The stalled-finality alert is a paragraph, not a line: it takes the full width under the Refresh row. */
+  .mainnet-page:has(.live-hero) > .form-error.finality-line {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
 }
 
 /* ---------- Third pass: the hold state ---------- */
