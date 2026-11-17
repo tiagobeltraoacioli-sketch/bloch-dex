@@ -154,7 +154,12 @@ describe('multichain configuration', () => {
       chainId: 42161,
       chainName: 'Arbitrum One',
       nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-      rpcUrls: ['https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com'],
+      rpcUrls: [
+        'https://arb1.arbitrum.io/rpc',
+        'https://arbitrum.gateway.tenderly.co',
+        'https://arbitrum-one.public.blastapi.io',
+        'https://arbitrum-one-rpc.publicnode.com',
+      ],
       blockExplorerUrls: ['https://arbiscan.io'],
     });
   });

@@ -165,9 +165,14 @@ export async function submissionBoundary(rpc: Rpc, context: SubmissionContext, a
     'The canonical head changed while preparing the wallet request. Nothing was sent. Refresh and review again.',
   );
   await recheckFinality(rpc, finalized, head);
+  // The boundary only has to lie before the transaction's inclusion, and every later decision requires it to be
+  // canonical still. On a public chain the head can be replaced by a one-block reorganisation, and the hold
+  // could then never end (review R328-3P-1): there the boundary is the block already settled by the chain's
+  // confirmation rule. The Bloch L2 (an RPC without a strict reader) keeps the head.
+  const boundary = (rpc as Rpc & { strict?: Rpc }).strict ? finalized : head;
   return {
-    afterBlockNumber: head.number.toString(),
-    afterBlockHash: head.hash,
+    afterBlockNumber: boundary.number.toString(),
+    afterBlockHash: boundary.hash,
     nonce: nonce.toString(),
   };
 }
@@ -237,11 +242,15 @@ export function savedSwapDeadline(data: Hex): bigint | null {
 /**
  * Two decisions end a hold WITHOUT the saved call's own receipt: its deadline passed (`expiredSwap`), or another
  * transaction used its nonce (`finalizedReplacementReceipt`). If either were wrong, a second request could execute
- * next to the first. An RPC of a public chain whose page settles on a confirmation depth carries a stricter
+ * next to the first. A third is a receipt that says REVERTED (`finalizedTransactionReceipt`): after it the user
+ * may send the swap again. An RPC of a public chain whose page settles on a confirmation depth carries a stricter
  * reader for exactly these two (multichain/rpc.ts `chainRpc`, review R309-MC-2). The Bloch L2's RPC carries
  * none, so nothing changes there: `finalized` for everything.
  */
 const strictOf = (rpc: Rpc): Rpc => (rpc as Rpc & { strict?: Rpc }).strict ?? rpc;
+/** The reader that settles a REVERTED swap: the chain's own rule for it, else the strict rule (R328-3P-3). A
+ * reverted approval or skim is settled like a success: sending it again cannot hurt. */
+const revertedOf = (rpc: Rpc): Rpc => (rpc as Rpc & { reverted?: Rpc }).reverted ?? strictOf(rpc);
 
 export type ExpiredSwap = {
   /** The canonical finalized block whose timestamp is past the deadline. */
@@ -453,7 +462,12 @@ async function finalizedTransactionReceipt(
     tx.blockHash === r.blockHash && quantity(tx.blockNumber) === r.blockNumber,
     'The transaction body and receipt disagree about inclusion.',
   );
-  const finalized = block(await rpc('eth_getBlockByNumber', ['finalized', false]));
+  // A REVERTED outcome frees the account for another request (the page offers a retry after a revert on the
+  // minimum): if its block were replaced, the first transaction and the retry could both execute. Like the two
+  // decisions that end a hold without a receipt, it therefore waits for the strict rule where the RPC carries
+  // one (review R328-7). A success is released by the settle rule: nothing is sent again after it.
+  const settling = r.status === 'reverted' && intent.kind === 'swap' ? revertedOf(rpc) : rpc;
+  const finalized = block(await settling('eth_getBlockByNumber', ['finalized', false]));
   if (finalized.number < r.blockNumber) return null;
   const included = { number: r.blockNumber, hash: r.blockHash };
   const boundary = { number: BigInt(intent.afterBlockNumber), hash: intent.afterBlockHash };
@@ -473,7 +487,7 @@ async function finalizedTransactionReceipt(
     txAgain.blockHash === r.blockHash && quantity(txAgain.blockNumber) === r.blockNumber,
     'Transaction inclusion changed during verification.',
   );
-  const finalAgain = block(await rpc('eth_getBlockByNumber', ['finalized', false]));
+  const finalAgain = block(await settling('eth_getBlockByNumber', ['finalized', false]));
   assert(
     finalAgain.number >= finalized.number &&
       (finalAgain.number !== finalized.number || finalAgain.hash === finalized.hash),

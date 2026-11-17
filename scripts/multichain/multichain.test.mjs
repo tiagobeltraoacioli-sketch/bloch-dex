@@ -5,13 +5,19 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import {
-  CHAIN_DEPENDENT_OPCODES, POST_PARIS_OPCODES, ROOT, ZERO_ADDRESS, checksummed, choicesFor, forgeEnvironment, loadArtifacts, loadChain, loadShared, lower,
-  opcodesOf, pendingChoices, planChain, validateChain, validateRule, validateShared,
+  CHAIN_DEPENDENT_OPCODES, POST_PARIS_OPCODES, REFERENCE_FIRST_DEPOSITOR, REFERENCE_FIRST_DEPOSITOR_PREIMAGE, ROOT, ZERO_ADDRESS, checksummed, choicesFor, forgeEnvironment, loadArtifacts, loadChain, loadShared, lower,
+  opcodesOf, pendingChoices, planChain, retrying, validateChain, validateRule, validateShared,
 } from "./lib.mjs";
-import { MAX_TOLERANCE_BPS, addTransactions, hasStrictMinimums, openingTransactions } from "./first-deposit.mjs";
+import { DONATION_BPS, MAX_TOLERANCE_BPS, addTransactions, giftWithinTolerance, hasStrictMinimums, openingTransactions } from "./first-deposit.mjs";
 import { evaluateGate, gateConfig } from "./gate.mjs";
 import { frontendNetwork, frontendRecord } from "./frontend-files.mjs";
+import { LOCKED_SHARES, MINT_TOPIC, TRANSFER_TOPIC, openingFromReceipt, priceShiftBps, readOpening } from "./opening.mjs";
+
+const viem = createRequire(new URL("../../frontend/package.json", import.meta.url))("viem");
+/** An owner's depositing account for tests where the choices are made: a dedicated key, not the fee address. */
+const OWNER_DEPOSITOR = viem.getAddress("0x00000000000000000000000000000000000a11ce");
 
 const shared = loadShared();
 const artifacts = loadArtifacts();
@@ -56,10 +62,10 @@ test("owner choices are open (TBD-owner) and a plan for a real deployment is ref
   }
   assert.ok(plans.every((p) => p.reference === true));
   // With the choices made the plan is no longer a reference plan.
-  const decided = { ...clone(shared), firstDepositor: shared.feeTo.address };
+  const decided = { ...clone(shared), firstDepositor: OWNER_DEPOSITOR };
   const chain = { ...clone(chains[0]), reserveCaps: [] };
   assert.equal(planChain(decided, chain, artifacts).reference, false);
-  assert.equal(choicesFor(decided, chain).firstDepositor, shared.feeTo.address);
+  assert.equal(choicesFor(decided, chain).firstDepositor, OWNER_DEPOSITOR);
 });
 
 test("the pair init code hash is the release candidate's and the compiler settings are pinned", () => {
@@ -78,7 +84,7 @@ test("with equal constructor arguments the factory and the lens have one address
   assert.equal(routerOf["op-mainnet"], routerOf.base, "OP Mainnet and Base share the WETH predeploy address");
   assert.equal(new Set(Object.values(routerOf)).size, 5);
   // A cap names a token address, which differs per chain: the factory address then differs too.
-  const capped = (chain) => planChain({ ...clone(shared), firstDepositor: shared.feeTo.address }, { ...clone(chain), reserveCaps: [{ token: chain.tokens[0].symbol, cap: "1000000" }] }, artifacts);
+  const capped = (chain) => planChain({ ...clone(shared), firstDepositor: OWNER_DEPOSITOR }, { ...clone(chain), reserveCaps: [{ token: chain.tokens[0].symbol, cap: "1000000" }] }, artifacts);
   assert.notEqual(capped(chains[0]).contracts.factory.address, capped(chains[2]).contracts.factory.address);
   assert.notEqual(capped(chains[0]).contracts.factory.address, plans[0].contracts.factory.address);
 });
@@ -106,7 +112,7 @@ test("the forge environment carries the plan and creates no pair (the first depo
   assert.equal(env.MC_FEE_TO, shared.feeTo.address);
   assert.equal(env.MC_WRAPPED, "0x4200000000000000000000000000000000000006");
   assert.equal(env.MC_PAIR_TOKENS, undefined);
-  assert.equal(env.MC_FIRST_DEPOSITOR, shared.feeTo.address);
+  assert.equal(env.MC_FIRST_DEPOSITOR, REFERENCE_FIRST_DEPOSITOR);
   assert.equal(forgeEnvironment(plan, chain, { createPairs: true }).MC_PAIR_TOKENS, chain.tokens[0].address);
   assert.equal(env.MC_CAP_TOKENS, undefined);
 });
@@ -199,17 +205,28 @@ test("R309-MC-4: a tool started through a symbolic link runs; it does not do not
   }
 });
 
-test("R309-MC-1: no plan has open first deposits; the reference plan's first depositor is the fee address", () => {
+test("R309-MC-1, R328-1: no plan has open first deposits, and none has the fee address as its depositing account", () => {
   const zero = { ...clone(shared), firstDepositor: ZERO_ADDRESS };
   assert.throws(() => validateShared(zero), /first deposits would be open to anyone/);
   for (const chain of chains) {
     assert.throws(() => planChain(zero, { ...clone(chain), reserveCaps: [] }, artifacts), /first deposits would be open/);
     assert.throws(() => planChain(zero, chain, artifacts, { reference: true }), /first deposits would be open/);
   }
+  // The reference plan's depositing account is an address nobody holds a key for, derived from a fixed text.
+  assert.equal(REFERENCE_FIRST_DEPOSITOR, viem.getAddress(`0x${viem.keccak256(viem.stringToHex(REFERENCE_FIRST_DEPOSITOR_PREIMAGE)).slice(26)}`));
   for (const plan of plans) {
-    assert.equal(plan.arguments.firstDepositor, shared.feeTo.address);
+    assert.equal(plan.arguments.firstDepositor, REFERENCE_FIRST_DEPOSITOR);
     assert.notEqual(lower(plan.arguments.firstDepositor), ZERO_ADDRESS);
+    assert.notEqual(lower(plan.arguments.firstDepositor), lower(shared.feeTo.address));
   }
+  // Review R328-1: the pair accepts a first mint by transaction origin, so the depositing account is a dedicated
+  // key: the fee address (a wallet in use) is refused by the configuration, by a caller's own object, and by the
+  // forge script; the reference address cannot be chosen for a real plan.
+  const feeAsDepositor = { ...clone(shared), firstDepositor: shared.feeTo.address };
+  assert.throws(() => validateShared(feeAsDepositor), /firstDepositor is the fee address/);
+  assert.throws(() => planChain(feeAsDepositor, { ...clone(chains[0]), reserveCaps: [] }, artifacts), /firstDepositor is the fee address/);
+  assert.throws(() => validateShared({ ...clone(shared), firstDepositor: REFERENCE_FIRST_DEPOSITOR }), /nobody holds its key/);
+  assert.ok(readFileSync(join(ROOT, "script/DeployMultichain.s.sol"), "utf8").includes('require(firstDepositor != feeTo, "MC: FIRST_DEPOSITOR_IS_FEE_TO")'));
   assert.throws(() => validateShared({ ...clone(shared), firstDepositor: shared.create2.deployer }), /not an account/);
   const script = readFileSync(join(ROOT, "script/DeployMultichain.s.sol"), "utf8");
   assert.ok(script.includes('require(firstDepositor != address(0), "MC: FIRST_DEPOSITOR")'));
@@ -235,12 +252,101 @@ test("R309-MC-1: the first deposit's minimums equal its amounts, and a later dep
   assert.equal(hasStrictMinimums(looseData, 10n ** 19n), false);
   assert.equal(hasStrictMinimums(deposit.data, 1n), false);
   assert.throws(() => openingTransactions({ ...base, native: 0n, tokenAmount: 1n }), /above zero/);
-  // A later deposit follows the pool's price: 1 native at 10 : 30,000 is 3,000 token; minimums 0.5% below.
-  const [, add] = addTransactions({ ...base, native: 10n ** 18n, reserveNative: 10n ** 19n, reserveToken: 30_000_000_000n, toleranceBps: 50 });
+  // A later deposit: the owner states both amounts; 1 native at a pool of 10 : 30,000 is 3,000 token; minimums 0.5% below.
+  const later = { ...base, native: 10n ** 18n, expectedToken: 3_000_000_000n, reserveNative: 10n ** 19n, reserveToken: 30_000_000_000n, toleranceBps: 50 };
+  const [, add] = addTransactions(later);
   assert.deepEqual(decodeFunctionData({ abi, data: add.data }).args.slice(1, 4), [3_000_000_000n, 2_985_000_000n, 995n * 10n ** 15n]);
   assert.equal(MAX_TOLERANCE_BPS, 100);
-  assert.throws(() => addTransactions({ ...base, native: 10n ** 18n, reserveNative: 10n ** 19n, reserveToken: 30_000_000_000n, toleranceBps: 101 }), /tolerance/);
-  assert.throws(() => addTransactions({ ...base, native: 10n ** 18n, reserveNative: 0n, reserveToken: 0n, toleranceBps: 50 }), /not open/);
+  assert.throws(() => addTransactions({ ...later, toleranceBps: 101 }), /tolerance/);
+  assert.throws(() => addTransactions({ ...later, reserveNative: 0n, reserveToken: 0n }), /not open/);
+  // Review R328-1: the pool's own price is not trusted. The reviewer's pool (1 native = 2 token, opened by a
+  // contract the depositing account called): 10 native would be paired with 20 token. Refused, as is a pool 5%
+  // away from the owner's amounts; without the owner's token amount nothing is printed at all.
+  const hostile = { ...base, native: 10n ** 19n, expectedToken: 30_000_000_000n, reserveNative: 10n ** 12n, reserveToken: 2n, toleranceBps: 50 };
+  assert.throws(() => addTransactions(hostile), /the pool's price is not the price of the amounts given/);
+  assert.throws(() => addTransactions({ ...later, reserveToken: 31_500_000_000n }), /pool's price is not/);
+  assert.throws(() => addTransactions({ ...later, reserveToken: 28_500_000_000n }), /pool's price is not/);
+  assert.throws(() => addTransactions({ ...later, expectedToken: undefined }), /--token/);
+  // Inside the tolerance the deposit follows the pool: 0.4% above the owner's amount.
+  const [, near] = addTransactions({ ...later, reserveToken: 30_120_000_000n });
+  assert.deepEqual(decodeFunctionData({ abi, data: near.data }).args.slice(1, 3), [3_012_000_000n, 2_996_940_000n]);
+  // Review R328-3: what sits at the pair's address before the first deposit is tolerated up to 0.1% of a side.
+  const opening = { native: 10n ** 19n, token: 30_000_000_000n };
+  assert.equal(DONATION_BPS, 10n);
+  assert.equal(giftWithinTolerance({ native: 0n, token: 1n }, opening), true);
+  assert.equal(giftWithinTolerance({ native: 10n ** 16n, token: 30_000_000n }, opening), true);
+  assert.equal(giftWithinTolerance({ native: 0n, token: 30_000_001n }, opening), false);
+  assert.equal(giftWithinTolerance({ native: 10n ** 16n + 1n, token: 0n }, opening), false);
+});
+
+/** A first deposit as first-deposit.mjs prints it, and the receipt the pair gives it. Overridable field by field. */
+function openingFixture({ pair, router, depositor, token, wrappedIs0, native = 10n ** 19n, tokenAmount = 30_000_000_000n, gift = { native: 0n, token: 0n }, over = {} }) {
+  const abi = viem.parseAbi(["function addLiquidityBLCH(address token,uint256 amountTokenDesired,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) payable returns (uint256,uint256,uint256)"]);
+  const word = (n) => n.toString(16).padStart(64, "0");
+  const topic = (address) => `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
+  const zero = `0x${"0".repeat(64)}`;
+  const joined = { native: native + gift.native, token: tokenAmount + gift.token };
+  const [amount0, amount1] = wrappedIs0 ? [joined.native, joined.token] : [joined.token, joined.native];
+  const hash = `0x${"0e".repeat(32)}`;
+  const tx = { hash, from: depositor, to: router, value: `0x${native.toString(16)}`, input: viem.encodeFunctionData({ abi, functionName: "addLiquidityBLCH", args: [token, tokenAmount, tokenAmount, native, depositor, 2_000_000_000n] }), ...over.tx };
+  const receipt = {
+    transactionHash: hash,
+    status: "0x1",
+    blockNumber: "0x60",
+    blockHash: `0x${"ab".repeat(32)}`,
+    logs: [
+      { address: pair, topics: [TRANSFER_TOPIC, zero, zero], data: `0x${word(LOCKED_SHARES)}` },
+      { address: pair, topics: [TRANSFER_TOPIC, zero, topic(depositor)], data: `0x${word(10n ** 12n)}` },
+      { address: pair, topics: [MINT_TOPIC, topic(router)], data: `0x${word(amount0)}${word(amount1)}` },
+    ],
+    ...over.receipt,
+  };
+  return { hash, tx, receipt };
+}
+
+test("R328-1: an opening is proven only by the pair's first mint, sent by the first depositor straight to the router with strict minimums", async () => {
+  const chain = chains.find((c) => c.chain.key === "base");
+  const plan = plans.find((p) => p.chain.key === "base");
+  const pair = plan.pairs[0];
+  const wrappedIs0 = lower(pair.token0) === lower(chain.wrappedNative.address);
+  const facts = { pair: pair.address, router: plan.contracts.router.address, depositor: plan.arguments.firstDepositor, token: chain.tokens[0].address, wrappedIs0 };
+  const good = openingFixture(facts);
+  const proof = openingFromReceipt({ ...good, ...facts });
+  assert.deepEqual([proof.proven, proof.problems], [true, []]);
+  assert.deepEqual([proof.deposited, proof.joined, proof.gift], [{ native: 10n ** 19n, token: 30_000_000_000n }, { native: 10n ** 19n, token: 30_000_000_000n }, { native: 0n, token: 0n }]);
+  assert.equal(priceShiftBps(proof), 0n);
+  const refused = (over, pattern) => {
+    const p = openingFromReceipt({ ...openingFixture({ ...facts, over }), ...facts });
+    assert.equal(p.proven, false);
+    assert.match(p.problems.join("; "), pattern);
+  };
+  // The reviewer's scenario: the depositing account called another contract, which made the first mint. The
+  // transaction's origin is the depositor, so the pair accepted it; it was not sent to the router.
+  const HOSTILE = "0x00000000000000000000000000000000000bad00";
+  refused({ tx: { to: HOSTILE, input: "0x4e71d92d" } }, /not to the router.*opened through another contract; it is not the router's addLiquidityBLCH/);
+  refused({ tx: { from: HOSTILE } }, /not by the first depositor/);
+  refused({ receipt: { status: "0x0" } }, /did not succeed/);
+  // The call of review R309-MC-1's step 5: minimums of the owner's choosing.
+  const abi = viem.parseAbi(["function addLiquidityBLCH(address token,uint256 amountTokenDesired,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) payable returns (uint256,uint256,uint256)"]);
+  refused({ tx: { input: viem.encodeFunctionData({ abi, functionName: "addLiquidityBLCH", args: [facts.token, 30_000_000_000n, 0n, 0n, facts.depositor, 2_000_000_000n] }) } }, /minimums are not equal/);
+  refused({ tx: { input: viem.encodeFunctionData({ abi, functionName: "addLiquidityBLCH", args: [HOSTILE, 30_000_000_000n, 30_000_000_000n, 10n ** 19n, facts.depositor, 2_000_000_000n] }) } }, /deposits the token/);
+  // A later deposit (no lock of the minimum liquidity) is not the opening, whoever sent it.
+  refused({ receipt: { logs: good.receipt.logs.slice(1) } }, /not the pair's first mint/);
+  // The lock and the Mint must be the planned pair's own logs.
+  refused({ receipt: { logs: good.receipt.logs.map((l) => ({ ...l, address: HOSTILE })) } }, /not the pair's first mint.*exactly one Mint/);
+  // Review R328-2: tokens at the pair's address before the deposit join the pool; the proof states them.
+  const gifted = openingFromReceipt({ ...openingFixture({ ...facts, gift: { native: 0n, token: 300_000_000n } }), ...facts });
+  assert.equal(gifted.proven, true);
+  assert.deepEqual(gifted.gift, { native: 0n, token: 300_000_000n });
+  assert.equal(priceShiftBps(gifted), 100n);
+  // Against a chain: the block must be the chain's, on every endpoint, and not above the finalized block.
+  const node = (blockHash = good.receipt.blockHash) => async (method) => (method === "eth_getTransactionByHash" ? good.tx : method === "eth_getTransactionReceipt" ? good.receipt : { number: "0x60", hash: blockHash });
+  assert.equal((await readOpening({ request: node(), others: [node()], hash: good.hash, finalizedNumber: 100, ...facts })).proven, true);
+  assert.match((await readOpening({ request: node(), others: [node(`0x${"cd".repeat(32)}`)], hash: good.hash, ...facts })).problems.join(), /another endpoint has a different block/);
+  assert.match((await readOpening({ request: node(`0x${"cd".repeat(32)}`), hash: good.hash, ...facts })).problems.join(), /not the chain's block/);
+  assert.match((await readOpening({ request: node(), hash: good.hash, finalizedNumber: 50, ...facts })).problems.join(), /above the finalized block 50: wait/);
+  assert.match((await readOpening({ request: async () => null, hash: good.hash, ...facts })).problems.join(), /not found/);
+  assert.equal((await readOpening({ request: node(), hash: "0x12", ...facts })).proven, false);
 });
 
 test("R309-MC-2: every chain states its confirmation rule, what was measured and the residual risk; the network file carries the rule and the deadline", () => {
@@ -257,7 +363,12 @@ test("R309-MC-2: every chain states its confirmation rule, what was measured and
     assert.ok(chain.confirmation.residualRisk.length > 40);
     assert.match(chain.confirmation.measured.at, /^2026-/);
     const file = frontendNetwork(shared, chain);
-    assert.deepEqual(file.confirmation, { settle: chain.confirmation.settle, strict: chain.confirmation.strict, blockSeconds: chain.confirmation.measured.blockSeconds });
+    assert.deepEqual(file.confirmation, { settle: chain.confirmation.settle, strict: chain.confirmation.strict, ...(chain.confirmation.reverted ? { reverted: chain.confirmation.reverted } : {}), blockSeconds: chain.confirmation.measured.blockSeconds });
+    // Review R328-3P-3: the rule that settles a reverted swap lies between the two, and says why it is enough.
+    if (chain.chain.key !== "bnb-smart-chain") assert.ok(chain.confirmation.reverted && chain.confirmation.revertedWhy.length >= 40, chain.chain.key);
+    const early = clone(chain);
+    early.confirmation.reverted = { depth: 1 };
+    if (chain.chain.key === "ethereum") assert.throws(() => validateChain(early, early.chain.key), /between confirmation.settle and confirmation.strict/);
     assert.deepEqual(file.swap, { deadlineMinutes: 20 });
     // A settle depth is seconds, not minutes: at most 30 s at the measured block time.
     if ("depth" in chain.confirmation.settle) assert.ok(chain.confirmation.settle.depth * chain.confirmation.measured.blockSeconds <= 30, chain.chain.key);
@@ -303,10 +414,12 @@ test("the gate passes a correct chain, reports an EIP-7702 fee address, and fail
   const world = (over = {}) => {
     const o = { genesis: chain.chain.genesisHash, feeCode: "0x", tokenCode: code("token"), ...over };
     const codes = new Map([[lower(local.create2.deployer), code("deployer")], [lower(chain.wrappedNative.address), code("wrapped")], [lower(chain.tokens[0].address), o.tokenCode], [lower(chain.multicall3.address), code("multicall")], [lower(local.feeTo.address), o.feeCode]]);
+    if (o.depositorCode) codes.set(lower(plan.arguments.firstDepositor), o.depositorCode);
     return async (method, params) => {
       if (method === "eth_chainId") return "0x2105";
       if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: o.genesis } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
       if (method === "eth_getCode") return codes.get(lower(params[0])) ?? "0x";
+      if (method === "eth_getTransactionCount") return o.depositorNonce ?? "0x0";
       if (method === "eth_call") {
         const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
         const fn = names[params[0].data.slice(0, 10)];
@@ -327,6 +440,17 @@ test("the gate passes a correct chain, reports an EIP-7702 fee address, and fail
   const contractFee = await gate(world({ feeCode: "0x6080604052" }));
   assert.equal(contractFee.decision, "fail");
   assert.match(contractFee.failed.join(), /externally owned account/);
+  // Review R328-1: the depositing account is a plain, new key account. Code at it, an EIP-7702 delegation (which
+  // the fee address may carry) or earlier transactions on the chain fail the pre gate.
+  assert.deepEqual(pass.firstDepositor, { address: plan.arguments.firstDepositor, code: "none", transactions: 0 });
+  const delegatedDepositor = await gate(world({ depositorCode: `0xef0100${"63".repeat(20)}` }));
+  assert.equal(delegatedDepositor.decision, "fail");
+  assert.match(delegatedDepositor.failed.join(), /depositing account has no code and no EIP-7702 delegation/);
+  assert.equal(delegatedDepositor.firstDepositor.code, "EIP-7702 delegation");
+  const usedDepositor = await gate(world({ depositorNonce: "0x7" }));
+  assert.equal(usedDepositor.decision, "fail");
+  assert.match(usedDepositor.failed.join(), /never sent a transaction on this chain/);
+  assert.equal(usedDepositor.firstDepositor.transactions, 7);
   const otherChain = await gate(world({ genesis: `0x${"11".repeat(32)}` }));
   assert.match(otherChain.failed.join(), /pinned genesis/);
   const otherToken = await gate(world({ tokenCode: code("another token") }));
@@ -366,13 +490,20 @@ test("the post gate reports each pair's state; the record needs every pair open;
     [lower(plan.contracts.router.address)]: linkImmutables(artifacts.router, [word(plan.contracts.factory.address), word(chain.wrappedNative.address)], "router"),
     [lower(plan.contracts.lens.address)]: linkImmutables(artifacts.lens, [word(plan.contracts.factory.address)], "lens"),
   };
-  // state: "absent" | "empty" | "donated" | "open"; finalizedHasCode: false = deployed but not finalized yet.
-  const world = ({ state = "absent", finalizedHasCode = true } = {}) => {
+  const wrappedIs0 = lower(pair.token0) === lower(chain.wrappedNative.address);
+  const facts = { pair: pair.address, router: plan.contracts.router.address, depositor: plan.arguments.firstDepositor, token: chain.tokens[0].address, wrappedIs0 };
+  const opened = openingFixture(facts);
+  // state: "absent" | "empty" | "donated" | "open"; finalizedHasCode: false = deployed but not finalized yet;
+  // opening: the transaction and receipt the node has for the opening hash.
+  const world = ({ state = "absent", finalizedHasCode = true, opening = opened } = {}) => {
     const codes = new Map([[lower(local.create2.deployer), code("deployer")], [lower(chain.wrappedNative.address), code("wrapped")], [lower(chain.tokens[0].address), code("token")], [lower(chain.multicall3.address), code("multicall")]]);
     const created = state !== "absent";
     return async (method, params) => {
       if (method === "eth_chainId") return "0x2105";
       if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: chain.chain.genesisHash } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
+      if (method === "eth_getTransactionCount") return "0x2";
+      if (method === "eth_getTransactionByHash") return params[0] === opening.hash ? opening.tx : null;
+      if (method === "eth_getTransactionReceipt") return params[0] === opening.hash ? opening.receipt : null;
       if (method === "eth_getCode") {
         const address = lower(params[0]);
         if (runtime[address]) return finalizedHasCode || params[1] === "latest" ? runtime[address] : "0x";
@@ -404,7 +535,8 @@ test("the post gate reports each pair's state; the record needs every pair open;
       throw new Error(`unexpected ${method}`);
     };
   };
-  const gate = (options) => evaluateGate({ shared: local, chain, plan, phase: "post", request: world(options), rehearsal: true });
+  const name = `${pair.tokenA}/${pair.tokenB}`;
+  const gate = (options, openings = { [name]: opened.hash }) => evaluateGate({ shared: local, chain, plan, phase: "post", request: world(options), rehearsal: true, openings });
   for (const state of ["absent", "empty", "donated", "open"]) {
     const report = await gate({ state });
     assert.equal(report.decision, "pass", `${state}: ${JSON.stringify(report.failed)}`);
@@ -414,12 +546,54 @@ test("the post gate reports each pair's state; the record needs every pair open;
       assert.deepEqual([report.pairs[0].totalSupply, report.pairs[0].reserves], ["1000000000000", ["1000", "1000"]]);
       const record = frontendRecord(local, chain, report, { rehearsal: true });
       assert.equal(record.status, "deployed");
-      assert.equal(record.firstDepositor, lower(local.feeTo.address));
+      assert.equal(record.firstDepositor, lower(REFERENCE_FIRST_DEPOSITOR));
       assert.equal(record.pairs.length, 1);
+      // The proof of the opening is in the report, with what joined the pool.
+      assert.deepEqual([report.pairs[0].opening.proven, report.pairs[0].opening.transaction, report.pairs[0].opening.joined, report.pairs[0].opening.priceShiftBps], [true, opened.hash, { native: "10000000000000000000", token: "30000000000" }, 0]);
     } else assert.throws(() => frontendRecord(local, chain, report, { rehearsal: true }), state === "absent" ? /does not show every planned pair created/ : /not open yet/);
   }
+  // Review R328-1: "open" is not "opened by the owner". An open pool without its opening transaction fails the
+  // gate, and so does the reviewer's pool: opened inside a transaction the depositing account sent to another
+  // contract (the pair accepts the origin). No record can be written from either report.
+  const unproven = await gate({ state: "open" }, {});
+  assert.equal(unproven.decision, "fail");
+  assert.match(unproven.failed.join(), /its opening is proven by its transaction.*STOP: someone else opened it/);
+  assert.equal(unproven.pairs[0].opening.proven, false);
+  assert.throws(() => frontendRecord(local, chain, unproven, { rehearsal: true }), /not a passed post gate/);
+  const hostile = openingFixture({ ...facts, over: { tx: { to: "0x00000000000000000000000000000000000bad00", input: "0x4e71d92d" } } });
+  const stolen = await gate({ state: "open", opening: hostile });
+  assert.equal(stolen.decision, "fail");
+  assert.match(stolen.failed.join(), /was opened by the first depositor's own deposit, sent straight to the router/);
+  assert.match(stolen.pairs[0].opening.problems.join(), /opened through another contract/);
+  // A hash the node does not know proves nothing; and a report edited to "pass" still needs the proof.
+  assert.equal((await gate({ state: "open" }, { [name]: `0x${"77".repeat(32)}` })).decision, "fail");
+  const edited = clone(await gate({ state: "open" }));
+  edited.pairs[0].opening.proven = false;
+  assert.throws(() => frontendRecord(local, chain, edited, { rehearsal: true }), /does not prove who opened each pool/);
+  // A gift at the opening (review R328-2) is reported, with the price it moved; the gate still passes.
+  const gifted = await gate({ state: "open", opening: openingFixture({ ...facts, gift: { native: 0n, token: 300_000_000n } }) });
+  assert.equal(gifted.decision, "pass");
+  assert.deepEqual([gifted.pairs[0].opening.gift, gifted.pairs[0].opening.priceShiftBps], [{ native: "0", token: "300000000" }, 100]);
   // Review R309-MC-5: deployed, not finalized yet: the gate fails and says WAIT for the three contracts.
   const early = await gate({ finalizedHasCode: false });
   assert.equal(early.decision, "fail");
   assert.deepEqual(early.waiting, ["factory", "router", "lens"]);
+});
+
+test("a public endpoint that fails once is asked again; a revert is the chain's answer", async () => {
+  let calls = 0;
+  const flaky = retrying(async () => {
+    if (++calls < 3) throw new Error("fetch failed");
+    return "0x1";
+  }, { delayMs: 1 });
+  assert.equal(await flaky("eth_chainId", []), "0x1");
+  assert.equal(calls, 3);
+  calls = 0;
+  const down = retrying(async () => { calls++; throw new Error("HTTP 429"); }, { delayMs: 1 });
+  await assert.rejects(() => down("eth_chainId", []), /429/);
+  assert.equal(calls, 3);
+  calls = 0;
+  const reverting = retrying(async () => { calls++; throw new Error("execution reverted: BDEX: K"); }, { delayMs: 1 });
+  await assert.rejects(() => reverting("eth_call", []), /BDEX: K/);
+  assert.equal(calls, 1);
 });

@@ -117,6 +117,7 @@ export default function MainnetLive({
   planned,
   now = () => Date.now(),
   receiptPollMs,
+  snapshotMaxAgeMs,
   ethRpc,
 }: {
   network: MainnetNetwork;
@@ -126,6 +127,8 @@ export default function MainnetLive({
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
   now?: () => number;
   receiptPollMs?: number;
+  /** A public chain's endpoints keep a block's state for a minute or so: take a new snapshot block this often. */
+  snapshotMaxAgeMs?: number;
   /** Ethereum RPC for the bUSDC hold status; defaults to the network file's status.ethRpcUrl. */
   ethRpc?: Rpc;
 }) {
@@ -180,6 +183,16 @@ export default function MainnetLive({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load, rpc, generation]);
+
+  // Review R328-5: every read is pinned to the snapshot block's hash and must be answered by two endpoints; public
+  // endpoints stop serving a block's state after about a minute. The pin is renewed while the page is visible.
+  useEffect(() => {
+    if (!snapshotMaxAgeMs) return;
+    const timer = setInterval(() => {
+      if (typeof document === 'undefined' || !document.hidden) setGeneration((g) => g + 1);
+    }, snapshotMaxAgeMs);
+    return () => clearInterval(timer);
+  }, [snapshotMaxAgeMs]);
 
   const live = state?.status === 'live';
   const snapshot = useMemo(

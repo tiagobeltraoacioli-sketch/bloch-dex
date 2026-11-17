@@ -4,32 +4,41 @@
 //
 //   node scripts/multichain/gate.mjs <chain> pre  [--reference] [--rpc URL --rehearsal] [--out report.json]
 //   node scripts/multichain/gate.mjs <chain> post [--reference] [--rpc URL --rehearsal] [--out report.json]
+//                                                 [--opening WETH/USDC=0xTRANSACTION ...]
 //
 // pre   before deploying: the chain is the pinned one (chain id and genesis hash, on every endpoint that serves
 //       block 0, at least one), `finalized` is served, the CREATE2 deployer, the wrapped native token, every listed
 //       token and Multicall3 have the pinned code and answer name()/symbol()/decimals() as listed, the fee address
-//       is an externally owned account (no code, or an EIP-7702 delegation, which is reported), and each planned
-//       address is empty or already holds exactly the planned code.
+//       is an externally owned account (no code, or an EIP-7702 delegation, which is reported), the depositing
+//       account (the factory's first depositor) is a plain key account with NO code and NO delegation that has
+//       never sent a transaction on this chain while the factory is not deployed (a dedicated key: the pair
+//       accepts a first mint by transaction origin, review R328-1), and each planned address is empty or already
+//       holds exactly the planned code.
 // post  after deploying, read at the `finalized` block: the three contracts hold the planned code, the factory's
 //       feeTo, firstDepositor (never the zero address) and every cap are the planned values, the router and the
 //       lens point at the factory and the wrapped native token. Each planned pair is reported with its state:
 //       "absent" (not created: the first deposit creates it), "empty", "donated" (tokens sit in it, no shares:
-//       anyone may skim them), or "open" with its reserves and share supply. Run it after the deployment (before
-//       any deposit) and again after the first deposits: the frontend record is made only from a report whose
-//       pairs are all open. A contract that has the planned code at the latest block but not yet at the finalized
-//       one is reported as WAIT: nothing is wrong, the chain has not finalized the deployment yet.
+//       anyone may skim them), or "open" with its reserves and share supply. An OPEN pair passes only with its
+//       opening PROVEN (opening.mjs): the transaction given by --opening (first-deposit.mjs verify prints the
+//       option; a hash already in the report at --out is used again) must be the pair's first mint, sent by the
+//       first depositor straight to the router with minimums equal to its amounts. "Open" alone does not show
+//       who opened a pool, or at which price (review R328-1). Run the gate after the deployment (before any
+//       deposit) and again after the first deposits: the frontend record is made only from a report whose
+//       pairs are all open and proven. A contract that has the planned code at the latest block but not yet at
+//       the finalized one is reported as WAIT: nothing is wrong, the chain has not finalized the deployment yet.
 //
 // The Bloch-L2-only rules (bridge token pin, Safe pin, new-slot fee, credit rule, idle-chain rule) are off for these
 // chains by configuration: deployments/multichain.json `l2Only` and deployments/<chain>/gate.json `l2Only`. The
 // Bloch L2 gate (scripts/staging/finality-gate.mjs, check-finality-gate-mainnet.mjs) is separate and unchanged.
 // Exit status: 0 pass, 1 a check failed, 2 usage or configuration.
 import { createRequire } from "node:module";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse,
+  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse, retrying,
 } from "./lib.mjs";
+import { openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi } = requireFromFrontend("viem");
@@ -73,6 +82,7 @@ export function gateConfig(shared, chain) {
       tokens: chain.tokens.map((t) => ({ address: t.address, symbol: t.symbol, decimals: t.decimals, codeHash: t.codeHash })),
       multicall3: chain.multicall3,
       feeTo: { address: shared.feeTo.address, mustBe: "externally owned account (an EIP-7702 delegation is reported, not refused)" },
+      firstDepositor: { mustBe: "a dedicated key account: not the fee address, no code, no EIP-7702 delegation, no transaction on the chain before the factory is deployed" },
       pairInitCodeHash: shared.source.pairInitCodeHash,
     },
     ownerChoices: { firstDepositor: shared.firstDepositor, reserveCaps: chain.reserveCaps, openingPrice: chain.openingPrice },
@@ -85,7 +95,7 @@ export function gateConfig(shared, chain) {
  * Evaluate the gate. `request(method, params)` is one endpoint's JSON-RPC; `others` are further endpoints that must
  * agree on the chain. Returns the report; `report.decision` is "pass" or "fail".
  */
-export async function evaluateGate({ shared, chain, plan, phase, request, others = [], identityOnly = [], rehearsal = false }) {
+export async function evaluateGate({ shared, chain, plan, phase, request, others = [], identityOnly = [], rehearsal = false, openings = {} }) {
   const checks = [];
   const waiting = [];
   const check = (name, ok, detail) => {
@@ -154,6 +164,17 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
     }
   }
   check("the plan's firstDepositor is an account, not the zero address (first deposits are never open on a public chain)", lower(plan.arguments.firstDepositor) !== ZERO_ADDRESS);
+  // Review R328-1: the depositing account. The pair accepts a first mint whose transaction origin is this account,
+  // so code at the address (a contract, or an EIP-7702 delegation that others may be able to drive) or a history
+  // of calls to other contracts is how someone else opens a pool in its name.
+  const depositor = plan.arguments.firstDepositor;
+  check("the plan's firstDepositor is not the fee address (the depositing account is a dedicated key)", lower(depositor) !== lower(shared.feeTo.address));
+  const depositorCode = await request("eth_getCode", [depositor, at]);
+  check("the depositing account has no code and no EIP-7702 delegation", depositorCode === "0x", depositorCode.slice(0, 60));
+  const depositorNonce = await soft(async () => Number(BigInt(await request("eth_getTransactionCount", [depositor, at]))));
+  const firstDepositor = { address: depositor, code: depositorCode === "0x" ? "none" : depositorCode.toLowerCase().startsWith(EIP7702_PREFIX) ? "EIP-7702 delegation" : "contract", transactions: Number.isInteger(depositorNonce) ? depositorNonce : null };
+  if (phase === "pre" && contracts.factory?.codeHash === EMPTY_CODE_HASH)
+    check("the depositing account has never sent a transaction on this chain (a new, dedicated key), while the factory is not deployed", depositorNonce === 0, depositorNonce);
   const pairs = [];
   if (phase === "post" && Object.values(contracts).every((c) => c.codeHash === c.planned)) {
     const f = plan.contracts.factory.address;
@@ -197,8 +218,24 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
           entry.totalSupply = supply.toString();
           entry.reserves = [reserves[0].toString(), reserves[1].toString()];
           entry.state = supply > 0n ? "open" : held.some((b) => b > 0n) ? "donated" : "empty";
-          // Only the first depositor can open a pool of this factory, so an open pool was opened by the owner.
-          if (supply > 0n) check(`pair ${p.tokenA}/${p.tokenB} is open with both reserves above zero`, reserves[0] > 0n && reserves[1] > 0n, entry.reserves);
+          if (supply > 0n) {
+            check(`pair ${p.tokenA}/${p.tokenB} is open with both reserves above zero`, reserves[0] > 0n && reserves[1] > 0n, entry.reserves);
+            // "Open" does not say who opened it or at which price (the pair accepts a first mint by transaction
+            // origin): the opening transaction must prove it (review R328-1).
+            const name = `${p.tokenA}/${p.tokenB}`;
+            const hash = openings[name] ?? openings[`${p.tokenB}/${p.tokenA}`];
+            const wrappedIs0 = lower(p.token0) === lower(chain.wrappedNative.address);
+            const hasWrapped = wrappedIs0 || lower(p.token1) === lower(chain.wrappedNative.address);
+            if (!hash || !hasWrapped) {
+              entry.opening = { proven: false, problems: [hasWrapped ? "no opening transaction was given" : "the opening of a pair without the wrapped native token is not supported by this gate"], transaction: null };
+              check(`pair ${name} is open: its opening is proven by its transaction (--opening ${name}=0xHASH; first-deposit.mjs verify prints it). If the depositing account did not open this pool with first-deposit.mjs, STOP: someone else opened it (docs/MULTICHAIN-DEPLOY.md section 10)`, false, entry.opening.problems);
+            } else {
+              const opening = await readOpening({ request, others, hash: hash.toLowerCase(), finalizedNumber: Number(BigInt(at)), pair: p.address, router: plan.contracts.router.address, depositor, token: wrappedIs0 ? p.token1 : p.token0, wrappedIs0 });
+              entry.opening = openingRecord(opening);
+              if (opening.proven) entry.opening.priceShiftBps = Number(priceShiftBps(opening));
+              check(`pair ${name} was opened by the first depositor's own deposit, sent straight to the router with minimums equal to its amounts (transaction ${hash})`, opening.proven, opening.problems);
+            }
+          }
         }
       }
       pairs.push(entry);
@@ -218,6 +255,7 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       chain: { key: chain.chain.key, chainId: chain.chain.chainId, genesisHash: chain.chain.genesisHash },
       finalized: finalized && typeof finalized.hash === "string" ? { number: Number(BigInt(finalized.number)), hash: finalized.hash, timestamp: Number(BigInt(finalized.timestamp ?? "0x0")) } : null,
       feeTo: typeof feeTo === "undefined" ? null : feeTo,
+      firstDepositor: typeof firstDepositor === "undefined" ? null : firstDepositor,
       plan: planSummary(plan),
       pairs,
       l2Only: { ...shared.l2Only },
@@ -230,18 +268,23 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
 
 function parseArgs(argv) {
   const [key, phase, ...rest] = argv;
-  refuse(key && (phase === "pre" || phase === "post"), "usage: gate.mjs <chain> pre|post [--reference] [--rpc URL --rehearsal] [--out FILE]");
-  const options = { key, phase, reference: false, rehearsal: false, rpc: null, out: null };
+  refuse(key && (phase === "pre" || phase === "post"), "usage: gate.mjs <chain> pre|post [--reference] [--rpc URL --rehearsal] [--out FILE] [--opening A/B=0xTRANSACTION ...]");
+  const options = { key, phase, reference: false, rehearsal: false, rpc: null, out: null, openings: {} };
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--reference") options.reference = true;
     else if (rest[i] === "--rehearsal") options.rehearsal = true;
     else if (rest[i] === "--rpc" || rest[i] === "--out") {
       refuse(rest[i + 1] && !rest[i + 1].startsWith("--"), `${rest[i]} needs a value`);
       options[rest[i].slice(2)] = rest[++i];
+    } else if (rest[i] === "--opening") {
+      const match = /^([A-Za-z0-9.]{2,12}\/[A-Za-z0-9.]{2,12})=(0x[0-9a-fA-F]{64})$/.exec(rest[++i] ?? "");
+      refuse(match, "--opening takes PAIR=TRANSACTION, for example --opening WETH/USDC=0x… (the hash of the first deposit)");
+      options.openings[match[1]] = match[2].toLowerCase();
     } else refuse(false, `unknown option ${rest[i]}`);
   }
   refuse(!options.rpc || options.rehearsal, "--rpc replaces the chain's reviewed endpoints and is for a rehearsal only: add --rehearsal");
   refuse(!options.rehearsal || /^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/.test(options.rpc ?? ""), "--rehearsal needs --rpc http://127.0.0.1:PORT (a loopback fork)");
+  refuse(phase === "post" || Object.keys(options.openings).length === 0, "--opening belongs to the post gate");
   return options;
 }
 
@@ -253,15 +296,33 @@ export async function main(argv) {
   const plan = planChain(shared, chain, loadArtifacts(), { reference: options.reference });
   refuse(!plan.reference || options.rehearsal || options.phase === "pre", "a reference plan (owner choices open) can pass the post gate only in a rehearsal");
   const urls = options.rehearsal ? [options.rpc] : chain.rpc;
-  const [request, ...others] = urls.map((url) => createRpcTransport(url, { timeoutMs: 30_000 }));
-  const identityOnly = options.rehearsal ? chain.rpc.map((url) => createRpcTransport(url, { timeoutMs: 30_000 })) : [];
-  const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, identityOnly, rehearsal: options.rehearsal });
+  const [request, ...others] = urls.map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
+  const identityOnly = options.rehearsal ? chain.rpc.map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 }))) : [];
+  // A later run of the post gate needs the opening transactions again: those of the report already at --out (same
+  // chain, same factory) are used when the option does not name the pair. They are verified again like any other.
+  const openings = { ...previousOpenings(options, chain, plan), ...options.openings };
+  const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, identityOnly, rehearsal: options.rehearsal, openings });
   if (options.out) writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
   for (const c of report.checks) console.log(`${c.ok ? "ok  " : "FAIL"} ${c.name}${c.ok || c.detail === undefined ? "" : ` (${JSON.stringify(c.detail)})`}`);
-  for (const p of report.pairs) console.log(`pair ${p.tokenA}/${p.tokenB} ${p.address}: ${p.state}${p.state === "open" ? `, reserves ${p.reserves.join(" / ")}, shares ${p.totalSupply}` : p.state === "donated" ? `, tokens sit in it without shares (${p.balances.join(" / ")}): anyone may call skim(to)` : ""}`);
+  for (const p of report.pairs) {
+    console.log(`pair ${p.tokenA}/${p.tokenB} ${p.address}: ${p.state}${p.state === "open" ? `, reserves ${p.reserves.join(" / ")}, shares ${p.totalSupply}` : p.state === "donated" ? `, tokens sit in it without shares (${p.balances.join(" / ")}): anyone may call skim(to)` : ""}`);
+    if (p.opening?.proven) console.log(`  opened by ${p.opening.by} in ${p.opening.transaction} (block ${p.opening.blockNumber}): ${p.opening.joined.native} native + ${p.opening.joined.token} token base units joined${p.opening.gift.native !== "0" || p.opening.gift.token !== "0" ? `, of which ${p.opening.gift.native} + ${p.opening.gift.token} were at the pair's address before the deposit (a gift to the pool; opening price moved by ${(p.opening.priceShiftBps / 100).toFixed(2)}%)` : ""}`);
+    else if (p.state === "open") console.log(`  NOT PROVEN who opened this pool: ${p.opening?.problems.join("; ")}`);
+  }
   if (report.waiting.length) console.log(`WAIT: ${report.waiting.join(", ")} ${report.waiting.length === 1 ? "has" : "have"} the planned code at the latest block but not at the finalized block yet. Nothing is wrong; run this gate again later (docs/MULTICHAIN-DEPLOY.md gives the wait per chain).`);
   console.log(`multichain gate ${options.key} ${options.phase}: ${report.decision.toUpperCase()}${report.finalized ? ` at finalized block ${report.finalized.number}` : ""}${plan.reference ? " (reference plan)" : ""}${report.feeTo?.delegate ? `; fee address has an EIP-7702 delegation to ${report.feeTo.delegate}` : ""}`);
   return report.decision === "pass" ? 0 : 1;
+}
+
+function previousOpenings(options, chain, plan) {
+  if (options.phase !== "post" || !options.out || !existsSync(options.out)) return {};
+  try {
+    const old = JSON.parse(readFileSync(options.out, "utf8"));
+    if (old.domain !== GATE_DOMAIN || old.chain?.chainId !== chain.chain.chainId || lower(old.plan?.contracts?.factory?.address ?? "") !== lower(plan.contracts.factory.address)) return {};
+    return Object.fromEntries((old.pairs ?? []).filter((p) => /^0x[0-9a-f]{64}$/.test(p.opening?.transaction ?? "")).map((p) => [`${p.tokenA}/${p.tokenB}`, p.opening.transaction]));
+  } catch {
+    return {};
+  }
 }
 
 // isMain: a start through a symbolic link must not do nothing and exit 0 (review R309-MC-4).
