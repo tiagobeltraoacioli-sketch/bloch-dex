@@ -32,7 +32,7 @@ const { keccak256, encodeAbiParameters, encodeFunctionData, decodeFunctionResult
 
 export const DOC = "docs/OWNER-DEPLOY-NOW.md";
 export const CHAIN_STEPS = ["pre-gate", "deployer-balance", "gas-price", "deploy-dry-run", "deploy-broadcast", "post-gate-deployed", "market", "depositor-native", "depositor-token", "prepare", "send-suffix", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
-export const ONCE_STEPS = ["kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
+export const ONCE_STEPS = ["clone", "env-dyld", "env-path", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
 export const ORDER = ["op-mainnet", "base", "arbitrum-one", "linea", "bnb-smart-chain", "ethereum"];
 const DEPOSITOR_KEYSTORE = '--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"';
 // The document names the deploying key's directory only as DEX_DEPLOYER_KEYSTORE_DIR (H398-3); the dry run sets it
@@ -89,15 +89,18 @@ async function main() {
     return Boolean(ok);
   };
   const save = () => writeFileSync(join(out, "evidence.json"), `${JSON.stringify(evidence, (_, v) => (typeof v === "bigint" ? v.toString() : v), 2)}\n`);
+  const envPrefix = `${blocks["once env-dyld"]}; ${blocks["once env-path"]}; `;
   const keyDir = join(out, "deployer-key");
   // A fresh throwaway key per run (a keystore left by an earlier run has another password).
   rmSync(keyDir, { recursive: true, force: true });
   const pwFile = join(out, "deployer-key.password");
   /** Run one shell command line (as the owner pastes it, after the documented changes) and log it. */
   const sh = (step, original, command, { timeoutMs = 900_000 } = {}) => {
-    appendFileSync(log, `\n## ${step}\n# document: ${original}\n$ ${command}\n`);
+    appendFileSync(log, `\n## ${step}\n# document: ${original}\n$ ${envPrefix}${command}\n`);
     const started = Date.now();
-    const r = spawnSync("bash", ["-c", command], { cwd: ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1", DEX_DEPLOYER_KEYSTORE_DIR: keyDir, DEX_DEPOSITOR_KEYSTORE_DIR: join(out, "no-depositor-key") } });
+    // Every command runs after the document's two "every new terminal" lines (Node 24 and Foundry 1.7.1 first in
+    // PATH), exactly as the owner's terminal has them.
+    const r = spawnSync("bash", ["-c", `${envPrefix}${command}`], { cwd: ROOT, encoding: "utf8", timeout: timeoutMs, env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1", DEX_DEPLOYER_KEYSTORE_DIR: keyDir, DEX_DEPOSITOR_KEYSTORE_DIR: join(out, "no-depositor-key") } });
     const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     appendFileSync(log, `${output}\n# exit ${r.status} after ${Math.round((Date.now() - started) / 1000)} s\n`);
     writeFileSync(join(out, `${step}.log`), output);
@@ -115,7 +118,15 @@ async function main() {
         .replace(/^(cast wallet address --keystore .*)$/, `$1 --password-file ${pwFile}`);
     writeFileSync(pwFile, `dry-run-${Math.random().toString(36).slice(2)}\n`, { mode: 0o600 });
     const run = (step) => sh(step, blocks[`once ${step}`], t(blocks[`once ${step}`]));
-    let r = run("kit-tests");
+    // The repository, cloned as the document says (read-only from the public GitHub), into the dry run's directory.
+    let r = sh("clone", blocks["once clone"], blocks["once clone"].replace("~/postern-dex", join(out, "postern-dex")));
+    const reviewed = spawnSync("git", ["-C", join(out, "postern-dex"), "merge-base", "--is-ancestor", "a99f761", "origin/main"], { encoding: "utf8" });
+    check("0 the clone succeeds and its main contains the reviewed a99f761", r.status === 0 && reviewed.status === 0, `${r.output.slice(-200)} ${reviewed.stderr}`);
+    rmSync(join(out, "postern-dex"), { recursive: true, force: true });
+    r = sh("env-tools", `${blocks["once env-dyld"]} + ${blocks["once env-path"]}`, "command -v node; command -v forge; command -v cast; node --version; forge --version; cast --version");
+    const home = process.env.HOME;
+    check("0 the two terminal lines give Node v24.21.0 and Foundry 1.7.1 from ~/.local/share/dex-tools", r.status === 0 && r.output.includes(`${home}/.local/share/dex-tools/node/node-v24.21.0-darwin-x64/bin/node`) && r.output.includes(`${home}/.local/share/dex-tools/foundry/forge`) && /v24\.21\.0/.test(r.output) && /forge Version: 1\.7\.1/.test(r.output) && /cast Version: 1\.7\.1/.test(r.output), r.output);
+    r = run("kit-tests");
     check("2.1 kit tests: fail 0", r.status === 0 && /ℹ fail 0/.test(r.output), r.output.slice(-400));
     r = run("check-depositor");
     check("2.2 check-depositor says FIT for 0x1ec3…C8f3 on the six chains (read-only, public endpoints)", r.status === 0 && /FIT/.test(r.output), r.output.slice(-600));
