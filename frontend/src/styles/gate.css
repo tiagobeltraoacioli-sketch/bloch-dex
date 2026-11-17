@@ -1738,6 +1738,23 @@
   margin-top: var(--s-3);
 }
 
+/* Six networks in the header never run under the network switcher: the list scrolls sideways within its own
+   space (a thin scrollbar shows there is more) instead of overflowing onto the controls. */
+@media (min-width: 861px) {
+  .main-nav {
+    flex: 1 1 auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+  .main-nav a {
+    flex: none;
+    white-space: nowrap;
+  }
+}
+
 /* ---------- Footer ---------- */
 .footer-licences {
   display: inline-flex;
