@@ -327,8 +327,8 @@ while read -r sum name url; do
     echo "fetch $url"
     # ghcr.io (Homebrew's bottles) answers anonymous downloads only with this fixed, public, empty token.
     case "$url" in
-      https://ghcr.io/*) /usr/bin/curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-redirs 5 --silent --show-error --retry 3 -H 'Authorization: Bearer QQ==' -o "$IN/$name" "$url" || abort "download failed: $url" ;;
-      *) /usr/bin/curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-redirs 5 --silent --show-error --retry 3 -o "$IN/$name" "$url" || abort "download failed: $url" ;;
+      https://ghcr.io/*) /usr/bin/curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-redirs 5 --silent --show-error --retry 3 --retry-all-errors -H 'Authorization: Bearer QQ==' -o "$IN/$name" "$url" || abort "download failed: $url" ;;
+      *) /usr/bin/curl -q --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-redirs 5 --silent --show-error --retry 3 --retry-all-errors -o "$IN/$name" "$url" || abort "download failed: $url" ;;
     esac
   fi
   actual=$(sha256 "$IN/$name")
