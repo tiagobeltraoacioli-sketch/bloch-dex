@@ -119,6 +119,10 @@ offline while the key is created, with Foundry installed. The directory is an ex
 keeps this one); any private directory will do.
 
 ```
+mkdir -p ~/Desktop/DEX-CHAVE-DEPOSITANTE
+```
+
+```
 cast wallet new ~/Desktop/DEX-CHAVE-DEPOSITANTE depositante
 ```
 
@@ -994,17 +998,26 @@ made as in section 8, withdrawals as in section 6); see also section 13.
 
 ## 11. Rehearsals and how to repeat them
 
-Everything below is loopback or read-only, with throwaway keys. Run of record: commit `77b5d61` for the suites, the
-six fork rehearsals, the costs and the pre gates; `d57cfab` and `5707bd8` (which change only how the tools ask a
-failing public endpoint again and which endpoint the simulation uses) for the page rehearsal and the six
-simulations; 2026-11-17. Commits after those change documents only.
+Everything below is loopback or read-only, with throwaway keys. **Run of 2026-11-17 on this line (agent 360,
+round 18)**, tools at `6b260da` to `279b900` (reviews R369-1 to R369-13): forge 249 pass (36 suites); kit tests
+38 pass (owner-tools-r369.test.mjs added: 10); page unit tests 538 pass, 1 skipped (nine Bloch L2 site tests
+timed out under a machine load of 200 to 430 and passed 123 of 123 when their three files were run alone); tsc
+clean; both builds; production bundle of the Bloch L2 site 0 hits in 88 files; fork rehearsals PASS six of six,
+**45 checks each** (41 before: the depositing account and market-price checks of 343), first chains on
+`6b260da`, the last on `279b900` (the later changes touch only multi-endpoint reads, the public-chain prompt of
+`deploy.sh` and printed text, which a loopback rehearsal does not reach); pre gates on the six real chains:
+every check passes except the owner's fee-address proof, which is missing (19 or 20 checks ok and 1 FAIL each;
+on Arbitrum One and Linea one endpoint per state read refused pruned state and the two others agreed); live
+check PASS six of six. Earlier run of record (agent 326): commit `77b5d61` for the suites, the six fork
+rehearsals, the costs and the pre gates; `d57cfab` and `5707bd8` for the page rehearsal and the six simulations;
+the simulations and costs were not repeated in round 18.
 
 | Rehearsal | Command | What it shows | Result |
 |---|---|---|---|
-| Kit tests | `node --test scripts/multichain/*.test.mjs` | configuration, plan, gate and pair states, the proof of an opening and its refusals, the depositing account's rules, the deposit tool's minimums and price check, confirmation rules, opcode set, refusals, start through a symbolic link | 21 pass |
+| Kit tests | `node --test scripts/multichain/*.test.mjs` | configuration, plan, gate and pair states, the proof of an opening and its refusals, the depositing account's rules, the deposit tool's minimums and price check, confirmation rules, opcode set, refusals, start through a symbolic link; state from two agreeing endpoints, a second endpoint for openings, block age, printed lines, the broadcast prompt (review 369) | 38 pass (21 at `77b5d61`) |
 | Deploy script | `forge test --match-contract MultichainScriptTest` | planned addresses on the deployer's real runtime, a second run deploys nothing, refusals (the zero address and the fee address as first depositor among them) | pass |
 | Opening of a pool | `forge test --match-contract MultichainFirstDepositTest` | review R309-MC-1 against the package's plan (hostile first mint refused directly, through the router and from a contract; strict minimums alone; later pairs); review R328-1 as a fact of the frozen pair (a contract called by the depositing account opens the pool; the printed deposit then reverts); the lock and the Mint log the proof relies on; reviews R328-2 and R328-3 (a donation joins the pool as a gift to the depositor; one unit does not stop the deposit) | 9 pass |
-| Pre gate on the public chains | `node scripts/multichain/gate.mjs <chain> pre --reference` | pins against the real chains, the depositing account, read-only | PASS, six of six |
+| Pre gate on the public chains | `node scripts/multichain/gate.mjs <chain> pre` | pins against the real chains, the depositing account, the fee address and its proof, read-only | every check ok on six of six except the missing owner proof (FAIL, by design until it is signed); `--reference` at `77b5d61`: PASS six of six |
 | Simulation on the real nodes | `node scripts/multichain/simulate-chain.mjs <chain> --out FILE` (BNB Smart Chain: add `--endpoint https://bsc-dataseed.bnbchain.org`) | deployment, the hostile first mint and deposit (must revert), the guarded opening by the depositing account and the flow on the chain's own node software, read-only | PASS, six of six |
 | Fork rehearsal | `node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR` | the owner's command and the post gate; **review R328-1 on the fork** (the depositing account calls a hostile contract, which opens the planned pool: `prepare` says STOP, the gate fails without and with that transaction as the opening, `verify` fails, `add` prints nothing, no record can be written); **reviews R328-2 and R328-3** (one unit at the pair does not block `prepare`, 1% does, the same 1% in front of the deposit joins as a gift that `verify` and the gate report); **review R309-MC-1** (a stranger's first mint and first deposit revert); the first deposit as printed; `verify` after a swap has moved the reserves; the post gate without, with and again without `--opening`; the flow with signed transactions; a later deposit as `add` prints it, after its refusal at a price 5% away; gas, fee amounts | PASS, six of six, 41 checks each |
 | Page rehearsal | `node scripts/multichain/rehearse-page.mjs --port PORT --out DIR` | the multichain site in a real browser engine against six forks whose pools were opened by a first deposit that also created the pair and whose records come from gates with the opening proven: network switch, one swap per chain settled by the chain's confirmation rule at the chain's block time, holds per chain | PASS: 6 chains, 59 assertions, 0 failed |
