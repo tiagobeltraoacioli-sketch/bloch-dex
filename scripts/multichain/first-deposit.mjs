@@ -40,7 +40,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, planChain, refuse,
+  EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, planChain, refuse, retrying,
 } from "./lib.mjs";
 import { decodeDeposit, openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
@@ -177,7 +177,7 @@ export async function main(argv, print = console.log) {
   const { router, factory } = plan.contracts;
 
   const urls = o.rehearsal ? [o.rpc] : chain.rpc;
-  const [request, ...others] = urls.map((url) => createRpcTransport(url, { timeoutMs: 30_000 }));
+  const [request, ...others] = urls.map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
   const checks = [];
   const check = (name, ok, detail) => {
     checks.push({ name, ok: Boolean(ok), ...(detail === undefined ? {} : { detail }) });

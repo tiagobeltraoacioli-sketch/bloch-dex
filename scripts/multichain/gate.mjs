@@ -36,7 +36,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse,
+  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, loadArtifacts, loadChain, loadShared, lower, planChain, planSummary, refuse, retrying,
 } from "./lib.mjs";
 import { openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
@@ -296,8 +296,8 @@ export async function main(argv) {
   const plan = planChain(shared, chain, loadArtifacts(), { reference: options.reference });
   refuse(!plan.reference || options.rehearsal || options.phase === "pre", "a reference plan (owner choices open) can pass the post gate only in a rehearsal");
   const urls = options.rehearsal ? [options.rpc] : chain.rpc;
-  const [request, ...others] = urls.map((url) => createRpcTransport(url, { timeoutMs: 30_000 }));
-  const identityOnly = options.rehearsal ? chain.rpc.map((url) => createRpcTransport(url, { timeoutMs: 30_000 })) : [];
+  const [request, ...others] = urls.map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
+  const identityOnly = options.rehearsal ? chain.rpc.map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 }))) : [];
   // A later run of the post gate needs the opening transactions again: those of the report already at --out (same
   // chain, same factory) are used when the option does not name the pair. They are verified again like any other.
   const openings = { ...previousOpenings(options, chain, plan), ...options.openings };

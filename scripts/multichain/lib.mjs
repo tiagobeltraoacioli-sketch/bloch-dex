@@ -59,6 +59,23 @@ export function checksummed(value, field) {
   return value;
 }
 
+/**
+ * A public endpoint that fails once (a dropped connection, a rate limit) is asked again, twice, with a pause: a
+ * refused request is not the chain's answer. An execution error (a revert) is, and is returned at once.
+ */
+export function retrying(request, { tries = 3, delayMs = 1500 } = {}) {
+  return async (method, params) => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await request(method, params);
+      } catch (error) {
+        if (attempt >= tries || /execution reverted|revert/i.test(String(error?.message ?? error))) throw error;
+        await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+      }
+    }
+  };
+}
+
 export const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 export const loadShared = (root = ROOT) => validateShared(readJson(join(root, "deployments/multichain.json")));
 export const loadChain = (key, root = ROOT) => {
