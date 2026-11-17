@@ -8,7 +8,7 @@ import { LoaderCircle, RefreshCw, Wallet } from 'lucide-react';
 import { encodeFunctionData, type Address, type Hex } from 'viem';
 import '../styles/bridge.css';
 import { formatAmount, parseAmount } from '../amm';
-import { ERC20_ABI, httpRpc, readCall, rpcErrorText, type Rpc } from '../devnet4/chain';
+import { ERC20_ABI, readCall, rpcErrorText, type Rpc } from '../devnet4/chain';
 import { ensureChain, parseReceipt, sendTransaction, type TransactionRequest } from '../devnet4/swap';
 import { addChainParameters, longestQuiet, type MainnetNetwork } from '../mainnet/config';
 import { priceNewSlots } from '../mainnet/newslotfee';
@@ -18,11 +18,11 @@ import { GateGlyph } from '../shell/BrandMark';
 import type { useWallet } from '../useWallet';
 import { validAddress } from '../wallet';
 import { AssetMark, Exact, LimitsBlock, NetworkPicker, Panel, QuoteBlock, RisksBlock, RouteFacts, RouteState, StatusCard, WaitsBlock, WrappedTokenList } from './BridgeParts';
-import { bitcoinFeeEstimate, bitcoinDeposits, evmDeposit, readSourceExit, solanaDepositCount, solanaDestination, stellarTrustline, VAULT_ABI, type Fetch } from './observe';
+import { bitcoinFeeEstimate, bitcoinDeposits, evmDeposit, evmSourceGas, evmSourceRpc, readEvmDepositState, readSourceExit, solanaDepositCount, solanaDestination, stellarTrustline, VAULT_ABI, type Fetch } from './observe';
 import { depositAddress, parseFeeRate, refundText } from './bitcoin';
 import { p2wpkhKeyHash, stellarAddress, tronAddress20 } from './codec';
 import { L2_CHAIN_ID, liveRoute, type BridgeConfig, type LiveRoute, type Route } from './config';
-import { BridgeError, SOLANA_PROOF_ROUTER_ABI, creditCalls, estimateStepGas, exitSteps, finalizedL2, readBurns, readL2Context, readMints, refusalText, stepTransaction, type BurnObservation, type ExitDestination, type ExitStep, type L2Context, type MintObservation } from './l2';
+import { BridgeError, SOLANA_PROOF_ROUTER_ABI, applyRecovery, creditCalls, recoveryCalls, estimateStepGas, exitSteps, finalizedL2, readBurns, readL2Context, readMints, refusalText, stepTransaction, type BurnObservation, type ExitDestination, type ExitStep, type L2Context, type MintObservation } from './l2';
 import { depositWaits, exitWaits, limitLines, money, quoteDeposit, quoteExit, routeRisks, type Direction, type Quote } from './quote';
 import { depositInstruction, exitProofMessage, parseSignature, solanaWallet, verifyExitProof, type ExitProof, type ProofFields } from './solana';
 import { discoverSolanaSigners, type SolanaSigner } from './solana-wallet';
@@ -55,7 +55,7 @@ function routeFromHash(config: BridgeConfig): { id: string; direction: Direction
 }
 
 /** A transaction of this page that is not yet in a finalized L2 block; kept across reloads, one per account. */
-type Pending = { hash: Hex; label: string; kind: 'approve' | 'burn' | 'credit'; routeId: string; sentAt: number };
+type Pending = { hash: Hex; label: string; kind: 'approve' | 'burn' | 'credit' | 'recovery'; routeId: string; sentAt: number };
 const pendingKey = (account: string) => `postern.bridge.pending.v1.${L2_CHAIN_ID}.${account.toLowerCase()}`;
 function loadPending(account: string): Pending | null {
   try {
@@ -218,7 +218,19 @@ export default function BridgePage({ config, network, rpc, wallet, now = Date.no
     (async () => {
       try {
         const [mints, burns] = await Promise.all([readMints(rpc, live, ctx.finalized, account), readBurns(rpc, live, ctx.finalized, account)]);
-        const withSource = await Promise.all(burns.slice(0, 6).map(async (burn) => ({ burn, source: await readSourceExit(live, burn, fetchImpl) })));
+        // The destination the signers pay (a claim or a redirect by the burner, final on the L2), then its source state.
+        // A Solana router exit with a valid proof follows a redirect only when its own destination is held.
+        const withSource = await Promise.all(
+          burns.slice(0, 6).map(async (observed) => {
+            let burn = applyRecovery(live, observed);
+            let source = await readSourceExit(live, burn, fetchImpl);
+            if (burn.redirectIgnored && source.kind === 'solana' && source.destination === 'not-a-wallet' && !source.record) {
+              burn = applyRecovery(live, observed, true);
+              source = await readSourceExit(live, burn, fetchImpl);
+            }
+            return { burn, source };
+          }),
+        );
         if (current) setActivity({ key: contextKey, mints, burns: withSource, error: null });
       } catch (error) {
         if (current) setActivity({ key: contextKey, mints: [], burns: [], error: errorText(error) });
@@ -229,6 +241,8 @@ export default function BridgePage({ config, network, rpc, wallet, now = Date.no
     };
   }, [live, account, ctx, rpc, fetchImpl, contextKey]);
   const shown = activity?.key === contextKey ? activity : null;
+  // One recovery form open at a time (a claim or a redirect of one burn).
+  const [recovering, setRecovering] = useState<Hex | null>(null);
   const nowSeconds = BigInt(Math.floor(now() / 1000));
 
   if (!entry)
@@ -428,7 +442,13 @@ export default function BridgePage({ config, network, rpc, wallet, now = Date.no
               heading={`Exit of ${formatAmount(burn.amount, live.l2.decimals)} ${live.l2.symbol} to ${burn.recipient}`}
               reference={{ what: 'Burn id', value: burn.burnId }}
               status={exitStatus(live, burn, source, nowSeconds)}
-            />
+              onAction={(action) => (action.id === 'claim-direct-burn' || action.id === 'redirect-held-burn') && setRecovering(burn.burnId)}
+              busy={busy || !!pending}
+            >
+              {recovering === burn.burnId && ctx && (
+                <ExitRecovery route={live} rpc={rpc} ctx={ctx} account={account} burn={burn} busy={busy || !!pending} now={now} fetchImpl={fetchImpl} onClose={() => setRecovering(null)} onSend={sendL2} />
+              )}
+            </StatusCard>
           ))}
           {shown?.mints.map((mint) => (
             <StatusCard
@@ -635,6 +655,9 @@ function ExitFlow({
         <input className="text-input bridge-address" autoComplete="off" spellCheck={false} autoCapitalize="off" value={text} onChange={(e) => (setText(e.target.value.trim()), setProof(null))} aria-invalid={(!validation.ok && trimmed !== '') || undefined} data-testid="exit-destination" />
         <span className="microcopy">{hint[kind]}</span>
       </label>
+      <p className="bridge-own-wallet" data-testid="exit-own-wallet">
+        Exits go to a wallet you control, never to an exchange deposit address: an exchange may not credit a payment from the bridge, and an exit that is paid cannot be called back.
+      </p>
       {!validation.ok && validation.reason && (
         <p className="form-error" role="alert" data-testid="exit-destination-error">
           {validation.reason}
@@ -659,7 +682,10 @@ function ExitFlow({
         <Panel tone="info" title="Before you sign" testId="exit-summary">
           <p>
             You burn {formatAmount(quote.l2Units, route.l2.decimals)} {route.l2.symbol} and receive {quote.receiveIsMinimum ? 'at least ' : ''}
-            {money(quote.receive)} at <span className="bridge-break">{text}</span> on {route.name}. The burn cannot be undone or redirected.
+            {money(quote.receive)} at <span className="bridge-break">{text}</span> on {route.name}.{' '}
+            {kind === 'svm' && route.solana!.proof.redirectTemplate
+              ? 'The burn cannot be undone. It can be sent to another wallet only if the signers hold it (for example, the destination turns out not to be a wallet), and only by you.'
+              : 'The burn cannot be undone or redirected.'}
           </p>
           {steps.length > 0 && (
             <ol className="bridge-steps">
@@ -713,7 +739,7 @@ function ExitFlow({
 }
 
 /** The destination-key proof of a Solana exit: the wallet signs one line; the page verifies it before any L2 call. */
-function SolanaProof({ route, rpc, ctx, wallet, account, units, proof, stale, now, onProof }: { route: LiveRoute; rpc: Rpc; ctx: L2Context; wallet: string; account: Address; units: bigint | null; proof: ExitProof | null; stale: boolean; now: () => number; onProof: (proof: ExitProof | null) => void }) {
+function SolanaProof({ route, rpc, ctx, wallet, account, units, proof, stale, now, onProof, redirectOf }: { route: LiveRoute; rpc: Rpc; ctx: L2Context; wallet: string; account: Address; units: bigint | null; proof: ExitProof | null; stale: boolean; now: () => number; onProof: (proof: ExitProof | null) => void; redirectOf?: Hex }) {
   const [signers, setSigners] = useState<SolanaSigner[]>([]);
   const [issued, setIssued] = useState(() => Math.floor(now() / 1000));
   const [pasted, setPasted] = useState('');
@@ -722,19 +748,23 @@ function SolanaProof({ route, rpc, ctx, wallet, account, units, proof, stale, no
   // What the router-carried format binds the line to, read from the router at the finalized block.
   const [bound, setBound] = useState<{ nonce: bigint; route: Hex; routerLine: string } | null>(null);
   useEffect(() => discoverSolanaSigners((s) => setSigners((list) => (list.some((x) => x.id === s.id) ? list : [...list, s]))), []);
-  const format = route.solana!.proof;
+  // A redirect signs the route's redirect line for one burn; an exit signs the exit line for one amount.
+  const base = route.solana!.proof;
+  const format = useMemo(() => (redirectOf ? { ...base, template: base.redirectTemplate! } : base), [base, redirectOf]);
   const router = route.router!.address!;
   const carried = format.carriedBy === 'router';
   useEffect(() => {
     setBound(null);
-    if (!carried || units === null) return;
+    if (!carried || (units === null && !redirectOf)) return;
     let current = true;
     (async () => {
       try {
         const at = { blockHash: ctx.finalized.hash };
         const nonce = await readCall<bigint>(rpc, SOLANA_PROOF_ROUTER_ABI, router, 'nextNonce', [account], at);
         const routeId = await readCall<Hex>(rpc, SOLANA_PROOF_ROUTER_ABI, router, 'route', [], at);
-        const routerLine = await readCall<string>(rpc, SOLANA_PROOF_ROUTER_ABI, router, 'exitMessage', [account, units, wallet, nonce], at);
+        const routerLine = redirectOf
+          ? await readCall<string>(rpc, SOLANA_PROOF_ROUTER_ABI, router, 'redirectMessage', [account, redirectOf, wallet, nonce], at)
+          : await readCall<string>(rpc, SOLANA_PROOF_ROUTER_ABI, router, 'exitMessage', [account, units, wallet, nonce], at);
         if (current) (setBound({ nonce: BigInt(nonce), route: routeId, routerLine }), setError(''));
       } catch (e) {
         if (current) setError(`The exit router could not be asked for the message (${errorText(e)}). Nothing is sent.`);
@@ -743,11 +773,19 @@ function SolanaProof({ route, rpc, ctx, wallet, account, units, proof, stale, no
     return () => {
       current = false;
     };
-  }, [carried, units, rpc, router, account, wallet, ctx.finalized.hash]);
+  }, [carried, units, rpc, router, account, wallet, ctx.finalized.hash, redirectOf]);
   const fieldsAt = useCallback(
     (at: number): ProofFields | null =>
-      carried ? (bound && units !== null ? { wallet, burner: account, router, amount: units, nonce: bound.nonce, route: bound.route } : null) : { wallet, burner: account, router, issued: at },
-    [carried, bound, units, wallet, account, router],
+      redirectOf
+        ? bound
+          ? { wallet, burner: account, router, burnId: redirectOf, nonce: bound.nonce, route: bound.route }
+          : null
+        : carried
+          ? bound && units !== null
+            ? { wallet, burner: account, router, amount: units, nonce: bound.nonce, route: bound.route }
+            : null
+          : { wallet, burner: account, router, issued: at },
+    [carried, bound, units, wallet, account, router, redirectOf],
   );
   const fields = fieldsAt(issued);
   const message = useMemo(() => {
@@ -783,10 +821,10 @@ function SolanaProof({ route, rpc, ctx, wallet, account, units, proof, stale, no
   };
   const done = proof && !stale;
   return (
-    <Panel tone={done ? 'ok' : 'action'} title={done ? 'Destination proven: this wallet signed' : 'Prove that you control the destination wallet'} testId="solana-proof">
+    <Panel tone={done ? 'ok' : 'action'} title={done ? 'Destination proven: this wallet signed' : redirectOf ? 'Prove that you control the new destination wallet' : 'Prove that you control the destination wallet'} testId="solana-proof">
       <p>
-        Exits go to a wallet you control. Before the burn, that wallet signs the line below: a message, not a Solana transaction; it costs nothing and moves nothing. This page checks the signature itself
-        {carried ? ', the exit router publishes it with the burn, and every signer checks it again before paying: an exit without a valid one is held' : ''}. An exchange deposit address cannot sign and must not be used.
+        Exits go to a wallet you control. {redirectOf ? 'Before the redirect is sent, the NEW wallet' : 'Before the burn, that wallet'} signs the line below: a message, not a Solana transaction; it costs nothing and moves nothing. This page checks the signature itself
+        {carried ? `, the exit router publishes it with the ${redirectOf ? 'redirect' : 'burn'}, and every signer checks it again before paying: ${redirectOf ? 'a redirect' : 'an exit'} without a valid one is ${redirectOf ? 'not followed' : 'held'}` : ''}. An exchange deposit address cannot sign and must not be used.
       </p>
       {mismatch ? (
         <p className="form-error" role="alert" data-testid="solana-proof-error">
@@ -806,7 +844,9 @@ function SolanaProof({ route, rpc, ctx, wallet, account, units, proof, stale, no
           Signed {proof.envelope === 'text' ? 'as text' : 'as a Solana off-chain message'}.{' '}
           {proof.issued !== undefined
             ? `Valid for ${Math.round(route.solana!.policy.proofMaxAgeSeconds / 60)} minutes: if the burn is sent later, the page asks for a new signature.`
-            : 'It is valid for this amount and this exit only: change the amount and the page asks for a new signature.'}
+            : redirectOf
+              ? 'It is valid for this redirect of this burn only.'
+              : 'It is valid for this amount and this exit only: change the amount and the page asks for a new signature.'}
         </p>
       ) : (
         message &&
@@ -851,6 +891,131 @@ function SolanaProof({ route, rpc, ctx, wallet, account, units, proof, stale, no
           {error}
         </p>
       )}
+    </Panel>
+  );
+}
+
+/**
+ * Recovery of one exit by the account that burned: a Solana redirect of a held burn (or of a burn made directly on the
+ * token) to a wallet that signs the route's redirect line, or the set-once claim of a direct burn on Bitcoin or
+ * Stellar. Validated in the page, checked on the source network, shown in full before the wallet is asked.
+ */
+function ExitRecovery({ route, rpc, ctx, account, burn, busy, now, fetchImpl, onClose, onSend }: { route: LiveRoute; rpc: Rpc; ctx: L2Context; account: Address; burn: BurnObservation; busy: boolean; now: () => number; fetchImpl: Fetch; onClose: () => void; onSend: (label: string, kind: Pending['kind'], call: { to: Address; data: Hex }) => Promise<void> }) {
+  const [text, setText] = useState('');
+  const [rateText, setRateText] = useState('');
+  const [read, setRead] = useState(false);
+  const [proof, setProof] = useState<ExitProof | null>(null);
+  const [check, setCheck] = useState<{ for: string; ok: boolean; text: string } | null>(null);
+  const kind = route.kind;
+  const amount = `${formatAmount(burn.amount, route.l2.decimals)} ${route.l2.symbol}`;
+  const rate = route.bitcoin ? parseFeeRate(rateText, route.bitcoin.policy.feeRateCeiling) : null;
+  const validation = useMemo((): { ok: true } | { ok: false; reason: string } => {
+    if (text === '') return { ok: false, reason: '' };
+    if (kind === 'svm') {
+      const w = solanaWallet(text, route.asset.id);
+      return w.ok ? { ok: true } : { ok: false, reason: w.reason };
+    }
+    if (kind === 'stellar') {
+      const a = stellarAddress(text);
+      return a.ok ? { ok: true } : { ok: false, reason: a.reason };
+    }
+    const a = p2wpkhKeyHash(route.bitcoin?.script?.hrp ?? 'bc', text);
+    return a.ok ? { ok: true } : { ok: false, reason: a.reason };
+  }, [text, kind, route]);
+  useEffect(() => {
+    setCheck(null);
+    if (!validation.ok || kind === 'utxo') return;
+    let current = true;
+    const set = (ok: boolean, message: string) => current && setCheck({ for: text, ok, text: message });
+    if (kind === 'svm')
+      solanaDestination(route, text, fetchImpl).then(
+        (d) => (d.destination === 'not-a-wallet' ? set(false, 'On Solana this address exists and is not a plain wallet. The signers would hold the burn again. Choose a wallet you control.') : set(true, d.tokenAccount ? 'A wallet address with a USDC account.' : 'A wallet address without a USDC account yet: create it, the payment waits for it.')),
+        () => set(false, 'Solana could not be read, so the new destination cannot be checked. Nothing is sent until it can.'),
+      );
+    else
+      stellarTrustline(route, text, fetchImpl).then(
+        (t) => (t === 'trusted' || t === 'contract' ? set(true, t === 'contract' ? 'A contract address: it needs no trustline.' : 'This account exists and holds the USDC trustline.') : set(false, t === 'unauthorized' ? 'The issuer has revoked this account\'s USDC authorization.' : t === 'no-account' ? 'This account does not exist on Stellar. Fund it and add the USDC trustline first: the claim cannot be changed later.' : 'This account holds no USDC trustline. Add it first: the claim cannot be changed later.')),
+        () => set(false, 'Stellar could not be read, so the account cannot be checked. Nothing is sent until it can.'),
+      );
+    return () => {
+      current = false;
+    };
+  }, [validation.ok, text, kind, route, fetchImpl]);
+  const checked = kind === 'utxo' ? true : check?.for === text && check.ok;
+  let call: { to: Address; data: Hex } | null = null;
+  let detail = '';
+  let failure = '';
+  try {
+    if (validation.ok && checked) {
+      if (kind === 'svm' && proof && proof.wallet === text) {
+        call = recoveryCalls.redirect(route, burn.burnId, proof);
+        detail = `redirectHeldBurn(${burn.burnId}, ${text}, ${proof.nonce}, <the new wallet's signature>) on the exit router`;
+      } else if (kind === 'stellar') {
+        call = recoveryCalls.claimStellar(route, burn.burnNonce, text);
+        detail = `claimDirectBurn(${burn.burnNonce}, ${text}) on the exit router`;
+      } else if (kind === 'utxo' && rate) {
+        call = recoveryCalls.claimBitcoin(route, burn.burnNonce, text, Number(rate));
+        detail = `claimDirectBurn(${burn.burnNonce}, ${text}, ${rate}) on the exit router`;
+      }
+    }
+  } catch (error) {
+    failure = errorText(error);
+  }
+  const verb = kind === 'svm' ? 'Send to another address' : 'Claim this burn';
+  return (
+    <Panel tone="action" title={kind === 'svm' ? `Send the exit of ${amount} to another wallet` : `Claim the burn of ${amount}`} testId="exit-recovery">
+      <p>
+        {kind === 'svm'
+          ? 'Name the wallet the signers should pay instead. It must be a wallet you control: it signs one line below. The redirect moves nothing on the L2; it counts once it is final, only for a held burn, and never after an approval. A later redirect replaces an earlier one.'
+          : 'Name where this burn is paid. The claim is a transaction from the account that burned; it is set once and cannot be changed, so check the address twice.'}{' '}
+        Never an exchange deposit address.
+      </p>
+      <label className="field-label bridge-field">
+        {kind === 'svm' ? 'New Solana wallet address' : kind === 'stellar' ? 'Stellar address (G… or C…)' : 'Your Bitcoin address (bc1q…)'}
+        <input className="text-input bridge-address" autoComplete="off" spellCheck={false} autoCapitalize="off" value={text} onChange={(e) => (setText(e.target.value.trim()), setProof(null))} aria-invalid={(!validation.ok && text !== '') || undefined} data-testid="recovery-destination" />
+      </label>
+      {kind === 'utxo' && (
+        <label className="field-label bridge-field">
+          Highest Bitcoin fee rate you accept (sat/vB)
+          <input className="text-input" inputMode="numeric" placeholder={`1 to ${route.bitcoin!.policy.feeRateCeiling}`} value={rateText} onChange={(e) => setRateText(e.target.value)} data-testid="recovery-fee-rate" />
+        </label>
+      )}
+      {!validation.ok && validation.reason && (
+        <p className="form-error" role="alert">
+          {validation.reason}
+        </p>
+      )}
+      {check && check.for === text && (
+        <p className={check.ok ? 'microcopy' : 'form-error'} role={check.ok ? 'status' : 'alert'} data-testid="recovery-check">
+          {check.text}
+        </p>
+      )}
+      {kind === 'svm' && validation.ok && checked && (
+        <SolanaProof route={route} rpc={rpc} ctx={ctx} wallet={text} account={account} units={null} proof={proof && proof.wallet === text ? proof : null} stale={false} now={now} onProof={setProof} redirectOf={burn.burnId} />
+      )}
+      {failure && (
+        <p className="form-error" role="alert">
+          {failure}
+        </p>
+      )}
+      {call && (
+        <>
+          <p className="microcopy bridge-break" data-testid="recovery-call">
+            Your wallet is asked to send {detail}, from {account}. Nothing is burned or moved by it.
+          </p>
+          <label className="checkbox-label">
+            <input type="checkbox" checked={read} onChange={(e) => setRead(e.target.checked)} /> {kind === 'svm' ? 'This is a wallet I control.' : 'This address is mine and correct; I know the claim cannot be changed.'}
+          </label>
+        </>
+      )}
+      <div className="bridge-signers">
+        <button type="button" className="button primary" disabled={!call || !read || busy} data-testid="recovery-send" onClick={() => call && void onSend(`${verb} (${amount})`, 'recovery', call)}>
+          {busy ? 'Check your wallet…' : verb}
+        </button>
+        <button type="button" className="button secondary" onClick={onClose}>
+          Close
+        </button>
+      </div>
     </Panel>
   );
 }
@@ -909,7 +1074,8 @@ function DepositFlow({ route, ctx, account, quote, assetAmount, wallet, fetchImp
 
 /** A deposit on an EVM source network, through the injected wallet: exact approval, then the vault's deposit call. */
 function EvmDeposit({ route, account, recipient, amount, wallet, fetchImpl }: { route: LiveRoute; account: Address; recipient: Address; amount: bigint; wallet: WalletState; fetchImpl: Fetch }) {
-  const source = useMemo(() => httpRpc(route.read.urls[0], fetchImpl), [route, fetchImpl]);
+  // Two agreeing endpoints for every read and receipt (R364-6); a route with one endpoint is refused there.
+  const source = useMemo(() => { try { return evmSourceRpc(route, fetchImpl); } catch (e) { return (async () => { throw e; }) as Rpc; } }, [route, fetchImpl]);
   const vault = route.custody.address as Address;
   const token = route.asset.id as Address;
   const [state, setState] = useState<{ allowance: bigint; balance: bigint; room: bigint; open: boolean } | null>(null);
@@ -922,18 +1088,8 @@ function EvmDeposit({ route, account, recipient, amount, wallet, fetchImpl }: { 
     let current = true;
     (async () => {
       try {
-        if (BigInt((await source('eth_chainId', [])) as string) !== BigInt(route.chainId)) throw new BridgeError(`The endpoint is not ${route.name}.`);
-        const block = (await source('eth_getBlockByNumber', ['latest', false])) as { hash: Hex };
-        const at = { blockHash: block.hash };
-        const [allowance, balance, locked, cap, enabled, paused] = await Promise.all([
-          readCall<bigint>(source, ERC20_ABI, token, 'allowance', [account, vault], at),
-          readCall<bigint>(source, ERC20_ABI, token, 'balanceOf', [account], at),
-          readCall<bigint>(source, VAULT_ABI, vault, 'totalLocked', [], at),
-          readCall<bigint>(source, VAULT_ABI, vault, 'cap', [], at),
-          readCall<boolean>(source, VAULT_ABI, vault, 'depositsEnabled', [], at),
-          readCall<boolean>(source, VAULT_ABI, vault, 'paused', [], at),
-        ]);
-        if (current) (setState({ allowance, balance, room: BigInt(cap) - BigInt(locked), open: enabled && !paused }), setError(''));
+        const { allowance, balance, room, open } = await readEvmDepositState(route, account, fetchImpl);
+        if (current) (setState({ allowance, balance, room, open }), setError(''));
       } catch (e) {
         if (current) (setState(null), setError(errorText(e)));
       }
@@ -941,7 +1097,7 @@ function EvmDeposit({ route, account, recipient, amount, wallet, fetchImpl }: { 
     return () => {
       current = false;
     };
-  }, [source, route, account, vault, token, tick]);
+  }, [route, account, fetchImpl, tick]);
   useEffect(() => {
     if (!sent) return;
     let current = true;
@@ -980,8 +1136,8 @@ function EvmDeposit({ route, account, recipient, amount, wallet, fetchImpl }: { 
         kind === 'approve'
           ? { to: token, data: encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [vault, amount] }) }
           : { to: vault, data: encodeFunctionData({ abi: VAULT_ABI, functionName: 'deposit', args: [amount, `0x${recipient.slice(2).padStart(64, '0')}` as Hex] }) };
-      const estimate = BigInt((await source('eth_estimateGas', [{ from: account, ...call }, 'latest'])) as string);
-      const hash = await withWalletRequestLock(account, () => sendTransaction(wallet.provider!, { from: account, ...call, value: 0n, gas: (estimate * 4n) / 3n, chainId: Number(route.chainId) }));
+      const gas = await evmSourceGas(route, account, call, fetchImpl);
+      const hash = await withWalletRequestLock(account, () => sendTransaction(wallet.provider!, { from: account, ...call, value: 0n, gas, chainId: Number(route.chainId) }));
       setSent({ hash, kind });
     } catch (e) {
       setError(declined(e) ? 'You declined the request in your wallet. Nothing was sent.' : `${errorText(e)} Nothing was sent.`);

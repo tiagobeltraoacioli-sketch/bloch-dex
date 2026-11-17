@@ -16,7 +16,7 @@ import {
 import { readCall, type Rpc } from '../devnet4/chain';
 import type { TransactionRequest } from '../devnet4/swap';
 import { L2_CHAIN_ID, type LiveRoute } from './config';
-import type { ExitProof } from './solana';
+import { exitProofMessage, verifyCarriedProof, type ExitProof } from './solana';
 
 export const TOKEN_ABI = parseAbi([
   'function symbol() view returns (string)',
@@ -57,6 +57,10 @@ export const BITCOIN_ROUTER_ABI = parseAbi([
   'function burnTo(uint64 amount, string bitcoinAddress, uint16 maxFeeRate) returns (bytes32 burnId)',
   'function claimDirectBurn(uint64 burnNonce, string bitcoinAddress, uint16 maxFeeRate)',
   'event BitcoinExit(bytes32 indexed burnId, address indexed from, uint64 amount, bytes20 keyHash, string bitcoinAddress, uint16 maxFeeRate)',
+  'event DirectBurnClaimed(address indexed burner, uint64 indexed burnNonce, bytes20 keyHash, string bitcoinAddress, uint16 maxFeeRate)',
+  'error AlreadyClaimed()',
+  'error NoSuchBurn()',
+  'error NotTheBurner()',
   'error NotAP2wpkhAddress()',
   'error BadFeeRate()',
   'error PayoutBelowDustAtFeeRate()',
@@ -100,6 +104,15 @@ export const STELLAR_ROUTER_ABI = parseAbi([
   'event StellarExit(bytes32 indexed burnId, address indexed from, uint64 amount, bytes20 commitment, string stellarAddress)',
   'error BadStrkey()',
   'error TransferFailed()',
+]);
+/** The Stellar router with the direct-burn claim (revision 4 of the route; page.json stellar.policy.directBurnClaim = router). */
+export const STELLAR_CLAIM_ROUTER_ABI = parseAbi([
+  'function claimOf(address burner, uint64 burnNonce) view returns (string)',
+  'function claimDirectBurn(uint64 burnNonce, string stellarAddress)',
+  'event DirectBurnClaimed(address indexed burner, uint64 indexed burnNonce, bytes20 commitment, string stellarAddress)',
+  'error BadStrkey()',
+  'error BadNonce()',
+  'error AlreadyClaimed()',
 ]);
 
 export class BridgeError extends Error {}
@@ -315,6 +328,9 @@ export function refusalText(error: unknown, route: LiveRoute): string | null {
     ['InsufficientBalance', `Your ${route.l2.symbol} balance does not cover this amount.`],
     ['InsufficientAllowance', 'The approval does not cover this amount.'],
     ['BadEthRecipient', 'The token refuses this recipient.'],
+    ['AlreadyClaimed', 'This burn is already claimed: a claim is set once and cannot be changed.'],
+    ['NoSuchBurn', 'The router finds no such burn made by this account.'],
+    ['NotTheBurner', 'Only the account that made the burn can claim it.'],
   ];
   for (const [name, text] of selectors) {
     const selector = keccak256(`0x${Array.from(new TextEncoder().encode(`${name}()`), (b) => b.toString(16).padStart(2, '0')).join('')}` as Hex).slice(0, 10);
@@ -404,7 +420,39 @@ export type BurnObservation = {
   maxFeeRate?: number;
   /** The burn went through the route's router (always true for burns made by this page on router routes). */
   viaRouter: boolean;
+  /** Solana router exits: the nonce and proof the router published with the burn, and the page's own check of it. */
+  proof?: { nonce: bigint; bytes: Hex; valid: boolean; reason: string | null };
+  /** A burn made directly on the token that its burner claimed through the router (set once), final on the L2. */
+  claim?: { address: string; block: bigint; tx: Hex; maxFeeRate?: number } | null;
+  /**
+   * Solana: the latest finalized `redirectHeldBurn` of this burn by its own burner whose proof checks (highest nonce
+   * wins, as the signers rule). Whether the signers honour it depends on the burn being held; see the status.
+   */
+  redirect?: { address: string; nonce: bigint; block: bigint; tx: Hex } | null;
+  /** Redirects of this burn whose proof does not check: shown, never followed. */
+  badRedirects?: number;
+  /** Set by `applyRecovery` when the destination shown is a claim's or a redirect's: the one the burn first named. */
+  recipientOriginal?: string;
+  /** A valid redirect exists but the signers do not follow it (the exit was not held). */
+  redirectIgnored?: boolean;
 };
+
+/**
+ * The destination the bridge pays a burn to, as the signers decide it from the finalized L2 log:
+ *   - a direct burn on a router route: its claim (Bitcoin, Stellar) or its latest valid redirect (Solana), else none;
+ *   - a Solana router exit: its own destination, unless it is held (no valid proof, or `heldAtOriginal`: the page read
+ *     the original destination as not a wallet), in which case the latest valid redirect;
+ *   - any other burn: its own destination.
+ * A Solana router exit with a valid proof and a wallet destination is never redirected (`redirectIgnored`).
+ */
+export function applyRecovery(route: LiveRoute, burn: BurnObservation, heldAtOriginal = false): BurnObservation {
+  if (!route.router) return burn;
+  if (!burn.viaRouter && burn.claim) return { ...burn, recipient: burn.claim.address, recipientOriginal: burn.recipient, ...(burn.claim.maxFeeRate === undefined ? {} : { maxFeeRate: burn.claim.maxFeeRate }) };
+  if (route.kind !== 'svm' || !burn.redirect) return burn;
+  const held = !burn.viaRouter || (burn.proof !== undefined && !burn.proof.valid) || heldAtOriginal;
+  if (!held) return { ...burn, redirectIgnored: true };
+  return { ...burn, recipient: burn.redirect.address, recipientOriginal: burn.recipient };
+}
 
 /** Every exit `account` has made on this route, from the L2's logs at the finalized block. */
 export async function readBurns(rpc: Rpc, route: LiveRoute, finalized: L2Block, account: Address, fromBlock = 0n): Promise<BurnObservation[]> {
@@ -445,8 +493,103 @@ export async function readBurns(rpc: Rpc, route: LiveRoute, finalized: L2Block, 
       });
     }
   }
+  if (route.router) await annotateRouterBurns(rpc, route, finalized, account, fromBlock, out);
   return out.sort((a, b) => (a.burnNonce > b.burnNonce ? -1 : 1));
 }
+
+/**
+ * What the router says about the account's burns beyond the exit log: the destination proof of a Solana exit (the
+ * page checks it as every signer does: a burn without a valid one is HELD), redirects of a Solana burn by its burner,
+ * and the claim of a direct burn (Bitcoin; Stellar when the route's router has it). All from logs at the finalized
+ * block; nothing unfinalized counts.
+ */
+async function annotateRouterBurns(rpc: Rpc, route: LiveRoute, finalized: L2Block, account: Address, fromBlock: bigint, burns: BurnObservation[]): Promise<void> {
+  const router = route.router!.address!;
+  const who = topicAddress(account);
+  const at = { blockHash: finalized.hash };
+  if (route.kind === 'svm' && route.solana!.proof.carriedBy === 'router') {
+    const format = route.solana!.proof;
+    const routeId = await readCall<Hex>(rpc, SOLANA_PROOF_ROUTER_ABI, router, 'route', [], at);
+    const exits = await logs(rpc, router, [encodeEventTopics({ abi: SOLANA_PROOF_ROUTER_ABI, eventName: 'SolanaExit' })[0], null, who], finalized, fromBlock);
+    for (const log of exits) {
+      const a = decodeEventLog({ abi: SOLANA_PROOF_ROUTER_ABI, eventName: 'SolanaExit', topics: log.topics as [Hex, ...Hex[]], data: log.data }).args;
+      const burn = burns.find((b) => b.viaRouter && b.burnId === a.burnId);
+      if (!burn) continue;
+      let verdict: { ok: boolean; reason?: string };
+      try {
+        const line = exitProofMessage(format, { wallet: a.recipient, burner: account, router, amount: a.amount, nonce: a.nonce, route: routeId });
+        verdict = await verifyCarriedProof(line, a.recipient, a.proof);
+      } catch (error) {
+        verdict = { ok: false, reason: error instanceof Error ? error.message : 'the line cannot be built' };
+      }
+      burn.proof = { nonce: a.nonce, bytes: a.proof, valid: verdict.ok, reason: verdict.ok ? null : (verdict.reason ?? 'invalid') };
+    }
+    if (format.redirectTemplate) {
+      const redirects = await logs(rpc, router, [encodeEventTopics({ abi: SOLANA_PROOF_ROUTER_ABI, eventName: 'SolanaRedirect' })[0], null, who], finalized, fromBlock);
+      for (const burn of burns) {
+        burn.redirect = null;
+        burn.badRedirects = 0;
+      }
+      for (const log of redirects) {
+        const a = decodeEventLog({ abi: SOLANA_PROOF_ROUTER_ABI, eventName: 'SolanaRedirect', topics: log.topics as [Hex, ...Hex[]], data: log.data }).args;
+        const burn = burns.find((b) => b.burnId === a.burnId);
+        if (!burn) continue;
+        let ok = false;
+        try {
+          const line = exitProofMessage({ ...format, template: format.redirectTemplate }, { wallet: a.recipient, burner: account, router, burnId: a.burnId, nonce: a.nonce, route: routeId });
+          ok = (await verifyCarriedProof(line, a.recipient, a.proof)).ok;
+        } catch {
+          ok = false;
+        }
+        if (!ok) {
+          burn.badRedirects = (burn.badRedirects ?? 0) + 1;
+          continue;
+        }
+        if (!burn.redirect || a.nonce > burn.redirect.nonce) burn.redirect = { address: a.recipient, nonce: a.nonce, block: BigInt(log.blockNumber), tx: log.transactionHash };
+      }
+    }
+  }
+  const claims = route.kind === 'utxo' || (route.kind === 'stellar' && route.stellar?.policy.directBurnClaim === 'router');
+  if (claims) {
+    const abi = route.kind === 'utxo' ? BITCOIN_ROUTER_ABI : STELLAR_CLAIM_ROUTER_ABI;
+    const found = await logs(rpc, router, [encodeEventTopics({ abi, eventName: 'DirectBurnClaimed' } as never)[0], who], finalized, fromBlock);
+    for (const burn of burns) if (!burn.viaRouter) burn.claim = null;
+    for (const log of found) {
+      const a = decodeEventLog({ abi, eventName: 'DirectBurnClaimed', topics: log.topics as [Hex, ...Hex[]], data: log.data } as never).args as unknown as Record<string, unknown>;
+      const burn = burns.find((b) => !b.viaRouter && b.burnNonce === a.burnNonce);
+      // Set once: the first finalized claim is the claim (the router refuses a second one).
+      if (!burn || burn.claim) continue;
+      burn.claim = {
+        address: String(a.bitcoinAddress ?? a.stellarAddress),
+        block: BigInt(log.blockNumber),
+        tx: log.transactionHash,
+        ...(a.maxFeeRate === undefined ? {} : { maxFeeRate: Number(a.maxFeeRate) }),
+      };
+    }
+  }
+}
+
+/** The L2 calls that recover an exit, each sent by the account that burned. */
+export const recoveryCalls = {
+  /** Solana: name a new destination for a held burn, or for a burn made directly on the token, with its proof. */
+  redirect: (route: LiveRoute, burnId: Hex, proof: ExitProof): { to: Address; data: Hex } => {
+    refuse(route.kind === 'svm' && route.solana!.proof.redirectTemplate && route.router?.address, 'This route offers no redirect.');
+    refuse(proof.router.toLowerCase() === route.router!.address!.toLowerCase() && proof.nonce !== undefined, 'The proof names another router.');
+    return { to: route.router!.address!, data: encodeFunctionData({ abi: SOLANA_PROOF_ROUTER_ABI, functionName: 'redirectHeldBurn', args: [burnId, proof.wallet, proof.nonce!, proof.proofBytes] }) };
+  },
+  /** Bitcoin: claim a direct burn for a bc1q address and a fee ceiling (set once). */
+  claimBitcoin: (route: LiveRoute, burnNonce: bigint, address: string, maxFeeRate: number): { to: Address; data: Hex } => {
+    refuse(route.kind === 'utxo' && route.router?.address, 'This route has no Bitcoin router.');
+    refuse(Number.isInteger(maxFeeRate) && maxFeeRate >= 1 && maxFeeRate <= route.bitcoin!.policy.feeRateCeiling, 'The fee rate is out of range.');
+    return { to: route.router!.address!, data: encodeFunctionData({ abi: BITCOIN_ROUTER_ABI, functionName: 'claimDirectBurn', args: [burnNonce, address, maxFeeRate] }) };
+  },
+  /** Stellar: claim a direct burn for a Stellar address (set once). */
+  claimStellar: (route: LiveRoute, burnNonce: bigint, address: string): { to: Address; data: Hex } => {
+    refuse(route.kind === 'stellar' && route.stellar?.policy.directBurnClaim === 'router' && route.router?.address, 'This route offers no claim.');
+    refuse(burnNonce > 0n, 'A burn nonce starts at 1.');
+    return { to: route.router!.address!, data: encodeFunctionData({ abi: STELLAR_CLAIM_ROUTER_ABI, functionName: 'claimDirectBurn', args: [burnNonce, address] }) };
+  },
+};
 
 /** Calls anyone may send to move a credit along: execute the mint at the credit head, or drain those behind it. */
 export const creditCalls = {

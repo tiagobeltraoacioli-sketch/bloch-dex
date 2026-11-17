@@ -8,7 +8,8 @@
 // read needs a transaction envelope this page does not build), and the Bitcoin vault's marker (which burn a vault
 // transaction pays or sets aside); see `stellarExit` and `bitcoinExit`.
 import { decodeFunctionResult, parseAbi, type Address, type Hex } from 'viem';
-import { httpRpc, readCall, type Rpc } from '../devnet4/chain';
+import { ERC20_ABI, httpRpc, readCall, type Rpc } from '../devnet4/chain';
+import { agreeingRpc } from '../multichain/rpc';
 import type { LiveRoute } from './config';
 import { base58Encode, concat, fromHex, segwitV0Encode, sha256Bytes, tronAddress20, tronAddressText, type Bytes } from './codec';
 import type { BurnObservation } from './l2';
@@ -58,6 +59,60 @@ const unread = (route: LiveRoute, error: unknown): SourceExit => ({
 });
 
 // ── Ethereum-style vaults ────────────────────────────────────────────────────
+/**
+ * The RPC of an EVM source network for everything a deposit decides on or signs (review finding R364-6): the DEX's
+ * two-endpoint agreement (multichain/rpc.ts `agreeingRpc`): a tag resolves to one block two endpoints report with the
+ * same hash, and every state read at that hash must be the same on both. One endpoint is accepted only when every
+ * listed endpoint is loopback (a rehearsal bundle; config.ts admits loopback in local render builds only).
+ */
+export function evmSourceRpc(route: LiveRoute, fetchImpl: Fetch = fetch): Rpc {
+  const loopback = route.read.urls.every((u) => u.startsWith('http://127.0.0.1'));
+  refuse(route.read.urls.length >= 2 || loopback, `${route.name}: a deposit needs two independent endpoints of the network, and this route lists one. Nothing is read or sent.`);
+  return agreeingRpc(route.read.urls.map((u) => httpRpc(u, fetchImpl)));
+}
+
+export type EvmDepositState = { block: Hex; allowance: bigint; balance: bigint; room: bigint; open: boolean };
+/** Allowance, balance, cap room and whether deposits are open, at one block two endpoints agree on. */
+export async function readEvmDepositState(route: LiveRoute, account: Address, fetchImpl: Fetch = fetch): Promise<EvmDepositState> {
+  const source = evmSourceRpc(route, fetchImpl);
+  const vault = route.custody.address as Address;
+  const token = route.asset.id as Address;
+  refuse(BigInt((await source('eth_chainId', [])) as string) === BigInt(route.chainId), `The endpoint is not ${route.name}.`);
+  const block = (await source('eth_getBlockByNumber', ['latest', false])) as { hash?: unknown } | null;
+  refuse(typeof block?.hash === 'string' && /^0x[0-9a-f]{64}$/.test(block.hash), 'the endpoints report no common head block');
+  const at = { blockHash: block.hash as Hex };
+  const [allowance, balance, locked, cap, enabled, paused] = await Promise.all([
+    readCall<bigint>(source, ERC20_ABI, token, 'allowance', [account, vault], at),
+    readCall<bigint>(source, ERC20_ABI, token, 'balanceOf', [account], at),
+    readCall<bigint>(source, VAULT_ABI, vault, 'totalLocked', [], at),
+    readCall<bigint>(source, VAULT_ABI, vault, 'cap', [], at),
+    readCall<boolean>(source, VAULT_ABI, vault, 'depositsEnabled', [], at),
+    readCall<boolean>(source, VAULT_ABI, vault, 'paused', [], at),
+  ]);
+  return { block: at.blockHash, allowance, balance, room: BigInt(cap) - BigInt(locked), open: enabled && !paused };
+}
+
+/**
+ * The gas limit the page names for a source-network call: the HIGHER of the first two endpoints' estimates (both must
+ * answer), plus a third, inside fixed bounds. A low estimate from one endpoint can no longer make the deposit run out
+ * of gas; a high one is bounded. (agreeingRpc leaves estimates to one endpoint, so they are asked here separately.)
+ */
+export async function evmSourceGas(route: LiveRoute, from: Address, call: { to: Address; data: Hex }, fetchImpl: Fetch = fetch): Promise<bigint> {
+  const loopback = route.read.urls.every((u) => u.startsWith('http://127.0.0.1'));
+  refuse(route.read.urls.length >= 2 || loopback, `${route.name}: a deposit needs two independent endpoints of the network, and this route lists one. Nothing is sent.`);
+  const estimates = await Promise.all(
+    route.read.urls.slice(0, 2).map(async (u) => {
+      const value = await httpRpc(u, fetchImpl)('eth_estimateGas', [{ from, ...call }, 'latest']);
+      refuse(typeof value === 'string' && /^0x[0-9a-f]+$/i.test(value), 'an endpoint answered the gas estimate in a form this page cannot read');
+      const gas = BigInt(value);
+      refuse(gas >= 21_000n && gas <= 3_000_000n, 'a gas estimate is outside what this page sends');
+      return gas;
+    }),
+  );
+  const high = estimates.reduce((a, b) => (a > b ? a : b));
+  return (high * 4n) / 3n;
+}
+
 async function finalizedHash(rpc: Rpc): Promise<Hex> {
   const block = (await rpc('eth_getBlockByNumber', ['finalized', false])) as { hash?: unknown } | null;
   refuse(typeof block?.hash === 'string' && /^0x[0-9a-f]{64}$/.test(block.hash), 'the endpoint reports no finalized block');
@@ -300,6 +355,6 @@ export function readSourceExit(route: LiveRoute, burn: BurnObservation, fetchImp
     case 'stellar':
       return stellarExit(route, burn, fetchImpl);
     case 'utxo':
-      return bitcoinExit(route, burn, false, fetchImpl);
+      return bitcoinExit(route, burn, !!burn.claim, fetchImpl);
   }
 }

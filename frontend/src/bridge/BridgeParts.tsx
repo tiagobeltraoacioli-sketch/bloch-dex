@@ -265,7 +265,7 @@ export function StatusCard({
         <div className="bridge-status-actions" aria-label="What you can do">
           {status.actions.map((action) => (
             <div key={action.id} className="bridge-status-action">
-              {onAction && (action.id === 'execute-credit' || action.id === 'drain-credits' || action.id === 'claim-direct-burn') ? (
+              {onAction && (action.id === 'execute-credit' || action.id === 'drain-credits' || action.id === 'claim-direct-burn' || action.id === 'redirect-held-burn') ? (
                 <button type="button" className="button secondary" disabled={busy} onClick={() => onAction(action)}>
                   {action.label}
                 </button>
