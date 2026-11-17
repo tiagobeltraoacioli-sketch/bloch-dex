@@ -207,7 +207,14 @@ describe('risks particular to the route', () => {
     const held = routeRisks(route('solana'), 'exit').find((r) => r.id === 'sol-held')!;
     expect(held.tone).toBe('danger');
     expect(held.body).toMatch(/exchange deposit address cannot sign and must not be used/);
-    expect(held.body).toMatch(/HELD permanently.*no refund/s);
+    // Restated by agent 363 (round 18 redirect): held for good, released only by the burner's redirect; no refund.
+    expect(held.body).toMatch(/HELD by the signers for good.*Send to another address.*There is no refund/s);
+    const sol = route('solana');
+    const noRedirect = { ...sol, solana: { ...sol.solana!, proof: { ...sol.solana!.proof, redirectTemplate: null } } };
+    expect(routeRisks(noRedirect, 'exit').find((r) => r.id === 'sol-held')!.body).toMatch(/HELD permanently.*no refund/s);
+    for (const id of ['ethereum', 'arbitrum-one', 'op-mainnet', 'linea', 'bitcoin', 'tron', 'stellar'])
+      expect(routeRisks(route(id), 'exit').find((r) => r.id === 'own-wallet')!.body, id).toMatch(/wallet you control.*never an exchange deposit address/);
+    expect(routeRisks(route('stellar'), 'exit').find((r) => r.id === 'xlm-queue')!.body).toMatch(/claims it once through the router/);
     expect(ids('bitcoin', 'exit')).toEqual(expect.arrayContaining(['btc-custody', 'btc-exit']));
     expect(routeRisks(route('bitcoin'), 'deposit').find((r) => r.id === 'btc-deposit')!.body).toMatch(/contract and cannot sign cannot ask for a refund/);
   });

@@ -107,6 +107,14 @@ export const STATE_FIXTURES: StateFixture[] = [
   exit('solana held: destination not a wallet', 'exit-held', 'solana', USDC, solana({ destination: 'not-a-wallet' })),
   exit('solana direct burn held', 'exit-held-direct-burn', 'solana', USDC, solana(), { viaRouter: false, recipient: '0x1111111111111111111111111111111111111111' }),
   exit('solana paid', 'exit-paid', 'solana', USDC, solana({ paidBit: true })),
+  // Solana, round 18: the proof the router published, and the burner's redirect of a held burn
+  exit('solana held: no valid proof', 'exit-held-no-proof', 'solana', USDC, solana(), { proof: { nonce: 3n, bytes: `0x00${'00'.repeat(64)}`, valid: false, reason: 'the signature is not by the destination wallet over this exit\'s line' } }),
+  exit('solana held burn redirected, waiting for the committee', 'exit-waiting-signatures', 'solana', USDC, solana(), {
+    recipient: 'CK892oB8o4LTPKEe2yXEBY5YG1DCh3fAcGN1AFx71eQG',
+    recipientOriginal: 'GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB',
+    redirect: { address: 'CK892oB8o4LTPKEe2yXEBY5YG1DCh3fAcGN1AFx71eQG', nonce: 4n, block: 430n, tx: id(0xf1) },
+  }),
+  exit('solana redirect not followed (exit was not held)', 'exit-waiting-signatures', 'solana', USDC, solana(), { redirect: { address: 'CK892oB8o4LTPKEe2yXEBY5YG1DCh3fAcGN1AFx71eQG', nonce: 4n, block: 430n, tx: id(0xf1) }, redirectIgnored: true }),
   // Stellar: the queue and the pause that voids it
   exit('stellar waiting for the committee', 'exit-waiting-signatures', 'stellar', USDC, stellar()),
   exit('stellar no trustline', 'exit-waiting-signatures', 'stellar', USDC, stellar({ trustline: 'no-trustline' })),
@@ -116,10 +124,13 @@ export const STATE_FIXTURES: StateFixture[] = [
   exit('stellar paused', 'exit-vault-paused', 'stellar', USDC, stellar({ pausedUntil: NOW + 250_000n })),
   exit('stellar held', 'exit-held', 'stellar', USDC, stellar({ burnStatus: 3 })),
   exit('stellar paid', 'exit-paid', 'stellar', USDC, stellar({ burnStatus: 2 })),
+  exit('stellar direct burn unclaimed', 'exit-unclaimed', 'stellar', USDC, stellar(), { viaRouter: false, recipient: '0x1111111111111111111111111111111111111111', claim: null }),
+  exit('stellar direct burn claimed, waiting for the committee', 'exit-waiting-signatures', 'stellar', USDC, stellar(), { viaRouter: false, recipientOriginal: '0x1111111111111111111111111111111111111111', claim: { address: 'GAF2DTU23X5CFOPOUCUBTFJ5PKTSOV4GLZAJB5VMJW2JUA5KKYF5OLNA', block: 431n, tx: id(0xf2) } }),
   // Bitcoin: the fee ceiling
   exit('bitcoin payable', 'exit-payable', 'bitcoin', BTC, bitcoin()),
   exit('bitcoin waiting for fees', 'exit-waiting-fee-rate', 'bitcoin', BTC, bitcoin({ feeEstimate: 85 })),
   exit('bitcoin set aside', 'exit-set-aside', 'bitcoin', BTC, bitcoin({ setAside: true })),
   exit('bitcoin direct burn unclaimed', 'exit-unclaimed', 'bitcoin', BTC, bitcoin(), { viaRouter: false, recipient: '0x1111111111111111111111111111111111111111' }),
+  exit('bitcoin direct burn claimed, payable', 'exit-payable', 'bitcoin', BTC, bitcoin({ claimed: true }), { viaRouter: false, recipientOriginal: '0x1111111111111111111111111111111111111111', claim: { address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', block: 431n, tx: id(0xf3), maxFeeRate: 12 } }),
   exit('bitcoin paid', 'exit-paid', 'bitcoin', BTC, bitcoin({ payment: { txid: 'f'.repeat(64), confirmations: 3, sats: 5_992_176n } })),
 ];

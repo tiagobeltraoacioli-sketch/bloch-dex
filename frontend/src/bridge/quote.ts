@@ -349,8 +349,17 @@ export function routeRisks(route: Route, direction: Direction): Risk[] {
       risks.push({
         id: 'sol-held',
         title: 'Exits go to a wallet you control',
-        body: 'The destination wallet must sign a message before the burn. An exchange deposit address cannot sign and must not be used. An exit sent to any address that is not a wallet (a token account, a program), or made outside this page, may be HELD permanently by the signers: nothing is paid and there is no refund.',
+        body: route.solana?.proof.redirectTemplate
+          ? 'The destination wallet must sign a message before the burn. An exchange deposit address cannot sign and must not be used. An exit sent to any address that is not a wallet (a token account, a program), or made outside this page, is HELD by the signers for good: nothing is paid until the account that burned names a wallet it controls ("Send to another address", which that wallet signs). There is no refund.'
+          : 'The destination wallet must sign a message before the burn. An exchange deposit address cannot sign and must not be used. An exit sent to any address that is not a wallet (a token account, a program), or made outside this page, may be HELD permanently by the signers: nothing is paid and there is no refund.',
         tone: 'danger',
+      });
+    else
+      risks.push({
+        id: 'own-wallet',
+        title: 'Exits go to a wallet you control',
+        body: `Name an address of a wallet you control on ${route.name}, never an exchange deposit address: an exchange may not credit a payment from the bridge${route.kind === 'stellar' ? ' (and no memo can be attached)' : ''}, and an exit that is paid cannot be called back.`,
+        tone: 'warn',
       });
     if (route.kind === 'utxo')
       risks.push({
@@ -363,7 +372,7 @@ export function routeRisks(route: Route, direction: Direction): Risk[] {
       risks.push({
         id: 'xlm-queue',
         title: 'A guardian pause empties the exit queue',
-        body: `Every exit waits in the vault's queue. If a guardian pauses the vault (72 hours), every queued exit is voided, certified again by the committee after the pause, and waits the delay again. With hostile guardian keys an exit can be delayed by ${plainTime(route.stellar!.policy.worstCaseGuardianDelaySeconds)}. It is not lost and this page never shows it as failed. A G… account must already hold a ${sym} trustline, or the payment waits until it does.`,
+        body: `Every exit waits in the vault's queue. If a guardian pauses the vault (72 hours), every queued exit is voided, certified again by the committee after the pause, and waits the delay again. With hostile guardian keys an exit can be delayed by ${plainTime(route.stellar!.policy.worstCaseGuardianDelaySeconds)}. It is not lost and this page never shows it as failed. A G… account must already hold a ${sym} trustline, or the payment waits until it does.${route.stellar!.policy.directBurnClaim === 'router' ? ' A burn made directly on the token, not through this page\'s router, is never paid until the account that burned claims it once through the router.' : ''}`,
         tone: 'warn',
       });
     if (route.kind === 'tvm' || route.kind === 'evm')

@@ -11,7 +11,7 @@ import type { ReleaseRecord } from './solana';
 
 export type Tone = 'wait' | 'ok' | 'warn' | 'danger' | 'action';
 export type StatusAction = {
-  id: 'execute-credit' | 'drain-credits' | 'create-token-account' | 'execute-release' | 'add-trustline' | 'claim-direct-burn' | 'announce-wallet' | 'refund-request' | 'wait';
+  id: 'execute-credit' | 'drain-credits' | 'create-token-account' | 'execute-release' | 'add-trustline' | 'claim-direct-burn' | 'announce-wallet' | 'redirect-held-burn' | 'refund-request' | 'wait';
   label: string;
   /** What doing it involves, in a sentence. */
   detail: string;
@@ -194,16 +194,25 @@ export function exitStatus(route: Route, burn: BurnObservation, source: SourceEx
   const waitingCommittee = (extra = ''): Status => ({
     state: 'exit-waiting-signatures',
     title: 'Final on the L2; waiting for the committee',
-    body: `Your burn of ${amount} is in finalized L2 block ${burn.block}. ${route.committee.threshold} signers now certify it for ${route.name}; a relayer then sends the payment to ${to}. Usually ${plainTime(route.release.typicalSeconds)}.${extra} Nothing to do.`,
+    body: `Your burn of ${amount} is in finalized L2 block ${burn.block}.${burn.recipientOriginal ? ` You named ${to} for it in L2 block ${(burn.redirect ?? burn.claim)?.block ?? '?'} (it was ${burn.recipientOriginal}).` : ''} ${route.committee.threshold} signers now certify it for ${route.name}; a relayer then sends the payment to ${to}. Usually ${plainTime(route.release.typicalSeconds)}.${extra}${burn.redirectIgnored ? ' A redirect you sent later is not followed: this exit was not held, so the signers pay the destination the burn named.' : ''} Nothing to do.`,
     tone: 'wait',
     step: 2,
     steps,
     actions: [],
   });
   const paid = (detail: string): Status => ({ state: 'exit-paid', title: `Paid on ${route.name}`, body: detail, tone: 'ok', step: 3, steps, actions: [] });
+  const canRedirect = route.kind === 'svm' && !!route.solana?.proof.redirectTemplate;
+  const redirectAction: StatusAction[] = canRedirect
+    ? [{ id: 'redirect-held-burn', label: 'Send to another address', detail: 'Sends redirectHeldBurn(burn id, new wallet, nonce, proof) on the exit router from the account that burned, after the NEW wallet signs one line. It moves nothing on the L2; the signers then pay the new wallet. Only a held burn (or one made directly on the token) can be redirected, never after an approval; of several redirects the one with the highest nonce counts.' }]
+    : [];
+  // A redirect or claim the page applied: the destination shown is the one named later, by the burner, on the L2.
+  const named = burn.recipientOriginal ? ` You named ${to} for it in L2 block ${(burn.redirect ?? burn.claim)?.block ?? '?'} (it was ${burn.recipientOriginal}).` : '';
 
   // A burn made directly on the token of a route that exits through a router: the bridge does not pay it as is.
-  if (route.router && !burn.viaRouter) {
+  // A claim (Bitcoin, Stellar) or a redirect (Solana) by its burner, final on the L2, names where it is paid; the
+  // page then reads that destination like any exit.
+  const recovered = !!burn.claim || (route.kind === 'svm' && !!burn.redirect);
+  if (route.router && !burn.viaRouter && !recovered) {
     if (route.kind === 'utxo') {
       if (source.kind === 'bitcoin' && source.payment) return paid(`The vault paid ${formatAmount(source.payment.sats, 8)} BTC in transaction ${source.payment.txid}.`);
       if (!(source.kind === 'bitcoin' && source.claimed))
@@ -216,18 +225,33 @@ export function exitStatus(route: Route, burn: BurnObservation, source: SourceEx
           steps,
           actions: [{ id: 'claim-direct-burn', label: 'Claim this burn', detail: 'Sends claimDirectBurn(burn nonce, Bitcoin address, highest fee rate) on the exit router from the account that burned. Set once; it cannot be changed.' }],
         };
-    } else
+    } else if (route.kind === 'stellar' && route.stellar?.policy.directBurnClaim === 'router')
+      return {
+        state: 'exit-unclaimed',
+        title: 'Burned directly on the token: not payable until claimed',
+        body: `This burn of ${amount} was not made through the exit router, so it is NEVER paid to the 20 bytes it names. The account that burned must name a Stellar address for it once, with a transaction on the exit router of the L2; the claim counts once it is final on the L2. It is set once and cannot be changed, there is no time limit and no other way, and a contract that cannot send that call can never be paid. Name a wallet you control that holds the USDC trustline, never an exchange deposit address.`,
+        tone: 'danger',
+        step: 1,
+        steps,
+        actions: [{ id: 'claim-direct-burn', label: 'Claim this burn', detail: 'Sends claimDirectBurn(burn nonce, Stellar address) on the exit router from the account that burned. Set once; it cannot be changed.' }],
+      };
+    else
       return {
         state: 'exit-held-direct-burn',
         title: 'Burned directly on the token: held',
         body:
           route.kind === 'svm'
-            ? `This burn of ${amount} was not made through the exit router. The signers hold it until a wallet that hashes to the 20 bytes it names is announced on the recipient registry; if those bytes are not a wallet commitment (an Ethereum address typed by habit), it can never be paid and there is no refund path today.`
+            ? canRedirect
+              ? `This burn of ${amount} was not made through the exit router, so no wallet has proven it is its destination: the signers hold it. Its burner can name a wallet for it with "Send to another address" (that wallet signs one line first). Until then it is not paid; there is no refund path today.`
+              : `This burn of ${amount} was not made through the exit router. The signers hold it until a wallet that hashes to the 20 bytes it names is announced on the recipient registry; if those bytes are not a wallet commitment (an Ethereum address typed by habit), it can never be paid and there is no refund path today.`
             : `This burn of ${amount} was not made through the exit router. It is held, and paid only when the account that burned signs a claim naming a Stellar address and hands it to the bridge operators; a contract cannot claim.`,
         tone: 'danger',
         step: 1,
         steps,
-        actions: route.kind === 'svm' ? [{ id: 'announce-wallet', label: 'How to announce the wallet', detail: 'announce(bytes32 wallet) on SolanaRecipientRegistry, once per wallet; only useful when the burn names that wallet\'s commitment.' }] : [],
+        actions:
+          route.kind === 'svm'
+            ? [...redirectAction, { id: 'announce-wallet', label: 'How to announce the wallet', detail: 'announce(bytes32 wallet) on SolanaRecipientRegistry, once per wallet; only useful when the burn names that wallet\'s commitment.' }]
+            : [],
       };
   }
 
@@ -260,16 +284,30 @@ export function exitStatus(route: Route, burn: BurnObservation, source: SourceEx
 
   if (source.kind === 'solana') {
     if (source.paidBit || source.record?.state === 'paid')
-      return paid(`The vault paid this exit to the USDC account of ${to}${source.record ? `: ${formatAmount(source.record.paidAmount, route.l2.decimals)} USDC` : ''}.`);
+      return paid(`The vault paid this exit to the USDC account of ${to}${source.record ? `: ${formatAmount(source.record.paidAmount, route.l2.decimals)} USDC` : ''}.${named}`);
+    const latch = canRedirect
+      ? ' A held burn stays held for good, even if the address changes later; only you, the account that burned, can release it, by naming a wallet you control with "Send to another address". There is no refund.'
+      : ' There is no refund path today.';
+    // The exit's own proof, checked by the page as every signer checks it: without a valid one the burn is held.
+    if (burn.viaRouter && burn.proof && !burn.proof.valid && !burn.recipientOriginal)
+      return {
+        state: 'exit-held-no-proof',
+        title: 'Held: no valid proof from the destination wallet',
+        body: `The exit router published this burn of ${amount} with a destination proof that does not check (${burn.proof.reason}). Every signer checks it the same way and HOLDS such a burn: it is not certified, approved or paid.${latch} This is this page's own reading; the signers' decision is not written on any chain.`,
+        tone: 'danger',
+        step: 1,
+        steps,
+        actions: redirectAction,
+      };
     if (source.destination === 'not-a-wallet')
       return {
         state: 'exit-held',
         title: 'Held: the destination is not a wallet',
-        body: `On Solana the address ${to} exists and is not a plain wallet (it is owned by a program, or holds data). The signers read the same and HOLD such a burn: it is not certified, approved or paid while the chain shows that, and there is no refund path today. This is this page's own reading of Solana; the signers' decision is theirs and is not written on any chain.`,
+        body: `On Solana the address ${to} exists and is not a plain wallet (it is owned by a program, or holds data). The signers read the same and HOLD such a burn: it is not certified, approved or paid.${latch}${named} This is this page's own reading of Solana; the signers' decision is theirs and is not written on any chain.`,
         tone: 'danger',
         step: 1,
         steps,
-        actions: [],
+        actions: burn.recipientOriginal ? [] : redirectAction,
       };
     const record = source.record;
     if (record && record.seq <= source.voidThroughSeq)

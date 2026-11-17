@@ -305,6 +305,14 @@
 .bridge-prose {
   text-align: left;
 }
+/* Required text of every exit (visible by default): where an exit may go. */
+.bridge-own-wallet {
+  margin: 0;
+  padding: var(--s-1) var(--s-2);
+  border-left: 3px solid var(--line-strong);
+  color: var(--text);
+  font-size: var(--text-small);
+}
 
 /* The reading column under the card. */
 .bridge-details {
