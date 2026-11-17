@@ -29,6 +29,7 @@ import {
   expiredSwap,
   finalizedSubmissionReceipt,
   savedSwapDeadline,
+  submissionBoundary,
   submissionContext,
   type SubmissionIntent,
 } from '../mainnet/submission-outcome';
@@ -427,11 +428,42 @@ describe('a swap hold ends by its deadline at a canonical finalized block, with 
     expect(await finalizedSubmissionReceipt(bad.rpc, ONE, swapIntent, context)).toMatchObject({
       status: 'reverted',
     });
+    // R328-3P-3: a chain may state its own rule for a reverted swap (its `safe` block): that reader decides,
+    // not the strict one.
+    const quick = included('0x0');
+    const safe = chain();
+    safe.state.latest = { number: 17n, hash: hash('c'), timestamp: 300n };
+    const withRule = Object.assign(quick.rpc, { reverted: safe.rpc });
+    expect(await finalizedSubmissionReceipt(withRule, ONE, swapIntent, context)).toBeNull();
+    safe.state.finalized = { number: 17n, hash: hash('c'), timestamp: 300n };
+    expect(await finalizedSubmissionReceipt(withRule, ONE, swapIntent, context)).toMatchObject({
+      status: 'reverted',
+    });
+    expect(quick.strict.rpc).not.toHaveBeenCalled();
     // An RPC without a strict reader (the Bloch L2) is unchanged: one rule for both.
     const l2 = included('0x0').settled;
     delete (l2.rpc as { strict?: unknown }).strict;
     expect(await finalizedSubmissionReceipt(l2.rpc, ONE, swapIntent, context)).toMatchObject({
       status: 'reverted',
+    });
+  });
+
+  it('R328-3P-1: on a chain with a confirmation rule the submission boundary is the settled block, not the head', async () => {
+    const c = chain();
+    c.state.finalized = { number: 16n, hash: hash('a'), timestamp: 256n };
+    c.state.latest = { number: 17n, hash: hash('c'), timestamp: 300n };
+    // The Bloch L2 (no strict reader): the head, as before.
+    expect(await submissionBoundary(c.rpc, context, FROM)).toMatchObject({
+      afterBlockNumber: '17',
+      afterBlockHash: hash('c'),
+    });
+    // A public chain: a head can be replaced by a one-block reorganisation, and every later decision needs the
+    // boundary to be canonical still. The settled block is saved instead; the nonce is still read at the head.
+    const rpc = Object.assign(c.rpc, { strict: chain().rpc });
+    expect(await submissionBoundary(rpc, context, FROM)).toMatchObject({
+      afterBlockNumber: '16',
+      afterBlockHash: hash('a'),
+      nonce: '4',
     });
   });
 

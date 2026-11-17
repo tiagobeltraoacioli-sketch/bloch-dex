@@ -550,6 +550,39 @@ Shown by the page rehearsal (section 11): on each fork,
 blocks are mined at the chain's measured block time and only as many as the rule asks; the swap's outcome appears
 within seconds while the fork's `finalized` block is still behind the swap.
 
+### Third revision of the page's rules (review R328-3P-1 to 3P-5, 2026-11-17)
+
+Where this section and the lines below it differ, this paragraph is the current state.
+
+- **Nothing that is signed comes from one endpoint, by construction** (R328-3P-4). The comparison quote at the
+  latest block, which becomes the signed quote after "reconfirm", was an `eth_call` at the tag `latest` answered by
+  the first endpoint alone. The page's RPC layer now never sends a state read by tag, by number or without a
+  block: it first resolves the block from two endpoints (hash and timestamp must be the same on both) and reads at
+  that hash from two endpoints. The pending nonce is the higher of two answers; a block by number needs two
+  endpoints. Left to one endpoint: the chain id (compared with the pinned one) and fee data (the wallet sets the
+  fee). `frontend/src/test/multichain-provenance.test.ts` fails when a method the route names is not classified,
+  when a lying endpoint's answer comes through in any position, or when any endpoint receives a state read by tag.
+- **A reverted swap** (R328-3P-3) is settled by the chain's own rule for it (`confirmation.reverted`), between
+  the settle and the strict rule; `chain.json` says per chain why a deeper replacement is not credible. OP Mainnet
+  and Base: the chain's `safe` block (its batch is on Ethereum; about half a minute and a minute and a half
+  behind the head when measured). Arbitrum One and Ethereum: `safe` (12 to 15 minutes when measured; finality was
+  19 to 22). Linea: 30 blocks (about 6 to 9 minutes; the strict rule stays 300). BNB Smart Chain: its `finalized`
+  (seconds). A reverted approval is settled like a success. The note above the form now says that a reverted swap
+  holds the account, until when, and why.
+- **The submission boundary** (R328-3P-1) is the block settled by the chain's rule, not the head: a one-block
+  reorganisation of the head no longer leaves a hold that can never end.
+- **Heads** (R328-3P-5): two heads count as apart only when they are more than 2 blocks and more than 90 seconds
+  of chain time apart (a quiet Linea is not "behind"); a third endpoint is asked when one of the first two fails
+  or lags; a refused request is asked again with a growing pause.
+- **Endpoints**: Arbitrum One and BNB Smart Chain list four. Added, each measured to serve pinned state 45 minutes
+  old and a browser's preflight: `arbitrum.gateway.tenderly.co` (Tenderly) and `api.zan.top/bsc-mainnet` (ZAN),
+  placed second so that strict reads no longer depend on blastapi's shared anonymous quota. Operator independence
+  is judged from the hostnames and response headers only. The CSP names seventeen origins.
+- **Snapshot renewal** (R328-3P-2): every four minutes in the background, not every 30 seconds (a snapshot kept
+  300 to 600 seconds was still answered on all six chains). The route must also renew on demand and never under a
+  user who is typing; on this branch's plain route a renewal still resets the form, and the redesigned route
+  (agent 327's line) is the one that keeps it.
+
 ### Two endpoints must agree (review R309-MC-3)
 
 Every endpoint is a third party here. Everything the page shows and signs from (reserves, the binding quote,

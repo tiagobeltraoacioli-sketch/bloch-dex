@@ -60,6 +60,8 @@
     "strict": {
       "depth": 300
     },
+    "reverted": { "depth": 30 },
+    "revertedWhy": "Linea has one sequencer and no fork choice between competing blocks; 30 blocks (about 6 minutes) is far beyond a restart of it, and the page's endpoints do not agree on a safe or finalized tag. Not the chain's finality.",
     "measured": {
       "at": "2026-11-16",
       "blockSeconds": 11.5,

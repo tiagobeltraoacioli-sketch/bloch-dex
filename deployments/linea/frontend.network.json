@@ -55,6 +55,9 @@
     "strict": {
       "depth": 300
     },
+    "reverted": {
+      "depth": 30
+    },
     "blockSeconds": 11.5
   },
   "swap": {
