@@ -9,7 +9,7 @@
 //
 // The blocks are those of the document marked `<!-- run: <chain>|once <step> -->`; the run refuses to start when an
 // expected block is missing. Each block is run as written, with only the changes listed in the document's section
-// 9 (loopback flags, the dry run's own output paths, the throwaway keystore and its password file, the impersonated
+// 10 (loopback flags, the dry run's own output paths, the throwaway keystore and its password file, the impersonated
 // depositor's `--unlocked`, the values earlier steps printed). Every command actually run is written to
 // DIR/commands.log next to the block it came from. Funding and waiting, which the owner does with a wallet and a
 // clock, are anvil_setBalance / a token balance slot and 70 mined blocks (anvil's `finalized` is 64 behind).
@@ -45,16 +45,18 @@ export function blocksOf(text) {
     refuse(!m[3].includes("\n") && !/(^|\s)#/.test(m[3]), `${DOC}: the block ${m[1]} ${m[2]} must be one line without a comment`);
     blocks[`${m[1]} ${m[2]}`] = m[3];
   }
+  // Text the owner appends to a printed line (not a command by itself): inline, marked `<!-- suffix: … -->`.
+  for (const m of text.matchAll(/<!-- suffix: (\S+) (\S+) -->\n`([^`\n]+)`/g)) {
+    refuse(!blocks[`${m[1]} ${m[2]}`], `${DOC}: the block ${m[1]} ${m[2]} appears twice`);
+    blocks[`${m[1]} ${m[2]}`] = m[3];
+  }
   return blocks;
 }
 
-/** The funding amounts the document states for a chain (section 4, steps 2 and 6). */
+/** The funding amounts the document states for a chain (steps 2 and 6 of that chain). */
 export function fundingOf(text, key, symbol) {
-  const start = text.indexOf(`(\`${key}\`, chain id`);
-  refuse(start > 0, `${DOC}: no section for ${key}`);
-  const section = text.slice(start, text.indexOf("\n### ", start + 1) > 0 ? text.indexOf("\n### ", start + 1) : undefined);
-  const deployer = section.match(new RegExp(`Fund the deploying account\\*\\* with \\*\\*([0-9.]+) ${symbol}\\*\\*`))?.[1];
-  const allowance = section.match(new RegExp(`plus ([0-9.]+) ${symbol}\\*\\* for its two transactions`))?.[1];
+  const deployer = text.match(new RegExp(`\\*\\*${key}-2\\. Fund the deploying account\\*\\* with \\*\\*([0-9.]+) ${symbol}\\*\\*`))?.[1];
+  const allowance = text.match(new RegExp(`\\*\\*${key}-6\\. Fund the depositing account\\*\\*[^\\n]*?\\*\\*plus ([0-9.]+) ${symbol}\\*\\* for its two transactions`))?.[1];
   refuse(deployer && allowance, `${DOC}: the funding amounts of ${key} are not stated in the expected form`);
   return { deployer, allowance };
 }

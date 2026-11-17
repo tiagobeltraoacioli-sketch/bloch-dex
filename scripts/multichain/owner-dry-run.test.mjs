@@ -14,13 +14,26 @@ test("every step the dry run expects has its block, for the once section and eac
   for (const s of ONCE_STEPS) assert.ok(blocks[`once ${s}`], `once ${s}`);
   for (const key of ORDER) for (const s of CHAIN_STEPS) assert.ok(blocks[`${key} ${s}`], `${key} ${s}`);
   assert.equal(Object.keys(blocks).length, ONCE_STEPS.length + ORDER.length * CHAIN_STEPS.length);
+  assert.ok(/Send them only with `cast`/.test(text) && /never accept "switch to smart account"/.test(text), "step 7 warns against browser wallets and batched sends (review R369-3)");
 });
 
 test("the chains are in the order the document states (cheapest first) and match deployments/multichain.json", () => {
   const shared = loadShared();
   assert.deepEqual([...ORDER].sort(), [...shared.chains].sort());
-  const positions = ORDER.map((k) => text.indexOf(`(\`${k}\`, chain id`));
-  assert.ok(positions.every((p, i) => p > 0 && (i === 0 || p > positions[i - 1])), positions.join(","));
+  // Phase A (section 4: deploy) on all six, then phase B (section 5: open the pools), each in the same order;
+  // every deployment comes before the first opening (review R369-4).
+  const deploy = ORDER.map((k) => text.indexOf(`(\`${k}\`, chain id ${loadChain(k).chain.chainId}): deploy`));
+  const open = ORDER.map((k) => text.indexOf(`(\`${k}\`, chain id ${loadChain(k).chain.chainId}): open the pool`));
+  for (const list of [deploy, open]) assert.ok(list.every((p, i) => p > 0 && (i === 0 || p > list[i - 1])), list.join(","));
+  assert.ok(Math.max(...deploy) < Math.min(...open));
+  for (const k of ORDER) {
+    assert.ok(text.indexOf(`<!-- run: ${k} post-gate-deployed -->`) < Math.min(...open), `${k}: step 5 is in phase A`);
+    assert.ok(text.indexOf(`<!-- run: ${k} market -->`) > Math.max(...deploy), `${k}: step 6 is in phase B`);
+  }
+});
+
+test("every documented cast send names its chain (review R369-10)", () => {
+  for (const line of text.split("\n").filter((l) => /^cast send /.test(l))) assert.match(line, /--chain /, line);
 });
 
 test("no block carries a private key, a key on the command line, a comment, or a public URL where a cast send goes", () => {
@@ -30,6 +43,7 @@ test("no block carries a private key, a key on the command line, a comment, or a
   }
   for (const key of ORDER) {
     assert.match(blocks[`${key} deploy-broadcast`], /^scripts\/multichain\/deploy\.sh \S+ broadcast -- --keystore ~\/Desktop\/DEX-CHAVE-DEPLOY\/deployer$/);
+    assert.ok(!text.includes(`<!-- run: ${key} send-suffix -->`), `${key}: the suffix is inline text, not a block to paste (review R369-11)`);
     assert.match(blocks[`${key} send-suffix`], /^--keystore ~\/Desktop\/DEX-CHAVE-DEPOSITANTE\/depositante --rpc-url https:\/\/\S+$/);
     assert.ok(blocks[`${key} send-suffix`].endsWith(loadChain(key).rpc[0]), `${key}: the send endpoint is the chain's first reviewed endpoint`);
   }

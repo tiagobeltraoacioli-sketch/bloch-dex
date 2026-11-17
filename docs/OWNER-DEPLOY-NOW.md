@@ -1,6 +1,6 @@
 # PosternDEX on six public chains: the owner's deployment, step by step
 
-Status: **ready for the owner to run; dry-run on a fork of each chain (section 8); nothing deployed.** Written
+Status: **ready for the owner to run; dry-run on a fork of each chain (section 9); nothing deployed.** Written
 2026-11-17 by agent 367 (round 18) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
 behind every rule are in that document; this one is only the sequence, with every command exactly as you type it.
 A Portuguese copy for the owner is kept outside this public repository (the repository is English only), with the same command blocks; this English file is the one the dry run executes.
@@ -17,9 +17,10 @@ Rules for the whole procedure:
   (`DEPLOYER_ADDRESS`, `DEPOSIT_HASH`, `TOKEN_AMOUNT`) are yours to replace.
 - **Nothing in this procedure ever asks for a private key on the command line.** Keys live in encrypted keystore
   files; `cast` and `forge` ask for the password.
-- One chain at a time, in the order of section 4 (cheapest first: a mistake is found where it costs least).
-  Finish a chain (through its step 11) before starting the next.
-- **Any line starting `FAIL`, any `STOP`, any error: stop that chain and read section 6.** A `WAIT` line is not a
+- Two phases, each one chain at a time in the same order (cheapest first: a mistake is found where it costs least):
+  section 4 deploys on all six chains (steps 1 to 5), then section 5 opens the pools (steps 6 to 11). No pool is
+  opened before every chain is deployed (the reason is at the top of section 5).
+- **Any line starting `FAIL`, any `STOP`, any error: stop that chain and read section 7.** A `WAIT` line is not a
   failure (the chain has not finalized yet: run the same command again later).
 - Run everything from the repository's top directory.
 
@@ -84,7 +85,7 @@ node scripts/multichain/check-depositor.mjs 0x1ec3fe62f416cA8984b0AB415F144a29eE
 ```
 
 It must say FIT: no code, nonce 0, no delegation on all six chains. If it does not, stop: the account was used,
-and section 6 ("the depositing account was used") applies before anything is deployed.
+and section 7 (its first row) applies before anything is deployed.
 
 ### 2.3 The fee address: sign the proof of control (no transaction, no cost)
 
@@ -99,7 +100,9 @@ It prints exactly this one line (compare it word for word with what your wallet 
 
 > PosternDEX fee address proof (postern.dex.multichain.fee-address-proof.v1). I control the address 0x775a993F09Bd80aeCF8F8c2ADe0C84158E3a0544 and name it as the protocol fee recipient (feeTo) of the PosternDEX factory on the chains with ids 10, 8453, 42161, 59144, 56, 1. This message is not a transaction and authorizes no transfer and no approval.
 
-Sign it **as a message** with the fee address. With a Ledger:
+Sign it **as a message** with the fee address. With a Ledger (this signs with the Ledger's first account; if the fee address is another account of the Ledger, add
+`--mnemonic-index N` to the command, and `cast wallet address --ledger --mnemonic-index N` shows which address index
+`N` is; `record` refuses a signature by any other address, review R369-12):
 
 ```
 cast wallet sign --ledger "$(node scripts/multichain/fee-proof.mjs message)"
@@ -190,12 +193,12 @@ Chain), `0x8A1DdC0BAE18A038D4E5Bb088eeDcdE10b61db53` (Ethereum). If any differs,
 
 RESULTS-MONEY
 
-## 4. Chain by chain
+## 4. Deploying, chain by chain
 
 Order: OP Mainnet, Base, Arbitrum One, Linea, BNB Smart Chain, Ethereum (cheapest first; section 3 shows today's
-costs). Each chain has the same eleven steps.
+costs). Each chain has steps 1 to 5 here and steps 6 to 11 in section 5.
 
-### 4.1 OP Mainnet (`op-mainnet`, chain id 10)
+### 4.1 OP Mainnet (`op-mainnet`, chain id 10): deploy
 
 Endpoint used for sending in this section: `https://mainnet.optimism.io` (the first reviewed endpoint of `deployments/op-mainnet/chain.json`; the tools themselves always read the reviewed endpoints). Listed token: USDC `0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85`, 6 decimals. Minimum first deposit: 0.1 ETH and its USDC.
 
@@ -241,77 +244,9 @@ scripts/multichain/deploy.sh op-mainnet broadcast -- --keystore ~/Desktop/DEX-CH
 node scripts/multichain/gate.mjs op-mainnet post --out deployments/op-mainnet/gate-report.json
 ```
 
-**op-mainnet-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on OP Mainnet with the native amount you will deposit **plus 0.0005 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step op-mainnet-7.
+Fill the chain's deployment columns of the progress table (section 6), then deploy the next chain. **Open no pool before all six chains have passed step 5** (section 5).
 
-<!-- run: op-mainnet market -->
-```
-node scripts/multichain/market.mjs op-mainnet --native 0.1
-```
-
-Check both balances arrived:
-
-<!-- run: op-mainnet depositor-native -->
-```
-cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://mainnet.optimism.io
-```
-<!-- run: op-mainnet depositor-token -->
-```
-cast call 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://mainnet.optimism.io
-```
-
-(The second number is in base units: 6 decimals.)
-
-**op-mainnet-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 6. If it prints "no market price", wait a few minutes and run it again.
-
-<!-- run: op-mainnet prepare -->
-```
-node scripts/multichain/first-deposit.mjs op-mainnet prepare --pair WETH/USDC --native 0.1 --gate-report deployments/op-mainnet/gate-report.json
-```
-
-Send the two printed lines **in order, within a few minutes**, each one exactly as printed with this added at its end (cast asks for the depositing key's password; check that the `--from` it printed is `0x1ec3…C8f3` and the `--chain` is 10):
-
-<!-- run: op-mainnet send-suffix -->
-```
---keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://mainnet.optimism.io
-```
-
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
-
-**op-mainnet-8. Prove the opening** from the deposit transaction. It must say `PASS`.
-
-<!-- run: op-mainnet verify -->
-```
-node scripts/multichain/first-deposit.mjs op-mainnet verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
-```
-
-**op-mainnet-9. Post gate with the opening**, after the same wait as op-mainnet-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
-
-<!-- run: op-mainnet post-gate-open -->
-```
-node scripts/multichain/gate.mjs op-mainnet post --opening WETH/USDC=DEPOSIT_HASH --out deployments/op-mainnet/gate-report.json
-```
-
-**op-mainnet-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
-
-<!-- run: op-mainnet frontend-record -->
-```
-node scripts/multichain/frontend-files.mjs op-mainnet --gate-report deployments/op-mainnet/gate-report.json
-```
-
-**op-mainnet-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
-
-<!-- run: op-mainnet record-add -->
-```
-git add deployments/op-mainnet
-```
-<!-- run: op-mainnet record-commit -->
-```
-git commit -m "OP Mainnet: deployed and pool opened (owner run)"
-```
-
-Then fill the chain's row of the progress table (section 5) and go on to the next chain.
-
-### 4.2 Base (`base`, chain id 8453)
+### 4.2 Base (`base`, chain id 8453): deploy
 
 Endpoint used for sending in this section: `https://mainnet.base.org` (the first reviewed endpoint of `deployments/base/chain.json`; the tools themselves always read the reviewed endpoints). Listed token: USDC `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, 6 decimals. Minimum first deposit: 0.1 ETH and its USDC.
 
@@ -357,77 +292,9 @@ scripts/multichain/deploy.sh base broadcast -- --keystore ~/Desktop/DEX-CHAVE-DE
 node scripts/multichain/gate.mjs base post --out deployments/base/gate-report.json
 ```
 
-**base-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Base with the native amount you will deposit **plus 0.0005 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step base-7.
+Fill the chain's deployment columns of the progress table (section 6), then deploy the next chain. **Open no pool before all six chains have passed step 5** (section 5).
 
-<!-- run: base market -->
-```
-node scripts/multichain/market.mjs base --native 0.1
-```
-
-Check both balances arrived:
-
-<!-- run: base depositor-native -->
-```
-cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://mainnet.base.org
-```
-<!-- run: base depositor-token -->
-```
-cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://mainnet.base.org
-```
-
-(The second number is in base units: 6 decimals.)
-
-**base-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 6. If it prints "no market price", wait a few minutes and run it again.
-
-<!-- run: base prepare -->
-```
-node scripts/multichain/first-deposit.mjs base prepare --pair WETH/USDC --native 0.1 --gate-report deployments/base/gate-report.json
-```
-
-Send the two printed lines **in order, within a few minutes**, each one exactly as printed with this added at its end (cast asks for the depositing key's password; check that the `--from` it printed is `0x1ec3…C8f3` and the `--chain` is 8453):
-
-<!-- run: base send-suffix -->
-```
---keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://mainnet.base.org
-```
-
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
-
-**base-8. Prove the opening** from the deposit transaction. It must say `PASS`.
-
-<!-- run: base verify -->
-```
-node scripts/multichain/first-deposit.mjs base verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
-```
-
-**base-9. Post gate with the opening**, after the same wait as base-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
-
-<!-- run: base post-gate-open -->
-```
-node scripts/multichain/gate.mjs base post --opening WETH/USDC=DEPOSIT_HASH --out deployments/base/gate-report.json
-```
-
-**base-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
-
-<!-- run: base frontend-record -->
-```
-node scripts/multichain/frontend-files.mjs base --gate-report deployments/base/gate-report.json
-```
-
-**base-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
-
-<!-- run: base record-add -->
-```
-git add deployments/base
-```
-<!-- run: base record-commit -->
-```
-git commit -m "Base: deployed and pool opened (owner run)"
-```
-
-Then fill the chain's row of the progress table (section 5) and go on to the next chain.
-
-### 4.3 Arbitrum One (`arbitrum-one`, chain id 42161)
+### 4.3 Arbitrum One (`arbitrum-one`, chain id 42161): deploy
 
 Endpoint used for sending in this section: `https://arb1.arbitrum.io/rpc` (the first reviewed endpoint of `deployments/arbitrum-one/chain.json`; the tools themselves always read the reviewed endpoints). Listed token: USDC `0xaf88d065e77c8cC2239327C5EDb3A432268e5831`, 6 decimals. Minimum first deposit: 0.1 ETH and its USDC.
 
@@ -473,77 +340,9 @@ scripts/multichain/deploy.sh arbitrum-one broadcast -- --keystore ~/Desktop/DEX-
 node scripts/multichain/gate.mjs arbitrum-one post --out deployments/arbitrum-one/gate-report.json
 ```
 
-**arbitrum-one-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Arbitrum One with the native amount you will deposit **plus 0.001 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step arbitrum-one-7.
+Fill the chain's deployment columns of the progress table (section 6), then deploy the next chain. **Open no pool before all six chains have passed step 5** (section 5).
 
-<!-- run: arbitrum-one market -->
-```
-node scripts/multichain/market.mjs arbitrum-one --native 0.1
-```
-
-Check both balances arrived:
-
-<!-- run: arbitrum-one depositor-native -->
-```
-cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://arb1.arbitrum.io/rpc
-```
-<!-- run: arbitrum-one depositor-token -->
-```
-cast call 0xaf88d065e77c8cC2239327C5EDb3A432268e5831 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://arb1.arbitrum.io/rpc
-```
-
-(The second number is in base units: 6 decimals.)
-
-**arbitrum-one-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 6. If it prints "no market price", wait a few minutes and run it again.
-
-<!-- run: arbitrum-one prepare -->
-```
-node scripts/multichain/first-deposit.mjs arbitrum-one prepare --pair WETH/USDC --native 0.1 --gate-report deployments/arbitrum-one/gate-report.json
-```
-
-Send the two printed lines **in order, within a few minutes**, each one exactly as printed with this added at its end (cast asks for the depositing key's password; check that the `--from` it printed is `0x1ec3…C8f3` and the `--chain` is 42161):
-
-<!-- run: arbitrum-one send-suffix -->
-```
---keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://arb1.arbitrum.io/rpc
-```
-
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
-
-**arbitrum-one-8. Prove the opening** from the deposit transaction. It must say `PASS`.
-
-<!-- run: arbitrum-one verify -->
-```
-node scripts/multichain/first-deposit.mjs arbitrum-one verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
-```
-
-**arbitrum-one-9. Post gate with the opening**, after the same wait as arbitrum-one-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
-
-<!-- run: arbitrum-one post-gate-open -->
-```
-node scripts/multichain/gate.mjs arbitrum-one post --opening WETH/USDC=DEPOSIT_HASH --out deployments/arbitrum-one/gate-report.json
-```
-
-**arbitrum-one-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
-
-<!-- run: arbitrum-one frontend-record -->
-```
-node scripts/multichain/frontend-files.mjs arbitrum-one --gate-report deployments/arbitrum-one/gate-report.json
-```
-
-**arbitrum-one-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
-
-<!-- run: arbitrum-one record-add -->
-```
-git add deployments/arbitrum-one
-```
-<!-- run: arbitrum-one record-commit -->
-```
-git commit -m "Arbitrum One: deployed and pool opened (owner run)"
-```
-
-Then fill the chain's row of the progress table (section 5) and go on to the next chain.
-
-### 4.4 Linea (`linea`, chain id 59144)
+### 4.4 Linea (`linea`, chain id 59144): deploy
 
 Endpoint used for sending in this section: `https://rpc.linea.build` (the first reviewed endpoint of `deployments/linea/chain.json`; the tools themselves always read the reviewed endpoints). Listed token: USDC `0x176211869cA2b568f2A7D4EE941E073a821EE1ff`, 6 decimals. Minimum first deposit: 0.1 ETH and its USDC.
 
@@ -589,77 +388,9 @@ scripts/multichain/deploy.sh linea broadcast -- --keystore ~/Desktop/DEX-CHAVE-D
 node scripts/multichain/gate.mjs linea post --out deployments/linea/gate-report.json
 ```
 
-**linea-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Linea with the native amount you will deposit **plus 0.001 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step linea-7.
+Fill the chain's deployment columns of the progress table (section 6), then deploy the next chain. **Open no pool before all six chains have passed step 5** (section 5).
 
-<!-- run: linea market -->
-```
-node scripts/multichain/market.mjs linea --native 0.1
-```
-
-Check both balances arrived:
-
-<!-- run: linea depositor-native -->
-```
-cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://rpc.linea.build
-```
-<!-- run: linea depositor-token -->
-```
-cast call 0x176211869cA2b568f2A7D4EE941E073a821EE1ff "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://rpc.linea.build
-```
-
-(The second number is in base units: 6 decimals.)
-
-**linea-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 6. If it prints "no market price", wait a few minutes and run it again.
-
-<!-- run: linea prepare -->
-```
-node scripts/multichain/first-deposit.mjs linea prepare --pair WETH/USDC --native 0.1 --gate-report deployments/linea/gate-report.json
-```
-
-Send the two printed lines **in order, within a few minutes**, each one exactly as printed with this added at its end (cast asks for the depositing key's password; check that the `--from` it printed is `0x1ec3…C8f3` and the `--chain` is 59144):
-
-<!-- run: linea send-suffix -->
-```
---keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://rpc.linea.build
-```
-
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
-
-**linea-8. Prove the opening** from the deposit transaction. It must say `PASS`.
-
-<!-- run: linea verify -->
-```
-node scripts/multichain/first-deposit.mjs linea verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
-```
-
-**linea-9. Post gate with the opening**, after the same wait as linea-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
-
-<!-- run: linea post-gate-open -->
-```
-node scripts/multichain/gate.mjs linea post --opening WETH/USDC=DEPOSIT_HASH --out deployments/linea/gate-report.json
-```
-
-**linea-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
-
-<!-- run: linea frontend-record -->
-```
-node scripts/multichain/frontend-files.mjs linea --gate-report deployments/linea/gate-report.json
-```
-
-**linea-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
-
-<!-- run: linea record-add -->
-```
-git add deployments/linea
-```
-<!-- run: linea record-commit -->
-```
-git commit -m "Linea: deployed and pool opened (owner run)"
-```
-
-Then fill the chain's row of the progress table (section 5) and go on to the next chain.
-
-### 4.5 BNB Smart Chain (`bnb-smart-chain`, chain id 56)
+### 4.5 BNB Smart Chain (`bnb-smart-chain`, chain id 56): deploy
 
 Endpoint used for sending in this section: `https://bsc-rpc.publicnode.com` (the first reviewed endpoint of `deployments/bnb-smart-chain/chain.json`; the tools themselves always read the reviewed endpoints). Listed token: USDC (Binance-Peg) `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d`, 18 decimals. Minimum first deposit: 0.5 BNB and its USDC (Binance-Peg).
 
@@ -705,77 +436,9 @@ scripts/multichain/deploy.sh bnb-smart-chain broadcast -- --keystore ~/Desktop/D
 node scripts/multichain/gate.mjs bnb-smart-chain post --out deployments/bnb-smart-chain/gate-report.json
 ```
 
-**bnb-smart-chain-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on BNB Smart Chain with the native amount you will deposit **plus 0.003 BNB** for its two transactions, and with the USDC (Binance-Peg) amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.5` by your amount (at least 0.5). Transfers **to** the depositing account are safe; it must **send** nothing but step bnb-smart-chain-7.
+Fill the chain's deployment columns of the progress table (section 6), then deploy the next chain. **Open no pool before all six chains have passed step 5** (section 5).
 
-<!-- run: bnb-smart-chain market -->
-```
-node scripts/multichain/market.mjs bnb-smart-chain --native 0.5
-```
-
-Check both balances arrived:
-
-<!-- run: bnb-smart-chain depositor-native -->
-```
-cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://bsc-rpc.publicnode.com
-```
-<!-- run: bnb-smart-chain depositor-token -->
-```
-cast call 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://bsc-rpc.publicnode.com
-```
-
-(The second number is in base units: 18 decimals.)
-
-**bnb-smart-chain-7. Open the pool.** Use your amount in place of `0.5`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 6. If it prints "no market price", wait a few minutes and run it again.
-
-<!-- run: bnb-smart-chain prepare -->
-```
-node scripts/multichain/first-deposit.mjs bnb-smart-chain prepare --pair WBNB/USDC --native 0.5 --gate-report deployments/bnb-smart-chain/gate-report.json
-```
-
-Send the two printed lines **in order, within a few minutes**, each one exactly as printed with this added at its end (cast asks for the depositing key's password; check that the `--from` it printed is `0x1ec3…C8f3` and the `--chain` is 56):
-
-<!-- run: bnb-smart-chain send-suffix -->
-```
---keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://bsc-rpc.publicnode.com
-```
-
-The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
-
-**bnb-smart-chain-8. Prove the opening** from the deposit transaction. It must say `PASS`.
-
-<!-- run: bnb-smart-chain verify -->
-```
-node scripts/multichain/first-deposit.mjs bnb-smart-chain verify --pair WBNB/USDC --native 0.5 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
-```
-
-**bnb-smart-chain-9. Post gate with the opening**, after the same wait as bnb-smart-chain-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
-
-<!-- run: bnb-smart-chain post-gate-open -->
-```
-node scripts/multichain/gate.mjs bnb-smart-chain post --opening WBNB/USDC=DEPOSIT_HASH --out deployments/bnb-smart-chain/gate-report.json
-```
-
-**bnb-smart-chain-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
-
-<!-- run: bnb-smart-chain frontend-record -->
-```
-node scripts/multichain/frontend-files.mjs bnb-smart-chain --gate-report deployments/bnb-smart-chain/gate-report.json
-```
-
-**bnb-smart-chain-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
-
-<!-- run: bnb-smart-chain record-add -->
-```
-git add deployments/bnb-smart-chain
-```
-<!-- run: bnb-smart-chain record-commit -->
-```
-git commit -m "BNB Smart Chain: deployed and pool opened (owner run)"
-```
-
-Then fill the chain's row of the progress table (section 5) and go on to the next chain.
-
-### 4.6 Ethereum (`ethereum`, chain id 1)
+### 4.6 Ethereum (`ethereum`, chain id 1): deploy
 
 Endpoint used for sending in this section: `https://ethereum-rpc.publicnode.com` (the first reviewed endpoint of `deployments/ethereum/chain.json`; the tools themselves always read the reviewed endpoints). Listed token: USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`, 6 decimals. Minimum first deposit: 1 ETH and its USDC.
 
@@ -821,6 +484,370 @@ scripts/multichain/deploy.sh ethereum broadcast -- --keystore ~/Desktop/DEX-CHAV
 node scripts/multichain/gate.mjs ethereum post --out deployments/ethereum/gate-report.json
 ```
 
+Fill the chain's deployment columns of the progress table (section 6), then deploy the next chain. **Open no pool before all six chains have passed step 5** (section 5).
+
+## 5. Opening the pools, chain by chain
+
+Only after section 4 is finished on all six chains (every step 5 PASS, the pair `absent`). Same order. Why: the pre gate refuses a chain whose factory is not deployed yet once the depositing account has sent anything there, and the depositing account is the same on all six chains and in every factory's address; deploying all six first means that nothing the depositing account does later can block a deployment (review R369-4).
+
+### 5.1 OP Mainnet (`op-mainnet`, chain id 10): open the pool
+
+
+**op-mainnet-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on OP Mainnet with the native amount you will deposit **plus 0.0005 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step op-mainnet-7.
+
+<!-- run: op-mainnet market -->
+```
+node scripts/multichain/market.mjs op-mainnet --native 0.1
+```
+
+Check both balances arrived:
+
+<!-- run: op-mainnet depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://mainnet.optimism.io
+```
+<!-- run: op-mainnet depositor-token -->
+```
+cast call 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://mainnet.optimism.io
+```
+
+(The second number is in base units: 6 decimals.)
+
+**op-mainnet-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 7. If it prints "no market price", wait a few minutes and run it again.
+
+<!-- run: op-mainnet prepare -->
+```
+node scripts/multichain/first-deposit.mjs op-mainnet prepare --pair WETH/USDC --native 0.1 --gate-report deployments/op-mainnet/gate-report.json
+```
+
+**Send them only with `cast`, from this terminal, exactly as printed. Never import the depositing key into a browser wallet; never accept "switch to smart account", a batched transaction, or any wallet that bundles the two: the opening must be a transaction from the depositing account straight to the router, or it can never be proven and that pair of that factory is lost (review R369-3).** Each command is one printed line followed by this text (it is not a command by itself: add it at the end of the line, after a space; cast then asks for the depositing key's password). Check that the `--from` printed is `0x1ec3…C8f3` and the `--chain` is 10:
+
+<!-- suffix: op-mainnet send-suffix -->
+`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://mainnet.optimism.io`
+
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
+
+**op-mainnet-8. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- run: op-mainnet verify -->
+```
+node scripts/multichain/first-deposit.mjs op-mainnet verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**op-mainnet-9. Post gate with the opening**, after the same wait as op-mainnet-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
+
+<!-- run: op-mainnet post-gate-open -->
+```
+node scripts/multichain/gate.mjs op-mainnet post --opening WETH/USDC=DEPOSIT_HASH --out deployments/op-mainnet/gate-report.json
+```
+
+**op-mainnet-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
+
+<!-- run: op-mainnet frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs op-mainnet --gate-report deployments/op-mainnet/gate-report.json
+```
+
+**op-mainnet-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
+
+<!-- run: op-mainnet record-add -->
+```
+git add deployments/op-mainnet
+```
+<!-- run: op-mainnet record-commit -->
+```
+git commit -m "OP Mainnet: deployed and pool opened (owner run)"
+```
+
+Then fill the chain's row of the progress table (section 6) and go on to the next chain.
+
+### 5.2 Base (`base`, chain id 8453): open the pool
+
+
+**base-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Base with the native amount you will deposit **plus 0.0005 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step base-7.
+
+<!-- run: base market -->
+```
+node scripts/multichain/market.mjs base --native 0.1
+```
+
+Check both balances arrived:
+
+<!-- run: base depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://mainnet.base.org
+```
+<!-- run: base depositor-token -->
+```
+cast call 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://mainnet.base.org
+```
+
+(The second number is in base units: 6 decimals.)
+
+**base-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 7. If it prints "no market price", wait a few minutes and run it again.
+
+<!-- run: base prepare -->
+```
+node scripts/multichain/first-deposit.mjs base prepare --pair WETH/USDC --native 0.1 --gate-report deployments/base/gate-report.json
+```
+
+**Send them only with `cast`, from this terminal, exactly as printed. Never import the depositing key into a browser wallet; never accept "switch to smart account", a batched transaction, or any wallet that bundles the two: the opening must be a transaction from the depositing account straight to the router, or it can never be proven and that pair of that factory is lost (review R369-3).** Each command is one printed line followed by this text (it is not a command by itself: add it at the end of the line, after a space; cast then asks for the depositing key's password). Check that the `--from` printed is `0x1ec3…C8f3` and the `--chain` is 8453:
+
+<!-- suffix: base send-suffix -->
+`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://mainnet.base.org`
+
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
+
+**base-8. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- run: base verify -->
+```
+node scripts/multichain/first-deposit.mjs base verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**base-9. Post gate with the opening**, after the same wait as base-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
+
+<!-- run: base post-gate-open -->
+```
+node scripts/multichain/gate.mjs base post --opening WETH/USDC=DEPOSIT_HASH --out deployments/base/gate-report.json
+```
+
+**base-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
+
+<!-- run: base frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs base --gate-report deployments/base/gate-report.json
+```
+
+**base-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
+
+<!-- run: base record-add -->
+```
+git add deployments/base
+```
+<!-- run: base record-commit -->
+```
+git commit -m "Base: deployed and pool opened (owner run)"
+```
+
+Then fill the chain's row of the progress table (section 6) and go on to the next chain.
+
+### 5.3 Arbitrum One (`arbitrum-one`, chain id 42161): open the pool
+
+
+**arbitrum-one-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Arbitrum One with the native amount you will deposit **plus 0.001 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step arbitrum-one-7.
+
+<!-- run: arbitrum-one market -->
+```
+node scripts/multichain/market.mjs arbitrum-one --native 0.1
+```
+
+Check both balances arrived:
+
+<!-- run: arbitrum-one depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://arb1.arbitrum.io/rpc
+```
+<!-- run: arbitrum-one depositor-token -->
+```
+cast call 0xaf88d065e77c8cC2239327C5EDb3A432268e5831 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://arb1.arbitrum.io/rpc
+```
+
+(The second number is in base units: 6 decimals.)
+
+**arbitrum-one-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 7. If it prints "no market price", wait a few minutes and run it again.
+
+<!-- run: arbitrum-one prepare -->
+```
+node scripts/multichain/first-deposit.mjs arbitrum-one prepare --pair WETH/USDC --native 0.1 --gate-report deployments/arbitrum-one/gate-report.json
+```
+
+**Send them only with `cast`, from this terminal, exactly as printed. Never import the depositing key into a browser wallet; never accept "switch to smart account", a batched transaction, or any wallet that bundles the two: the opening must be a transaction from the depositing account straight to the router, or it can never be proven and that pair of that factory is lost (review R369-3).** Each command is one printed line followed by this text (it is not a command by itself: add it at the end of the line, after a space; cast then asks for the depositing key's password). Check that the `--from` printed is `0x1ec3…C8f3` and the `--chain` is 42161:
+
+<!-- suffix: arbitrum-one send-suffix -->
+`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://arb1.arbitrum.io/rpc`
+
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
+
+**arbitrum-one-8. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- run: arbitrum-one verify -->
+```
+node scripts/multichain/first-deposit.mjs arbitrum-one verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**arbitrum-one-9. Post gate with the opening**, after the same wait as arbitrum-one-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
+
+<!-- run: arbitrum-one post-gate-open -->
+```
+node scripts/multichain/gate.mjs arbitrum-one post --opening WETH/USDC=DEPOSIT_HASH --out deployments/arbitrum-one/gate-report.json
+```
+
+**arbitrum-one-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
+
+<!-- run: arbitrum-one frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs arbitrum-one --gate-report deployments/arbitrum-one/gate-report.json
+```
+
+**arbitrum-one-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
+
+<!-- run: arbitrum-one record-add -->
+```
+git add deployments/arbitrum-one
+```
+<!-- run: arbitrum-one record-commit -->
+```
+git commit -m "Arbitrum One: deployed and pool opened (owner run)"
+```
+
+Then fill the chain's row of the progress table (section 6) and go on to the next chain.
+
+### 5.4 Linea (`linea`, chain id 59144): open the pool
+
+
+**linea-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Linea with the native amount you will deposit **plus 0.001 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step linea-7.
+
+<!-- run: linea market -->
+```
+node scripts/multichain/market.mjs linea --native 0.1
+```
+
+Check both balances arrived:
+
+<!-- run: linea depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://rpc.linea.build
+```
+<!-- run: linea depositor-token -->
+```
+cast call 0x176211869cA2b568f2A7D4EE941E073a821EE1ff "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://rpc.linea.build
+```
+
+(The second number is in base units: 6 decimals.)
+
+**linea-7. Open the pool.** Use your amount in place of `0.1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 7. If it prints "no market price", wait a few minutes and run it again.
+
+<!-- run: linea prepare -->
+```
+node scripts/multichain/first-deposit.mjs linea prepare --pair WETH/USDC --native 0.1 --gate-report deployments/linea/gate-report.json
+```
+
+**Send them only with `cast`, from this terminal, exactly as printed. Never import the depositing key into a browser wallet; never accept "switch to smart account", a batched transaction, or any wallet that bundles the two: the opening must be a transaction from the depositing account straight to the router, or it can never be proven and that pair of that factory is lost (review R369-3).** Each command is one printed line followed by this text (it is not a command by itself: add it at the end of the line, after a space; cast then asks for the depositing key's password). Check that the `--from` printed is `0x1ec3…C8f3` and the `--chain` is 59144:
+
+<!-- suffix: linea send-suffix -->
+`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://rpc.linea.build`
+
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
+
+**linea-8. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- run: linea verify -->
+```
+node scripts/multichain/first-deposit.mjs linea verify --pair WETH/USDC --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**linea-9. Post gate with the opening**, after the same wait as linea-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
+
+<!-- run: linea post-gate-open -->
+```
+node scripts/multichain/gate.mjs linea post --opening WETH/USDC=DEPOSIT_HASH --out deployments/linea/gate-report.json
+```
+
+**linea-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
+
+<!-- run: linea frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs linea --gate-report deployments/linea/gate-report.json
+```
+
+**linea-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
+
+<!-- run: linea record-add -->
+```
+git add deployments/linea
+```
+<!-- run: linea record-commit -->
+```
+git commit -m "Linea: deployed and pool opened (owner run)"
+```
+
+Then fill the chain's row of the progress table (section 6) and go on to the next chain.
+
+### 5.5 BNB Smart Chain (`bnb-smart-chain`, chain id 56): open the pool
+
+
+**bnb-smart-chain-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on BNB Smart Chain with the native amount you will deposit **plus 0.003 BNB** for its two transactions, and with the USDC (Binance-Peg) amount this command prints for that native amount, **plus 1%** (the price moves). Replace `0.5` by your amount (at least 0.5). Transfers **to** the depositing account are safe; it must **send** nothing but step bnb-smart-chain-7.
+
+<!-- run: bnb-smart-chain market -->
+```
+node scripts/multichain/market.mjs bnb-smart-chain --native 0.5
+```
+
+Check both balances arrived:
+
+<!-- run: bnb-smart-chain depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://bsc-rpc.publicnode.com
+```
+<!-- run: bnb-smart-chain depositor-token -->
+```
+cast call 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://bsc-rpc.publicnode.com
+```
+
+(The second number is in base units: 18 decimals.)
+
+**bnb-smart-chain-7. Open the pool.** Use your amount in place of `0.5`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 7. If it prints "no market price", wait a few minutes and run it again.
+
+<!-- run: bnb-smart-chain prepare -->
+```
+node scripts/multichain/first-deposit.mjs bnb-smart-chain prepare --pair WBNB/USDC --native 0.5 --gate-report deployments/bnb-smart-chain/gate-report.json
+```
+
+**Send them only with `cast`, from this terminal, exactly as printed. Never import the depositing key into a browser wallet; never accept "switch to smart account", a batched transaction, or any wallet that bundles the two: the opening must be a transaction from the depositing account straight to the router, or it can never be proven and that pair of that factory is lost (review R369-3).** Each command is one printed line followed by this text (it is not a command by itself: add it at the end of the line, after a space; cast then asks for the depositing key's password). Check that the `--from` printed is `0x1ec3…C8f3` and the `--chain` is 56:
+
+<!-- suffix: bnb-smart-chain send-suffix -->
+`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://bsc-rpc.publicnode.com`
+
+The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
+
+**bnb-smart-chain-8. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- run: bnb-smart-chain verify -->
+```
+node scripts/multichain/first-deposit.mjs bnb-smart-chain verify --pair WBNB/USDC --native 0.5 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**bnb-smart-chain-9. Post gate with the opening**, after the same wait as bnb-smart-chain-5. It must end with `post: PASS` and report the pair `open`, opened by `0x1ec3…C8f3`.
+
+<!-- run: bnb-smart-chain post-gate-open -->
+```
+node scripts/multichain/gate.mjs bnb-smart-chain post --opening WBNB/USDC=DEPOSIT_HASH --out deployments/bnb-smart-chain/gate-report.json
+```
+
+**bnb-smart-chain-10. The page's record of this chain**, written from that report (the tool refuses a report without every opening proven):
+
+<!-- run: bnb-smart-chain frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs bnb-smart-chain --gate-report deployments/bnb-smart-chain/gate-report.json
+```
+
+**bnb-smart-chain-11. Record.** Commit the chain's files (the gate report and the two page files are public facts; no key is in them):
+
+<!-- run: bnb-smart-chain record-add -->
+```
+git add deployments/bnb-smart-chain
+```
+<!-- run: bnb-smart-chain record-commit -->
+```
+git commit -m "BNB Smart Chain: deployed and pool opened (owner run)"
+```
+
+Then fill the chain's row of the progress table (section 6) and go on to the next chain.
+
+### 5.6 Ethereum (`ethereum`, chain id 1): open the pool
+
+
 **ethereum-6. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Ethereum with the native amount you will deposit **plus 0.015 ETH** for its two transactions, and with the USDC amount this command prints for that native amount, **plus 1%** (the price moves). Replace `1` by your amount (at least 1). Transfers **to** the depositing account are safe; it must **send** nothing but step ethereum-7.
 
 <!-- run: ethereum market -->
@@ -841,19 +868,17 @@ cast call 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 "balanceOf(address)(uint256
 
 (The second number is in base units: 6 decimals.)
 
-**ethereum-7. Open the pool.** Use your amount in place of `1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 6. If it prints "no market price", wait a few minutes and run it again.
+**ethereum-7. Open the pool.** Use your amount in place of `1`. The tool reads the market at one block on two endpoints, checks the contracts against the gate report, and prints two `cast send` lines (an `approve` of exactly the token amount to the router, then `addLiquidityBLCH` with minimums equal to the amounts). If it prints `STOP`, deposit nothing and go to section 7. If it prints "no market price", wait a few minutes and run it again.
 
 <!-- run: ethereum prepare -->
 ```
 node scripts/multichain/first-deposit.mjs ethereum prepare --pair WETH/USDC --native 1 --gate-report deployments/ethereum/gate-report.json
 ```
 
-Send the two printed lines **in order, within a few minutes**, each one exactly as printed with this added at its end (cast asks for the depositing key's password; check that the `--from` it printed is `0x1ec3…C8f3` and the `--chain` is 1):
+**Send them only with `cast`, from this terminal, exactly as printed. Never import the depositing key into a browser wallet; never accept "switch to smart account", a batched transaction, or any wallet that bundles the two: the opening must be a transaction from the depositing account straight to the router, or it can never be proven and that pair of that factory is lost (review R369-3).** Each command is one printed line followed by this text (it is not a command by itself: add it at the end of the line, after a space; cast then asks for the depositing key's password). Check that the `--from` printed is `0x1ec3…C8f3` and the `--chain` is 1:
 
-<!-- run: ethereum send-suffix -->
-```
---keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://ethereum-rpc.publicnode.com
-```
+<!-- suffix: ethereum send-suffix -->
+`--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante --rpc-url https://ethereum-rpc.publicnode.com`
 
 The second one prints `transactionHash`: that is `DEPOSIT_HASH` below. `TOKEN_AMOUNT` is the token amount `prepare` printed (`prepare` ends with `Then: node scripts/multichain/first-deposit.mjs … verify … --token N --tx <hash of the deposit>`: `TOKEN_AMOUNT` is that `N`; you may also copy that command from `node` on and put the hash in place of `<hash of the deposit>`).
 
@@ -889,9 +914,9 @@ git add deployments/ethereum
 git commit -m "Ethereum: deployed and pool opened (owner run)"
 ```
 
-Then fill the chain's row of the progress table (section 5) and go on to the next chain.
+Then fill the chain's row of the progress table (section 6) and go on to the next chain.
 
-## 5. Progress table (fill as you go)
+## 6. Progress table (fill as you go)
 
 | Chain | 1 pre | 4 deployed (3 tx hashes) | 5 post | 7 deposit hash | 8 verify | 9 post open | 10 record | 11 committed |
 |---|---|---|---|---|---|---|---|---|
@@ -902,16 +927,21 @@ Then fill the chain's row of the progress table (section 5) and go on to the nex
 | BNB Smart Chain | | | | | | | | |
 | Ethereum | | | | | | | | |
 
-## 6. If a step fails midway
+## 7. If a step fails midway
 
 The principle: **every step before 7 can be repeated safely; nothing of yours is at risk before step 7; from step 7
 on, only the printed transactions go in, and the tools refuse rather than guess.** A failure on one chain does not
-touch the chains already finished, and you may stop between chains for as long as you like (each chain's
-deployment is independent; the depositing account's rule holds for as long as it is kept).
+touch the contracts and pools of the other chains, and you may stop between chains for as long as you like. **One
+exception: the depositing account is one account for all six chains and is part of every factory's address.** If
+it is ever replaced (it was used for something else, or stolen), the planned factory, router, lens and pairs move
+on **every** chain at once, and the committed tools cannot hold the finished chains and the new ones side by side
+(review R369-4). Then stop and ask the developer (agent 360's line) before anything else; do not edit
+`deployments/` yourself. Pools already opened stay open and yours; only their listing on the page needs that
+work.
 
 | Where | What you see | What it means | What to do |
 |---|---|---|---|
-| 2.2 | `check-depositor` is not FIT | the depositing account has code, a delegation or a transaction on some chain | Stop before any deployment. If it sent a transaction, treat the key as used: a new depositing key means a new factory address (`docs/MULTICHAIN-DEPLOY.md` sections 2.1, 10); ask the developer (agent 360's line) to record a new one |
+| 2.2 | `check-depositor` is not FIT | the depositing account has code, a delegation or a transaction on some chain | Stop before any deployment. If it sent a transaction, treat the key as used: a new depositing key means a new factory address on every chain (the exception above); ask the developer (agent 360's line) |
 | 2.3 | `record` refuses the signature | wrong account signed, the text changed, or a smart-account signature | Sign again with the fee address itself, as a plain message; nothing is recorded until it is valid |
 | 1 or 3 | pre gate `FAIL` | the chain differs from what was reviewed (a token's code changed, the depositing account was used, the fee address delegates to an unidentified contract, the proof is missing) | Do not deploy on that chain. Read the failing line; a delegation change at the fee address on any chain stops that chain until it is cleared or identified (`docs/MULTICHAIN-DEPLOY.md` 2.3) |
 | 3 | "lack of funds" / insufficient funds | the deploying account holds less than the gas | Fund more (step 2) and repeat step 3 |
@@ -921,8 +951,8 @@ deployment is independent; the depositing account's rule holds for as long as it
 | 5 | any `FAIL` | the deployed code is not the planned code at the finalized block | Stop that chain; put no money in; report the output |
 | 6 | `market.mjs` prints no market price | the two references disagree or a feed is stale | Wait; it never falls back to one reference |
 | 7 | `prepare` FAIL, "no market price", "below the minimum" | nothing was printed, nothing is to be sent | Wait, or use a larger amount, and run step 7 again |
-| 7 | `prepare` says tokens sit at the pair's address and prints a `skim` command | someone sent tokens to the not-yet-created pair (above 0.1% of a side) | Send the printed `skim` from **the deploying account, never the depositing account** (`--keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer`), naming an address of yours; then step 7 again |
-| 7 | **`STOP`: the pool is already open** | you did not open it: the depositing key was used elsewhere or stolen | Deposit nothing on that chain; do not use `add`. That pair of that factory is lost (no money is). `docs/MULTICHAIN-DEPLOY.md` section 10: a new depositing key, a new factory on that chain |
+| 7 | `prepare` says tokens sit at the pair's address and prints a `skim` command | someone sent tokens to the not-yet-created pair (above 0.1% of a side) | Send the printed `skim` from **the deploying account, never the depositing account**: the printed line with `--chain CHAIN_ID --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer --rpc-url RPC_URL` added (the printed `skim` line carries no `--chain` of its own, review R369-10), naming an address of yours; then step 7 again |
+| 7 | **`STOP`: the pool is already open** | you did not open it: the depositing key was used elsewhere or stolen | Deposit nothing on that chain; do not use `add`; stop the remaining chains' openings. That pair of that factory is lost (no money is), and the depositing key must be treated as exposed: the exception above (a new key moves every chain's factory; ask the developer) |
 | 7 | the `approve` went through, the deposit was not sent (closed terminal, waited too long) | an allowance of exactly the token amount to the router stands; no money moved | **Run `prepare` again** (shown in the dry run: it prints a fresh pair of lines) and send both new lines; the new `approve` replaces the old allowance |
 | 7 | the deposit reverted (`status 0`), for example sent after its 20-minute deadline or with too little gas | nothing was deposited; only its gas was spent | **Run `prepare` again** and send the new lines (shown in the dry run). Never write a deposit by hand or with other minimums |
 | 8 | `verify` reports a gift above 0.1% | someone sent tokens to the pair's address in front of your deposit; they are now in the pool and owned by your shares | Nothing is lost: **do not withdraw**. Continue with step 9; compare the pool's price with the market before the page is published |
@@ -930,7 +960,7 @@ deployment is independent; the depositing account's rule holds for as long as it
 | 10 | `frontend-files` refuses | the report is not a passed post gate with the opening proven | Repeat step 9 until it passes |
 | any | the machine or session is lost | | Start again at the first step of that chain whose output you do not have; every step up to 6 can be repeated, step 7 by `prepare` again, steps 8 to 11 any time |
 
-## 7. After the last chain
+## 8. After the last chain
 
 **The page.** The integrator (agent 366) merges the committed records into `main`; the multichain site is built
 from `main` with:
@@ -949,8 +979,11 @@ yours (from a wallet that imports nothing: `cast send` with the keystore; `RECIP
 balance less a little for gas):
 
 ```
-cast send RECIPIENT --value AMOUNT --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer --rpc-url RPC_URL
+cast send RECIPIENT --value AMOUNT --chain CHAIN_ID --keystore ~/Desktop/DEX-CHAVE-DEPLOY/deployer --rpc-url RPC_URL
 ```
+
+(`CHAIN_ID` and `RPC_URL` as in the chain's section: `--chain` makes the signature valid on that chain only, review
+R369-10.)
 
 Then delete `~/Desktop/DEX-CHAVE-DEPLOY`. Leftover dust lost with it is harmless.
 
@@ -960,11 +993,11 @@ nothing but printed deposits) if you will open further pairs on these factories;
 **Bloch L2 DEX (separate product).** Not part of this procedure: its fee goes to the Bloch Inc Safe through
 `blochInc`; that is the integrator's owner checklist item (agent 366).
 
-## 8. The dry run of this document
+## 9. The dry run of this document
 
 RESULTS-DRYRUN
 
-## 9. What the dry run changes, exactly
+## 10. What the dry run changes, exactly
 
 The dry run (`scripts/multichain/owner-dry-run.mjs`) reads the command blocks of this file (the ones marked
 `<!-- run: … -->`), refuses to start if a block it expects is missing, and runs each as written with only these
@@ -978,13 +1011,13 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 | `--out deployments/<chain>/…`, `--gate-report deployments/<chain>/…`, `fee-proof.mjs page --out /tmp/…` | the path is the dry run's own directory; `frontend-files.mjs` gets `--out DIR` | nothing of a dry run is written into `deployments/` |
 | `~/Desktop/DEX-CHAVE-DEPLOY` | a throwaway directory; `cast wallet new` gets `--unsafe-password`, `forge` and `cast` get `--password-file` | a throwaway key with a throwaway password, never the owner's |
 | `--rpc-url https://…` (public endpoint) in `cast` | the fork's URL | nothing is sent to a public chain |
-| the printed `cast send` lines and their suffix | the suffix `--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` becomes `--unlocked`; the depositing account is impersonated on the fork | nobody but the owner has that key |
+| the printed `cast send` lines and their suffix (the inline text marked `<!-- suffix: … -->`) | the suffix `--keystore ~/Desktop/DEX-CHAVE-DEPOSITANTE/depositante` becomes `--unlocked`; the depositing account is impersonated on the fork | nobody but the owner has that key |
 | `DEPLOYER_ADDRESS`, `DEPOSIT_HASH`, `TOKEN_AMOUNT` | the values the earlier steps printed | as the owner does |
 | funding (steps 2 and 6) and waiting (steps 5 and 9) | `anvil_setBalance` with exactly the amounts of section 3, the token by its balance slot; 70 blocks mined so that anvil's `finalized` (64 behind) covers the transactions | the owner funds from a wallet and waits for the chain |
 | `fee-proof.mjs record` | not run (it needs the fee address's signature); the pre gates of the dry run report the proof as "not required (rehearsal)", and the public pre gate is run read-only to show that it fails on the missing proof only | no one but the owner can sign it |
 | `git add`, `git commit`, `npm ci`, `git checkout` | not run | they change the repository, not a chain |
 | the Portuguese owner copy | its marked blocks are compared with this file's (`once --pt FILE`); any difference fails the run | the owner may follow either |
 
-## 10. Not done / not proven
+## 11. Not done / not proven
 
 NOT-DONE
