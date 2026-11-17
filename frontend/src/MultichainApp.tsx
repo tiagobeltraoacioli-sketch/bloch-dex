@@ -19,6 +19,8 @@ import { networkEntries } from './shell/networks';
 const CHAINS = bundledChains();
 /** A pending swap is looked up this often: these chains settle in seconds, the Bloch L2 route's default is 10 s. */
 const RECEIPT_POLL_MS = 4_000;
+/** The snapshot block is renewed this often: public endpoints keep a block's state for about a minute (R328-5). */
+const SNAPSHOT_MAX_AGE_MS = 30_000;
 export const MULTICHAIN_RENDER_BANNER =
   'Local rehearsal build against loopback forks: not for publication.';
 
@@ -134,6 +136,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         wallet={wallet}
         planned={chain.planned}
         receiptPollMs={RECEIPT_POLL_MS}
+        snapshotMaxAgeMs={SNAPSHOT_MAX_AGE_MS}
         confirmation={confirmationView}
       />
     </Shell>

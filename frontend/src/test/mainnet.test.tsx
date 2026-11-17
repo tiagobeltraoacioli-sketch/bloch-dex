@@ -3288,3 +3288,95 @@ describe('new-slot priority fee on the page (round-12 task 259)', () => {
     expect(attempted[1]).toHaveProperty('nonce', '0x0');
   });
 });
+
+// Agent 327: the timed renewal of the snapshot block (326's answer to review R328-5) remounts the swap card. On a
+// network that passes `snapshotMaxAgeMs` the card keeps what the user typed, where the cursor was and what was
+// open, and reads its quote again at the new block by the unchanged getQuote(); a held swap pauses the renewal.
+describe('renewed snapshot block and the swap form', () => {
+  const page = (rpc: Rpc, wallet: Devnet4Wallet, snapshotMaxAgeMs?: number) =>
+    render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={PLANNED}
+        now={() => NOW_MS}
+        snapshotMaxAgeMs={snapshotMaxAgeMs}
+      />,
+    );
+  const fill = async (user: ReturnType<typeof userEvent.setup>) => {
+    await screen.findByLabelText('Finalized balances');
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'wGSMH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    expect((await screen.findByLabelText('Quote')).textContent).toContain('Finalized block 440');
+  };
+
+  it('keeps the inputs, the cursor and the open details, and quotes again at the new block', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain();
+    const { wallet, requests } = fakeWallet(state);
+    page(rpc, wallet, 400);
+    await fill(user);
+    await user.click(screen.getByRole('button', { name: 'All quote details' }));
+    const amount = screen.getByLabelText('Amount') as HTMLInputElement;
+    amount.focus();
+    // The chain moves on; the next renewal reads the new block.
+    state.finalizedBlock = INCLUDED;
+    await waitFor(
+      () => expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+      { timeout: 4000 },
+    );
+    // The quote is back without a click (the fake lens names block 440 whatever block it is asked at).
+    expect((await screen.findByLabelText('Quote')).textContent).toContain('bUSDC → BLCH → wGSMH');
+    const again = screen.getByLabelText('Amount') as HTMLInputElement;
+    expect(again).not.toBe(amount); // a new card
+    expect(again.value).toBe('1');
+    expect(document.activeElement).toBe(again);
+    expect((screen.getByLabelText('You pay') as HTMLSelectElement).selectedOptions[0].text).toBe(
+      'bUSDC',
+    );
+    expect(
+      (screen.getByLabelText('You receive') as HTMLSelectElement).selectedOptions[0].text,
+    ).toBe('wGSMH');
+    expect(screen.getByRole('button', { name: 'Fewer quote details' })).toBeTruthy();
+    // The new quote is pinned to the new block, by the same reads as a click on "Get quote".
+    const quoted = state.sent.filter(
+      (s) =>
+        s.method === 'eth_call' &&
+        JSON.stringify(s.params[1]) === JSON.stringify({ blockHash: INCLUDED.hash }) &&
+        (() => {
+          try {
+            return (
+              decodeFunctionData({
+                abi: LENS_ABI,
+                data: (s.params[0] as { data: Hex }).data,
+              }).functionName === 'bestExactInput'
+            );
+          } catch {
+            return false;
+          }
+        })(),
+    );
+    expect(quoted.length).toBeGreaterThan(0);
+    // Nothing reached the wallet by itself.
+    expect(requests.filter((r) => r.method === 'eth_sendTransaction')).toHaveLength(0);
+  });
+
+  it('without the timer (the Bloch L2) a new block empties the form, as before', async () => {
+    const user = userEvent.setup();
+    const { rpc, state } = fakeChain();
+    const { wallet } = fakeWallet(state);
+    page(rpc, wallet);
+    await fill(user);
+    state.finalizedBlock = INCLUDED;
+    await user.click(screen.getAllByRole('button', { name: 'Refresh' })[0]);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Finalized balances').textContent).toContain('block 442'),
+    );
+    expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('');
+    expect(screen.queryByLabelText('Quote')).toBeNull();
+  });
+});

@@ -9,7 +9,15 @@
 // tightens the signed minimum after a better one (mainnet/quotecheck.ts); a
 // worse price needs an explicit reconfirmation. A sent swap holds the Swap button
 // until its outcome is known (mainnet/pendingswap.ts).
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MutableRefObject,
+} from 'react';
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -116,6 +124,23 @@ const message = (error: unknown, fallback: string) =>
  * How a public network settles, for the page: the note that says what "confirmed" means there (always visible),
  * and the rule a tracked transaction is counted against. Absent on the Bloch L2.
  */
+/**
+ * What the swap form holds when the card is remounted for a renewed snapshot block (public networks only): the
+ * user's own inputs, and whether a quote was on screen. Never a quote itself: that is read again at the new block.
+ */
+type FormMemory = {
+  inKey: string;
+  outKey: string;
+  amount: string;
+  slippage: string;
+  deadline: string;
+  quoted: boolean;
+  /** Presentation the remount would otherwise undo: the focused field, the open settings, the open quote details. */
+  focus: string | null;
+  settingsOpen: boolean;
+  detailsOpen: boolean;
+};
+
 export type ConfirmationView = {
   note: string;
   rule: ProgressRule;
@@ -164,6 +189,7 @@ export default function MainnetLive({
   planned,
   now = () => Date.now(),
   receiptPollMs,
+  snapshotMaxAgeMs,
   ethRpc,
   confirmation,
 }: {
@@ -174,6 +200,8 @@ export default function MainnetLive({
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
   now?: () => number;
   receiptPollMs?: number;
+  /** A public chain's endpoints keep a block's state for a minute or so: take a new snapshot block this often. */
+  snapshotMaxAgeMs?: number;
   /** Ethereum RPC for the bUSDC hold status; defaults to the network file's status.ethRpcUrl. */
   ethRpc?: Rpc;
   /** A public network's confirmation rule in words and numbers (the multichain site); none on the Bloch L2. */
@@ -247,6 +275,28 @@ export default function MainnetLive({
     // One timer per failed read: `failure` is cleared when the next read starts.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRetry, failure]);
+  // Review R328-5: every read is pinned to the snapshot block's hash and must be answered by two endpoints; public
+  // endpoints stop serving a block's state after about a minute. The pin is renewed while the page is visible.
+  // Shaped for the redesigned card (agent 327; 326's rule stands: on these chains a snapshot does not get older
+  // than about a minute). A renewal remounts the swap card, so: it waits while the card has a wallet request in
+  // flight or a hold is open (nothing can be quoted or sent then, and the hold's own reads are not pinned to the
+  // snapshot; the end of a hold renews it), it leaves a failed read to that state's own counted retry, and the
+  // card keeps what the user typed, where the cursor was and what was open, and reads its quote again at the new
+  // block (`formMemory`, used only with this prop).
+  const cardBusy = useRef(false);
+  const formMemory = useRef<FormMemory | null>(null);
+  const failed = useRef(false);
+  failed.current = failure !== '';
+  useEffect(() => {
+    if (!snapshotMaxAgeMs) return;
+    const timer = setInterval(() => {
+      if (cardBusy.current || failed.current || holdOpen.current) return;
+      if (typeof document === 'undefined' || !document.hidden) setGeneration((g) => g + 1);
+    }, snapshotMaxAgeMs);
+    return () => clearInterval(timer);
+  }, [snapshotMaxAgeMs]);
+
+  const holdOpen = useRef(false);
   const live = state?.status === 'live';
   const snapshot = useMemo(
     () =>
@@ -281,6 +331,7 @@ export default function MainnetLive({
         : Promise.resolve('unknown'),
     intervalMs: receiptPollMs,
   });
+  holdOpen.current = pendingSwap.open;
   // The same conditions as the status block below, named for the layout.
   const ready = !failure && state?.status === 'live' && !!snapshot;
   const loading = !failure && (!state || (state.status === 'live' && !snapshot));
@@ -374,6 +425,8 @@ export default function MainnetLive({
             confirmation={confirmation}
             receiptPollMs={receiptPollMs}
             onRefresh={() => setGeneration((g) => g + 1)}
+            memory={snapshotMaxAgeMs ? formMemory : undefined}
+            busyRef={cardBusy}
           />
         </div>
       ) : (
@@ -949,6 +1002,8 @@ function SwapPanel({
   confirmation,
   receiptPollMs,
   onRefresh,
+  memory,
+  busyRef,
 }: {
   network: MainnetNetwork;
   deployment: DevnetDeployment;
@@ -964,6 +1019,10 @@ function SwapPanel({
   receiptPollMs?: number;
   /** The page's own Refresh (a new snapshot block); offered inside an alert that a newer block can clear. */
   onRefresh?: () => void;
+  /** Set on a network whose snapshot block is renewed by a timer: the form's inputs survive the remount. */
+  memory?: MutableRefObject<FormMemory | null>;
+  /** Told while a wallet request of this card is in flight, so a timed renewal waits. */
+  busyRef?: MutableRefObject<boolean>;
 }) {
   const [holdAccepted, setHoldAccepted] = useState(false);
   const [quoting, setQuoting] = useState(false);
@@ -976,14 +1035,23 @@ function SwapPanel({
       ),
     [snapshot],
   );
-  const [inKey, setInKey] = useState(options[0]?.key ?? '');
-  const [outKey, setOutKey] = useState(options[1]?.key ?? '');
-  const [amount, setAmount] = useState('');
-  const [slippage, setSlippage] = useState((DEFAULT_SLIPPAGE_BPS / 100).toFixed(2));
+  // Read once, at mount: the inputs of the card this one replaces after a renewed snapshot (public networks).
+  const [kept] = useState(() => {
+    const m = memory?.current ?? null;
+    return m && options.some((o) => o.key === m.inKey) && options.some((o) => o.key === m.outKey)
+      ? m
+      : null;
+  });
+  const [inKey, setInKey] = useState(kept?.inKey ?? options[0]?.key ?? '');
+  const [outKey, setOutKey] = useState(kept?.outKey ?? options[1]?.key ?? '');
+  const [amount, setAmount] = useState(kept?.amount ?? '');
+  const [slippage, setSlippage] = useState(
+    kept?.slippage ?? (DEFAULT_SLIPPAGE_BPS / 100).toFixed(2),
+  );
   // 2 once the user took the page's one retry after a revert on the minimum (DEX-5).
   const [attempt, setAttempt] = useState<1 | 2>(1);
   const [deadline, setDeadline] = useState(
-    String(network.defaultDeadlineMinutes ?? DEFAULT_DEADLINE_MINUTES),
+    kept?.deadline ?? String(network.defaultDeadlineMinutes ?? DEFAULT_DEADLINE_MINUTES),
   );
   const [quote, setQuote] = useState<LensQuote | null>(null);
   const [blocked, setBlocked] = useState<RouteCheck[]>([]);
@@ -995,6 +1063,54 @@ function SwapPanel({
   const [allowance, setAllowance] = useState<bigint | null>(null);
   const [steps, setSteps] = useState<Step[]>([]);
   const [busy, setBusy] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!busyRef) return;
+    busyRef.current = busy;
+    return () => {
+      busyRef.current = false;
+    };
+  }, [busy, busyRef]);
+  // Presentation the remount would undo, noted as it happens (a remounted card reads the memory while it renders,
+  // before the old card is gone): the focused field, the open settings, the open quote details.
+  const shown = useRef({
+    focus: kept?.focus ?? null,
+    settingsOpen: kept?.settingsOpen ?? false,
+    detailsOpen: kept?.detailsOpen ?? false,
+  });
+  const note = (patch: Partial<(typeof shown)['current']>) => {
+    shown.current = { ...shown.current, ...patch };
+    if (memory?.current) memory.current = { ...memory.current, ...shown.current };
+  };
+  // After a transaction of this card the form starts empty, as before: nothing is kept while a hold is open or
+  // a wallet request is in flight.
+  useEffect(() => {
+    if (!memory) return;
+    memory.current =
+      pendingSwap.open || busy
+        ? null
+        : {
+            inKey,
+            outKey,
+            amount,
+            slippage,
+            deadline,
+            quoted: !!quote || quoting,
+            ...shown.current,
+          };
+  });
+  useLayoutEffect(() => {
+    const field = kept?.focus
+      ? cardRef.current?.querySelector<HTMLInputElement>(`input[data-field="${kept.focus}"]`)
+      : null;
+    if (field) {
+      field.focus();
+      // The cursor goes back to the end of what was typed.
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
+    // At mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const tracked = pendingSwap.tracked;
   const historyAccount = wallet.account?.address as Address | undefined;
   const [history, setHistory] = useState<FinishedTx[]>(() =>
@@ -1028,7 +1144,8 @@ function SwapPanel({
     [],
   );
   const lastQuoteRequest = useRef(0);
-  const [requote, setRequote] = useState(0);
+  // A quote that was on screen when the snapshot was renewed is asked again, once, by the unchanged getQuote().
+  const [requote, setRequote] = useState(kept?.quoted ? 1 : 0);
   const input = options.find((o) => o.key === inKey);
   const output = options.find((o) => o.key === outKey);
   const amountIn = input ? parseAmount(amount, input.token.decimals) : null;
@@ -1410,7 +1527,10 @@ function SwapPanel({
       : null;
   // Only the two refusals the page itself writes (multichain/rpc.ts); a wallet's own error text is not renamed.
   const holdTrouble =
-    holdKind && (holdKind.kind === 'unconfirmed' || holdKind.kind === 'disagreement')
+    holdKind &&
+    (holdKind.kind === 'unconfirmed' ||
+      holdKind.kind === 'behind' ||
+      holdKind.kind === 'disagreement')
       ? holdKind
       : null;
   const quoteKind = quoteNote ? classifyReadFailure(quoteNote) : null;
@@ -1561,6 +1681,9 @@ function SwapPanel({
   );
   return (
     <div
+      ref={cardRef}
+      onFocusCapture={(e) => note({ focus: (e.target as HTMLElement).dataset?.field ?? null })}
+      onBlurCapture={() => note({ focus: null })}
       className="card devnet4-swap swap-card"
       data-phase={quote ? 'quoted' : 'form'}
       data-quoting={quoting || undefined}
@@ -1590,6 +1713,7 @@ function SwapPanel({
             Amount
             <input
               className="text-input amount-input"
+              data-field="amount"
               inputMode="decimal"
               placeholder="0"
               autoComplete="off"
@@ -1636,6 +1760,8 @@ function SwapPanel({
         </div>
         <Disclosure
           className="swap-settings"
+          defaultOpen={kept?.settingsOpen}
+          onToggle={(open) => note({ settingsOpen: open })}
           summary={() => (
             <>
               <span className="settings-label">Settings</span>
@@ -1649,6 +1775,7 @@ function SwapPanel({
               Slippage tolerance (%)
               <input
                 className="text-input"
+                data-field="slippage"
                 inputMode="decimal"
                 value={slippage}
                 onChange={(e) => (setSlippage(e.target.value), clear())}
@@ -1658,6 +1785,7 @@ function SwapPanel({
               Deadline (minutes)
               <input
                 className="text-input"
+                data-field="deadline"
                 inputMode="numeric"
                 value={deadline}
                 onChange={(e) => (setDeadline(e.target.value), clear())}
@@ -1732,7 +1860,13 @@ function SwapPanel({
       )}
       {quote && signed && input && output && (
         <>
-          <Expander className="quote-box" more="All quote details" less="Fewer quote details">
+          <Expander
+            className="quote-box"
+            more="All quote details"
+            less="Fewer quote details"
+            defaultExpanded={kept?.detailsOpen}
+            onToggle={(open) => note({ detailsOpen: open })}
+          >
             <dl className="detail-list quote-list" aria-label="Quote">
               {rate !== null && (
                 <>

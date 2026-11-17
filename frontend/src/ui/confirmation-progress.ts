@@ -1,5 +1,5 @@
 // How far a sent transaction is from the block this page settles at, in words. A display only: the numbers come
-// from one endpoint's block header and receipt; the hold ends on the tracker's own verified receipt
+// from the route's RPC (a receipt and a block number or header); the hold ends on the tracker's own verified receipt
 // (mainnet/pendingswap.ts), never on this.
 
 export type ProgressRule = { depth: number } | { tag: 'finalized' | 'safe' };

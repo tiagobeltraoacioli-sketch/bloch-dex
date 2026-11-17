@@ -12,6 +12,7 @@ export function Disclosure({
   children,
   defaultOpen = false,
   clip = false,
+  onToggle,
 }: {
   className?: string;
   /** Content of the toggle button; told whether the region is open. */
@@ -23,6 +24,8 @@ export function Disclosure({
    * page's text (tools that read the page see it), it is inert and takes no space.
    */
   clip?: boolean;
+  /** Told the new state when the user toggles it. */
+  onToggle?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const id = useId();
@@ -36,7 +39,10 @@ export function Disclosure({
         className="disclosure-toggle"
         aria-expanded={open}
         aria-controls={id}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          onToggle?.(!open);
+          setOpen(!open);
+        }}
       >
         {summary(open)}
         <ChevronDown size={16} aria-hidden="true" className="disclosure-chevron" />

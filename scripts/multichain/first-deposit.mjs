@@ -290,6 +290,7 @@ export async function main(argv, print = console.log) {
         result.gift = { native: gift.native.toString(), token: gift.token.toString() };
         print(`note: ${nativeText(gift.native)} and ${amountText(gift.token, token)} sit at the pair's address (someone sent them). They join the pool as a gift to it: the pool would open with ${nativeText(joined.native)} + ${amountText(joined.token, token)}, at 1 ${chain.nativeCurrency.symbol} = ${price(joined)} ${token.symbol} instead of ${price(deposit)}.`);
       }
+      print(`opening price of these amounts: 1 ${chain.nativeCurrency.symbol} = ${price(deposit)} ${token.symbol}. Compare it with the market price on ${chain.chain.name} before sending: a pool opened away from the market is traded back at the depositor's cost.`);
       transactions = openingTransactions({ router: router.address, token: token.address, native, tokenAmount, to, deadline });
     } else {
       check("the pool is open", state === "open", "use `prepare` for the first deposit");
@@ -317,7 +318,8 @@ export async function main(argv, print = console.log) {
       print("");
       print(`Send these two transactions FROM ${depositor} (the factory's first depositor), exactly as printed, and send nothing else from that account.`);
       print(`Add your signer option (--ledger, --trezor or --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
-      for (const t of transactions) print(`cast send ${t.to} "${t.signature}" ${t.args.join(" ")}${t.value > 0n ? ` --value ${t.value}` : ""} --from ${depositor}`);
+      // --chain: cast refuses to send when the RPC URL added by hand is another chain's.
+      for (const t of transactions) print(`cast send ${t.to} "${t.signature}" ${t.args.join(" ")}${t.value > 0n ? ` --value ${t.value}` : ""} --from ${depositor} --chain ${chain.chain.chainId}`);
       print("");
       print(o.mode === "prepare"
         ? `The deposit is ${nativeText(native)} + ${amountText(tokenAmount, token)}, and its minimums are those same amounts: nobody else can have opened the pool before it (it would revert). Tokens that someone sends to the pair's address before it is mined join the pool as a gift and move the opening price by their size; verify reports it. Then: node scripts/multichain/first-deposit.mjs ${o.key} verify --pair ${o.pair} --native ${o.native} --token ${o.token} --tx <hash of the deposit>`

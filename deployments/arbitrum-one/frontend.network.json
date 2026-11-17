@@ -13,6 +13,7 @@
   "rpc": {
     "urls": [
       "https://arb1.arbitrum.io/rpc",
+      "https://arbitrum-one.public.blastapi.io",
       "https://arbitrum-one-rpc.publicnode.com"
     ],
     "rehearsal": false

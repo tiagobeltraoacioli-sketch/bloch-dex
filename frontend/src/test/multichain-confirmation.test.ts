@@ -5,6 +5,7 @@ import { ChainError, type Rpc } from '../devnet4/chain';
 import bundle from '../multichain/bundle';
 import { bundledChains, parseChain, parseConfirmation } from '../multichain/config';
 import {
+  BEHIND,
   DISAGREEMENT,
   FINALIZED_ONLY,
   UNCONFIRMED,
@@ -155,32 +156,49 @@ describe('two endpoints must agree on every read pinned to a block hash', () => 
     const [a, b] = [answers('0x1'), answers('0x2')];
     const rpc = agreeingRpc([a, b], 0);
     expect(await rpc('eth_call', [{ to: h(1).slice(0, 42) }, 'latest'])).toBe('0x1');
-    expect(await rpc('eth_getTransactionReceipt', [h(3)])).toBe('0x1');
+    expect(await rpc('eth_gasPrice', [])).toBe('0x1');
     expect(b).not.toHaveBeenCalled();
     expect(await agreeingRpc([a], 0)('eth_call', pinned)).toBe('0x1');
   });
 });
 
 describe('the block a tag names is taken from two endpoints', () => {
-  it('R309-MC-3: `latest` is the newer of the two heads, so one endpoint cannot hold the page on an old state', async () => {
-    // The first endpoint withholds 40 blocks (a true, old state); the second is at the head.
-    const [stale, fresh] = [node(960), node(1_000)];
-    expect(
-      await agreeingRpc([stale.rpc, fresh.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
-    ).toMatchObject({ number: q(1_000), hash: h(1_000) });
-    // Whichever of the two lags.
-    expect(
-      await agreeingRpc([fresh.rpc, stale.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
-    ).toMatchObject({ number: q(1_000) });
-    // The settled block of a depth rule follows that head, and is found on the endpoint that has it.
-    const rpc = chainRpc([stale.rpc, fresh.rpc], { settle: { depth: 5 }, strict: { depth: 30 } });
+  it('`latest` is a block both endpoints have: the older of two heads that are close; an endpoint far behind stops the page', async () => {
+    // A few blocks apart (measured on the real endpoints: up to 5): the older head, whichever endpoint has it.
+    const [a, b] = [node(997), node(1_000)];
+    for (const order of [
+      [a.rpc, b.rpc],
+      [b.rpc, a.rpc],
+    ])
+      expect(await agreeingRpc(order, 0)('eth_getBlockByNumber', ['latest', false])).toMatchObject({
+        number: q(997),
+        hash: h(997),
+      });
+    // The settled block of a depth rule is counted from that head.
+    const rpc = chainRpc([a.rpc, b.rpc], { settle: { depth: 5 }, strict: { depth: 30 } });
     expect(await rpc('eth_getBlockByNumber', ['finalized', false])).toMatchObject({
-      number: q(995),
-      hash: h(995),
+      number: q(992),
+      hash: h(992),
     });
     expect(await rpc.strict('eth_getBlockByNumber', ['finalized', false])).toMatchObject({
-      number: q(970),
+      number: q(967),
     });
+    // R328-6: one endpoint withholds 200 blocks (a true, old state; block n has time 1,000 + n here). The page
+    // is not held on that state: it stops, whichever of the two lags.
+    const stale = node(800);
+    await expect(
+      agreeingRpc([stale.rpc, b.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).rejects.toThrow(BEHIND);
+    await expect(
+      chainRpc([b.rpc, stale.rpc], { settle: { depth: 5 }, strict: { depth: 30 } })(
+        'eth_getBlockByNumber',
+        ['finalized', false],
+      ),
+    ).rejects.toThrow(BEHIND);
+    // Exactly at the limit is accepted.
+    expect(
+      await agreeingRpc([node(910).rpc, b.rpc], 0)('eth_getBlockByNumber', ['latest', false]),
+    ).toMatchObject({ number: q(910) });
   });
   it('a head only one endpoint answers is used (the pinned reads then need the other)', async () => {
     const down = vi.fn<Rpc>(async () => {
@@ -251,6 +269,60 @@ describe('the block a tag names is taken from two endpoints', () => {
   });
 });
 
+describe('a transaction and its receipt count only when two endpoints report the same inclusion', () => {
+  const receipt = (status: string, block = 9) => ({
+    transactionHash: h(3),
+    blockHash: h(block),
+    blockNumber: q(block),
+    status,
+    gasUsed: '0x5208',
+  });
+  const says = (value: unknown) => vi.fn<Rpc>(async () => value);
+  it('R328-6: one endpoint alone cannot report a receipt, and a false "reverted" is a disagreement', async () => {
+    // Known to the first endpoint only (or invented by it): not known yet. A hold is never ended by `null`.
+    expect(
+      await agreeingRpc([says(receipt('0x0')), says(null)], 0)('eth_getTransactionReceipt', [h(3)]),
+    ).toBeNull();
+    // The transaction really succeeded; the first endpoint says it reverted.
+    await expect(
+      agreeingRpc([says(receipt('0x0')), says(receipt('0x1'))], 0)('eth_getTransactionReceipt', [
+        h(3),
+      ]),
+    ).rejects.toThrow(DISAGREEMENT);
+    // Another block for the same transaction (one endpoint is on another branch).
+    await expect(
+      agreeingRpc([says(receipt('0x1', 9)), says(receipt('0x1', 10))], 0)(
+        'eth_getTransactionReceipt',
+        [h(3)],
+      ),
+    ).rejects.toThrow(DISAGREEMENT);
+    // Both report the same inclusion and status: the first endpoint's receipt is returned.
+    const [a, b] = [says(receipt('0x1')), says({ ...receipt('0x1'), extra: 'field' })];
+    expect(await agreeingRpc([a, b], 0)('eth_getTransactionReceipt', [h(3)])).toEqual(
+      receipt('0x1'),
+    );
+    expect(a).toHaveBeenCalledTimes(1);
+    expect(b).toHaveBeenCalledTimes(1);
+  });
+  it('the transaction body follows the same rule; an endpoint that fails does not count; a third stands in', async () => {
+    const body = { hash: h(3), blockHash: h(9), blockNumber: q(9), nonce: '0x4' };
+    const down = vi.fn<Rpc>(async () => {
+      throw new Error('network');
+    });
+    expect(await agreeingRpc([says(body), down], 0)('eth_getTransactionByHash', [h(3)])).toBeNull();
+    expect(
+      await agreeingRpc([says(body), down, says(body)], 0)('eth_getTransactionByHash', [h(3)]),
+    ).toEqual(body);
+    // Pending on both (no block yet): the same answer, returned as it is.
+    const pending = { hash: h(3), blockHash: null, blockNumber: null, nonce: '0x4' };
+    expect(
+      await agreeingRpc([says(pending), says(pending)], 0)('eth_getTransactionByHash', [h(3)]),
+    ).toEqual(pending);
+    // One endpoint alone (a rehearsal file) is used as it is.
+    expect(await agreeingRpc([says(body)], 0)('eth_getTransactionReceipt', [h(3)])).toEqual(body);
+  });
+});
+
 describe('the network file states the rule, the deadline, and the page says both', () => {
   it('every bundled chain has a rule; five settle on a depth and decide lost requests more strictly', () => {
     const rules = Object.fromEntries(bundledChains().map((c) => [c.key, c.confirmation]));
@@ -304,7 +376,7 @@ describe('the network file states the rule, the deadline, and the page says both
     expect(bad((n) => (n.confirmation.strict = { depth: 10 }))).toThrow(/weaker/);
     expect(bad((n) => (n.confirmation.extra = 1))).toThrow(/unknown field/);
     expect(bad((n) => delete n.confirmation.blockSeconds)).toThrow(/blockSeconds/);
-    expect(bad((n) => (n.swap.deadlineMinutes = 4))).toThrow(/swap\.deadlineMinutes/);
+    expect(bad((n) => (n.swap.deadlineMinutes = 9))).toThrow(/swap\.deadlineMinutes/);
     expect(bad((n) => (n.swap.deadlineMinutes = 61))).toThrow(/swap\.deadlineMinutes/);
     expect(() =>
       parseConfirmation({ settle: { tag: 'safe' }, strict: { depth: 9 }, blockSeconds: 1 }, 'X'),

@@ -5,6 +5,7 @@
 export type ReadFailureKind =
   | 'disagreement'
   | 'unconfirmed'
+  | 'behind'
   | 'rate-limited'
   | 'unreachable'
   | 'other';
@@ -27,7 +28,7 @@ export const readRetrySeconds = (attempt: number): number =>
   READ_RETRY_SECONDS[Math.min(Math.max(0, attempt), READ_RETRY_SECONDS.length - 1)];
 
 /**
- * The texts matched are the ones the page itself writes: `DISAGREEMENT` and `UNCONFIRMED` of multichain/rpc.ts
+ * The texts matched are the ones the page itself writes: `DISAGREEMENT`, `UNCONFIRMED` and `BEHIND` of multichain/rpc.ts
  * (asserted against those constants in the tests), and the HTTP status or the JSON-RPC text of an endpoint that
  * limits requests.
  */
@@ -42,6 +43,17 @@ export function classifyReadFailure(message: string): ReadFailure {
         'Two independent endpoints gave different answers for the same block, so at least one of them is wrong. Nothing was sent. Refresh reads the chain again; if this stays, do not trade here until it clears.',
       refresh: true,
       retry: 'manual',
+    };
+  if (/one RPC endpoint of this network is behind the other/.test(message))
+    return {
+      kind: 'behind',
+      title: 'One endpoint is behind the other',
+      advice:
+        'The two endpoints of this network are on blocks more than a minute and a half apart, so the page cannot tell which state is current. It reads again by itself, a little later each time, until they are level.',
+      quoteAdvice:
+        'The two endpoints of this network are on blocks too far apart to compare. Nothing was sent. Wait a moment and get the quote again.',
+      refresh: true,
+      retry: 'auto',
     };
   if (/a second RPC endpoint could not confirm this read/.test(message))
     return {

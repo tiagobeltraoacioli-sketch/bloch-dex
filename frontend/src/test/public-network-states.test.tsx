@@ -11,7 +11,7 @@ import { ChainError, type Rpc } from '../devnet4/chain';
 import { REPLACEMENT_NOT_FOR_UNSEEN_SWAPS, REVIEW_NOT_FOR_SWAPS } from '../mainnet/pendingswap';
 import { BLOCH_L2_WORDING, setWording, worded, wording } from '../mainnet/wording';
 import { bundledChains } from '../multichain/config';
-import { DISAGREEMENT, UNCONFIRMED } from '../multichain/rpc';
+import { BEHIND, DISAGREEMENT, UNCONFIRMED } from '../multichain/rpc';
 import { ConfirmationProgress } from '../ui/ConfirmationProgress';
 import { DeadlineClock } from '../ui/DeadlineClock';
 import { confirmationProgress } from '../ui/confirmation-progress';
@@ -118,6 +118,7 @@ describe('a failed read is named, shown in full, and read again the right way', 
       retry: 'manual',
     });
     expect(classifyReadFailure(UNCONFIRMED)).toMatchObject({ kind: 'unconfirmed', retry: 'auto' });
+    expect(classifyReadFailure(BEHIND)).toMatchObject({ kind: 'behind', retry: 'auto' });
     for (const text of [
       'chain: eth_getBlockByNumber returned HTTP 429',
       'chain: eth_call failed: rate limit exceeded',

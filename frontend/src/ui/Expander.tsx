@@ -11,13 +11,18 @@ export function Expander({
   more,
   less,
   children,
+  defaultExpanded = false,
+  onToggle,
 }: {
   className?: string;
   more: string;
   less: string;
   children: ReactNode;
+  defaultExpanded?: boolean;
+  /** Told the new state when the user toggles it. */
+  onToggle?: (expanded: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultExpanded);
   return (
     <div className={`expander ${className}`} data-expanded={expanded || undefined}>
       {children}
@@ -25,7 +30,10 @@ export function Expander({
         type="button"
         className="expander-toggle"
         aria-expanded={expanded}
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => {
+          onToggle?.(!expanded);
+          setExpanded(!expanded);
+        }}
       >
         {expanded ? less : more}
         <ChevronDown size={16} aria-hidden="true" className="disclosure-chevron" />

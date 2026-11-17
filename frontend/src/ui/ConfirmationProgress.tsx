@@ -13,7 +13,7 @@ const quantity = (value: unknown): bigint | null =>
 
 /**
  * Under a tracked transaction on a public network: where it stands against the network's confirmation rule.
- * Two plain reads per look (the receipt and a block header), from whichever endpoint answers; a look that fails
+ * Two plain reads per look (the receipt and a block number or header) through the route's own RPC; a look that fails
  * is said and the next one comes later (twice as late each time, up to a minute). It shows; it decides nothing.
  */
 export function ConfirmationProgress({
@@ -30,7 +30,7 @@ export function ConfirmationProgress({
   pollMs?: number;
 }) {
   const [facts, setFacts] = useState<ProgressFacts>({ included: null, reference: null });
-  const [trouble, setTrouble] = useState<'' | 'limited' | 'silent'>('');
+  const [trouble, setTrouble] = useState<'' | 'limited' | 'disagree' | 'silent'>('');
   const depth = 'depth' in rule ? rule.depth : null;
   const tag = 'tag' in rule ? rule.tag : null;
   const ruleRef = useRef(rule);
@@ -61,7 +61,10 @@ export function ConfirmationProgress({
       } catch (error) {
         if (!live) return;
         const text = error instanceof Error ? error.message : '';
-        setTrouble(classifyReadFailure(text).kind === 'rate-limited' ? 'limited' : 'silent');
+        const kind = classifyReadFailure(text).kind;
+        setTrouble(
+          kind === 'rate-limited' ? 'limited' : kind === 'disagreement' ? 'disagree' : 'silent',
+        );
         wait = Math.min(wait * 2, 60_000);
       }
       if (live) timer = setTimeout(() => void look(), wait);
@@ -95,12 +98,14 @@ export function ConfirmationProgress({
         <span className="confirm-trouble" role="status">
           {trouble === 'limited'
             ? 'The endpoint is limiting requests, so this count is behind; the page looks again less often for a while. Your transaction is not affected.'
-            : 'The endpoint did not answer, so this count is behind; the page keeps looking.'}
+            : trouble === 'disagree'
+              ? 'The endpoints give different answers about this transaction, so the count is not shown as current; the page keeps looking, and the hold stays.'
+              : 'The endpoint did not answer, so this count is behind; the page keeps looking.'}
         </span>
       )}
       <span className="confirm-foot">
-        A count from one endpoint, shown for orientation. The hold ends only when the page has
-        verified the receipt itself.
+        A count shown for orientation. The hold ends only when the page has verified the receipt
+        itself.
       </span>
     </span>
   );

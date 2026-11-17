@@ -7,6 +7,7 @@ const ICON = {
   unconfirmed: CloudOff,
   'rate-limited': Hourglass,
   unreachable: CloudOff,
+  behind: Hourglass,
   other: TriangleAlert,
 } as const;
 

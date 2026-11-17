@@ -14,8 +14,9 @@
     "decimals": 18
   },
   "rpc": [
-    "https://bsc-dataseed.bnbchain.org",
-    "https://bsc-rpc.publicnode.com"
+    "https://bsc-rpc.publicnode.com",
+    "https://bsc-mainnet.public.blastapi.io",
+    "https://bsc-dataseed.bnbchain.org"
   ],
   "explorer": "https://bscscan.com",
   "wrappedNative": {
