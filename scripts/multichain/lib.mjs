@@ -170,7 +170,7 @@ export function validateChain(chain, key) {
   checksummed(chain.multicall3?.address, "multicall3.address");
   refuse(HASH.test(chain.multicall3.codeHash ?? ""), "multicall3.codeHash");
   validateConfirmation(chain.confirmation);
-  refuse(chain.swap && Number.isInteger(chain.swap.deadlineMinutes) && chain.swap.deadlineMinutes >= 5 && chain.swap.deadlineMinutes <= 60, "swap.deadlineMinutes: the page's default swap deadline, 5 to 60 minutes");
+  refuse(chain.swap && Number.isInteger(chain.swap.deadlineMinutes) && chain.swap.deadlineMinutes >= 10 && chain.swap.deadlineMinutes <= 60, "swap.deadlineMinutes: the page's default swap deadline, 10 to 60 minutes (the swap form accepts 10 to 180)");
   refuse(Array.isArray(chain.initialPairs) && chain.initialPairs.length <= 4, "initialPairs");
   for (const [i, p] of chain.initialPairs.entries())
     refuse(symbols.includes(p.tokenA) && symbols.includes(p.tokenB) && p.tokenA !== p.tokenB, `initialPairs[${i}] names a token that is not listed`);
