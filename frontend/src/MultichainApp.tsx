@@ -56,6 +56,8 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
       note: chain.confirmationNote,
       rule: chain.confirmation.settle,
       blockSeconds: chain.blockSeconds,
+      // A reverted swap holds the account until this rule has passed (submission-outcome.ts `revertedOf`).
+      reverted: chain.confirmation.reverted ?? chain.confirmation.strict,
     }),
     [chain],
   );

@@ -2568,6 +2568,17 @@ li[data-state='failed'] .state-pill {
 .confirm-progress[data-phase='reached'] .confirm-bar > span {
   background: var(--ok);
 }
+/* A reverted swap: the account is held until the network's rule for a revert has passed (R328-3P-3). */
+.confirm-progress[data-phase='reverted'] {
+  border-color: var(--warn);
+}
+.confirm-progress[data-phase='reverted'] .confirm-bar > span {
+  background: var(--warn);
+}
+.renewal-note {
+  padding-left: var(--s-2);
+  border-left: 2px solid var(--line-strong);
+}
 @keyframes postern-march {
   to {
     background-position: 32px 0;
