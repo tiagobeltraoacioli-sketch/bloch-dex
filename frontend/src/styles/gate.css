@@ -675,7 +675,7 @@
   .mainnet-page[data-layout='gate'] > .section-heading {
     grid-column: 2;
     grid-row: 2;
-    margin-top: 72px;
+    margin-top: 40px;
     padding-top: 0;
     border-top: 0;
   }
@@ -683,14 +683,19 @@
     grid-column: 2;
     grid-row: 3;
   }
-  .mainnet-page[data-layout='gate'] > .trust-strip {
-    grid-column: 2;
-    grid-row: 4;
-    margin-top: var(--s-2);
-  }
   .mainnet-page[data-layout='gate'] > .confirmation-rule {
     grid-column: 2;
-    grid-row: 5;
+    grid-row: 4;
+  }
+  /* The ledger travels with the gate: it holds under the header while the gate scrolls past (its grid area runs
+     down to the gate's foot, so it never leaves the gate's side). */
+  .mainnet-page[data-layout='gate'] > .trust-strip {
+    grid-column: 2;
+    grid-row: 5 / span 2;
+    align-self: start;
+    position: sticky;
+    top: calc(var(--header-h) + var(--s-4));
+    margin-top: var(--s-2);
   }
   .mainnet-page[data-layout='gate'] > .reference[data-mode='docked'] {
     grid-column: 1 / -1;
@@ -773,7 +778,7 @@
 }
 .gate-stone {
   stroke: var(--mortar);
-  stroke-width: 1;
+  stroke-width: 1.6;
   stroke-linejoin: round;
 }
 .gate-stone-1 {
@@ -805,7 +810,7 @@
   stroke-width: 1;
 }
 .gate-fall {
-  opacity: calc(var(--lamp-level) * 0.7);
+  opacity: calc(var(--lamp-level) * 0.95);
   mix-blend-mode: var(--glow-blend);
 }
 .gate-wash {
@@ -821,6 +826,8 @@
   fill: none;
   stroke: var(--stone-edge);
   stroke-width: 1;
+  /* The arch's thickness: its underside throws a soft shadow onto the opening. */
+  filter: drop-shadow(0 3px 3px var(--recess));
 }
 .lamp-stop {
   stop-color: var(--lamp-color);
@@ -876,6 +883,24 @@
   opacity: 0;
   transform-box: fill-box;
   transform-origin: center;
+}
+/* In flight: a dashed ring stands round the lamp, so the state is visible without motion; it turns slowly. */
+[data-lamp='pending'] .lamp-ring {
+  stroke: var(--lamp-color);
+  stroke-dasharray: 3 4.5;
+  opacity: 0.85;
+  animation: lamp-orbit 9s linear infinite;
+}
+/* Attention or failure: a solid ring in the state's colour. */
+[data-lamp='warn'] .lamp-ring,
+[data-lamp='danger'] .lamp-ring {
+  stroke: var(--lamp-color);
+  opacity: 0.7;
+}
+@keyframes lamp-orbit {
+  to {
+    transform: rotate(1turn);
+  }
 }
 [data-lamp='settled'] .lamp-ring {
   opacity: 0.75;
@@ -1678,6 +1703,18 @@
   animation: quote-sweep 1.5s linear infinite;
 }
 
+/* ---------- Footer ---------- */
+.footer-licences {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+.footer-licences:hover {
+  text-decoration-color: currentColor;
+}
+
 /* ---------- Narrow screens ---------- */
 @media (max-width: 640px) {
   .live-hero > .card.swap-card {
@@ -1729,6 +1766,20 @@
   }
   .quote-list dd {
     max-width: 22ch;
+  }
+  /* Once a quote is on the card, the action stays at the foot of the screen while the receipt and the revert
+     conditions above it are read; it is the card's own last block, so it never leaves the gate and covers
+     nothing once the card's end is reached. */
+  .swap-card[data-phase='quoted'] .swap-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-inline: calc(-1 * var(--s-2));
+    padding: var(--s-3) var(--s-2) calc(var(--s-3) + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
   }
 }
 @keyframes sheet-up {
