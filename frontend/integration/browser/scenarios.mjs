@@ -879,7 +879,9 @@ scenario('idle-chain-swap-lands-in-the-second-block', 'R309-3P-1, 4P-3: an idle 
   w.check('held swap, on screen without a click: the hash field and both checks', seen.includes('Transaction hash from wallet activity') && (await reach('Check transaction hash')) && (await reach('Check cancellation or replacement')));
   w.check('the idle-chain explanation is one click away: not on screen yet, and its button "Why is this waiting?" is', !QUIET.test(seen) && (await reach('Why is this waiting?')), QUIET.test(seen));
   await page.click('Why is this waiting?');
-  w.check('the waiting user is told what ends the wait on a quiet chain (on screen after "Why is this waiting?")', QUIET.test(await page.visibleText()));
+  // The region opens with the next render of the page: wait for it, at most 5 s.
+  const told = await page.waitVisibleText(String(QUIET), 5000).then(() => true, () => false);
+  w.check('the waiting user is told what ends the wait on a quiet chain (on screen after "Why is this waiting?")', told);
   // The block that takes the swap is the second after the pause: its time is 65 minutes after the swap was signed,
   // past what the default 60 minutes would have allowed and inside the raised deadline.
   await rpc('evm_setNextBlockTimestamp', [hex(deviceNow + 65 * 60)]);
