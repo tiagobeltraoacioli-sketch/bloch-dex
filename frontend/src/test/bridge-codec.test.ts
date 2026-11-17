@@ -8,16 +8,17 @@ import { decodePoint, onCurve, routerKeyPoint, runtimeOnCurve, smallOrder, verif
 import { depositScript } from '../bridge/bitcoin';
 import { associatedTokenAddress, exitProofMessage, findProgramAddress, parseSignature, proofEnvelopes, pubkey, solanaCommitment, solanaWallet, verifyExitProof } from '../bridge/solana';
 import { stellarCommitment } from '../bridge/stellar';
+import { SOLANA_PROOF_PAGE_V0 } from '../bridge/config';
 
 beforeAll(() => {
   // jsdom exposes no SubtleCrypto; browsers and Node do.
   if (!globalThis.crypto?.subtle) Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
 });
 
-const FORMAT = {
-  template: 'Bloch bridge exit: pay bUSDC.sol exits to my Solana wallet {wallet}. L2 account {l2Account}. Router {router}. Chain {chainId}. Issued {issued}.',
-  carriedBy: 'page' as const,
-  routerFunction: null,
+const FORMAT = SOLANA_PROOF_PAGE_V0;
+const ROUTER_FORMAT = {
+  template: 'Bloch bridge exit v1: pay {amount} units burned by {burner} to my Solana wallet {wallet}. Nonce {nonce}. Router {router}. Chain {chainId}. Route {route}.',
+  carriedBy: 'router' as const,
 };
 const MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
@@ -164,42 +165,63 @@ describe('Solana wallet, commitment and derived addresses (solana_lib.py, Solana
   });
 });
 
-describe('Solana destination proof (sol_proof.py, docs/SOLANA-VAULT.md 11.3)', () => {
+describe('Solana destination proof (sol_proof.py, SolanaBurnRouter.exitMessage)', () => {
   const s = vectors.solana;
-  const base = { format: FORMAT, mint: MINT, wallet: s.wallet, l2Account: s.l2Account as `0x${string}`, router: s.router as `0x${string}`, issued: s.issued, maxAgeSeconds: 600 };
-  it('writes the reference message and envelopes byte for byte', () => {
-    expect(exitProofMessage(FORMAT, s.wallet, s.l2Account as `0x${string}`, s.router as `0x${string}`, s.issued)).toBe(s.message);
+  const fields = { wallet: s.wallet, burner: s.l2Account as `0x${string}`, router: s.router as `0x${string}`, amount: BigInt(s.amount), nonce: BigInt(s.nonce), route: s.route as `0x${string}` };
+  const base = { format: ROUTER_FORMAT, mint: MINT, fields, maxAgeSeconds: 600, now: 1 };
+  it('writes the reference message and the bytes each envelope covers, byte for byte', () => {
+    expect(exitProofMessage(ROUTER_FORMAT, fields)).toBe(s.message);
     // Upper-case input still gives the lower-case line.
-    expect(exitProofMessage(FORMAT, s.wallet, s.l2Account.toUpperCase().replace('0X', '0x') as `0x${string}`, s.router as `0x${string}`, s.issued)).toBe(s.message);
+    expect(exitProofMessage(ROUTER_FORMAT, { ...fields, burner: s.l2Account.toUpperCase().replace('0X', '0x') as `0x${string}` })).toBe(s.message);
+    expect(() => exitProofMessage(ROUTER_FORMAT, { ...fields, nonce: undefined })).toThrow(/needs \{nonce\}/);
     const envelopes = proofEnvelopes(s.message, pubkey(s.wallet));
-    expect(envelopes.map((e) => [e.name, toHex(e.bytes).slice(2)])).toEqual(s.envelopes.map((e) => [e.name, e.bytes]));
+    expect(envelopes.map((e) => [e.tag, toHex(e.bytes).slice(2)])).toEqual(s.envelopes.map((e) => [e.tag, e.bytes]));
   });
-  it('accepts a signature under each envelope the reference accepts', async () => {
-    for (const sig of s.signatures) {
-      const verdict = await verifyExitProof({ ...base, signature: fromHex(sig.signature), now: s.issued + 30 });
-      expect(verdict.ok && verdict.proof.envelope, sig.name).toBe(sig.name);
+  it('builds, for a signature under each envelope, the proof bytes the reference verifier accepts', async () => {
+    for (const p of s.proofs) {
+      const verdict = await verifyExitProof({ ...base, signature: fromHex(p.signature) });
+      expect(verdict.ok, p.name).toBe(true);
+      if (!verdict.ok) continue;
+      expect(verdict.proof.proofBytes).toBe(`0x${p.proof}`);
+      expect(verdict.proof.amount).toBe(BigInt(s.amount));
+      expect(verdict.proof.nonce).toBe(BigInt(s.nonce));
     }
   });
-  it('refuses an old proof, a future one, another L2 account, another router, another wallet and a changed signature', async () => {
-    const signature = fromHex(s.signatures[0].signature);
-    const refused = async (change: Partial<typeof base> & { now?: number; signature?: Uint8Array }) => {
-      const verdict = await verifyExitProof({ ...base, signature, now: s.issued + 30, ...change });
+  it('refuses the signature for another amount, nonce, burner, router, route or wallet, and a changed signature', async () => {
+    const signature = fromHex(s.proofs[0].signature);
+    const refused = async ({ signature: sig, ...change }: Partial<typeof fields> & { signature?: Uint8Array }) => {
+      const verdict = await verifyExitProof({ ...base, fields: { ...fields, ...change }, signature: sig ?? signature });
       return verdict.ok ? '' : verdict.reason;
     };
-    expect(await refused({ now: s.issued + 601 })).toMatch(/older than 10 minutes/);
-    expect(await refused({ now: s.issued - 120 })).toMatch(/future/);
-    expect(await refused({ l2Account: `0x${'11'.repeat(20)}` })).toMatch(/not by this wallet/);
+    expect(await refused({ amount: fields.amount + 1n })).toMatch(/not by this wallet/);
+    expect(await refused({ nonce: fields.nonce + 1n })).toMatch(/not by this wallet/);
+    expect(await refused({ burner: `0x${'11'.repeat(20)}` })).toMatch(/not by this wallet/);
     expect(await refused({ router: `0x${'22'.repeat(20)}` })).toMatch(/not by this wallet/);
-    expect(await refused({ issued: s.issued + 1 })).toMatch(/not by this wallet/);
+    expect(await refused({ route: `0x${'33'.repeat(32)}` })).toMatch(/not by this wallet/);
     expect(await refused({ wallet: vectors.solana.keys[7].text })).toMatch(/not by this wallet/);
     const flipped = signature.slice();
     flipped[5] ^= 1;
     expect(await refused({ signature: flipped })).toMatch(/not by this wallet/);
     expect(await refused({ wallet: MINT })).toMatch(/token itself/);
     expect(await refused({ signature: signature.slice(1) })).toMatch(/64 bytes/);
+    expect((await refused({ signature: flipped })).toString()).toMatch(/exchange deposit address cannot sign/);
+  });
+  it('the page-only format (the interface file\'s text) expires after ten minutes', async () => {
+    const { createPrivateKey, sign } = await import('node:crypto');
+    const key = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), Buffer.alloc(32, 7)]), format: 'der', type: 'pkcs8' });
+    const f = { wallet: s.wallet, burner: s.l2Account as `0x${string}`, router: s.router as `0x${string}`, issued: 1_794_787_200 };
+    const line = exitProofMessage(FORMAT, f);
+    expect(line).toBe(`Bloch bridge exit: pay bUSDC.sol exits to my Solana wallet ${s.wallet}. L2 account ${s.l2Account}. Router ${s.router}. Chain 700770. Issued 1794787200.`);
+    const signature = new Uint8Array(sign(null, Buffer.from(line), key));
+    const at = (now: number) => verifyExitProof({ format: FORMAT, mint: MINT, fields: f, signature, now, maxAgeSeconds: 600 });
+    expect((await at(f.issued + 30)).ok).toBe(true);
+    const old = await at(f.issued + 601);
+    expect(!old.ok && old.reason).toMatch(/older than 10 minutes/);
+    const future = await at(f.issued - 120);
+    expect(!future.ok && future.reason).toMatch(/future/);
   });
   it('reads a signature from hex, base58 and base64 and nothing else', () => {
-    const hex = s.signatures[0].signature;
+    const hex = s.proofs[0].signature;
     const raw = fromHex(hex);
     expect(toHex(parseSignature(hex)!)).toBe(`0x${hex}`);
     expect(toHex(parseSignature(`0x${hex}`)!)).toBe(`0x${hex}`);

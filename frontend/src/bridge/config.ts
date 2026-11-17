@@ -32,15 +32,19 @@ export type SolanaPolicy = {
   recordRetentionSeconds: number;
   proofMaxAgeSeconds: number;
 };
-/** How the destination proof of a Solana exit is made and where it goes: data, so the format can move with the router. */
-export type SolanaProofFormat = {
-  /** One line; `{wallet}`, `{l2Account}`, `{router}`, `{chainId}`, `{issued}` are filled by the page. */
-  template: string;
-  /** `page`: verified by the page only (router burnTo(uint64,string)). `router`: also passed to the router call. */
-  carriedBy: 'page' | 'router';
-  /** The router function when `carriedBy` is `router` (ABI signature text), else null. */
-  routerFunction: string | null;
-};
+/**
+ * How the destination-key proof of a Solana exit is made and where it goes. It is DATA (page.json
+ * `solana.exitProof`), so the format moves with the bridge's router without a change to the page's code:
+ *   template       one line of printable ASCII; the page fills {wallet}, {burner} (the L2 account, lower case),
+ *                  {router}, {chainId}, and, when the template names them, {amount} (units), {nonce}, {route},
+ *                  {issued} (unix seconds; a template with it expires after the policy's proofMaxAgeSeconds).
+ *   carriedBy      `page`: the page alone checks the signature and calls burnTo(uint64,string).
+ *                  `router`: the router call carries the proof, burnTo(uint64 amount, string recipient,
+ *                  uint64 nonce, bytes proof) with proof = tag | 64-byte signature [| 32-byte domain]
+ *                  (tag 0 text, 1 off-chain envelope, 2 envelope with domain and signer); every signer verifies it.
+ * With `router`, the page also reads the router's own `exitMessage` and refuses to go on unless it is the same line.
+ */
+export type SolanaProofFormat = { template: string; carriedBy: 'page' | 'router' };
 export type TronPolicy = {
   releaseFlat: bigint;
   depositTrxEstimate: string;
@@ -194,11 +198,9 @@ function endpoints(value: unknown, what: string, rehearsal: boolean): ReadEndpoi
     } catch {
       throw new Refusal(`${what}.urls[${i}] is not a URL`);
     }
-    const loopback = parsed.protocol === 'http:' && parsed.hostname === '127.0.0.1';
-    refuse(
-      (parsed.protocol === 'https:' && !rehearsal) || (loopback && rehearsal),
-      `${what}.urls[${i}] must be https (or 127.0.0.1 in a rehearsal bundle)`,
-    );
+    // A loopback stand-in is readable only by a local render build; a production bundle does not hold the address.
+    const loopback = __POSTERN_LOCAL_RENDER__ ? rehearsal && parsed.protocol === 'http:' && parsed.hostname === '127.0.0.1' : false;
+    refuse((parsed.protocol === 'https:' && !rehearsal) || loopback, `${what}.urls[${i}] must be an https endpoint`);
     refuse(!parsed.username && !parsed.password && !parsed.search && !parsed.hash, `${what}.urls[${i}] carries credentials, a query or a fragment`);
     return u;
   });
@@ -226,28 +228,26 @@ function parseBitcoinScript(value: unknown, what: string, rehearsal: boolean): B
   return { threshold, publicKeys, vaultId: value.vaultId as Hex, hrp };
 }
 
-/** Router calls that carry the proof, as the page can build them (solana.ts `solanaExitCall`). */
-export const SOLANA_ROUTER_SHAPES = [
-  'burnTo(uint64 amount, string recipient, uint64 issued, bytes signature)',
-  'burnTo(uint64 amount, string recipient, bytes signature)',
-];
-const DEFAULT_SOLANA_PROOF: SolanaProofFormat = {
+const PROOF_FIELDS = ['wallet', 'burner', 'router', 'chainId', 'amount', 'nonce', 'route', 'issued'] as const;
+/** The interface file's own text at the imported commit (docs/SOLANA-VAULT.md 11.3): checked by the page only. */
+export const SOLANA_PROOF_PAGE_V0: SolanaProofFormat = {
   template:
-    'Bloch bridge exit: pay bUSDC.sol exits to my Solana wallet {wallet}. L2 account {l2Account}. Router {router}. Chain {chainId}. Issued {issued}.',
+    'Bloch bridge exit: pay bUSDC.sol exits to my Solana wallet {wallet}. L2 account {burner}. Router {router}. Chain {chainId}. Issued {issued}.',
   carriedBy: 'page',
-  routerFunction: null,
 };
 function parseSolanaProof(value: unknown, what: string): SolanaProofFormat {
-  if (value === undefined) return DEFAULT_SOLANA_PROOF;
+  if (value === undefined) return SOLANA_PROOF_PAGE_V0;
   refuse(isObject(value), what);
   const template = text(value.template, `${what}.template`, 600);
   refuse(/^[\x20-\x7e]+$/.test(template), `${what}.template is not one line of printable ASCII`);
-  for (const field of ['{wallet}', '{l2Account}', '{router}', '{chainId}', '{issued}'])
-    refuse(template.split(field).length === 2, `${what}.template must name ${field} exactly once`);
+  const named = [...template.matchAll(/\{([A-Za-z0-9]+)\}/g)].map((m) => m[1]);
+  refuse(named.every((n) => (PROOF_FIELDS as readonly string[]).includes(n)) && new Set(named).size === named.length, `${what}.template names a field the page does not know, or one twice`);
+  for (const field of ['wallet', 'burner', 'router', 'chainId']) refuse(named.includes(field), `${what}.template must name {${field}}`);
   refuse(value.carriedBy === 'page' || value.carriedBy === 'router', `${what}.carriedBy`);
-  const routerFunction = value.carriedBy === 'router' ? text(value.routerFunction, `${what}.routerFunction`, 200) : null;
-  refuse(routerFunction === null || SOLANA_ROUTER_SHAPES.includes(routerFunction), `${what}.routerFunction is not a shape this page can call`);
-  return { template, carriedBy: value.carriedBy, routerFunction };
+  // A proof the router carries is bound to one burn: it must name the amount and the burner's nonce.
+  if (value.carriedBy === 'router') refuse(named.includes('amount') && named.includes('nonce') && named.includes('route'), `${what}.template must name {amount}, {nonce} and {route} when the router carries the proof`);
+  else refuse(named.includes('issued'), `${what}.template must name {issued} when only the page checks the proof`);
+  return { template, carriedBy: value.carriedBy };
 }
 
 function parseRoute(file: unknown, launch: AnyRecord, page: AnyRecord, source: Route['source'], rehearsal: boolean): Route {

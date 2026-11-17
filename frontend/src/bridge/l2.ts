@@ -62,18 +62,37 @@ export const BITCOIN_ROUTER_ABI = parseAbi([
   'error PayoutBelowDustAtFeeRate()',
   'error TransferFailed()',
 ]);
+/** The router whose exit call carries no proof (the interface file's text at the imported commit). */
 export const SOLANA_ROUTER_ABI = parseAbi([
   'function token() view returns (address)',
   'function solanaMint() view returns (bytes32)',
   'function walletOf(string recipient) view returns (bytes32)',
   'function commitment(string recipient) view returns (address)',
   'function burnTo(uint64 amount, string recipient) returns (bytes32 burnId)',
-  'function burnTo(uint64 amount, string recipient, uint64 issued, bytes signature) returns (bytes32 burnId)',
-  'function burnTo(uint64 amount, string recipient, bytes signature) returns (bytes32 burnId)',
   'event SolanaExit(bytes32 indexed burnId, address indexed from, uint64 amount, address commitment, string recipient)',
   'error NotASolanaWallet()',
   'error TransferFailed()',
 ]);
+/** The router whose exit call carries the destination-key proof (round 17, coordinator's decision). */
+export const SOLANA_PROOF_ROUTER_ABI = parseAbi([
+  'function token() view returns (address)',
+  'function solanaMint() view returns (bytes32)',
+  'function route() view returns (bytes32)',
+  'function nextNonce(address) view returns (uint64)',
+  'function walletOf(string recipient) view returns (bytes32)',
+  'function commitment(string recipient) view returns (address)',
+  'function exitMessage(address burner, uint64 amount, string recipient, uint64 nonce) view returns (string)',
+  'function redirectMessage(address burner, bytes32 burnId, string recipient, uint64 nonce) view returns (string)',
+  'function burnTo(uint64 amount, string recipient, uint64 nonce, bytes proof) returns (bytes32 burnId)',
+  'function redirectHeldBurn(bytes32 burnId, string recipient, uint64 nonce, bytes proof)',
+  'event SolanaExit(bytes32 indexed burnId, address indexed from, uint64 amount, address commitment, string recipient, uint64 nonce, bytes proof, bytes32 exitHash)',
+  'event SolanaRedirect(bytes32 indexed burnId, address indexed from, uint64 nonce, address commitment, string recipient, bytes proof)',
+  'error NotASolanaWallet()',
+  'error TransferFailed()',
+  'error BadNonce()',
+  'error BadProof()',
+]);
+export const solanaRouterAbi = (route: LiveRoute) => (route.solana?.proof.carriedBy === 'router' ? SOLANA_PROOF_ROUTER_ABI : SOLANA_ROUTER_ABI);
 export const STELLAR_ROUTER_ABI = parseAbi([
   'function token() view returns (address)',
   'function commitment(string recipient) pure returns (address)',
@@ -241,11 +260,10 @@ export function exitSteps(route: LiveRoute, units: bigint, destination: ExitDest
     const { proof } = destination;
     refuse(proof.router.toLowerCase() === router.toLowerCase(), 'The destination proof names another router.');
     if (format.carriedBy === 'router') {
-      const withIssued = /uint64 issued/.test(format.routerFunction ?? '');
-      data = withIssued
-        ? encodeFunctionData({ abi: SOLANA_ROUTER_ABI, functionName: 'burnTo', args: [units, proof.wallet, BigInt(proof.issued), proof.signature] })
-        : encodeFunctionData({ abi: SOLANA_ROUTER_ABI, functionName: 'burnTo', args: [units, proof.wallet, proof.signature] });
-      call = `burnTo(${units}, ${proof.wallet}, ${withIssued ? `${proof.issued}, ` : ''}<the wallet's signature>)`;
+      // The signed line names the amount and the burner's nonce: a proof made for another amount is not this exit's.
+      refuse(proof.amount === units && proof.nonce !== undefined, 'The destination proof was signed for another amount. Sign it again.');
+      data = encodeFunctionData({ abi: SOLANA_PROOF_ROUTER_ABI, functionName: 'burnTo', args: [units, proof.wallet, proof.nonce, proof.proofBytes] });
+      call = `burnTo(${units}, ${proof.wallet}, ${proof.nonce}, <the wallet's signature>)`;
     } else {
       data = encodeFunctionData({ abi: SOLANA_ROUTER_ABI, functionName: 'burnTo', args: [units, proof.wallet] });
       call = `burnTo(${units}, ${proof.wallet})`;
@@ -289,6 +307,8 @@ export function refusalText(error: unknown, route: LiveRoute): string | null {
     ['PayoutBelowDustAtFeeRate', 'The router refuses this burn: its payout would be dust at the fee rate you named.'],
     ['NotASolanaWallet', 'The router refuses this destination: it is not a Solana wallet address.'],
     ['BadStrkey', 'The router refuses this Stellar address.'],
+    ['BadNonce', 'The router refuses the proof: its nonce is not the next one of your account. Sign the message again.'],
+    ['BadProof', 'The router refuses the shape of the proof.'],
     ['TransferFailed', 'The router could not take the tokens: check the approval.'],
     ['BurnTooSmall', `The token refuses a burn below ${route.limits.l2MinBurn} units.`],
     ['BurnTooLarge', 'The token refuses a burn above its largest single exit.'],
@@ -401,7 +421,7 @@ export async function readBurns(rpc: Rpc, route: LiveRoute, finalized: L2Block, 
   }
   if (route.router) {
     const router = route.router.address!;
-    const abi = route.kind === 'utxo' ? BITCOIN_ROUTER_ABI : route.kind === 'svm' ? SOLANA_ROUTER_ABI : STELLAR_ROUTER_ABI;
+    const abi = route.kind === 'utxo' ? BITCOIN_ROUTER_ABI : route.kind === 'svm' ? solanaRouterAbi(route) : STELLAR_ROUTER_ABI;
     const eventName = route.kind === 'utxo' ? 'BitcoinExit' : route.kind === 'svm' ? 'SolanaExit' : 'StellarExit';
     const exitTopic = encodeEventTopics({ abi, eventName } as never)[0];
     const routerBurns = await logs(rpc, token, [burnedTopic, null, null, topicAddress(router)], finalized, fromBlock);

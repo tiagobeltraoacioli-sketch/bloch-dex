@@ -2,36 +2,42 @@
 // Test vectors for the bridge page's validators and computations, produced by the BRIDGES' OWN reference tools
 // (Python, standard library) at the commits recorded in deployments/bridges/sources.json:
 //
-//   node scripts/bridge/make-vectors.mjs --btc <worktree> --solana <worktree> --stellar <worktree> --tron <worktree>
+//   node scripts/bridge/make-vectors.mjs [--repo <a checkout of bloch-l2-bridge>]
 //
 // Writes frontend/src/test/fixtures/bridge-vectors.json. The page's TypeScript is then tested against these
 // answers (src/test/bridge-codec.test.ts and others). Keys are throwaway: small integers and fixed seeds.
-// Each worktree must be at the commit sources.json names for that network; the script refuses otherwise.
+// The tools are taken with `git archive` at the commit sources.json names for each network, into a temporary
+// directory: the bridge repository and its worktrees are only read, and a worktree someone is editing is not used.
 import { execFileSync } from 'node:child_process';
 import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const args = process.argv.slice(2);
-const need = (name) => {
-  const at = args.indexOf(name);
-  if (at < 0) throw new Error(`missing ${name} <worktree>`);
-  return args[at + 1];
-};
+const config = JSON.parse(readFileSync(join(root, 'deployments/bridges/import.config.json'), 'utf8'));
+const repo = (args.includes('--repo') ? args[args.indexOf('--repo') + 1] : (process.env.BRIDGE_REPO ?? config.repo)).replace(/^~/, homedir());
 const sources = JSON.parse(readFileSync(join(root, 'deployments/bridges/sources.json'), 'utf8')).sources;
+const work = mkdtempSync(join(tmpdir(), 'postern-bridge-vectors-'));
 const trees = {};
-for (const [flag, network] of [['--btc', 'bitcoin'], ['--solana', 'solana'], ['--stellar', 'stellar'], ['--tron', 'tron']]) {
-  const dir = need(flag);
-  const head = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD']).toString().trim();
-  const want = sources.find((s) => s.network === network).commit;
-  if (head !== want) throw new Error(`${network}: ${dir} is at ${head}, sources.json names ${want}`);
-  trees[network] = { dir, commit: head };
+for (const [network, paths] of [
+  ['bitcoin', ['tools', 'deployments/bitcoin']],
+  ['solana', ['tools']],
+  ['stellar', ['tools']],
+  ['tron', ['tools']],
+]) {
+  const commit = sources.find((s) => s.network === network).commit;
+  const dir = join(work, network);
+  mkdirSync(dir);
+  const tar = execFileSync('git', ['-C', repo, 'archive', commit, ...paths], { maxBuffer: 256 << 20 });
+  execFileSync('tar', ['-x', '-C', dir], { input: tar });
+  trees[network] = { dir, commit };
 }
 function py(dir, sub, code) {
   try {
-    const source = `import sys, json\nsys.path.insert(0, ${JSON.stringify(join(dir, sub))})\n${code}`;
+    const source = `import sys, json\nsys.dont_write_bytecode = True\nsys.path.insert(0, ${JSON.stringify(join(dir, sub))})\n${code}`;
     return JSON.parse(execFileSync('python3', ['-c', source], { maxBuffer: 16 << 20, stdio: ['ignore', 'pipe', 'pipe'] }).toString());
   } catch (error) {
     throw new Error(`the reference tool under ${dir}/${sub} failed: ${error.stderr?.toString() ?? error}`);
@@ -44,7 +50,8 @@ import btc_core as c, btc_policy as p
 keys = [c.pubkey(k) for k in range(1, 8)]
 anchor = ('11' * 32, 1)
 owner = c.address_from_spk('bitcoin-mainnet', c.p2wpkh(bytes(range(1, 21))))
-v = p.Vault('bitcoin-mainnet', 5, keys, anchor[0], anchor[1], owner, p.DEFAULT_POLICY)
+policy = json.load(open(sys.path[0] + '/../../deployments/bitcoin/bbtc-vault-mainnet.config.json'))['policy']
+v = p.Vault('bitcoin-mainnet', 5, keys, anchor[0], anchor[1], owner, policy)
 recipients = ['00' * 19 + '01', 'ab' * 20, '99ee0a068b17de102c3ef986247615e07996823f']
 h = [bytes(range(1, 21)), bytes([0xff] * 20), bytes.fromhex('751e76e8199196d454941c45d1b3a323f1433bd6')]
 good = [c.address_from_spk('bitcoin-mainnet', c.p2wpkh(x)) for x in h]
@@ -71,7 +78,7 @@ print(json.dumps({
   'p2wpkh': [{'address': a, 'keyHash': x.hex()} for a, x in zip(good, h)],
   'refused': [{'address': a, 'refused': refused(a)} for a in bad],
   'sizes': {'depositVbytes': v.deposit_vb + v.overhead_vb, 'releaseVbytes': v.release_vb, 'refundVbytes': v.deposit_vb + v.payout_vb + v.overhead_vb},
-  'policy': p.DEFAULT_POLICY,
+  'policy': policy,
   'credit': [{'sats': s, 'feeRate': r, 'result': credit(s, r)} for s, r in [(100000, 1), (100000, 17), (99999, 1), (10000000, 200), (10000001, 1), (250000, 44), (123456, 3)]],
   'payout': [{'units': u, 'feeRate': r, 'result': payout(u, r)} for u, r in [(1000, 1), (1000, 200), (100000, 25), (5, 1), (50000, 60)]],
   'refund': [{'sats': s, 'feeRate': r, 'result': refund(s, r)} for s, r in [(100000, 5), (50000, 80), (20000000, 12)]],
@@ -88,7 +95,8 @@ import solana_lib as S, sol_proof as P
 pub = bytes.fromhex('${pub.toString('hex')}')
 wallet = S.b58encode(pub)
 l2 = '0x99ee0a068b17de102c3ef986247615e07996823f'; router = '0x5fbdb2315678afecb367f032d93f642f64180aa3'
-msg = P.exit_message(wallet, l2, router, 1794787200)
+route = '0x' + '5a' * 32; amount = 25000000; nonce = 3
+msg = P.exit_message(wallet, l2, amount, nonce, router, route)
 keys = [pub, S.pubkey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'), S.TOKEN_PROGRAM, S.SYSTEM_PROGRAM, S.ATA_PROGRAM,
         bytes(32), (1).to_bytes(32, 'little'), S.sha256(b'a'), S.sha256(b'b'), S.sha256(b'c'), S.sha256(b'd'),
         (0x05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f95e826).to_bytes(32, 'little'), bytes([0xec] + [0xff] * 30 + [0x7f]), bytes([0xee] + [0xff] * 30 + [0x7f])]
@@ -102,20 +110,25 @@ for seeds in ([b'tokens', vault[0]], [b'deposit', vault[0], (0).to_bytes(8, 'lit
     pdas.append({'seeds': [s.hex() for s in seeds], 'address': S.b58encode(a), 'bump': bump})
 mint = S.pubkey('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')
 print(json.dumps({
-  'wallet': wallet, 'l2Account': l2, 'router': router, 'issued': 1794787200, 'message': msg,
-  'envelopes': [{'name': n, 'bytes': b.hex()} for n, b in P.envelopes(msg.encode(), pub)],
+  'wallet': wallet, 'l2Account': l2, 'router': router, 'route': route, 'amount': amount, 'nonce': nonce, 'message': msg,
+  'envelopes': [{'name': n, 'tag': t, 'bytes': P.covered_bytes(t, msg.encode(), pub, bytes(32)).hex()} for n, t in P.ENVELOPE_TAGS.items()],
   'keys': [{'key': k.hex(), 'text': S.b58encode(k), 'onCurve': S.on_curve(k), 'smallOrder': S.small_order(k), 'commitment': '0x' + S.account_id(k).hex()} for k in keys],
   'program': S.b58encode(program), 'vault': {'address': S.b58encode(vault[0]), 'bump': vault[1], 'seeds': [b'vault'.hex(), S.sha256(b'config').hex()]},
   'pdas': pdas, 'ata': {'owner': wallet, 'mint': S.b58encode(mint), 'address': S.b58encode(S.associated_token_address(pub, mint))},
   'chainId': '0x' + S.chain_id_of(S.pubkey(S.MAINNET_GENESIS)).hex(),
 }))`);
-solana.signatures = solana.envelopes.map((e) => ({ name: e.name, signature: sign(null, Buffer.from(e.bytes, 'hex'), priv).toString('hex') }));
-// The reference verifier must accept each of them (and refuse a changed message).
-for (const s of solana.signatures) {
+// One proof per envelope, as the router takes it (tag | signature [| 32-byte domain]); the reference verifier
+// (sol_proof.exit_proof_valid, what every signer runs) must accept each, and refuse it for another message.
+solana.proofs = solana.envelopes.map((e) => {
+  const signature = sign(null, Buffer.from(e.bytes, 'hex'), priv).toString('hex');
+  return { name: e.name, tag: e.tag, signature, proof: `${e.tag.toString(16).padStart(2, '0')}${signature}${e.tag === 2 ? '00'.repeat(32) : ''}` };
+});
+for (const p of solana.proofs) {
   const verdict = py(trees.solana.dir, 'tools/signatario-solana', `
-import sol_proof as P
-print(json.dumps(P.verify(${JSON.stringify(solana.wallet)}, ${JSON.stringify(solana.message)}, ${JSON.stringify(s.signature)})))`);
-  if (verdict !== s.name) throw new Error(`sol_proof.verify answered ${verdict} for ${s.name}`);
+import sol_proof as P, solana_lib as S
+pub = S.pubkey(${JSON.stringify(solana.wallet)})
+print(json.dumps([P.exit_proof_valid(pub, ${JSON.stringify(solana.message)}, bytes.fromhex('${p.proof}')), P.exit_proof_valid(pub, ${JSON.stringify(solana.message)} + ' ', bytes.fromhex('${p.proof}'))]))`);
+  if (verdict[0] !== true || verdict[1] !== false) throw new Error(`sol_proof.exit_proof_valid answered ${verdict} for ${p.name}`);
 }
 
 // ── Stellar ──────────────────────────────────────────────────────────────────
@@ -151,4 +164,5 @@ writeFileSync(
   outFile,
   `${JSON.stringify({ note: 'Generated by scripts/bridge/make-vectors.mjs from the bridges\' reference tools; do not edit.', commits: Object.fromEntries(Object.entries(trees).map(([k, v]) => [k, v.commit])), bitcoin, solana, stellar, tron }, null, 1)}\n`,
 );
+rmSync(work, { recursive: true, force: true });
 console.log(`wrote ${outFile}`);

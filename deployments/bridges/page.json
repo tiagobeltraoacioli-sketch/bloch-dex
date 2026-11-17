@@ -30,6 +30,11 @@
       "router": "TBD-deploy",
       "routerCodeHash": "TBD-deploy",
       "read": "TBD-owner",
+      "exitProof": {
+        "source": "contracts/solana/SolanaBurnRouter.sol exitMessage() on codex/bridge-solana-r17-20261117 (work in progress at 3b6c3f4: the destination-key proof is part of the router call; coordinator's decision of round 17). PROVISIONAL until agent 336 posts the final format; the page also reads the router's own exitMessage and refuses to continue unless it is this line.",
+        "template": "Bloch bridge exit v1: pay {amount} units burned by {burner} to my Solana wallet {wallet}. Nonce {nonce}. Router {router}. Chain {chainId}. Route {route}.",
+        "carriedBy": "router"
+      },
       "policy": {
         "source": "notes and fee.networkFee of deployments/solana/bridge.network.json",
         "largeReleaseThreshold": "1000000000",

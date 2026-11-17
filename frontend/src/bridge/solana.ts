@@ -45,30 +45,43 @@ export function solanaCommitment(key: Bytes): Address {
   return `0x${keccak256(concat(utf8(ACCOUNT_ID_DOMAIN), key)).slice(-40)}` as Address;
 }
 
+/** What the template of a proof may name. `amount`, `nonce`, `route` and `issued` are needed only if it names them. */
+export type ProofFields = { wallet: string; burner: Address; router: Address; amount?: bigint; nonce?: bigint; route?: Hex; issued?: number };
+
 /** The one line the destination wallet signs, from the format the route carries. */
-export function exitProofMessage(format: SolanaProofFormat, wallet: string, l2Account: Address, router: Address, issued: number): string {
-  if (!Number.isSafeInteger(issued) || issued <= 0) throw new Error('issued must be a time in seconds');
-  const fields: Record<string, string> = {
-    wallet,
-    l2Account: l2Account.toLowerCase(),
-    router: router.toLowerCase(),
+export function exitProofMessage(format: SolanaProofFormat, fields: ProofFields): string {
+  const values: Record<string, string | undefined> = {
+    wallet: fields.wallet,
+    burner: fields.burner.toLowerCase(),
+    router: fields.router.toLowerCase(),
     chainId: '700770',
-    issued: String(issued),
+    amount: fields.amount?.toString(),
+    nonce: fields.nonce?.toString(),
+    route: fields.route?.toLowerCase(),
+    issued: fields.issued === undefined ? undefined : String(fields.issued),
   };
-  const line = format.template.replace(/\{(wallet|l2Account|router|chainId|issued)\}/g, (_, name: string) => fields[name]);
+  const line = format.template.replace(/\{([A-Za-z0-9]+)\}/g, (_, name: string) => {
+    const value = values[name];
+    if (value === undefined || value === '') throw new Error(`the proof message needs {${name}}`);
+    return value;
+  });
   if (!/^[\x20-\x7e]{1,1000}$/.test(line)) throw new Error('the proof message is not one line of printable ASCII');
   return line;
 }
 
 const OFFCHAIN_DOMAIN = concat(Uint8Array.of(0xff), utf8('solana offchain'));
-/** The byte strings a signature of `message` may cover (sol_proof.envelopes): the text, and the off-chain envelope in its two layouts. */
-export function proofEnvelopes(message: string, publicKey: Bytes): { name: string; bytes: Bytes }[] {
+/**
+ * The byte strings a signature of `message` may cover (sol_proof.envelopes), with the tag the router's proof gives
+ * each: 0 the text (a wallet's signMessage), 1 the off-chain message envelope (solana sign-offchain-message),
+ * 2 the envelope with an application domain (all zero here) and the signer.
+ */
+export function proofEnvelopes(message: string, publicKey: Bytes): { name: string; tag: number; bytes: Bytes }[] {
   const body = utf8(message);
   const length = Uint8Array.of(body.length & 0xff, body.length >> 8);
   return [
-    { name: 'text', bytes: body },
-    { name: 'offchain-v0', bytes: concat(OFFCHAIN_DOMAIN, Uint8Array.of(0, 0), length, body) },
-    { name: 'offchain-v0-with-signers', bytes: concat(OFFCHAIN_DOMAIN, Uint8Array.of(0), new Uint8Array(32), Uint8Array.of(0, 1), publicKey, length, body) },
+    { name: 'text', tag: 0, bytes: body },
+    { name: 'offchain-v0', tag: 1, bytes: concat(OFFCHAIN_DOMAIN, Uint8Array.of(0, 0), length, body) },
+    { name: 'offchain-v0-with-signers', tag: 2, bytes: concat(OFFCHAIN_DOMAIN, Uint8Array.of(0), new Uint8Array(32), Uint8Array.of(0, 1), publicKey, length, body) },
   ];
 }
 
@@ -93,44 +106,59 @@ export function parseSignature(text: string): Bytes | null {
 
 export type ExitProof = {
   wallet: string;
-  l2Account: Address;
+  burner: Address;
   router: Address;
-  issued: number;
   message: string;
   signature: Hex;
   envelope: string;
+  /** What the router call carries: tag | signature [| 32-byte domain]. */
+  proofBytes: Hex;
+  /** The values the message is bound to, when the format names them. */
+  amount?: bigint;
+  nonce?: bigint;
+  issued?: number;
 };
 export type ProofVerdict = { ok: true; proof: ExitProof } | { ok: false; reason: string };
 
 /**
- * Check a destination proof completely: the wallet is a wallet, the message is the page's own text for this
- * wallet, L2 account, router and time, the signature is by the wallet's key over that text (or its off-chain
- * envelope), and it is not older than the format allows. Nothing is sent to the router before this passes.
+ * Check a destination proof completely: the wallet is a wallet, the message is the page's own line for these
+ * values, the signature is by the wallet's key over that line (or its off-chain envelope), and, for a format with
+ * a time, it is not older than allowed. Nothing is sent to the router before this passes.
  */
 export async function verifyExitProof(input: {
   format: SolanaProofFormat;
   mint: string;
-  wallet: string;
-  l2Account: Address;
-  router: Address;
-  issued: number;
+  fields: ProofFields;
   signature: Bytes;
   now: number;
   maxAgeSeconds: number;
 }): Promise<ProofVerdict> {
   const no = (reason: string): ProofVerdict => ({ ok: false, reason });
-  const wallet = solanaWallet(input.wallet, input.mint);
+  const { fields } = input;
+  const wallet = solanaWallet(fields.wallet, input.mint);
   if (!wallet.ok) return no(wallet.reason);
   if (input.signature.length !== 64) return no('A signature is 64 bytes.');
-  if (input.issued > input.now + 60) return no('The proof is dated in the future. Check this device\'s clock and sign again.');
-  if (input.now - input.issued > input.maxAgeSeconds)
-    return no(`The proof is older than ${Math.round(input.maxAgeSeconds / 60)} minutes. Sign a new one.`);
-  const message = exitProofMessage(input.format, wallet.text, input.l2Account, input.router, input.issued);
+  if (fields.issued !== undefined) {
+    if (fields.issued > input.now + 60) return no("The proof is dated in the future. Check this device's clock and sign again.");
+    if (input.now - fields.issued > input.maxAgeSeconds) return no(`The proof is older than ${Math.round(input.maxAgeSeconds / 60)} minutes. Sign a new one.`);
+  }
+  const message = exitProofMessage(input.format, fields);
   for (const envelope of proofEnvelopes(message, wallet.key)) {
     if (await verify(wallet.key, envelope.bytes, input.signature))
       return {
         ok: true,
-        proof: { wallet: wallet.text, l2Account: input.l2Account, router: input.router, issued: input.issued, message, signature: toHex(input.signature), envelope: envelope.name },
+        proof: {
+          wallet: wallet.text,
+          burner: fields.burner,
+          router: fields.router,
+          message,
+          signature: toHex(input.signature),
+          envelope: envelope.name,
+          proofBytes: toHex(concat(Uint8Array.of(envelope.tag), input.signature, envelope.tag === 2 ? new Uint8Array(32) : new Uint8Array(0))),
+          amount: fields.amount,
+          nonce: fields.nonce,
+          issued: fields.issued,
+        },
       };
   }
   return no('The signature is not by this wallet over this exact message. The wallet that signs must be the destination wallet itself; an exchange deposit address cannot sign and must not be used.');
