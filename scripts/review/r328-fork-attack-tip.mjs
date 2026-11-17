@@ -254,7 +254,18 @@ try {
     // The strict deposit itself still reverts on the hostile pool (unchanged protection).
     await must(depositorAccount, { to: token.address, data: call("approve", [router, 30_000n * unit]) }, "depositor approves");
     const strict = await send(depositorAccount, { to: router, data: call("addLiquidityBLCH", [token.address, 30_000n * unit, 30_000n * unit, 10n * 10n ** 18n, depositor, deadline]), value: 10n * 10n ** 18n }, "a strict first deposit into the hostile pool");
-    check(`${label}: a strict first deposit into the hostile pool reverts`, !strict.ok);
+    if (label === "C") check("C: a strict first deposit into the hostile pool reverts", !strict.ok);
+    else {
+      // First run of this script expected a revert here too. Wrong: at EXACTLY the owner's price the router's quote
+      // equals the desired amounts, so minimums equal to the amounts are met and the deposit goes in as a second
+      // deposit, at the owner's own price (no loss). What matters is that it is then not accepted as the opening.
+      check("D: at exactly the owner's price a strict deposit into the hostile pool is ACCEPTED (a second deposit at the owner's price)", strict.ok);
+      const v2 = firstDeposit("verify", "D8-verify-second-deposit", ["--tx", strict.hash]);
+      check("D: verify of that deposit fails: it is not the pair's first mint", v2.status === 1, fails(v2.text).slice(0, 300));
+      await rpc("anvil_mine", [hex(70)]);
+      const g3 = gate("D9-gate-second-deposit", ["--opening", `${pairName}=${strict.hash}`]);
+      check("D: the post gate does not accept that deposit as the opening", g3.status === 1 && g3.report?.pairs.every((p) => p.opening?.proven !== true), (g3.report?.pairs[0]?.opening?.problems ?? []).join("; ").slice(0, 200));
+    }
   }
 } catch (error) {
   failed = true;
