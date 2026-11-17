@@ -1722,6 +1722,14 @@ details dl dd {
   .main-nav a[aria-current]::after {
     bottom: 0;
   }
+  /* Few links share the strip's width; many (six networks) keep their width and the strip scrolls. */
+  .main-nav {
+    justify-content: flex-start;
+  }
+  .main-nav a {
+    flex: 1 0 auto;
+    justify-items: center;
+  }
   .header-actions {
     margin-left: auto;
   }
@@ -2833,4 +2841,10 @@ li[data-state='failed'] .state-pill {
 .hold-trouble {
   display: block;
   margin-top: var(--s-2);
+}
+/* Without the swap card (not live, read failure) the page is a left-aligned column: these blocks follow it. */
+.mainnet-page:not(:has(.live-hero)) > .read-failure,
+.mainnet-page:not(:has(.live-hero)) > .confirmation-rule {
+  justify-self: start;
+  max-width: 720px;
 }
