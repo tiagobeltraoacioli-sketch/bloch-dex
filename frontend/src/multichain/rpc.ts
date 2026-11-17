@@ -1,25 +1,36 @@
 // Reads of a public chain through its reviewed endpoints. Three layers, composed by `chainRpc` at the end of this
 // file: `fallbackRpc` (the first endpoint that answers), `agreeingRpc` (reads pinned to a block hash must be equal
-// on two endpoints), `settledRpc` (the chain's confirmation rule in place of `finalized`).
-// fallbackRpc: An endpoint that fails (network
-// error, HTTP error, a JSON-RPC error that says the node cannot serve the request) is skipped for this request and
-// the next is tried; an execution error (a revert) is the chain's answer and is returned as it is. Block 0, which
-// identifies the chain, is not served by every public node (history pruning): `null` for it also moves on.
+// on two endpoints, and the block a tag names is taken from two endpoints), `settledRpc` (the chain's confirmation
+// rule in place of `finalized`).
+// fallbackRpc: an endpoint that fails (network error, HTTP error, a JSON-RPC error that says the node cannot serve
+// the request) is skipped for this request and the next is tried; an execution error (a revert) is the chain's
+// answer and is returned as it is. A block asked by number or by hash that an endpoint does not have (`null`) is
+// asked of the next one: block 0, which identifies the chain, is not served by every public node (history
+// pruning), and a block at the head may not have reached every endpoint yet.
 import { ChainError, httpRpc, type Rpc } from '../devnet4/chain';
 
 /** JSON-RPC error codes that are the chain's own answer to a call, not an endpoint's failure. */
 const EXECUTION_ERROR_CODES = new Set([3, -32015]);
 
+const isBlockLookup = (method: string, params: unknown[]): boolean =>
+  method === 'eth_getBlockByHash' ||
+  (method === 'eth_getBlockByNumber' &&
+    typeof params[0] === 'string' &&
+    /^0x[0-9a-f]+$/i.test(params[0]));
+
 export function fallbackRpc(endpoints: Rpc[]): Rpc {
   if (endpoints.length === 0) throw new Error('no RPC endpoint');
   return async (method, params) => {
     let last: unknown;
+    let unknownBlock = false;
+    const lookup = isBlockLookup(method, params);
+    const wantsGenesis = method === 'eth_getBlockByNumber' && params[0] === '0x0';
     for (const endpoint of endpoints) {
       try {
         const result = await endpoint(method, params);
-        const wantsGenesis = method === 'eth_getBlockByNumber' && params[0] === '0x0';
-        if (wantsGenesis && result === null) {
-          last = new ChainError('chain: this endpoint does not serve block 0');
+        if (lookup && result === null) {
+          unknownBlock = true;
+          if (wantsGenesis) last = new ChainError('chain: this endpoint does not serve block 0');
           continue;
         }
         return result;
@@ -31,6 +42,8 @@ export function fallbackRpc(endpoints: Rpc[]): Rpc {
         last = error;
       }
     }
+    // No endpoint has the block: that is an answer (`null`), except for block 0, which every chain has.
+    if (unknownBlock && !wantsGenesis) return null;
     throw last;
   };
 }
@@ -120,8 +133,17 @@ export const UNCONFIRMED =
  * Review R309-MC-3: on a public chain every endpoint is a third party. Everything the page shows and signs from
  * (reserves, the binding quote, balances, allowances, code hashes, the account nonce) is read at a block hash;
  * such a read is asked of TWO endpoints and used only when both give the same answer. One endpoint alone (a
- * rehearsal file) is used as it is. Other requests (block headers, receipts, the latest-block cross-check, fee
- * data) go to the first endpoint that answers, as before: the route re-checks blocks by number and hash itself.
+ * rehearsal file) is used as it is.
+ *
+ * Which block those reads are pinned to is also taken from two endpoints, so that one endpoint cannot hold the
+ * page on a true but old state (the binding quote is compared with the head before the wallet is asked):
+ *   `latest`              the NEWER of the two heads. An endpoint that lags or withholds new blocks cannot keep
+ *                         the page behind the other; a head only one endpoint knows fails the pinned reads on the
+ *                         other (UNCONFIRMED), so an invented block shows nothing.
+ *   `finalized`, `safe`   the OLDER of the two answers, and both must answer. These tags are a claim about
+ *                         finality; one endpoint alone cannot make the page treat a newer block as final.
+ * Other requests (blocks by number or hash, receipts, fee data, the pending nonce) go to the first endpoint that
+ * answers, as before: the route re-checks blocks by number and hash itself.
  * A second endpoint that does not know the block yet is asked again (twice, half a second apart); a further
  * endpoint, when the file lists one, stands in for an endpoint that keeps failing.
  */
@@ -140,7 +162,47 @@ export function agreeingRpc(endpoints: Rpc[], retryDelayMs = 500): Rpc {
       }
     }
   };
+  type TagAnswer = { number: bigint; block: unknown } | null;
+  const tagged = async (endpoint: Rpc, params: unknown[], tries: number): Promise<TagAnswer> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const block = (await endpoint('eth_getBlockByNumber', params)) as {
+          number?: unknown;
+          hash?: unknown;
+        } | null;
+        const number = quantityOf(block?.number);
+        if (number !== null && typeof block?.hash === 'string') return { number, block };
+      } catch {
+        // An endpoint that cannot answer is asked again below.
+      }
+      if (attempt >= tries) return null;
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  };
+  const tagBlock = async (params: unknown[]): Promise<unknown> => {
+    const newest = params[0] === 'latest';
+    // The head: one try each (the other endpoint's answer is enough); a finality tag: both must answer.
+    const answers = await Promise.all(
+      endpoints.slice(0, 2).map((endpoint) => tagged(endpoint, params, newest ? 1 : 3)),
+    );
+    for (const endpoint of endpoints.slice(2)) {
+      if (answers.filter(Boolean).length >= 2) break;
+      answers.push(await tagged(endpoint, params, newest ? 1 : 3));
+    }
+    const given = answers.filter((a): a is NonNullable<TagAnswer> => a !== null);
+    if (newest) {
+      if (given.length === 0) return fallback('eth_getBlockByNumber', params);
+      return given.reduce((a, b) => (b.number > a.number ? b : a)).block;
+    }
+    if (given.length < 2) throw new ChainError(UNCONFIRMED);
+    return given.slice(0, 2).reduce((a, b) => (b.number < a.number ? b : a)).block;
+  };
   return async (method, params) => {
+    if (
+      method === 'eth_getBlockByNumber' &&
+      (params[0] === 'latest' || params[0] === 'finalized' || params[0] === 'safe')
+    )
+      return tagBlock(params);
     if (!isPinned(method, params)) return fallback(method, params);
     const answers: Answer[] = await Promise.all(
       endpoints.slice(0, 2).map((endpoint) => ask(endpoint, method, params)),

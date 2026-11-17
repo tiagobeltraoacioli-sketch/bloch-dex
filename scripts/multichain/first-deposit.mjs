@@ -1,38 +1,51 @@
 #!/usr/bin/env node
 // The owner's deposits on a public chain (docs/MULTICHAIN-DEPLOY.md, "Opening a pool"). Read-only: it checks the
-// chain and prints the exact transactions; it signs and sends nothing. Review R309-MC-1: a pool is opened only
-// through this path.
+// chain and prints the exact transactions; it signs and sends nothing. Reviews R309-MC-1 and R328-1 to R328-3: a
+// pool is opened only through this path.
 //
 //   node scripts/multichain/first-deposit.mjs <chain> prepare --pair WETH/USDC --native 10 --token 30000 --gate-report FILE [--to ADDRESS] [--out FILE]
-//   node scripts/multichain/first-deposit.mjs <chain> verify  --pair WETH/USDC --native 10 --token 30000 [--tx HASH]
-//   node scripts/multichain/first-deposit.mjs <chain> add     --pair WETH/USDC --native 1 --tolerance-bps 50 --gate-report FILE [--to ADDRESS] [--out FILE]
+//   node scripts/multichain/first-deposit.mjs <chain> verify  --pair WETH/USDC --native 10 --token 30000 --tx HASH [--out FILE]
+//   node scripts/multichain/first-deposit.mjs <chain> add     --pair WETH/USDC --native 1 --token 3000 [--tolerance-bps 50] --gate-report FILE [--to ADDRESS] [--out FILE]
 //   every mode: [--reference] [--rpc http://127.0.0.1:PORT --rehearsal]
 //
-// What makes the opening safe against anyone else, on a chain with a public mempool:
-//   1. The factory's `firstDepositor` is the owner's depositing account (never the zero address: lib.mjs refuses
-//      it). The pair refuses a first mint whose sender and transaction origin are both someone else, so nobody can
-//      open the pool at another price, before, between or after the owner's transactions.
-//   2. The deployment creates no pair. The first deposit goes through the router, which creates the pair and
+// What protects the opening on a chain with a public mempool, and what does not:
+//   1. The factory's `firstDepositor` is the owner's depositing account (never the zero address, never the fee
+//      address: lib.mjs refuses both). The pair refuses a first mint whose sender and transaction origin are both
+//      someone else, so nobody else can open the pool by a transaction of their own.
+//   2. The pair accepts a first mint by transaction ORIGIN. A contract that the depositing account calls could
+//      open a pool in its name, at any price (review R328-1). So the depositing account is a dedicated key that
+//      sends only what this tool prints; `prepare` refuses an account with code or an EIP-7702 delegation; a pool
+//      that is already open when `prepare` runs was NOT opened by this tool and `prepare` says STOP; `verify` and
+//      the gate prove the opening from its transaction (opening.mjs); `add` deposits only into a pool the gate
+//      proved, and only at the price the owner states.
+//   3. The deployment creates no pair. The first deposit goes through the router, which creates the pair and
 //      deposits in ONE transaction; when someone created the (empty) pair first, the same call just deposits.
-//   3. The minimums of the first deposit EQUAL the amounts. This tool prints no other minimums and has no option
-//      for them: if the pool were not empty, the transaction would revert instead of depositing at another price.
-//   4. `prepare` refuses while tokens sit at the pair's address without shares (a donation would shift the opening
-//      price; anyone, the owner included, removes it with skim), and `verify` reads the opened pool back.
-// `add` is for a pool that is already open: amounts follow the pool's current price, with minimums at most 1%
-// (default 0.5%) below them.
+//   4. The minimums of the first deposit EQUAL the amounts. This tool prints no other minimums and has no option
+//      for them: if the pool were already open, at any price, the transaction would revert instead of depositing.
+//   5. What the minimums do NOT see: tokens sent to the pair's address before the deposit is mined (review
+//      R328-2). The router takes the two amounts and the pair counts whatever else sits at its address as part of
+//      the first deposit. Such a "gift" belongs to the pool, so to the depositor's shares: it is always a loss
+//      for whoever sent it. It moves the opening price by its size. `prepare` accepts a gift of at most 0.1% of
+//      either side and says so (one base unit sent again and again must not block the opening, review R328-3),
+//      and refuses a larger one with the skim command that takes it out; `verify` reads from the opening
+//      transaction what joined the pool and states the opening price.
+// `add` is for a pool that is already open and proven: the owner gives both amounts at the market price; the tool
+// refuses when the pool's own price differs from them by more than the tolerance (default 0.5%, at most 1%), and
+// the deposit's minimums are that tolerance below its amounts.
 //
-// Exit status: 0 the checks held (prepare, add: the transactions were printed; verify: the pool is as intended),
+// Exit status: 0 the checks held (prepare, add: the transactions were printed; verify: the opening is proven),
 // 1 a check failed (nothing to send), 2 usage or configuration.
 import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, planChain, refuse,
+  EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, planChain, refuse,
 } from "./lib.mjs";
+import { decodeDeposit, openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
-const { keccak256, encodeFunctionData, decodeFunctionData, decodeFunctionResult, parseAbi, parseUnits, formatUnits } = requireFromFrontend("viem");
+const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, parseUnits, formatUnits } = requireFromFrontend("viem");
 
 export const ABI = parseAbi([
   "function firstDepositor() view returns (address)",
@@ -46,8 +59,13 @@ export const ABI = parseAbi([
 ]);
 export const DEADLINE_SECONDS = 20 * 60;
 export const MAX_TOLERANCE_BPS = 100;
-/** A donation the opened pool may hold above the deposited amounts before `verify` fails: 0.1% of either side. */
+/**
+ * Tokens at the pair's address before the first deposit (a gift to the opening pool) that `prepare` accepts and
+ * `verify` reports without a warning: at most 0.1% of either side of the deposit.
+ */
 export const DONATION_BPS = 10n;
+/** True when what sits at the pair's address is within DONATION_BPS of the deposit, on both sides. Pure. */
+export const giftWithinTolerance = (gift, deposit) => gift.native * 10_000n <= deposit.native * DONATION_BPS && gift.token * 10_000n <= deposit.token * DONATION_BPS;
 
 const codeHashOf = (code) => (code === "0x" ? EMPTY_CODE_HASH : keccak256(code));
 
@@ -72,22 +90,26 @@ export function openingTransactions({ router, token, native, tokenAmount, to, de
   ];
 }
 
-/** True when a deposit call carries minimums equal to its amounts (what `verify --tx` requires). */
-export function hasStrictMinimums(data, value) {
-  try {
-    const { functionName, args } = decodeFunctionData({ abi: ABI, data });
-    return functionName === "addLiquidityBLCH" && args[2] === args[1] && args[3] === BigInt(value);
-  } catch {
-    return false;
-  }
-}
+/** True when a deposit call carries minimums equal to its amounts (what the proof of an opening requires). */
+export const hasStrictMinimums = (data, value) => decodeDeposit(data, value)?.strict === true;
 
-/** A later deposit into an open pool: the token amount at the pool's price, minimums `toleranceBps` below. Pure. */
-export function addTransactions({ router, token, native, reserveNative, reserveToken, toleranceBps, to, deadline }) {
+/**
+ * A later deposit into an open pool. The owner states BOTH amounts, at the market price (`expectedToken` for
+ * `native`); the pool asks its own token amount for that native amount, and the deposit is refused when the two
+ * differ by more than `toleranceBps`: a pool whose price was moved, or was never the owner's, takes nothing
+ * (review R328-1). The deposit's minimums are `toleranceBps` below its amounts. Pure.
+ */
+export function addTransactions({ router, token, native, expectedToken, reserveNative, reserveToken, toleranceBps, to, deadline }) {
   refuse(Number.isInteger(toleranceBps) && toleranceBps >= 0 && toleranceBps <= MAX_TOLERANCE_BPS, `--tolerance-bps is a whole number from 0 to ${MAX_TOLERANCE_BPS}`);
   refuse(native > 0n && reserveNative > 0n && reserveToken > 0n, "the pool is not open, or the amount is zero");
+  refuse(typeof expectedToken === "bigint" && expectedToken > 0n, "the token amount the owner expects for the native amount is required (--token)");
   const tokenAmount = (native * reserveToken) / reserveNative;
   refuse(tokenAmount > 0n, "the amount is too small for this pool");
+  const away = tokenAmount > expectedToken ? tokenAmount - expectedToken : expectedToken - tokenAmount;
+  refuse(
+    away * 10_000n <= expectedToken * BigInt(toleranceBps),
+    `the pool's price is not the price of the amounts given: for that native amount the pool asks ${tokenAmount} token base units, the amounts say ${expectedToken} (${((Number(away) / Number(expectedToken)) * 100).toFixed(2)}% apart, tolerance ${toleranceBps / 100}%). Nothing to send: the pool's price was moved, or the amounts are not the market's`,
+  );
   const floor = (n) => (n * BigInt(10_000 - toleranceBps)) / 10_000n;
   return [
     { step: "approve", to: token, value: 0n, data: encodeFunctionData({ abi: ABI, functionName: "approve", args: [router, tokenAmount] }), signature: "approve(address,uint256)", args: [router, tokenAmount.toString()] },
@@ -103,7 +125,7 @@ export function addTransactions({ router, token, native, reserveNative, reserveT
 }
 
 function parseArgs(argv) {
-  const usage = "usage: first-deposit.mjs <chain> prepare|verify|add --pair A/B --native AMOUNT [--token AMOUNT] [--gate-report FILE] [--to ADDRESS] [--tx HASH] [--tolerance-bps N] [--out FILE] [--reference] [--rpc URL --rehearsal]";
+  const usage = "usage: first-deposit.mjs <chain> prepare|verify|add --pair A/B --native AMOUNT --token AMOUNT [--gate-report FILE] [--to ADDRESS] [--tx HASH] [--tolerance-bps N] [--out FILE] [--reference] [--rpc URL --rehearsal]";
   const [key, mode, ...rest] = argv;
   refuse(key && ["prepare", "verify", "add"].includes(mode), usage);
   const o = { key, mode, reference: false, rehearsal: false };
@@ -119,7 +141,9 @@ function parseArgs(argv) {
   refuse(!o.rpc || o.rehearsal, "--rpc replaces the chain's reviewed endpoints and is for a rehearsal only: add --rehearsal");
   refuse(!o.rehearsal || /^http:\/\/127\.0\.0\.1:\d{2,5}\/?$/.test(o.rpc ?? ""), "--rehearsal needs --rpc http://127.0.0.1:PORT (a loopback fork)");
   refuse(o.mode === "verify" || o["gate-report"], "--gate-report FILE is required: the report of a passed `gate.mjs <chain> post`, so that money goes only into the verified contracts");
-  refuse(o.mode === "add" ? o.token === undefined : o.token !== undefined, o.mode === "add" ? "add takes --native only: the token amount follows the pool's price" : "--token AMOUNT is required");
+  refuse(o.token !== undefined, o.mode === "add" ? "--token AMOUNT is required: the token amount you expect for that native amount at the market price. The tool refuses when the pool's own price is not that price" : "--token AMOUNT is required");
+  refuse(o.mode !== "verify" || o.tx !== undefined, "--tx HASH is required: the hash of the deposit transaction. The opening is proven from that transaction, not from the pool's reserves, which change with the first swap");
+  refuse(o.mode === "verify" || o.tx === undefined, "--tx belongs to verify");
   refuse(o.mode !== "add" || o["tolerance-bps"] === undefined || /^[0-9]{1,3}$/.test(o["tolerance-bps"]), "--tolerance-bps is a whole number");
   return o;
 }
@@ -147,7 +171,7 @@ export async function main(argv, print = console.log) {
     return value;
   };
   const native = decimal(o.native, 18, "--native");
-  const tokenAmount = o.mode === "add" ? null : decimal(o.token, token.decimals, "--token");
+  const tokenAmount = decimal(o.token, token.decimals, "--token");
   const to = o.to ? checksummed(o.to, "--to") : depositor;
   refuse(lower(to) !== ZERO_ADDRESS && lower(to) !== lower(planned.address), "--to must be an account that will hold the LP shares");
   const { router, factory } = plan.contracts;
@@ -183,6 +207,11 @@ export async function main(argv, print = console.log) {
         report.chain?.genesisHash === chain.chain.genesisHash && lower(report.plan?.contracts?.factory?.address ?? "") === lower(factory.address) &&
         lower(report.plan?.contracts?.router?.address ?? "") === lower(router.address) && Boolean(report.rehearsal) === o.rehearsal && Boolean(report.referencePlan) === plan.reference,
     );
+    if (o.mode === "add") {
+      // Only into a pool whose opening the gate proved (opened by the first depositor's own strict deposit).
+      const entry = (report.pairs ?? []).find((p) => lower(p.address ?? "") === lower(planned.address));
+      check("the gate report shows this pool open, with its opening proven", entry?.state === "open" && entry.opening?.proven === true, "run `gate.mjs <chain> post --opening PAIR=HASH` after the first deposit; a pool the gate cannot prove is not the owner's opening");
+    }
   }
   check("the factory holds the planned code", (await codeAt(factory.address)) === factory.runtimeCodeHash);
   check("the router holds the planned code", (await codeAt(router.address)) === router.runtimeCodeHash);
@@ -207,43 +236,77 @@ export async function main(argv, print = console.log) {
   const deadline = BigInt(head.timestamp) + BigInt(DEADLINE_SECONDS);
   const result = { schema: "postern.dex.multichain-deposit.v1", chain: chain.chain.key, chainId: chain.chain.chainId, mode: o.mode, pair: { name: o.pair, address: planned.address, state }, block: { number: Number(BigInt(at)), hash: head.hash }, depositor, to };
 
+  const price = (pool) => (pool.native > 0n ? formatUnits((pool.token * 10n ** 18n) / pool.native, token.decimals) : "?");
   if (o.mode === "verify") {
-    const r = side(reserves);
+    // From the deposit transaction itself, not from the reserves (they change with the first swap).
+    refuse(/^0x[0-9a-fA-F]{64}$/.test(o.tx), "--tx is a transaction hash");
+    const opening = await readOpening({ request, others, hash: o.tx.toLowerCase(), pair: planned.address, router: router.address, depositor, token: token.address, wrappedIs0 });
     check("the pool is open", state === "open");
-    const within = (got, want) => got >= want && (got - want) * 10_000n <= want * DONATION_BPS;
-    check(`the native reserve is the deposited ${nativeText(native)} (at most 0.1% above it)`, within(r.native, native), nativeText(r.native));
-    check(`the ${token.symbol} reserve is the deposited ${amountText(tokenAmount, token)} (at most 0.1% above it)`, within(r.token, tokenAmount), amountText(r.token, token));
-    if (r.native > native || r.token > tokenAmount) print(`note: the pool holds ${nativeText(r.native - native)} and ${amountText(r.token > tokenAmount ? r.token - tokenAmount : 0n, token)} more than the deposit: tokens someone sent to the pair before it opened (a gift to the pool).`);
-    if (o.tx) {
-      refuse(/^0x[0-9a-f]{64}$/.test(o.tx), "--tx is a transaction hash");
-      const tx = await request("eth_getTransactionByHash", [o.tx]);
-      const receipt = await request("eth_getTransactionReceipt", [o.tx]);
-      check("the deposit transaction is included and succeeded", tx && receipt?.status === "0x1");
-      if (tx) {
-        check("it was sent by the depositing account to the router", lower(tx.from) === lower(depositor) && lower(tx.to ?? "") === lower(router.address));
-        check("its minimums equal its amounts", hasStrictMinimums(tx.input, tx.value));
-      }
+    check("the transaction is the pair's first mint, sent by the first depositor straight to the router, with minimums equal to its amounts", opening.proven, opening.problems.join("; "));
+    result.opening = openingRecord(opening);
+    if (opening.deposited) {
+      check(`it deposited the ${nativeText(native)} given`, opening.deposited.native === native, nativeText(opening.deposited.native));
+      check(`it deposited the ${amountText(tokenAmount, token)} given`, opening.deposited.token === tokenAmount, amountText(opening.deposited.token, token));
     }
-    result.reserves = { native: r.native.toString(), token: r.token.toString() };
-    result.price = `1 ${chain.nativeCurrency.symbol} = ${r.native > 0n ? formatUnits((r.token * 10n ** 18n) / r.native, token.decimals) : "?"} ${token.symbol}`;
-    if (state === "open") print(`opening price: ${result.price}`);
+    if (opening.proven) {
+      const shift = priceShiftBps(opening);
+      result.opening.priceShiftBps = Number(shift);
+      result.price = `1 ${chain.nativeCurrency.symbol} = ${price(opening.joined)} ${token.symbol}`;
+      print(`opened in block ${opening.blockNumber} with ${nativeText(opening.joined.native)} + ${amountText(opening.joined.token, token)}; LP shares to ${opening.sharesTo}`);
+      print(`opening price: ${result.price}`);
+      if (opening.gift.native > 0n || opening.gift.token > 0n) {
+        print(`note: ${nativeText(opening.gift.native)} and ${amountText(opening.gift.token, token)} of that were not deposited by you: someone had sent them to the pair's address. They joined the pool as a gift (your shares own them; the sender lost them) and moved the opening price by ${(Number(shift) / 100).toFixed(2)}% from ${price(opening.deposited)}.`);
+        if (!giftWithinTolerance(opening.gift, opening.deposited))
+          print(`      That is more than 0.1%. Nothing is lost and nothing has to be undone: do NOT withdraw. Leave the liquidity in; the market trades the pool back to its price, and the gift stays with the pool. Compare the pool's price with the market before you publish the page.`);
+      }
+      print(`next, when the chain has finalized that block: node scripts/multichain/gate.mjs ${o.key} post --opening ${o.pair}=${o.tx.toLowerCase()} --out deployments/${o.key}/gate-report.json`);
+    }
   } else {
-    // The depositing account: an ordinary key account (its own transactions carry it as origin), funded.
+    // The depositing account: a plain key account. Code at the address (a contract, or an EIP-7702 delegation
+    // that others may be able to drive) is how someone else's call becomes this account's transaction.
     const code = await request("eth_getCode", [depositor, at]);
-    const delegated = code.toLowerCase().startsWith(EIP7702_PREFIX) && code.length === 2 + 46;
-    check("the depositing account is an externally owned account (no code, or an EIP-7702 delegation)", code === "0x" || delegated, code.slice(0, 60));
+    check("the depositing account has no code and no EIP-7702 delegation (a dedicated key account)", code === "0x", `${code.slice(0, 60)}: use an account without code as firstDepositor`);
     let transactions;
     if (o.mode === "prepare") {
-      check("the pool is not open yet", state !== "open", "use `add` for a pool that is already open");
+      // Open already: this tool did not open it (it prints one first deposit and `verify` follows). The pair
+      // accepts a first mint by transaction origin, so a contract the depositing account called can have opened
+      // it, at its own price (review R328-1).
+      check(
+        "the pool is not open yet",
+        state !== "open",
+        `STOP. This pool is already open, at 1 ${chain.nativeCurrency.symbol} = ${price(side(reserves))} ${token.symbol}. If you opened it with this tool, run verify with the deposit's hash. If you did not, someone opened it in the depositing account's name: deposit nothing, do not use add, and see docs/MULTICHAIN-DEPLOY.md section 10`,
+      );
+      const gift = side(balances);
+      const deposit = { native, token: tokenAmount };
+      const tolerated = giftWithinTolerance(gift, deposit);
       const skim = `${created ? "" : `cast send ${factory.address} "createPair(address,address)" ${token0} ${token1}; then `}cast send ${planned.address} "skim(address)" ${depositor}`;
-      check("no tokens sit at the pair's address", balances.every((x) => x === 0n), `${balances.join(" / ")}: someone sent tokens there, which would shift the opening price. Take them out first (anyone may send these): ${skim}; then run prepare again`);
+      check(
+        "what sits at the pair's address is at most 0.1% of either side of the deposit",
+        state === "open" || tolerated,
+        `${nativeText(gift.native)} and ${amountText(gift.token, token)} sit there: someone sent them. They would join the pool as a gift to it and move the opening price. Take them out first (anyone may send these; the tokens go to the address named): ${skim}; then run prepare again`,
+      );
+      if (state !== "open" && tolerated && (gift.native > 0n || gift.token > 0n)) {
+        const joined = { native: native + gift.native, token: tokenAmount + gift.token };
+        result.gift = { native: gift.native.toString(), token: gift.token.toString() };
+        print(`note: ${nativeText(gift.native)} and ${amountText(gift.token, token)} sit at the pair's address (someone sent them). They join the pool as a gift to it: the pool would open with ${nativeText(joined.native)} + ${amountText(joined.token, token)}, at 1 ${chain.nativeCurrency.symbol} = ${price(joined)} ${token.symbol} instead of ${price(deposit)}.`);
+      }
       transactions = openingTransactions({ router: router.address, token: token.address, native, tokenAmount, to, deadline });
     } else {
       check("the pool is open", state === "open", "use `prepare` for the first deposit");
       const r = side(reserves);
-      transactions = state === "open" ? addTransactions({ router: router.address, token: token.address, native, reserveNative: r.native, reserveToken: r.token, toleranceBps: Number(o["tolerance-bps"] ?? 50), to, deadline }) : [];
+      transactions = [];
+      if (state === "open") {
+        print(`pool price: 1 ${chain.nativeCurrency.symbol} = ${price(r)} ${token.symbol}; the amounts given say ${price({ native, token: tokenAmount })}`);
+        try {
+          transactions = addTransactions({ router: router.address, token: token.address, native, expectedToken: tokenAmount, reserveNative: r.native, reserveToken: r.token, toleranceBps: Number(o["tolerance-bps"] ?? 50), to, deadline });
+          check("the pool's price is the price of the amounts given, within the tolerance", true);
+        } catch (error) {
+          if (!(error instanceof MultichainError) || !/pool's price is not/.test(error.message)) throw error;
+          check("the pool's price is the price of the amounts given, within the tolerance", false, error.message.replace(/^multichain: /, ""));
+        }
+      }
     }
-    const need = transactions.length ? BigInt(transactions[0].args[1]) : 0n;
+    const need = transactions.length ? BigInt(transactions[0].args[1]) : tokenAmount;
     const have = await call(token.address, "balanceOf", [depositor]);
     check(`the depositing account holds the ${token.symbol} to deposit (${amountText(need, token)})`, have >= need, amountText(have, token));
     const coin = BigInt(await request("eth_getBalance", [depositor, at]));
@@ -252,12 +315,12 @@ export async function main(argv, print = console.log) {
     result.deadline = deadline.toString();
     if (checks.every((c) => c.ok)) {
       print("");
-      print(`Send these two transactions FROM ${depositor} (the factory's first depositor; no other account can open a pool).`);
+      print(`Send these two transactions FROM ${depositor} (the factory's first depositor), exactly as printed, and send nothing else from that account.`);
       print(`Add your signer option (--ledger, --trezor or --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
       for (const t of transactions) print(`cast send ${t.to} "${t.signature}" ${t.args.join(" ")}${t.value > 0n ? ` --value ${t.value}` : ""} --from ${depositor}`);
       print("");
       print(o.mode === "prepare"
-        ? `The deposit is ${nativeText(native)} + ${amountText(tokenAmount, token)}, and its minimums are those same amounts: it opens the pool at exactly that price or reverts. Then: node scripts/multichain/first-deposit.mjs ${o.key} verify --pair ${o.pair} --native ${o.native} --token ${o.token} --tx <hash of the deposit>`
+        ? `The deposit is ${nativeText(native)} + ${amountText(tokenAmount, token)}, and its minimums are those same amounts: nobody else can have opened the pool before it (it would revert). Tokens that someone sends to the pair's address before it is mined join the pool as a gift and move the opening price by their size; verify reports it. Then: node scripts/multichain/first-deposit.mjs ${o.key} verify --pair ${o.pair} --native ${o.native} --token ${o.token} --tx <hash of the deposit>`
         : `The deposit is ${nativeText(native)} + ${amountText(need, token)} at the pool's current price; it reverts if the price moves more than ${Number(o["tolerance-bps"] ?? 50) / 100}% first.`);
     }
   }
@@ -265,7 +328,9 @@ export async function main(argv, print = console.log) {
   result.checks = checks;
   result.decision = failed.length === 0 ? "pass" : "fail";
   if (o.out) writeFileSync(o.out, `${JSON.stringify(result, null, 2)}\n`);
-  print(`multichain ${o.mode} ${o.key} ${o.pair}: ${result.decision.toUpperCase()}${failed.length ? `; nothing to send (${failed.length} check${failed.length === 1 ? "" : "s"} failed)` : ""}`);
+  const count = `${failed.length} check${failed.length === 1 ? "" : "s"} failed`;
+  if (o.mode === "verify" && failed.length) print("The opening is NOT proven. Do not run the gate for the page's record and do not use add. If this pool was opened by a transaction you did not send through this tool, someone opened it in the depositing account's name: docs/MULTICHAIN-DEPLOY.md section 10.");
+  print(`multichain ${o.mode} ${o.key} ${o.pair}: ${result.decision.toUpperCase()}${failed.length ? (o.mode === "verify" ? `; ${count}` : `; nothing to send (${count})`) : ""}`);
   return failed.length === 0 ? 0 : 1;
 }
 

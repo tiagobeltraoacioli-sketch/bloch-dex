@@ -8,7 +8,8 @@
 //                                               code hash; every Bloch-L2-only rule stated off
 //   deployments/<chain>/frontend.record.json    "not-deployed", or the deployment as the post gate verified it
 //                                               (--gate-report: a report of `gate.mjs <chain> post` with decision
-//                                               "pass"; a rehearsal or reference-plan report is refused unless
+//                                               "pass", every planned pair open and its opening proven; a
+//                                               rehearsal or reference-plan report is refused unless
 //                                               --rehearsal is given, which also replaces the endpoints by --rpc)
 // --out writes both files into DIR/<chain>/ instead of deployments/<chain>/ (rehearsals). No RPC is contacted.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -56,6 +57,9 @@ export function frontendRecord(shared, chain, report = null, { rehearsal = false
   // A page for a pool nobody opened would show an empty market; and an opened pool is the proof that the first
   // deposit went through the guarded path (only the first depositor can open a pool of this factory).
   refuse(pairs.every((p) => p.state === "open"), "the gate report shows a planned pair that is not open yet: make its first deposit (first-deposit.mjs), then run the post gate again");
+  // "Open" does not say who opened a pool (the pair accepts a first mint by transaction origin): the gate must
+  // have proven each opening from its transaction (review R328-1).
+  refuse(pairs.every((p) => p.opening?.proven === true), "the gate report does not prove who opened each pool: run the post gate with --opening PAIR=HASH (first-deposit.mjs verify prints it)");
   const contracts = report.plan.contracts;
   return {
     ...base,
