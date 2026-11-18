@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Smartphone } from 'lucide-react';
 import { Modal } from '../ui/Modal';
 import { CopyButton } from '../ui/CopyButton';
-import type { WalletOption } from '../wallet';
+import type { Provider, WalletOption } from '../wallet';
 
 export type MobileConnectChain = { chainId: number; name: string };
 type Stage =
@@ -39,20 +39,32 @@ export function onHandheld(): boolean {
   }
 }
 
+export const MOBILE_SESSION_NOTE =
+  'Connected to a mobile wallet through WalletConnect. After you press Approve or Swap here, open the wallet app to confirm there.';
+
 /**
  * `chains`: the networks of this site whose bundled record is live (the session is asked for these and no other);
- * `route`: the network of the page shown. Returns the button for the route's connect step and the dialog.
+ * `route`: the network of the page shown. Returns the button for the route's connect step, the dialog, and, while
+ * the page's wallet is a mobile session opened here, a line that says so and ends it (an injected wallet is
+ * disconnected in its own extension; a mobile session has no other handle on this page).
  */
 export function useMobileWalletConnect({
   wallet,
   chains,
   route,
 }: {
-  wallet: { pending: boolean; connect(option: WalletOption): Promise<void> | void };
+  wallet: {
+    pending: boolean;
+    provider?: Provider | null;
+    connect(option: WalletOption): Promise<void> | void;
+    disconnect?(): void;
+  };
   chains: MobileConnectChain[];
   route: MobileConnectChain;
-}): { button: ReactNode; dialog: ReactNode } {
+}): { button: ReactNode; dialog: ReactNode; session: ReactNode } {
   const [stage, setStage] = useState<Stage | null>(null);
+  // The provider of the session opened here, to tell it from an injected wallet.
+  const [opened, setOpened] = useState<Provider | null>(null);
   const attempt = useRef<AbortController | null>(null);
   const available = chains.some((c) => c.chainId === route.chainId);
   const close = () => {
@@ -99,6 +111,7 @@ export function useMobileWalletConnect({
         option.provider.disconnect?.();
         return;
       }
+      setOpened(option.provider);
       await wallet.connect(option);
       if (attempt.current === controller) {
         attempt.current = null;
@@ -211,5 +224,14 @@ export function useMobileWalletConnect({
       </div>
     </Modal>
   ) : null;
-  return { button, dialog };
+  const session =
+    opened !== null && wallet.provider === opened && wallet.disconnect ? (
+      <p className="muted mobile-session" data-testid="mobile-session">
+        {MOBILE_SESSION_NOTE}{' '}
+        <button type="button" className="text-link" onClick={() => wallet.disconnect?.()}>
+          Disconnect the mobile wallet
+        </button>
+      </p>
+    ) : null;
+  return { button, dialog, session };
 }

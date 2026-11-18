@@ -180,6 +180,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
           {note}
         </p>
       ))}
+      {mobile.session}
       <ConnectSlotContext.Provider value={mobile.button}>
         <MainnetLive
           key={chain.key}

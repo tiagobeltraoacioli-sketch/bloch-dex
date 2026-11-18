@@ -7,6 +7,22 @@ import type { MainnetNetwork } from './config';
 
 // WalletConnect relay/verify and the Reown (WalletConnect) asset APIs used by
 // the QR wallet flow, as in qr-release/worker.mjs.
+//
+// Who contacts what (agent 410, round 20). The policy text is one for both sites; the list is not widened for the
+// multichain site's mobile-wallet session, which uses less of it than the Bloch L2 preview's QR flow:
+//  - relay.walletconnect.org (wss): the relay socket of the WalletConnect client, opened when the user presses a
+//    connect-by-QR / mobile-wallet button and not before. Both flows. The https form and the .com names are the
+//    client library's fallbacks for the same service.
+//  - verify.walletconnect.org / .com (connect and frame): the client's origin attestation (Verify API), by which
+//    a wallet can show that a request comes from this site's domain. Both flows.
+//  - pulse.walletconnect.org: the client's event reporting. Both flows start the client with telemetry off; the
+//    name stays for the library's own error reports.
+//  - rpc.walletconnect.org: Reown's RPC, which the AppKit modal of the Bloch L2 preview may use. The multichain
+//    session never reads through it: it sends eth_sendTransaction to the wallet and nothing else.
+//  - api.web3modal.org, api.reown.com (connect and img): wallet list and wallet images of the AppKit modal (the
+//    Bloch L2 preview's QR flow). The multichain site draws its own QR code and loads neither.
+// The multichain rehearsal (frontend/integration/browser/multichain-walletconnect.mjs) records the origins the
+// page really contacted and fails on one that is not named here.
 const WALLETCONNECT_CONNECT = [
   'wss://relay.walletconnect.com',
   'wss://relay.walletconnect.org',

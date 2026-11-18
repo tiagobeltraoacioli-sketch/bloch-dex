@@ -16,7 +16,9 @@ const here = fileURLToPath(new URL("..", import.meta.url));
 const argv = process.argv.slice(2);
 const at = argv.indexOf("--bundle");
 const bundleFile = at >= 0 ? argv[at + 1] : null;
-const out = resolve(argv.find((a, i) => !a.startsWith("--") && i !== at + 1) ?? join(here, "dist-multichain"));
+// The value of --bundle is not the output directory. (Without --bundle, `at` is -1: the first argument IS the
+// directory; before agent 410 it was skipped as if it followed the flag, and the default directory was written.)
+const out = resolve(argv.find((a, i) => !a.startsWith("--") && (at < 0 || i !== at + 1)) ?? join(here, "dist-multichain"));
 let networks;
 if (bundleFile) networks = JSON.parse(readFileSync(bundleFile, "utf8")).map((entry) => entry.network);
 else {

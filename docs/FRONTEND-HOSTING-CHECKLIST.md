@@ -140,8 +140,31 @@ blochbridge.com must have no Worker route at all.
 - The project ID `e263eead…00bb` is public. In Reown Cloud, set the allowed
   domains to `blochdex.com` (and `www`) only, so another site cannot use the
   project's name and verification status.
-- The QR wallet requests `eth_accounts` and `eth_chainId` on the staging chain
+- The QR wallet of the Bloch L2 preview requests `eth_accounts` and `eth_chainId` on the staging chain
   only and cannot send transactions; it is not part of the bridge site.
+- The multichain site ("Bloch DEX", published at the root of `blochdex.com`) has its own session
+  (`frontend/src/multichain/walletconnect.ts`): one method, `eth_sendTransaction`, on the networks whose record
+  is live; no message signing; the wallet is never asked to read. It uses the same project ID, so the domain it
+  is served from must be in that project's list. Nothing in this repository can read that list: it is checked
+  in the Reown dashboard (Project, then Domain / "Allowed domains" or "Verify"), by the owner:
+  1. Sign in at `https://dashboard.reown.com` with the account that owns the project.
+  2. Open the project whose Project ID is `e263eead656b6d61ecdee75a71e100bb`.
+  3. Open the project's domain settings (the allowlist of origins).
+  4. Make sure `https://blochdex.com` is listed; add it if it is not.
+  5. Add `https://www.blochdex.com` only if the site answers on `www`.
+  6. Remove entries that are no longer the project's sites (old preview hosts).
+  7. Save, then open `https://blochdex.com` and run steps 1 to 5 of test 12 in `docs/WALLET-MANUAL-TEST.md`.
+  Measured from outside on 2026-11-18 (agent 410; a relay socket opened as the client library opens it, with
+  the project ID and an `Origin` header, one subscription to a random topic, nothing else): the relay accepted
+  `https://blochdex.com` and a loopback origin, and closed `https://www.blochdex.com` and an unrelated origin
+  with code 3000 "Unauthorized: origin not allowed". So the list is enforced and holds the bare domain but not
+  `www`, while `https://www.blochdex.com/` serves the site (HTTP 200, no redirect): a visitor on `www` cannot
+  connect a mobile wallet until `www` is added to the list or redirected to the bare domain (step 5). This
+  shows the relay's answer to an Origin header, not a browser on the real domain, and not the Verify status a
+  wallet displays.
+  The same page shows the project's plan and usage: the WalletConnect packages are under a community licence
+  with a commercial threshold (`docs/LICENSING.md` section 4), and this change puts them into the multichain
+  site's build.
 
 ## 7. After each publish
 

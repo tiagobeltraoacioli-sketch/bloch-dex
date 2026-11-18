@@ -103,6 +103,46 @@ What it is not:
   (`reply-lost-wallet-ignores-nonce-no-review`), so the double swap that round
   14 recorded as a residual can no longer be produced by the page; a swap hold
   ends at its deadline in a finalized block (`reply-lost-never-published-expires`).
-- No WalletConnect: the QR entry of this frontend is identity-only and refuses
-  every transaction, so there is nothing to drive.
+- No WalletConnect here: the QR entry of the Bloch L2 page is identity-only and refuses
+  every transaction, so there is nothing to drive. The multichain site's mobile-wallet
+  session has its own rehearsal (next section).
 - Headless Chrome on macOS only was run. No Firefox, Safari or mobile browser.
+
+# Mobile-wallet (WalletConnect) rehearsal of the multichain site (`browser/walletconnect-rehearsal.mjs`)
+
+From the repository root, with `anvil`, `cast` and `forge` on `PATH` and `forge build` done:
+
+```sh
+node frontend/integration/browser/walletconnect-rehearsal.mjs --port 48000 --out /absolute/evidence/dir
+```
+
+Options: `--chains key,key` (default `base,op-mainnet`; at least two), `--shots DIR` (screenshots), `--stage 1`
+(bring the stage up and hold it; run `browser/multichain-walletconnect.mjs <DIR>/harness.json` by hand).
+It uses the tools of the page rehearsal (`scripts/multichain/rehearse-fork.mjs --hold`, `endpoint-proxy.mjs`,
+`frontend-files.mjs`), builds the site twice (a rehearsal bundle of the forked chains, and the committed records,
+where no chain is live) and serves both on loopback with their own headers. The page runs in headless Chrome
+with no injected wallet. The wallet is SCRIPTED: a WalletConnect sign-client in node with a throwaway key,
+paired with the page through the real relay (`relay.walletconnect.org`). The pairing code is taken from the
+pixels of the QR image on screen (desktop) or from the wallet-app link (phone emulation).
+
+What it asserts (`walletconnect-result.json`, schema `postern.frontend.multichain-walletconnect.v1`):
+
+- not live: the header "Connect wallet" shows its note; no socket, no request off the origin, no WalletConnect
+  code loaded;
+- live, before the press: the same three; after it: the proposal the wallet received (nothing required, the live
+  chains, one method, two events, the site's name and origin), the origins the page contacted against the
+  Content-Security-Policy;
+- on two forked chains: a swap, an approval and a swap of the approved token, each signed by the scripted wallet,
+  each checked on the fork, the second chain reached without any switch request to the wallet;
+- refusals: a rejection in the wallet; an account change followed; a chain outside the session; sessions with an
+  added method, an added chain, two accounts, or without the page's network; a declined connection; an update
+  that adds a method; a disconnection by the wallet and by the page; a transaction hash that is on no chain;
+- phone emulation: the links of the dialog and a connection through the `wc:` link.
+
+A chain on which the DEX is already deployed is forked from a loopback copy from which the three planned
+addresses were emptied (the fork rehearsal deploys). What leaves the machine: the forks' reads of the public
+endpoints and the relay traffic of the page and of the scripted wallet.
+
+What it is not: a wallet app, a phone, Safari, or the production domain. The relay accepted the loopback origin;
+whether the project accepts the production domain is set in the Reown dashboard. Real devices:
+[test 12 of the manual script](../../docs/WALLET-MANUAL-TEST.md).

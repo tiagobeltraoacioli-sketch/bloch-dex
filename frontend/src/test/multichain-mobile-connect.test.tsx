@@ -34,15 +34,24 @@ function Harness({
   chains = LIVE,
   route = BASE,
   pending = false,
+  provider,
+  disconnect,
 }: {
   connect: (option: WalletOption) => Promise<void> | void;
   chains?: MobileConnectChain[];
   route?: MobileConnectChain;
   pending?: boolean;
+  provider?: WalletOption['provider'] | null;
+  disconnect?: () => void;
 }) {
-  const mobile = useMobileWalletConnect({ wallet: { pending, connect }, chains, route });
+  const mobile = useMobileWalletConnect({
+    wallet: { pending, connect, provider, disconnect },
+    chains,
+    route,
+  });
   return (
     <>
+      {mobile.session}
       <ConnectSlotContext.Provider value={mobile.button}>
         <div data-wallet-connect>
           <ConnectSlot />
@@ -213,6 +222,32 @@ describe('mobile-wallet connect step', () => {
     await act(async () => fail(new Error('Proposal expired')));
     expect((await within(dialog).findByRole('alert')).textContent).toBe(MOBILE_CONNECT_FAILED);
     expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('while the page’s wallet is the session opened here, a line says so and can end it; never for another wallet', async () => {
+    const user = userEvent.setup();
+    const { finish } = pairing();
+    const disconnect = vi.fn();
+    const injected = { request: async () => null };
+    const view = render(<Harness connect={vi.fn()} provider={injected} disconnect={disconnect} />);
+    expect(screen.queryByTestId('mobile-session')).toBeNull();
+    await user.click(screen.getByRole('button', { name: /Connect a mobile wallet/ }));
+    await screen.findByRole('dialog');
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // Still the injected wallet in the page's state: no line.
+    expect(screen.queryByTestId('mobile-session')).toBeNull();
+    view.rerender(<Harness connect={vi.fn()} provider={OPTION.provider} disconnect={disconnect} />);
+    const line = screen.getByTestId('mobile-session');
+    expect(line.textContent).toBe(
+      'Connected to a mobile wallet through WalletConnect. After you press Approve or Swap here, open the wallet app to confirm there. Disconnect the mobile wallet',
+    );
+    await user.click(within(line).getByRole('button', { name: 'Disconnect the mobile wallet' }));
+    expect(disconnect).toHaveBeenCalledOnce();
+    view.rerender(<Harness connect={vi.fn()} provider={null} disconnect={disconnect} />);
+    expect(screen.queryByTestId('mobile-session')).toBeNull();
+    view.rerender(<Harness connect={vi.fn()} provider={injected} disconnect={disconnect} />);
+    expect(screen.queryByTestId('mobile-session')).toBeNull();
   });
 
   it('offers nothing on a page whose network is not among the live ones, or while another connection is pending', () => {

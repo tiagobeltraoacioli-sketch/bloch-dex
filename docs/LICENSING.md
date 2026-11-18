@@ -93,6 +93,17 @@ Which build contains them, measured on this line's builds of 2026-11-17: the Blo
 names Reown; it has no QR wallet connection). The redesigned frontend line must be measured again when it is
 integrated.
 
+Measured again on 2026-11-18 (agent 410, branch `codex/dex-reown-wallet-r20-20261118`): **the multichain site now
+contains WalletConnect code.** Its mobile-wallet connection (`frontend/src/multichain/walletconnect.ts`) loads
+`@walletconnect/sign-client` 2.25.0 and what that package depends on, in one lazily loaded file of
+`dist-multichain/assets` (about 409 kB, 122 kB compressed; fetched only when a user presses "Connect a mobile
+wallet"). It contains no Reown AppKit: no file of the multichain build names Reown or AppKit, and the site draws
+its own QR code. So the WalletConnect Community License Agreement applies to the multichain site as well (the
+notice, the gateway condition and the commercial threshold above); the Reown AppKit agreement still applies to the
+Bloch L2 site only. The notice travels as before (`THIRD-PARTY-NOTICES.txt`, linked from the footer as
+"Licences", and `NOTICE`). No dependency was added or upgraded: both packages were already in
+`frontend/package.json` and `package-lock.json` is unchanged.
+
 This is an owner matter (cost and terms), listed in the round's report.
 
 ## 5. The copyright holder (filled)

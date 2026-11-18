@@ -2744,3 +2744,37 @@ li[data-state='failed'] .state-pill {
 .mobile-connect-copy {
   justify-content: space-between;
 }
+.mobile-session {
+  margin: 0 0 var(--s-3);
+  font-size: var(--text-small);
+  line-height: 1.5;
+}
+.mobile-session .text-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+/* At phone width a header popover becomes a sheet fixed to the bottom of the screen; inside the header that sheet
+   is placed against the header instead (its backdrop filter makes it the containing block of fixed descendants).
+   The note is therefore laid out against the header itself (the sticky top bar is its nearest positioned
+   ancestor once the entry is static): a panel under the header, inside the screen, whatever the filter does. */
+@media (max-width: 640px) {
+  .wallet-connect-entry {
+    position: static;
+  }
+  .wallet-connect-entry .wallet-unavailable {
+    position: absolute;
+    top: calc(100% + 8px);
+    bottom: auto;
+    left: var(--s-4);
+    right: var(--s-4);
+    width: auto;
+    max-width: none;
+    max-height: none;
+    border-width: 1px;
+    border-radius: var(--r-3);
+  }
+}

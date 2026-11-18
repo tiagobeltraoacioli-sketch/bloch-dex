@@ -20,7 +20,7 @@ The answers this script must produce, because no automated test can:
 | MetaMask Mobile, in-app browser | injected | tests 1 to 5, 7 and 10 |
 | One WalletConnect wallet through the QR entry | WalletConnect | test 11 only |
 
-The QR entry of this frontend is identity-only (`frontend/src/qr-wallet.ts`): its provider answers account and chain
+The QR entry of the Bloch L2 page is identity-only (`frontend/src/qr-wallet.ts`): its provider answers account and chain
 and refuses everything else with "This DEX preview requests account access only. Transactions require a verified
 deployment." A WalletConnect wallet therefore cannot approve or swap on this page. Test 11 confirms that.
 
@@ -324,6 +324,39 @@ Expected: no prompt reaches the wallet and nothing is signed. Record the exact p
 because nothing can have been sent.
 
 Router calls mined: 0. Harness: not covered.
+
+## Test 12: a mobile wallet through WalletConnect on the multichain site (Bloch DEX)
+
+The multichain site has its own session (`frontend/src/multichain/walletconnect.ts`), which does send transactions.
+The rehearsal (`frontend/integration/browser/walletconnect-rehearsal.mjs`) drives it with a scripted wallet in a
+desktop browser engine. None of the following is shown by it; each needs a phone and a real wallet app. Run it on a
+network of the site that is live, with small amounts, once per wallet (MetaMask, Trust Wallet, Rainbow at least) and
+per phone system (iOS with Safari, Android with Chrome).
+
+Before the first run: the Reown project of the site (`e263eead…00bb`) must accept the site's domain (section 6 of
+`docs/FRONTEND-HOSTING-CHECKLIST.md`). If it does not, step 2 shows "The connection was closed or could not be
+made" before any code appears: record that and stop.
+
+| Step | Do | Expected | Record |
+|---|---|---|---|
+| 1 | Desktop Safari without a wallet extension: open the network's page | "No browser wallet found." and a button "Connect a mobile wallet" | |
+| 2 | Press it | A dialog with a QR code within a few seconds | seconds until the code |
+| 3 | Scan the code with the wallet app | The wallet names the site "Bloch DEX" with the site's domain, and whether it shows the domain as verified, unverified or a warning | the wallet's exact words; a screenshot |
+| 4 | Read what the wallet asks for | Only sending transactions, on the networks that are live on the site; no message signing | the networks and permissions the wallet lists |
+| 5 | Approve | The dialog closes; the page shows "Wallet 0x… on chain N" and the line "Connected to a mobile wallet through WalletConnect." | If the page says "The wallet approved something other than what this page asked for": the wallet's name and version. That wallet cannot be used with this site as it is; report it |
+| 6 | Get a quote for a small swap of the native coin, press Swap | The wallet shows one transaction to the router on the right network | whether the wallet showed it by itself or had to be opened by hand; the network it shows |
+| 7 | Confirm | The page tracks the swap and shows it mined after the network's confirmations | the hash; compare it with the explorer |
+| 8 | Sell part of the token: Approve, then Swap | Two wallet prompts; the approval is for exactly the quoted amount | both hashes |
+| 9 | Open another live network's page and swap there | No "switch network" prompt in the wallet; the transaction prompt names the other network | what the wallet shows; a wallet that refuses a network it did not have selected is to be reported |
+| 10 | Press Swap and reject in the wallet | "The wallet request was rejected by you. Nothing was sent." and Swap usable again | If instead the page keeps a hold ("outcome unknown"): the wallet's name, and its error code if shown |
+| 11 | In the wallet, end the connection | The page returns to the connect step within seconds | |
+| 12 | Connect again; press "Disconnect the mobile wallet" on the page | The connection disappears from the wallet's list | |
+| 13 | On the phone itself (Safari on iOS, Chrome on Android): open the page, "Connect a mobile wallet", then "Open in a wallet app" and, separately, the link named after the wallet | The wallet app opens with the connection request; after approving and returning to the browser the page shows the account | for each link: opened the app / opened a web page / did nothing; whether the page had reloaded on return (then the session is gone: record it) |
+| 14 | On the phone: Swap, switch to the wallet app, confirm, return | The page shows the swap tracked, also when the phone slept in between | whether the request was waiting in the wallet; whether the page caught up after returning |
+
+Router calls mined: steps 7, 8 (one), 9 and 14: four. Harness: steps 2 to 12 with a scripted wallet on a desktop
+engine (what is asked, what is refused, the transactions on two forked chains); steps 13 and 14 only as far as "the
+link carries the pairing code and a wallet that receives it connects".
 
 ## Results
 

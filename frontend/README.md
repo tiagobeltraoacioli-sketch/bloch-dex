@@ -104,6 +104,23 @@ account lists. Expired, excessively long-lived or mixed-chain approvals are
 closed before a provider is exposed. Approved sessions also expire locally on
 their bounded deadline even if a remote expiry event is missed. Hardware-wallet-specific flows are not included.
 
+The multichain site ("Bloch DEX", `MultichainApp.tsx`) has a second, separate WalletConnect session
+(`src/multichain/walletconnect.ts`) for a wallet on a phone: a QR code on a desktop, links that open the wallet
+app on the phone itself. It is offered inside the route's own connect step, only on a network whose bundled
+record is live, and its client is loaded only when the user presses the button. The session asks for one method,
+`eth_sendTransaction`, and the `accountsChanged` and `chainChanged` events, on the networks that are live, as an
+offer (a wallet may approve fewer networks; the page's own network must be among them). Account, chain and
+chain-switch requests of the page are answered in the page from the approved session; every other method is
+refused in the page, so the wallet is never asked to read the chain or to sign a message, and the page keeps
+reading from its own two agreeing endpoints. A transaction is sent only when it names its chain, that chain is
+the one selected in the session and the sender is the session's account; the returned hash is verified by the page
+as for an injected wallet. The approved namespace, every later update and every session event are compared
+exactly; a chain, account set, method or event outside the request closes the session. Session state is kept in
+memory, not in browser storage: a reload ends the session on the page. The dialog draws its own QR code (`qr`);
+the AppKit modal is not part of this site's build. `frontend/integration/browser/walletconnect-rehearsal.mjs`
+rehearses the flow with a scripted wallet through the real relay; real phones and real wallets are test 12 of
+`docs/WALLET-MANUAL-TEST.md`.
+
 On iPhone Safari the application must first be opened in MetaMask's own browser;
 the injected-provider connection here does not pair Safari directly with the app.
 Discovery listens for MetaMask's asynchronous `ethereum#initialized` event,
