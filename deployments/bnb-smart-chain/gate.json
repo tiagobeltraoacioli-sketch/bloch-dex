@@ -23,6 +23,19 @@
         "symbol": "USDC",
         "decimals": 18,
         "codeHash": "0x56069ff2fd59ae482f7984aa894b6d3bc84cb910354dcda9cd6c828d61526914"
+      },
+      {
+        "address": "0x55d398326f99059fF775485246999027B3197955",
+        "symbol": "USDT",
+        "decimals": 18,
+        "codeHash": "0x97a48aa4c129657440dafdacd4c836389734d28cc4a0ca7403e68da660a74a59",
+        "behaviour": {
+          "returnsNoValue": false,
+          "approveZeroFirst": false,
+          "transferFee": null,
+          "switches": [],
+          "blocklist": null
+        }
       }
     ],
     "multicall3": {
@@ -101,6 +114,60 @@
           }
         }
       ]
+    },
+    "openingPrices": {
+      "WBNB/USDT": {
+        "rule": "market",
+        "maxDeviationBps": 50,
+        "referencesAgreeBps": 100,
+        "minimumNative": "0.5",
+        "minimumReason": "At least 0.5 BNB and its USDT (Binance-Peg) at the market price: the same floor as this chain's first pair, for the same reason (gas is negligible here; the floor keeps the pool worth more than a few hundred dollars a side). Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+        "references": [
+          {
+            "kind": "chainlink",
+            "name": "Chainlink BNB / USD over USDT / USD",
+            "base": {
+              "proxy": "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE",
+              "description": "BNB / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 27,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "quote": {
+              "proxy": "0xB97Ad0E74fa7d920791E90258A6E2085088b4320",
+              "description": "USDT / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 900,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+            "sourceChecked": {
+              "url": "https://reference-data-directory.vercel.app/feeds-bsc-mainnet.json",
+              "fetched": "2026-11-18",
+              "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): BNB / USD path bnb-usd, USDT / USD path usdt-usd (proxyAddress, heartbeat and decimals as recorded here)"
+            }
+          },
+          {
+            "kind": "v3-twap",
+            "name": "PancakeSwap v3 WBNB/USDT 0.01% pool, 5-minute mean",
+            "protocol": "PancakeSwap v3",
+            "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+            "factoryCodeHash": "0x8191d3ab1d55d3da9822199f28865415c99566b6f1aee4a4b16713f57930678c",
+            "fee": 100,
+            "pool": "0x172fcD41E0913e95784454622d1c3724f546f849",
+            "poolCodeHash": "0x6796316e56ef0dd38755758b3239f271b2398ef028c8200bcf7fc8cc00ae1cfd",
+            "windowSeconds": 300,
+            "minimumWrapped": "3000",
+            "chosen": "the 0.01% pool is the deepest (14,006 WBNB when measured, observation cardinality 4500), and it prices the listed Binance-Peg token itself; the 0.05% pool held 11,340 WBNB",
+            "source": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+            "sourceChecked": {
+              "url": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+              "fetched": "2026-11-18",
+              "found": "the publisher's address table, row PancakeV3Factory; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+            }
+          }
+        ]
+      }
     }
   },
   "expected": "derived by scripts/multichain/plan.mjs from the compiled release candidate and the owner's choices: factory, router, lens and pair addresses and runtime code hashes",

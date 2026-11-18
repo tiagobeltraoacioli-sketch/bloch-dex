@@ -50,6 +50,34 @@
       },
       "label": "USDC (Binance-Peg)",
       "note": "USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals."
+    },
+    {
+      "address": "0x55d398326f99059fF775485246999027B3197955",
+      "symbol": "USDT",
+      "name": "Tether USD",
+      "decimals": 18,
+      "codeHash": "0x97a48aa4c129657440dafdacd4c836389734d28cc4a0ca7403e68da660a74a59",
+      "kind": "NOT Tether-issued: Binance-Peg BSC-USD (a token issued by Binance against USDT it holds), 18 decimals; the contract says name() \"Tether USD\" and symbol() \"USDT\". Not a proxy; its owner can mint. Tether's own page names no USD₮ contract on BNB Smart Chain. Listed under the label \"USDT (Binance-Peg)\", never as plain USDT",
+      "source": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
+      "sourceChecked": {
+        "url": "https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll",
+        "fetched": "2026-11-18",
+        "found": "Binance's public network list, coin USDT, network BSC: the Binance-Peg token; Tether's page (tether.to/en/supported-protocols), section \"BNB Smart Chain\", names only an XAU₮ contract"
+      },
+      "label": "USDT (Binance-Peg)",
+      "note": "USDT (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Tether, and has 18 decimals.",
+      "behaviour": {
+        "returnsNoValue": false,
+        "approveZeroFirst": false,
+        "transferFee": null,
+        "switches": [],
+        "blocklist": null,
+        "issuerPowers": "The owner (0xF68a4b64162906efF0fF6aE34E2bB1Cd42FEf62d when read) can mint any amount and transfer or renounce ownership; holders can burn. No pause, blocklist or fee function. Its value rests on Binance holding the USDT behind it.",
+        "checked": {
+          "at": "2026-11-18",
+          "how": "the functions the runtime dispatches on (PUSH4 scan of the code read from two endpoints: mint(uint256), burn(uint256), owner; no pause, blocklist or fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
+        }
+      }
     }
   ],
   "multicall3": {
@@ -78,6 +106,62 @@
     {
       "tokenA": "WBNB",
       "tokenB": "USDC"
+    },
+    {
+      "tokenA": "WBNB",
+      "tokenB": "USDT",
+      "openingPrice": {
+        "rule": "market",
+        "maxDeviationBps": 50,
+        "referencesAgreeBps": 100,
+        "minimumNative": "0.5",
+        "minimumReason": "At least 0.5 BNB and its USDT (Binance-Peg) at the market price: the same floor as this chain's first pair, for the same reason (gas is negligible here; the floor keeps the pool worth more than a few hundred dollars a side). Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+        "references": [
+          {
+            "kind": "chainlink",
+            "name": "Chainlink BNB / USD over USDT / USD",
+            "base": {
+              "proxy": "0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE",
+              "description": "BNB / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 27,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "quote": {
+              "proxy": "0xB97Ad0E74fa7d920791E90258A6E2085088b4320",
+              "description": "USDT / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 900,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+            "sourceChecked": {
+              "url": "https://reference-data-directory.vercel.app/feeds-bsc-mainnet.json",
+              "fetched": "2026-11-18",
+              "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): BNB / USD path bnb-usd, USDT / USD path usdt-usd (proxyAddress, heartbeat and decimals as recorded here)"
+            }
+          },
+          {
+            "kind": "v3-twap",
+            "name": "PancakeSwap v3 WBNB/USDT 0.01% pool, 5-minute mean",
+            "protocol": "PancakeSwap v3",
+            "factory": "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865",
+            "factoryCodeHash": "0x8191d3ab1d55d3da9822199f28865415c99566b6f1aee4a4b16713f57930678c",
+            "fee": 100,
+            "pool": "0x172fcD41E0913e95784454622d1c3724f546f849",
+            "poolCodeHash": "0x6796316e56ef0dd38755758b3239f271b2398ef028c8200bcf7fc8cc00ae1cfd",
+            "windowSeconds": 300,
+            "minimumWrapped": "3000",
+            "chosen": "the 0.01% pool is the deepest (14,006 WBNB when measured, observation cardinality 4500), and it prices the listed Binance-Peg token itself; the 0.05% pool held 11,340 WBNB",
+            "source": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+            "sourceChecked": {
+              "url": "https://developer.pancakeswap.finance/contracts/v3/addresses",
+              "fetched": "2026-11-18",
+              "found": "the publisher's address table, row PancakeV3Factory; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+            }
+          }
+        ]
+      }
     }
   ],
   "reserveCaps": [],
@@ -141,5 +225,10 @@
     "at": "2026-11-16",
     "how": "scripts/multichain/verify-chain.mjs: chain id, genesis hash, code hashes, name(), symbol(), decimals() read from both RPC endpoints",
     "sources": "the wrapped native token and USDC addresses were compared with the pages named in sourceChecked, fetched read-only on 2026-11-16"
+  },
+  "verifiedRound20": {
+    "at": "2026-11-18",
+    "how": "scripts/multichain/verify-chain.mjs (added in round 20; the tool this block names did not exist in the repository before): chain id, genesis hash, code hashes, name(), symbol(), decimals(), the transfer-fee getters and declared switches of every token, and the two price references of every planned pair, each read at one block hash from the reviewed endpoints, two of which must answer and agree",
+    "sources": "the address of USDT and of its price references were compared with the pages named in sourceChecked, fetched read-only on 2026-11-18"
   }
 }

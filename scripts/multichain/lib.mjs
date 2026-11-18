@@ -312,6 +312,42 @@ export const PUBLIC_DEVELOPMENT_ACCOUNTS = [
   "0xdD2FD4581271e230360230F9337D5c0430Bf44C0", "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199",
 ];
 
+/** Getters a token's `behaviour` may name. Each is a function without arguments of the token contract. */
+export const FEE_PARAMETER_GETTERS = Object.freeze(["basisPointsRate", "maximumFee"]);
+export const SWITCH_GETTERS = Object.freeze(["paused", "deprecated"]);
+export const BLOCKLIST_GETTERS = Object.freeze(["isBlackListed", "isBlocked", "isBlacklisted"]);
+
+/**
+ * What a listed token does differently from a plain ERC-20, established from its deployed code and by calls on a
+ * fork of its chain (round 20; docs/MULTICHAIN-DEPLOY.md section 2.6). Optional: a token without the block is
+ * taken as it was before round 20 (USDC, the wrapped native tokens). The tools act on every field:
+ *   returnsNoValue     transfer, transferFrom and approve return no data (Tether's contract on Ethereum). The pair
+ *                      and the router accept that (test/TetherDeviations.t.sol); stated so that nobody adds a
+ *                      caller that does not.
+ *   approveZeroFirst   approve reverts when it would change a non-zero allowance into another non-zero value:
+ *                      first-deposit.mjs reads the allowance and prints approve(0) first; the page does the same.
+ *   transferFee        the fee getters the contract has (FEE_PARAMETER_GETTERS). The gate and first-deposit.mjs
+ *                      read each and refuse while one is not zero: a token that takes a fee on transfer is not
+ *                      supported by the pair's and the router's arithmetic.
+ *   switches           boolean getters that must read false (SWITCH_GETTERS): a paused token cannot be moved, and
+ *                      a deprecated Tether contract forwards every call to another contract.
+ *   blocklist          the issuer's blocklist getter (BLOCKLIST_GETTERS), read for the pair, the router and the
+ *                      depositing account before a deposit.
+ * The gate also probes EVERY listed token for the fee getters: one that answers them without declaring them here
+ * fails the gate.
+ */
+function validateBehaviour(b, field) {
+  refuse(b && typeof b === "object" && !Array.isArray(b), `${field} must be an object`);
+  const known = ["returnsNoValue", "approveZeroFirst", "transferFee", "switches", "blocklist", "issuerPowers", "checked"];
+  refuse(Object.keys(b).every((k) => known.includes(k)), `${field} has an unknown field (known: ${known.join(", ")})`);
+  refuse(typeof b.returnsNoValue === "boolean" && typeof b.approveZeroFirst === "boolean", `${field}: returnsNoValue and approveZeroFirst are stated, true or false`);
+  refuse(b.transferFee === null || (b.transferFee && Array.isArray(b.transferFee.parameters) && b.transferFee.parameters.length > 0 && new Set(b.transferFee.parameters).size === b.transferFee.parameters.length && b.transferFee.parameters.every((g) => FEE_PARAMETER_GETTERS.includes(g))), `${field}.transferFee is null (the contract has no fee parameter) or { parameters: [${FEE_PARAMETER_GETTERS.join(", ")}] }`);
+  refuse(Array.isArray(b.switches) && new Set(b.switches).size === b.switches.length && b.switches.every((g) => SWITCH_GETTERS.includes(g)), `${field}.switches is a list of ${SWITCH_GETTERS.join(", ")} (empty when the contract has none)`);
+  refuse(b.blocklist === null || BLOCKLIST_GETTERS.includes(b.blocklist), `${field}.blocklist is null or one of ${BLOCKLIST_GETTERS.join(", ")}`);
+  refuse(typeof b.issuerPowers === "string" && b.issuerPowers.length >= 40 && b.issuerPowers.length <= 600, `${field}.issuerPowers: say what the issuer or the bridge can still do to this token (40 to 600 characters)`);
+  refuse(b.checked && /^20\d\d-\d\d-\d\d$/.test(b.checked.at ?? "") && typeof b.checked.how === "string" && b.checked.how.length >= 40, `${field}.checked: at (a date) and how (what was read and run)`);
+}
+
 function validateToken(token, field) {
   checksummed(token?.address, `${field}.address`);
   refuse(typeof token.symbol === "string" && /^[A-Za-z0-9.]{2,12}$/.test(token.symbol), `${field}.symbol`);
@@ -319,39 +355,83 @@ function validateToken(token, field) {
   refuse(Number.isInteger(token.decimals) && token.decimals >= 0 && token.decimals <= 36, `${field}.decimals`);
   refuse(HASH.test(token.codeHash ?? "") && token.codeHash !== EMPTY_CODE_HASH, `${field}.codeHash`);
   refuse(typeof token.kind === "string" && typeof token.source === "string" && token.source.length > 0, `${field}: kind and source are required`);
+  // Optional (round 20): the contract's own symbol() when it cannot be the tools' key (Arbitrum One's "USD₮0":
+  // `symbol` stays the plain key that --pair and the pins use, "USDT0"). The gate pins the chain's answer to
+  // `chainSymbol`, and the page shows a label, never the key.
+  if (token.chainSymbol !== undefined) {
+    refuse(typeof token.chainSymbol === "string" && /^[\x21-\x7e₮]{1,16}$/u.test(token.chainSymbol) && token.chainSymbol !== token.symbol, `${field}.chainSymbol: the contract's own symbol, 1 to 16 printable characters, given only when it differs from symbol`);
+    refuse(token.label !== undefined, `${field}: a token with a chainSymbol needs a label and a note (what the page shows)`);
+  }
   // Optional: the name the token list and the page show instead of the contract's own symbol, and one line about
   // it. For a token whose symbol says more than is true (BNB Smart Chain's Binance-Peg "USDC").
-  refuse(token.label === undefined || (typeof token.label === "string" && /^[A-Za-z0-9. ()-]{2,24}$/.test(token.label) && token.label.startsWith(token.symbol)), `${field}.label: 2 to 24 characters, beginning with the symbol`);
+  refuse(token.label === undefined || (typeof token.label === "string" && /^[A-Za-z0-9. ()₮-]{2,24}$/u.test(token.label) && token.label.startsWith(token.chainSymbol ?? token.symbol)), `${field}.label: 2 to 24 characters, beginning with the symbol`);
   refuse(token.note === undefined || (typeof token.note === "string" && token.note.length >= 10 && token.note.length <= 160 && !/[<>\n]/.test(token.note)), `${field}.note: one line of 10 to 160 characters`);
   refuse((token.label === undefined) === (token.note === undefined), `${field}: label and note go together`);
+  if (token.behaviour !== undefined) validateBehaviour(token.behaviour, `${field}.behaviour`);
+}
+/** The symbol a token's contract answers: `chainSymbol` where the configuration gives one, else `symbol`. */
+export const chainSymbolOf = (token) => token.chainSymbol ?? token.symbol;
+
+/**
+ * The opening price rule of a planned pair (decision of 2026-11-17): the price of a pool's first deposit is the
+ * chain's market price, read on that chain from two independent references (market.mjs), never typed by hand.
+ * Round 20: one rule per planned pair. `chain.openingPrice` is the rule of the first planned pair, as before;
+ * every later pair carries its own under `initialPairs[i].openingPrice`, validated here in the same way
+ * (`openingPriceFor`). `field` is the path named in a refusal; `token` is the pair's listed token (absent only
+ * for a chain without planned pairs).
+ */
+function validateOpeningPrice(o, chain, token = null, field = "openingPrice") {
+  refuse(o && typeof o === "object" && o.rule === "market", `${field}: the rule is "market" (two on-chain references; see scripts/multichain/market.mjs)`);
+  refuse(Number.isInteger(o.maxDeviationBps) && o.maxDeviationBps >= 1 && o.maxDeviationBps <= 50, `${field}.maxDeviationBps: 1 to 50 (an opening price at most 0.5% from the market)`);
+  refuse(Number.isInteger(o.referencesAgreeBps) && o.referencesAgreeBps >= 10 && o.referencesAgreeBps <= 100, `${field}.referencesAgreeBps: 10 to 100`);
+  refuse(typeof o.minimumNative === "string" && /^[0-9]+(\.[0-9]{1,18})?$/.test(o.minimumNative) && Number(o.minimumNative) > 0 && typeof o.minimumReason === "string" && o.minimumReason.length >= 40, `${field}.minimumNative (whole native coin) and minimumReason`);
+  refuse(Array.isArray(o.references) && o.references.length === 2 && o.references[0].kind === "chainlink" && o.references[1].kind === "v3-twap", `${field}.references: two independent references, a Chainlink feed pair and a v3 pool's time-weighted price`);
+  const sourced = (r, where) => refuse(typeof r.name === "string" && typeof r.source === "string" && /^https:\/\//.test(r.source) && r.sourceChecked && typeof r.sourceChecked.url === "string" && typeof r.sourceChecked.fetched === "string" && typeof r.sourceChecked.found === "string", `${where}: name, source and sourceChecked (where the publisher names the address) are required`);
+  const [feeds, pool] = o.references;
+  sourced(feeds, `${field}.references[0]`);
+  for (const side of ["base", "quote"]) {
+    const f = feeds[side];
+    checksummed(f?.proxy, `${field}.references[0].${side}.proxy`);
+    refuse(typeof f.description === "string" && / \/ USD$/.test(f.description) && Number.isInteger(f.decimals) && f.decimals >= 0 && f.decimals <= 18 && Number.isInteger(f.heartbeatSeconds) && f.heartbeatSeconds > 0 && f.heartbeatSeconds <= 86_400 && HASH.test(f.codeHash ?? "") && f.codeHash !== EMPTY_CODE_HASH, `${field}.references[0].${side}: description (X / USD), decimals, heartbeatSeconds and codeHash`);
+  }
+  refuse(feeds.base.description.startsWith(`${chain.nativeCurrency.symbol} /`), `${field}.references[0].base is not the native coin's USD feed`);
+  refuse(lower(feeds.base.proxy) !== lower(feeds.quote.proxy), `${field}.references[0]: base and quote are the same feed`);
+  // Round 20: the quote feed is the listed token's own USD feed. Where the oracle publishes none for the token
+  // itself (Arbitrum One's USDT0 is priced by the USDT feed), the reference says which asset the feed prices and
+  // why that stands for the token: `quoteStandsFor`. The second reference always prices the token itself.
+  if (token) {
+    const priced = feeds.quote.description.replace(/ \/ USD$/, "");
+    if (feeds.quoteStandsFor === undefined) refuse(priced === token.symbol, `${field}.references[0].quote is the feed "${feeds.quote.description}", not the USD feed of ${token.symbol}; a feed of another asset needs quoteStandsFor { asset, reason }`);
+    else refuse(feeds.quoteStandsFor && feeds.quoteStandsFor.asset === priced && priced !== token.symbol && typeof feeds.quoteStandsFor.reason === "string" && feeds.quoteStandsFor.reason.length >= 40, `${field}.references[0].quoteStandsFor: { asset: the asset the quote feed prices, reason: why it stands for ${token.symbol} (40 characters or more) }`);
+  }
+  sourced(pool, `${field}.references[1]`);
+  checksummed(pool.factory, `${field}.references[1].factory`);
+  checksummed(pool.pool, `${field}.references[1].pool`);
+  refuse(HASH.test(pool.factoryCodeHash ?? "") && HASH.test(pool.poolCodeHash ?? "") && pool.factoryCodeHash !== EMPTY_CODE_HASH && pool.poolCodeHash !== EMPTY_CODE_HASH, `${field}.references[1]: factoryCodeHash and poolCodeHash`);
+  refuse(Number.isInteger(pool.fee) && pool.fee > 0 && pool.fee <= 10_000 && Number.isInteger(pool.windowSeconds) && pool.windowSeconds >= 60 && pool.windowSeconds <= 3_600, `${field}.references[1]: fee and windowSeconds (60 to 3600)`);
+  refuse(typeof pool.minimumWrapped === "string" && /^[0-9]+(\.[0-9]{1,18})?$/.test(pool.minimumWrapped) && Number(pool.minimumWrapped) > 0, `${field}.references[1].minimumWrapped: the wrapped native coin the pool must hold to count as a reference`);
+}
+
+/** The listed token of a planned pair entry (the side that is not the wrapped native token), or null. */
+function listedSideOf(chain, pair) {
+  const w = chain.wrappedNative.symbol;
+  if (pair.tokenA !== w && pair.tokenB !== w) return null;
+  return chain.tokens.find((t) => t.symbol === (pair.tokenA === w ? pair.tokenB : pair.tokenA)) ?? null;
 }
 
 /**
- * The opening price rule of a chain (decision of 2026-11-17): the price of a pool's first deposit is the chain's
- * market price, read on that chain from two independent references (market.mjs), never typed by hand.
+ * The opening price rule of the planned pair that holds `token` (a listed token object or its symbol): the
+ * chain's `openingPrice` for the first planned pair, the pair's own block for a later one. Refuses a token that
+ * has no planned pair: no pool is opened without two references of its own.
  */
-function validateOpeningPrice(o, chain) {
-  refuse(o && typeof o === "object" && o.rule === "market", "openingPrice: the rule is \"market\" (two on-chain references; see scripts/multichain/market.mjs)");
-  refuse(Number.isInteger(o.maxDeviationBps) && o.maxDeviationBps >= 1 && o.maxDeviationBps <= 50, "openingPrice.maxDeviationBps: 1 to 50 (an opening price at most 0.5% from the market)");
-  refuse(Number.isInteger(o.referencesAgreeBps) && o.referencesAgreeBps >= 10 && o.referencesAgreeBps <= 100, "openingPrice.referencesAgreeBps: 10 to 100");
-  refuse(typeof o.minimumNative === "string" && /^[0-9]+(\.[0-9]{1,18})?$/.test(o.minimumNative) && Number(o.minimumNative) > 0 && typeof o.minimumReason === "string" && o.minimumReason.length >= 40, "openingPrice.minimumNative (whole native coin) and minimumReason");
-  refuse(Array.isArray(o.references) && o.references.length === 2 && o.references[0].kind === "chainlink" && o.references[1].kind === "v3-twap", "openingPrice.references: two independent references, a Chainlink feed pair and a v3 pool's time-weighted price");
-  const sourced = (r, field) => refuse(typeof r.name === "string" && typeof r.source === "string" && /^https:\/\//.test(r.source) && r.sourceChecked && typeof r.sourceChecked.url === "string" && typeof r.sourceChecked.fetched === "string" && typeof r.sourceChecked.found === "string", `${field}: name, source and sourceChecked (where the publisher names the address) are required`);
-  const [feeds, pool] = o.references;
-  sourced(feeds, "openingPrice.references[0]");
-  for (const side of ["base", "quote"]) {
-    const f = feeds[side];
-    checksummed(f?.proxy, `openingPrice.references[0].${side}.proxy`);
-    refuse(typeof f.description === "string" && / \/ USD$/.test(f.description) && Number.isInteger(f.decimals) && f.decimals >= 0 && f.decimals <= 18 && Number.isInteger(f.heartbeatSeconds) && f.heartbeatSeconds > 0 && f.heartbeatSeconds <= 86_400 && HASH.test(f.codeHash ?? "") && f.codeHash !== EMPTY_CODE_HASH, `openingPrice.references[0].${side}: description (X / USD), decimals, heartbeatSeconds and codeHash`);
-  }
-  refuse(feeds.base.description.startsWith(`${chain.nativeCurrency.symbol} /`), "openingPrice.references[0].base is not the native coin's USD feed");
-  refuse(lower(feeds.base.proxy) !== lower(feeds.quote.proxy), "openingPrice.references[0]: base and quote are the same feed");
-  sourced(pool, "openingPrice.references[1]");
-  checksummed(pool.factory, "openingPrice.references[1].factory");
-  checksummed(pool.pool, "openingPrice.references[1].pool");
-  refuse(HASH.test(pool.factoryCodeHash ?? "") && HASH.test(pool.poolCodeHash ?? "") && pool.factoryCodeHash !== EMPTY_CODE_HASH && pool.poolCodeHash !== EMPTY_CODE_HASH, "openingPrice.references[1]: factoryCodeHash and poolCodeHash");
-  refuse(Number.isInteger(pool.fee) && pool.fee > 0 && pool.fee <= 10_000 && Number.isInteger(pool.windowSeconds) && pool.windowSeconds >= 60 && pool.windowSeconds <= 3_600, "openingPrice.references[1]: fee and windowSeconds (60 to 3600)");
-  refuse(typeof pool.minimumWrapped === "string" && /^[0-9]+(\.[0-9]{1,18})?$/.test(pool.minimumWrapped) && Number(pool.minimumWrapped) > 0, "openingPrice.references[1].minimumWrapped: the wrapped native coin the pool must hold to count as a reference");
+export function openingPriceFor(chain, token) {
+  const symbol = typeof token === "string" ? token : token?.symbol;
+  const w = chain.wrappedNative.symbol;
+  const index = chain.initialPairs.findIndex((p) => (p.tokenA === w && p.tokenB === symbol) || (p.tokenB === w && p.tokenA === symbol));
+  refuse(index >= 0, `${w}/${symbol} is not a planned pair of ${chain.chain.key} (deployments/${chain.chain.key}/chain.json initialPairs): it has no opening price rule`);
+  const rule = index === 0 ? chain.openingPrice : chain.initialPairs[index].openingPrice;
+  refuse(rule && typeof rule === "object", `${w}/${symbol} has no opening price rule`);
+  return rule;
 }
 
 /**
@@ -414,7 +494,22 @@ export function validateChain(chain, key) {
   refuse(Array.isArray(chain.initialPairs) && chain.initialPairs.length <= 4, "initialPairs");
   for (const [i, p] of chain.initialPairs.entries())
     refuse(symbols.includes(p.tokenA) && symbols.includes(p.tokenB) && p.tokenA !== p.tokenB, `initialPairs[${i}] names a token that is not listed`);
-  validateOpeningPrice(chain.openingPrice, chain);
+  // Round 20: every planned pair is the wrapped native token with one listed token, planned once, and has its own
+  // opening price rule: `openingPrice` for the first pair (unchanged), `initialPairs[i].openingPrice` for a later one.
+  const pairTokens = chain.initialPairs.map((p) => listedSideOf(chain, p));
+  for (const [i, t] of pairTokens.entries()) refuse(t, `initialPairs[${i}] must be the wrapped native token ${chain.wrappedNative.symbol} with one listed token (no token/token pair is planned by this kit)`);
+  refuse(new Set(pairTokens.map((t) => t.symbol)).size === pairTokens.length, "a pair is planned twice");
+  validateOpeningPrice(chain.openingPrice, chain, pairTokens[0] ?? null);
+  for (const [i, p] of chain.initialPairs.entries()) {
+    if (i === 0) refuse(p.openingPrice === undefined, "initialPairs[0].openingPrice: the first planned pair's rule is the chain's `openingPrice`; it is written in one place only");
+    else validateOpeningPrice(p.openingPrice, chain, pairTokens[i], `initialPairs[${i}].openingPrice`);
+  }
+  // No reference of one pair prices another pair: a copied block would let one token's market open another's pool.
+  const rules = chain.initialPairs.map((p, i) => (i === 0 ? chain.openingPrice : p.openingPrice));
+  const quotes = rules.map((r) => lower(r.references[0].quote.proxy));
+  const pools = rules.map((r) => lower(r.references[1].pool));
+  refuse(new Set(quotes).size === quotes.length, "two planned pairs use the same quote feed: each listed token has its own USD feed");
+  refuse(new Set(pools).size === pools.length, "two planned pairs use the same reference pool: each pair has its own");
   if (!isPending(chain.reserveCaps)) {
     refuse(Array.isArray(chain.reserveCaps) && chain.reserveCaps.length <= 8, "reserveCaps must be TBD-owner or a list (an empty list means no caps)");
     const seen = new Set();

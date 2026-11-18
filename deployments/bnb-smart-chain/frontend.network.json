@@ -37,6 +37,16 @@
       "decimals": 18,
       "codeHash": "0x56069ff2fd59ae482f7984aa894b6d3bc84cb910354dcda9cd6c828d61526914",
       "kind": "NOT Circle-issued: Binance-Peg USD Coin (a token issued by Binance against USDC it holds), 18 decimals; upgradeable proxy. Circle issues no native USDC on BNB Smart Chain. Listed under the label \"USDC (Binance-Peg)\", never as plain USDC (coordinator's decision, 2026-11-17)"
+    },
+    {
+      "address": "0x55d398326f99059ff775485246999027b3197955",
+      "symbol": "USDT",
+      "label": "USDT (Binance-Peg)",
+      "note": "USDT (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Tether, and has 18 decimals.",
+      "name": "Tether USD",
+      "decimals": 18,
+      "codeHash": "0x97a48aa4c129657440dafdacd4c836389734d28cc4a0ca7403e68da660a74a59",
+      "kind": "NOT Tether-issued: Binance-Peg BSC-USD (a token issued by Binance against USDT it holds), 18 decimals; the contract says name() \"Tether USD\" and symbol() \"USDT\". Not a proxy; its owner can mint. Tether's own page names no USD₮ contract on BNB Smart Chain. Listed under the label \"USDT (Binance-Peg)\", never as plain USDT"
     }
   ],
   "multicall3": {

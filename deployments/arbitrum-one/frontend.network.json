@@ -35,6 +35,16 @@
       "decimals": 6,
       "codeHash": "0xad30d819dbc47814b7e6cb837fd7cc57fcb591479a38596ee93de4fc52e8c435",
       "kind": "Circle-issued (native), not the bridged USDC.e; upgradeable proxy, the issuer can pause and blacklist"
+    },
+    {
+      "address": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+      "symbol": "USD₮0",
+      "label": "USD₮0",
+      "note": "USD₮0 is USDT0, the cross-chain form of Tether USD (LayerZero). It is not the USDT contract of Ethereum.",
+      "name": "USD₮0",
+      "decimals": 6,
+      "codeHash": "0xfc1ea81db44e2de921b958dc92da921a18968ff3f3465bd475fb86dd1af03986",
+      "kind": "USD₮0 (USDT0), the omnichain form of Tether USD: an upgradeable proxy whose tokens are minted and burned on this chain by its OFT contract against USDT locked in the OFT Adapter on Ethereum (LayerZero messaging). Not the Ethereum USDT contract, and not named on Tether's own page. The contract's symbol is \"USD₮0\"; the tools' key is USDT0. Its owner can block an address and destroy a blocked balance"
     }
   ],
   "multicall3": {

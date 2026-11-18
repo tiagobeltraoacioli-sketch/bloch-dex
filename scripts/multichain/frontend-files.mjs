@@ -8,14 +8,18 @@
 //                                               code hash; every Bloch-L2-only rule stated off
 //   deployments/<chain>/frontend.record.json    "not-deployed", or the deployment as the post gate verified it
 //                                               (--gate-report: a report of `gate.mjs <chain> post` with decision
-//                                               "pass", every planned pair open and its opening proven; a
+//                                               "pass" and at least one planned pair open. The record lists
+//                                               exactly the pairs the gate reports OPEN WITH THEIR OPENING
+//                                               PROVEN, and names every other planned pair under `notOpen`
+//                                               (round 20: pairs open one at a time; the page shows such a
+//                                               pair as "not open yet" and sends nothing for it). A
 //                                               rehearsal or reference-plan report is refused unless
 //                                               --rehearsal is given, which also replaces the endpoints by --rpc)
 // --out writes both files into DIR/<chain>/ instead of deployments/<chain>/ (rehearsals). No RPC is contacted.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isMain } from "../staging/is-main.mjs";
-import { GATE_DOMAIN, MultichainError, ROOT, ZERO_ADDRESS, loadChain, loadShared, lower, refuse } from "./lib.mjs";
+import { GATE_DOMAIN, MultichainError, ROOT, ZERO_ADDRESS, chainSymbolOf, loadChain, loadShared, lower, refuse } from "./lib.mjs";
 
 export const FRONTEND_NETWORK_DOMAIN = "postern.dex.multichain-frontend-network.v1";
 export const FRONTEND_RECORD_DOMAIN = "postern.dex.multichain-frontend-record.v1";
@@ -34,7 +38,11 @@ export function frontendNetwork(shared, chain, { rpc = null } = {}) {
     wrappedNative: { address: lower(chain.wrappedNative.address), symbol: chain.wrappedNative.symbol, codeHash: chain.wrappedNative.codeHash },
     // `label` and `note` (optional): what the page shows instead of the contract's own symbol, and one line under it
     // (BNB Smart Chain's Binance-Peg "USDC" is never shown as plain USDC).
-    tokens: chain.tokens.map((t) => ({ address: lower(t.address), symbol: t.symbol, ...(t.label ? { label: t.label, note: t.note } : {}), name: t.name, decimals: t.decimals, codeHash: t.codeHash, kind: t.kind })),
+    // `symbol` is the contract's own symbol (the page pins it against the chain): `chainSymbol` where the
+    // configuration gives one (Arbitrum One's "USD₮0"; the tools' key "USDT0" is not a symbol of the chain).
+    // `approve: "zero-first"` (round 20): the token's approve reverts on a change from one non-zero allowance to
+    // another (Tether on Ethereum); the page then asks for a reset to zero before a new approval.
+    tokens: chain.tokens.map((t) => ({ address: lower(t.address), symbol: chainSymbolOf(t), ...(t.label ? { label: t.label, note: t.note } : {}), name: t.name, decimals: t.decimals, codeHash: t.codeHash, kind: t.kind, ...(t.behaviour?.approveZeroFirst ? { approve: "zero-first" } : {}) })),
     multicall3: { address: lower(chain.multicall3.address), codeHash: chain.multicall3.codeHash },
     feeTo: lower(shared.feeTo.address),
     l2Only: { ...shared.l2Only },
@@ -54,14 +62,26 @@ export function frontendRecord(shared, chain, report = null, { rehearsal = false
   refuse(lower(report.plan.arguments.feeTo) === lower(shared.feeTo.address), "the gate report has another fee address");
   refuse(report.finalized && Number.isSafeInteger(report.finalized.number) && /^0x[0-9a-f]{64}$/.test(report.finalized.hash), "the gate report has no finalized block");
   refuse(lower(report.plan.arguments.firstDepositor) !== ZERO_ADDRESS, "the gate report is of a factory with open first deposits");
-  const pairs = report.pairs.filter((p) => p.created);
-  refuse(pairs.length === report.pairs.length && pairs.length > 0, "the gate report does not show every planned pair created: make the first deposit of each (first-deposit.mjs), then run the post gate again");
-  // A page for a pool nobody opened would show an empty market; and an opened pool is the proof that the first
-  // deposit went through the guarded path (only the first depositor can open a pool of this factory).
-  refuse(pairs.every((p) => p.state === "open"), "the gate report shows a planned pair that is not open yet: make its first deposit (first-deposit.mjs), then run the post gate again");
+  // Round 20: pairs open one at a time (a chain live with its first pool stays live while a second is planned).
+  // What is kept, word for word, while NO planned pair is open: the two refusals below, as before.
+  const open = report.pairs.filter((p) => p.state === "open");
+  if (open.length === 0) {
+    const created = report.pairs.filter((p) => p.created);
+    refuse(created.length === report.pairs.length && created.length > 0, "the gate report does not show every planned pair created: make the first deposit of each (first-deposit.mjs), then run the post gate again");
+    // A page for a pool nobody opened would show an empty market; and an opened pool is the proof that the first
+    // deposit went through the guarded path (only the first depositor can open a pool of this factory).
+    refuse(false, "the gate report shows a planned pair that is not open yet: make its first deposit (first-deposit.mjs), then run the post gate again");
+  }
   // "Open" does not say who opened a pool (the pair accepts a first mint by transaction origin): the gate must
-  // have proven each opening from its transaction (review R328-1).
-  refuse(pairs.every((p) => p.opening?.proven === true), "the gate report does not prove who opened each pool: run the post gate with --opening PAIR=HASH (first-deposit.mjs verify prints it)");
+  // have proven each opening from its transaction (review R328-1). EVERY open pair, not only the listed ones: a
+  // report with one open pair that is not proven writes no record at all.
+  refuse(open.every((p) => p.opening?.proven === true), "the gate report does not prove who opened each pool: run the post gate with --opening PAIR=HASH (first-deposit.mjs verify prints it)");
+  // The page lists `pairs` and nothing else. A planned pair that is absent, empty or holds tokens without shares
+  // is named under `notOpen` with its state: the page shows it as not open yet, never as a market, and builds no
+  // transaction for it (frontend/src/multichain/config.ts).
+  const pairs = open;
+  const notOpen = report.pairs.filter((p) => p.state !== "open");
+  refuse(pairs.length <= 8 && notOpen.every((p) => ["absent", "empty", "donated"].includes(p.state)), "the gate report has a pair in a state this tool does not know");
   const contracts = report.plan.contracts;
   return {
     ...base,
@@ -78,6 +98,9 @@ export function frontendRecord(shared, chain, report = null, { rehearsal = false
     reserveCaps: report.plan.arguments.reserveCaps.map((c) => ({ token: lower(c.token), cap: c.cap })),
     pairCodeHash: report.plan.pair.runtimeCodeHash,
     pairs: pairs.map((p) => ({ address: lower(p.address), token0: lower(p.token0), token1: lower(p.token1) })),
+    // Only when a planned pair is not open (round 20), so that a record of a chain whose pairs are all open is the
+    // record it always was.
+    ...(notOpen.length ? { notOpen: notOpen.map((p) => ({ address: lower(p.address), token0: lower(p.token0), token1: lower(p.token1), state: p.state })) } : {}),
   };
 }
 

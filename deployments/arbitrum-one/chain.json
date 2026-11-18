@@ -48,6 +48,35 @@
         "fetched": "2026-11-16",
         "found": "the issuer's address table, row \"Arbitrum\""
       }
+    },
+    {
+      "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+      "symbol": "USDT0",
+      "chainSymbol": "USD₮0",
+      "name": "USD₮0",
+      "decimals": 6,
+      "codeHash": "0xfc1ea81db44e2de921b958dc92da921a18968ff3f3465bd475fb86dd1af03986",
+      "kind": "USD₮0 (USDT0), the omnichain form of Tether USD: an upgradeable proxy whose tokens are minted and burned on this chain by its OFT contract against USDT locked in the OFT Adapter on Ethereum (LayerZero messaging). Not the Ethereum USDT contract, and not named on Tether's own page. The contract's symbol is \"USD₮0\"; the tools' key is USDT0. Its owner can block an address and destroy a blocked balance",
+      "source": "https://docs.usdt0.to/technical-documentation/deployments",
+      "sourceChecked": {
+        "url": "https://docs.usdt0.to/technical-documentation/deployments",
+        "fetched": "2026-11-18",
+        "found": "the publisher's deployment list, entry \"Arbitrum One\", Chain ID 42161, row \"Token\"; row \"Safe\" is the address the token's owner() answers; Binance's public network list names the same address as USDT on network ARBITRUM; Tether's own page (tether.to/en/supported-protocols) names no Arbitrum contract"
+      },
+      "label": "USD₮0",
+      "note": "USD₮0 is USDT0, the cross-chain form of Tether USD (LayerZero). It is not the USDT contract of Ethereum.",
+      "behaviour": {
+        "returnsNoValue": false,
+        "approveZeroFirst": false,
+        "transferFee": null,
+        "switches": [],
+        "blocklist": "isBlocked",
+        "issuerPowers": "An upgradeable proxy (admin 0x553ec478A66Be27BA25a6BC5DB20aeC2ED6A1b4A when read): its code can be replaced, which the pinned hash of the proxy does not show. The owner (the Safe 0x4DFF9b5b0143E642a3F63a5bcf2d1C328e600bf8 of the publisher's list) can block an address and destroy its balance; the OFT contract mints and burns. Its value rests on the USDT locked on Ethereum and on the cross-chain messaging.",
+        "checked": {
+          "at": "2026-11-18",
+          "how": "the functions the implementation (0x3263CD783823D04a6B9819517E0e6840d37CA3f4, code 0x1d4c20a1a19a0e182c0d2bffbe433a96bd70a1dbb383b7a2d293976df4042279) dispatches on (PUSH4 scan: isBlocked, addToBlockedList, destroyBlockedFunds, mint, burn, oftContract; no pause and no fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
+        }
+      }
     }
   ],
   "multicall3": {
@@ -78,6 +107,66 @@
     {
       "tokenA": "WETH",
       "tokenB": "USDC"
+    },
+    {
+      "tokenA": "WETH",
+      "tokenB": "USDT0",
+      "openingPrice": {
+        "rule": "market",
+        "maxDeviationBps": 50,
+        "referencesAgreeBps": 100,
+        "minimumNative": "0.1",
+        "minimumReason": "At least 0.1 ETH and its USD₮0 at the market price: the same floor as this chain's first pair, for the same reason (gas is negligible here; the floor keeps the pool worth more than a few hundred dollars a side). Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+        "references": [
+          {
+            "kind": "chainlink",
+            "name": "Chainlink ETH / USD over USDT / USD",
+            "base": {
+              "proxy": "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612",
+              "description": "ETH / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 1755,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "quote": {
+              "proxy": "0x3f3f5dF88dC9F13eac63DF89EC16ef6e7E25DdE7",
+              "description": "USDT / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 255,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "quoteStandsFor": {
+              "asset": "USDT",
+              "reason": "Chainlink publishes no feed for USD₮0 itself; it is redeemable one for one for the USDT locked on Ethereum, so the USDT feed stands for it. The second reference prices USD₮0 itself: if it left the price of USDT, the two would part and the tool would refuse."
+            },
+            "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+            "sourceChecked": {
+              "url": "https://reference-data-directory.vercel.app/feeds-ethereum-mainnet-arbitrum-1.json",
+              "fetched": "2026-11-18",
+              "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): ETH / USD path eth-usd, USDT / USD path usdt-usd (proxyAddress, heartbeat and decimals as recorded here)"
+            }
+          },
+          {
+            "kind": "v3-twap",
+            "name": "Uniswap v3 WETH/USD₮0 0.05% pool, 5-minute mean",
+            "protocol": "Uniswap v3",
+            "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+            "factoryCodeHash": "0x4d7b8525cd5d14343fa67a732fba5b24cddba11620ca88392f4ec6c52f91fd69",
+            "fee": 500,
+            "pool": "0x641C00A822e8b671738d32a431a4Fb6074E5c79d",
+            "poolCodeHash": "0xcb4fd3eda26a91b42746fec7e81473d90e8eb1137b493ebf9f80346a2bae8d3b",
+            "windowSeconds": 300,
+            "minimumWrapped": "500",
+            "chosen": "the 0.05% pool is the deepest (2,072 WETH when measured, observation cardinality 1800); the 0.30% pool held 80.9 WETH",
+            "source": "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-arbitrum-deployments",
+            "sourceChecked": {
+              "url": "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-arbitrum-deployments",
+              "fetched": "2026-11-18",
+              "found": "the publisher's deployment table, row UniswapV3Factory; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+            }
+          }
+        ]
+      }
     }
   ],
   "reserveCaps": [],
@@ -141,5 +230,10 @@
     "at": "2026-11-16",
     "how": "scripts/multichain/verify-chain.mjs: chain id, genesis hash, code hashes, name(), symbol(), decimals() read from both RPC endpoints",
     "sources": "the wrapped native token and USDC addresses were compared with the pages named in sourceChecked, fetched read-only on 2026-11-16"
+  },
+  "verifiedRound20": {
+    "at": "2026-11-18",
+    "how": "scripts/multichain/verify-chain.mjs (added in round 20; the tool this block names did not exist in the repository before): chain id, genesis hash, code hashes, name(), symbol(), decimals(), the transfer-fee getters and declared switches of every token, and the two price references of every planned pair, each read at one block hash from the reviewed endpoints, two of which must answer and agree",
+    "sources": "the address of USD₮0 and of its price references were compared with the pages named in sourceChecked, fetched read-only on 2026-11-18"
   }
 }

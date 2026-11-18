@@ -33,6 +33,15 @@
       "decimals": 6,
       "codeHash": "0xd80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1d31383e6b41505",
       "kind": "Circle-issued (native); upgradeable proxy, the issuer can pause and blacklist"
+    },
+    {
+      "address": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+      "symbol": "USDT",
+      "name": "Tether USD",
+      "decimals": 6,
+      "codeHash": "0xb44fb4e949d0f78f87f79ee46428f23a2a5713ce6fc6e0beb3dda78c2ac1ea55",
+      "kind": "Tether-issued: the issuer's own contract (not a proxy). Not a plain ERC-20: transfer, transferFrom and approve return no value, and approve reverts on a change from one non-zero allowance to another. Its owner can pause every transfer, blacklist an address and destroy its balance, switch on a fee on every transfer and deprecate the contract in favour of another",
+      "approve": "zero-first"
     }
   ],
   "multicall3": {

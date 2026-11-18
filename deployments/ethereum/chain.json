@@ -46,6 +46,40 @@
         "fetched": "2026-11-16",
         "found": "the issuer's address table, row \"Ethereum\""
       }
+    },
+    {
+      "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      "symbol": "USDT",
+      "name": "Tether USD",
+      "decimals": 6,
+      "codeHash": "0xb44fb4e949d0f78f87f79ee46428f23a2a5713ce6fc6e0beb3dda78c2ac1ea55",
+      "kind": "Tether-issued: the issuer's own contract (not a proxy). Not a plain ERC-20: transfer, transferFrom and approve return no value, and approve reverts on a change from one non-zero allowance to another. Its owner can pause every transfer, blacklist an address and destroy its balance, switch on a fee on every transfer and deprecate the contract in favour of another",
+      "source": "https://tether.to/en/supported-protocols/",
+      "sourceChecked": {
+        "url": "https://tether.to/en/supported-protocols/",
+        "fetched": "2026-11-18",
+        "found": "the issuer's page, section \"Ethereum Network\", line \"USD₮ contract address\": etherscan.io/token/0xdac17f958d2ee523a2206206994597c13d831ec7; its note says the contract \"does not return a Boolean value in the transfer function\""
+      },
+      "behaviour": {
+        "returnsNoValue": true,
+        "approveZeroFirst": true,
+        "transferFee": {
+          "parameters": [
+            "basisPointsRate",
+            "maximumFee"
+          ]
+        },
+        "switches": [
+          "paused",
+          "deprecated"
+        ],
+        "blocklist": "isBlackListed",
+        "issuerPowers": "The owner (0xC6CDE7C39eB2f0F0095F41570af89eFC2C1Ea828 when read) can pause all transfers, blacklist an address and destroy its balance, issue and redeem, set a transfer fee below 20 basis points capped below 50 USDT a transfer (setParams; both parameters are zero), and deprecate the contract so that every call is forwarded to another one. None of these changes the code hash; the gate and the deposit tool read the fee parameters and the two switches.",
+        "checked": {
+          "at": "2026-11-18",
+          "how": "the functions the runtime dispatches on (PUSH4 scan of the code read from two endpoints); on a loopback fork of the chain: return data of transfer, approve and transferFrom (0 bytes), approve from 5 to 7 and from 5 to 5 (both revert), approve to 0 and then to 7 (both succeed), transferFrom of 3 received as 3, setParams accepted at (19, 49) and refused at (20, 49) and (19, 50)"
+        }
+      }
     }
   ],
   "multicall3": {
@@ -76,6 +110,62 @@
     {
       "tokenA": "WETH",
       "tokenB": "USDC"
+    },
+    {
+      "tokenA": "WETH",
+      "tokenB": "USDT",
+      "openingPrice": {
+        "rule": "market",
+        "maxDeviationBps": 50,
+        "referencesAgreeBps": 100,
+        "minimumNative": "1",
+        "minimumReason": "At least 1 ETH and its USDT at the market price: the same floor as this chain's first pair, for the same reason (the first deposit costs about 2.5 million gas, which below a deposit worth 2 ETH is more than half a percent of it; a first deposit of USDT also pays for one approve, or three when an old allowance must first be set to zero). Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+        "references": [
+          {
+            "kind": "chainlink",
+            "name": "Chainlink ETH / USD over USDT / USD",
+            "base": {
+              "proxy": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+              "description": "ETH / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 3600,
+              "codeHash": "0x4b79b5c8aee6da0f7b393e8b53e6265ef7320a1d16184c65bd3841b5aa3d700d"
+            },
+            "quote": {
+              "proxy": "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D",
+              "description": "USDT / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 86400,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+            "sourceChecked": {
+              "url": "https://reference-data-directory.vercel.app/feeds-mainnet.json",
+              "fetched": "2026-11-18",
+              "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): ETH / USD path eth-usd, USDT / USD path usdt-usd (proxyAddress, heartbeat and decimals as recorded here)"
+            }
+          },
+          {
+            "kind": "v3-twap",
+            "name": "Uniswap v3 WETH/USDT 0.05% pool, 5-minute mean",
+            "protocol": "Uniswap v3",
+            "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+            "factoryCodeHash": "0x4d7b8525cd5d14343fa67a732fba5b24cddba11620ca88392f4ec6c52f91fd69",
+            "fee": 500,
+            "pool": "0x11b815efB8f581194ae79006d24E0d814B7697F6",
+            "poolCodeHash": "0x54f2b4c90d2939269a9d3ea8a3081dce03328c947d54bf3d98b2820922840b35",
+            "windowSeconds": 300,
+            "minimumWrapped": "1500",
+            "chosen": "the 0.05% pool (5,528 WETH when measured, observation cardinality 400): deep, and its fee keeps it within 0.05% of the market; the 0.30% pool held 31,093 WETH",
+            "source": "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-ethereum-deployments",
+            "sourceChecked": {
+              "url": "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-ethereum-deployments",
+              "fetched": "2026-11-18",
+              "found": "the publisher's deployment table, row UniswapV3Factory; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+            }
+          }
+        ]
+      }
     }
   ],
   "reserveCaps": [],
@@ -137,5 +227,10 @@
     "at": "2026-11-16",
     "how": "scripts/multichain/verify-chain.mjs: chain id, genesis hash, code hashes, name(), symbol(), decimals() read from both RPC endpoints",
     "sources": "the wrapped native token and USDC addresses were compared with the pages named in sourceChecked, fetched read-only on 2026-11-16"
+  },
+  "verifiedRound20": {
+    "at": "2026-11-18",
+    "how": "scripts/multichain/verify-chain.mjs (added in round 20; the tool this block names did not exist in the repository before): chain id, genesis hash, code hashes, name(), symbol(), decimals(), the transfer-fee getters and declared switches of every token, and the two price references of every planned pair, each read at one block hash from the reviewed endpoints, two of which must answer and agree",
+    "sources": "the address of USDT and of its price references were compared with the pages named in sourceChecked, fetched read-only on 2026-11-18"
   }
 }

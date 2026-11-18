@@ -37,6 +37,15 @@
 //      ONE amount and the tool computes the other. When both amounts are given they are refused if their price
 //      is more than 0.5% from the market. No market price (a stale feed, references apart): nothing is printed.
 //      The SIZE of the deposit is the owner's; the tool refuses less than the chain's stated minimum.
+//      Each planned pair has its own two references (round 20: lib.mjs `openingPriceFor`); a pair is never
+//      priced by another pair's.
+//   7. What the TOKEN can do (round 20, docs/MULTICHAIN-DEPLOY.md section 2.6). `prepare` and `add` read, at the
+//      same block and from the endpoints that must agree: the token's transfer-fee parameters where it has them
+//      (Tether on Ethereum: `basisPointsRate`, `maximumFee`), which must be zero; its declared switches (`paused`,
+//      `deprecated`), which must be off; its issuer's blocklist for the pair, the router and the depositing
+//      account; and the allowance the router already has. A token whose `approve` reverts on a change from one
+//      non-zero allowance to another (Tether on Ethereum) gets `approve 0` printed first, or no approve at all
+//      when the allowance already is the amount.
 // `add` is for a pool that is already open and proven: the owner gives both amounts at the market price; the tool
 // refuses when the pool's own price differs from them by more than the tolerance (default 0.5%, at most 1%), and
 // the deposit's minimums are that tolerance below its amounts.
@@ -48,9 +57,10 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, pinnedStateReader, planChain, refuse, retrying,
+  EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, openingPriceFor, pinnedStateReader, planChain, refuse, retrying,
   ownerToolsCheck,
 } from "./lib.mjs";
+import { approvalSteps, blocklistState, tokenBehaviourState } from "./token-behaviour.mjs";
 import { deviationBps, marketRecord, nativeFor, priceOf, readMarket, tokenFor } from "./market.mjs";
 import { decodeDeposit, openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
@@ -64,6 +74,7 @@ export const ABI = parseAbi([
   "function getReserves() view returns (uint112,uint112,uint32)",
   "function balanceOf(address) view returns (uint256)",
   "function approve(address,uint256) returns (bool)",
+  "function allowance(address,address) view returns (uint256)",
   "function skim(address)",
   "function addLiquidityBLCH(address token,uint256 amountTokenDesired,uint256 amountTokenMin,uint256 amountBLCHMin,address to,uint256 deadline) payable returns (uint256,uint256,uint256)",
 ]);
@@ -125,6 +136,22 @@ export function openingTransactions({ router, token, native, tokenAmount, to, de
 
 /** True when a deposit call carries minimums equal to its amounts (what the proof of an opening requires). */
 export const hasStrictMinimums = (data, value) => decodeDeposit(data, value)?.strict === true;
+
+/**
+ * The transactions as they are printed, given the allowance the router already has (round 20). `transactions` is
+ * what `openingTransactions` or `addTransactions` returned: one approve of the exact amount, then the deposit. For
+ * a token whose approve reverts on a non-zero to non-zero change (`zeroFirst`: Tether on Ethereum) the approve is
+ * replaced by what works from the allowance that stands: nothing when it already is the amount, `approve 0` and
+ * then the amount when it is another non-zero value. The deposit is never changed. Pure.
+ */
+export function withApprovals({ transactions, router, zeroFirst, allowance }) {
+  const [approve, ...rest] = transactions;
+  refuse(approve?.step === "approve" && rest.length === 1 && rest[0].step === "deposit", "the transactions are one approve and one deposit");
+  const amount = BigInt(approve.args[1]);
+  const steps = approvalSteps({ zeroFirst, allowance, amount });
+  const approvals = steps.map(({ step, amount: value }) => ({ step, to: approve.to, value: 0n, data: encodeFunctionData({ abi: ABI, functionName: "approve", args: [router, value] }), signature: "approve(address,uint256)", args: [router, value.toString()] }));
+  return [...approvals, ...rest];
+}
 
 /**
  * A later deposit into an open pool. The owner states BOTH amounts, at the market price (`expectedToken` for
@@ -296,7 +323,7 @@ export async function main(argv, print = console.log, toolsCheck = null) {
   if (o.mode === "prepare") {
     // The opening price is the chain's market price, read here and now, at the same block as everything else and
     // from the first two reviewed endpoints, which must give the same answers.
-    const rule = chain.openingPrice;
+    const rule = openingPriceFor(chain, token);
     const market = await readMarket({ chain, token, requests: [request, ...others].slice(0, 2), at: head });
     result.market = marketRecord(market);
     for (const r of market.references) print(`     ${r.name}: ${r.problem ?? `1 ${chain.nativeCurrency.symbol} = ${formatUnits(r.price, token.decimals)} ${token.symbol}`}`);
@@ -396,7 +423,22 @@ export async function main(argv, print = console.log, toolsCheck = null) {
         }
       }
     }
-    const need = transactions.length ? BigInt(transactions[0].args[1]) : tokenAmount;
+    // What the token can do to a deposit (round 20): fee parameters, switches, the issuer's blocklist.
+    const ethCall = (target, data) => pinned("eth_call", [{ to: target, data }, "pinned"]);
+    const behaviour = await tokenBehaviourState(ethCall, token);
+    check(`${token.symbol} takes no fee on transfer and none of its declared switches is on${Object.keys(behaviour.read).length ? ` (${Object.entries(behaviour.read).map(([k, v]) => `${k} ${v}`).join(", ")})` : ""}`, behaviour.ok, behaviour.problems.join("; "));
+    const blocked = await blocklistState(ethCall, token, { "the pair": planned.address, "the router": router.address, "the depositing account": depositor });
+    if (token.behaviour?.blocklist) check(`the issuer's blocklist of ${token.symbol} names neither the pair, the router nor the depositing account`, blocked.ok, blocked.problems.join("; "));
+    const deposit = transactions.find((t) => t.step === "deposit");
+    const need = deposit ? BigInt(deposit.args[1]) : tokenAmount;
+    // The allowance the router already holds decides which approve is printed (a token that needs zero first).
+    const zeroFirst = token.behaviour?.approveZeroFirst === true;
+    const allowance = await call(token.address, "allowance", [depositor, router.address]).catch(() => null);
+    check(`the router's allowance of ${token.symbol} from the depositing account can be read`, typeof allowance === "bigint", "allowance() did not answer");
+    if (transactions.length && typeof allowance === "bigint") {
+      transactions = withApprovals({ transactions, router: router.address, zeroFirst, allowance });
+      result.allowance = { before: allowance.toString(), zeroFirst, steps: transactions.filter((t) => t.step !== "deposit").map((t) => t.step) };
+    }
     const have = await call(token.address, "balanceOf", [depositor]);
     check(`the depositing account holds the ${token.symbol} to deposit (${amountText(need, token)})`, have >= need, amountText(have, token));
     const coin = BigInt(await pinned("eth_getBalance", [depositor, "pinned"]));
@@ -405,16 +447,26 @@ export async function main(argv, print = console.log, toolsCheck = null) {
     result.deadline = deadline.toString();
     if (checks.every((c) => c.ok)) {
       print("");
-      print(`Send these two transactions FROM ${depositor} (the factory's first depositor), exactly as printed, and send nothing else from that account.`);
+      const words = ["no", "one", "two", "three"];
+      print(`Send these ${words[transactions.length]} transactions FROM ${depositor} (the factory's first depositor), exactly as printed, in this order, and send nothing else from that account.`);
+      if (zeroFirst && allowance > 0n && allowance !== need)
+        print(`${token.symbol} refuses to change an allowance that is not zero into another amount (its approve reverts): the router still holds an allowance of ${amountText(allowance, token)} from an earlier run, so the first line sets it to zero and the second sets the new amount. Wait until each is mined before sending the next.`);
+      else if (zeroFirst && allowance === need) print(`The router already holds an allowance of exactly ${amountText(allowance, token)} from an earlier run: no approve is printed (${token.symbol} would refuse a second one), only the deposit.`);
       print(`Add your signer option (--keystore FILE for the depositing key's encrypted keystore, or --ledger, --trezor, --account NAME) and --rpc-url. The deposit is valid for ${DEADLINE_SECONDS / 60} minutes; after that run this command again.`);
       // Review R369-3: the opening is proven only for a deposit sent by the depositing account STRAIGHT to the
       // router. A wallet that batches the two transactions (an EIP-7702 "smart account") sends them to the account
       // itself: the pool opens, its opening can never be proven, and the page never lists that pair.
-      print(`Send them with \`cast send\`, one at a time, exactly as printed. Never import this key into a browser wallet, never accept "switch to smart account", and never send the two as one batched transaction: a deposit that does not go straight from ${depositor} to the router ${router.address} opens the pool in a way no tool can prove, and that pair is then lost for this factory.`);
+      // One or three lines are printed for a token that needs its allowance set to zero first (round 20).
+      const batching = transactions.length === 2
+        ? `Never import this key into a browser wallet, never accept "switch to smart account", and never send the two as one batched transaction`
+        : `Never import this key into a browser wallet, never accept "switch to smart account", and never send these as one batched transaction`;
+      print(`Send them with \`cast send\`, one at a time, exactly as printed. ${batching}: a deposit that does not go straight from ${depositor} to the router ${router.address} opens the pool in a way no tool can prove, and that pair is then lost for this factory.`);
       // --chain: the transaction is signed for this chain id only (EIP-155); another chain's node rejects it
       // (review R369-8: cast itself does not compare the id with the RPC URL's chain).
       for (const t of transactions) print(`cast send ${t.to} "${t.signature}" ${t.args.join(" ")}${t.value > 0n ? ` --value ${t.value}` : ""} --from ${depositor} --chain ${chain.chain.chainId}`);
       print("");
+      if (zeroFirst)
+        print(`If the deposit is not sent in time, or reverts, the allowance stays where the approve put it. Do not send an approve by hand: ${token.symbol} reverts when a non-zero allowance is changed to another non-zero amount. Run this command again; it reads the allowance and prints the sequence that works (zero first when needed).`);
       print(o.mode === "prepare"
         ? `The deposit is ${nativeText(native)} + ${amountText(tokenAmount, token)}, and its minimums are those same amounts: nobody else can have opened the pool before it (it would revert). Tokens that someone sends to the pair's address before it is mined join the pool as a gift and move the opening price by their size; verify reports it. Then: node scripts/multichain/first-deposit.mjs ${o.key} verify --pair ${o.pair} --native ${formatUnits(native, 18)} --token ${formatUnits(tokenAmount, token.decimals)} --tx <hash of the deposit>`
         : `The deposit is ${nativeText(native)} + ${amountText(need, token)} at the pool's current price; it reverts if the price moves more than ${Number(o["tolerance-bps"] ?? 50) / 100}% first.`);

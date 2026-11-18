@@ -23,6 +23,27 @@
         "symbol": "USDC",
         "decimals": 6,
         "codeHash": "0xd80d4b7c890cb9d6a4893e6b52bc34b56b25335cb13716e0d1d31383e6b41505"
+      },
+      {
+        "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "symbol": "USDT",
+        "decimals": 6,
+        "codeHash": "0xb44fb4e949d0f78f87f79ee46428f23a2a5713ce6fc6e0beb3dda78c2ac1ea55",
+        "behaviour": {
+          "returnsNoValue": true,
+          "approveZeroFirst": true,
+          "transferFee": {
+            "parameters": [
+              "basisPointsRate",
+              "maximumFee"
+            ]
+          },
+          "switches": [
+            "paused",
+            "deprecated"
+          ],
+          "blocklist": "isBlackListed"
+        }
       }
     ],
     "multicall3": {
@@ -101,6 +122,60 @@
           }
         }
       ]
+    },
+    "openingPrices": {
+      "WETH/USDT": {
+        "rule": "market",
+        "maxDeviationBps": 50,
+        "referencesAgreeBps": 100,
+        "minimumNative": "1",
+        "minimumReason": "At least 1 ETH and its USDT at the market price: the same floor as this chain's first pair, for the same reason (the first deposit costs about 2.5 million gas, which below a deposit worth 2 ETH is more than half a percent of it; a first deposit of USDT also pays for one approve, or three when an old allowance must first be set to zero). Inflating the first share is not possible at any size (only the depositing account can mint first, and the pair locks 1,000 share units); the tool also refuses a deposit whose share supply would be under 10^12 units, so that the locked units are at most a billionth of it.",
+        "references": [
+          {
+            "kind": "chainlink",
+            "name": "Chainlink ETH / USD over USDT / USD",
+            "base": {
+              "proxy": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+              "description": "ETH / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 3600,
+              "codeHash": "0x4b79b5c8aee6da0f7b393e8b53e6265ef7320a1d16184c65bd3841b5aa3d700d"
+            },
+            "quote": {
+              "proxy": "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D",
+              "description": "USDT / USD",
+              "decimals": 8,
+              "heartbeatSeconds": 86400,
+              "codeHash": "0xbd6f524cdc4268b6bd1bb6f77a8821faeea9c52ee9e0afa0b6d948ce82c966c2"
+            },
+            "source": "https://docs.chain.link/data-feeds/price-feeds/addresses",
+            "sourceChecked": {
+              "url": "https://reference-data-directory.vercel.app/feeds-mainnet.json",
+              "fetched": "2026-11-18",
+              "found": "the feed directory that Chainlink's address page loads (named in smartcontractkit/documentation src/features/data/chains.ts): ETH / USD path eth-usd, USDT / USD path usdt-usd (proxyAddress, heartbeat and decimals as recorded here)"
+            }
+          },
+          {
+            "kind": "v3-twap",
+            "name": "Uniswap v3 WETH/USDT 0.05% pool, 5-minute mean",
+            "protocol": "Uniswap v3",
+            "factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+            "factoryCodeHash": "0x4d7b8525cd5d14343fa67a732fba5b24cddba11620ca88392f4ec6c52f91fd69",
+            "fee": 500,
+            "pool": "0x11b815efB8f581194ae79006d24E0d814B7697F6",
+            "poolCodeHash": "0x54f2b4c90d2939269a9d3ea8a3081dce03328c947d54bf3d98b2820922840b35",
+            "windowSeconds": 300,
+            "minimumWrapped": "1500",
+            "chosen": "the 0.05% pool (5,528 WETH when measured, observation cardinality 400): deep, and its fee keeps it within 0.05% of the market; the 0.30% pool held 31,093 WETH",
+            "source": "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-ethereum-deployments",
+            "sourceChecked": {
+              "url": "https://developers.uniswap.org/docs/protocols/v3/deployments/v3-ethereum-deployments",
+              "fetched": "2026-11-18",
+              "found": "the publisher's deployment table, row UniswapV3Factory; the pool is the address that factory's getPool() returns for the two tokens and the fee"
+            }
+          }
+        ]
+      }
     }
   },
   "expected": "derived by scripts/multichain/plan.mjs from the compiled release candidate and the owner's choices: factory, router, lens and pair addresses and runtime code hashes",

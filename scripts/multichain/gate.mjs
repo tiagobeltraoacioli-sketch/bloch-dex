@@ -8,7 +8,10 @@
 //
 // pre   before deploying: the chain is the pinned one (chain id and genesis hash, on every endpoint that serves
 //       block 0, at least one), `finalized` is served, the CREATE2 deployer, the wrapped native token, every listed
-//       token and Multicall3 have the pinned code and answer name()/symbol()/decimals() as listed, the fee address
+//       token and Multicall3 have the pinned code and answer name()/symbol()/decimals() as listed, no listed token
+//       takes a fee on transfer or has a declared switch on (round 20: every token is asked for Tether's fee
+//       getters `basisPointsRate` and `maximumFee`; one that answers must declare them in its `behaviour` block
+//       and they must be zero; its declared `paused` / `deprecated` must be false; token-behaviour.mjs), the fee address
 //       is an externally owned account: no code, or an EIP-7702 delegation to an IDENTIFIED delegate
 //       (deployments/multichain.json feeTo.delegation.accepted, with the code recorded for this chain; any other
 //       delegate fails the gate; the designator seen is recorded and a WARNING is printed when it is not the one
@@ -31,6 +34,9 @@
 //       deposit) and again after the first deposits: the frontend record is made only from a report whose
 //       pairs are all open and proven. A contract that has the planned code at the latest block but not yet at
 //       the finalized one is reported as WAIT: nothing is wrong, the chain has not finalized the deployment yet.
+//       Round 20: pairs open one at a time. A planned pair that is not open yet does not fail the gate (it never
+//       did); the frontend record lists exactly the pairs this gate reports open with their opening proven, and
+//       names the others as not open. A token with a declared issuer blocklist is asked for the pair and the router.
 //
 // The Bloch-L2-only rules (bridge token pin, Safe pin, new-slot fee, credit rule, idle-chain rule) are off for these
 // chains by configuration: deployments/multichain.json `l2Only` and deployments/<chain>/gate.json `l2Only`. The
@@ -41,8 +47,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
-  EIP7702_PREFIX, EMPTY_CODE_HASH, FEE_PROOF_FILE, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, feeDelegationOn, loadArtifacts, loadChain, loadShared, lower, pinnedStateReader, planChain, planSummary, refuse, retrying,
+  EIP7702_PREFIX, EMPTY_CODE_HASH, FEE_PROOF_FILE, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, chainSymbolOf, feeDelegationOn, loadArtifacts, loadChain, loadShared, lower, pinnedStateReader, planChain, planSummary, refuse, retrying,
 } from "./lib.mjs";
+import { blocklistState, tokenBehaviourState } from "./token-behaviour.mjs";
 import { loadFeeProof } from "./fee-proof.mjs";
 import { openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
@@ -85,7 +92,9 @@ export function gateConfig(shared, chain) {
     pins: {
       create2Deployer: { address: shared.create2.deployer, codeHash: shared.create2.deployerCodeHash },
       wrappedNative: { address: chain.wrappedNative.address, symbol: chain.wrappedNative.symbol, codeHash: chain.wrappedNative.codeHash },
-      tokens: chain.tokens.map((t) => ({ address: t.address, symbol: t.symbol, decimals: t.decimals, codeHash: t.codeHash })),
+      // `chainSymbol` and `behaviour` only where the token has them (round 20), so a chain without such a token
+      // keeps the file it had.
+      tokens: chain.tokens.map((t) => ({ address: t.address, symbol: t.symbol, ...(t.chainSymbol ? { chainSymbol: t.chainSymbol } : {}), decimals: t.decimals, codeHash: t.codeHash, ...(t.behaviour ? { behaviour: { returnsNoValue: t.behaviour.returnsNoValue, approveZeroFirst: t.behaviour.approveZeroFirst, transferFee: t.behaviour.transferFee, switches: t.behaviour.switches, blocklist: t.behaviour.blocklist } } : {}) })),
       multicall3: chain.multicall3,
       feeTo: {
         address: shared.feeTo.address,
@@ -97,7 +106,13 @@ export function gateConfig(shared, chain) {
       firstDepositor: { mustBe: "the address check-depositor.mjs recorded: a dedicated key account, not the fee address, no code, no EIP-7702 delegation, no transaction on the chain before the factory is deployed" },
       pairInitCodeHash: shared.source.pairInitCodeHash,
     },
-    ownerChoices: { firstDepositor: shared.firstDepositor, reserveCaps: chain.reserveCaps, openingPrice: chain.openingPrice },
+    // `openingPrice` is the rule of the first planned pair; a later pair's own rule is listed by the pair's name.
+    ownerChoices: {
+      firstDepositor: shared.firstDepositor,
+      reserveCaps: chain.reserveCaps,
+      openingPrice: chain.openingPrice,
+      ...(chain.initialPairs.length > 1 ? { openingPrices: Object.fromEntries(chain.initialPairs.slice(1).map((p) => [`${p.tokenA}/${p.tokenB}`, p.openingPrice])) } : {}),
+    },
     expected: "derived by scripts/multichain/plan.mjs from the compiled release candidate and the owner's choices: factory, router, lens and pair addresses and runtime code hashes",
     l2Only: { ...shared.l2Only },
   };
@@ -176,11 +191,18 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
 
   // 2. What the deployment builds on.
   const codeAt = async (address) => codeHashOf(await state("eth_getCode", [address, "pinned"]));
+  const ethCall = (to, data) => state("eth_call", [{ to, data }, "pinned"]);
+  const tokenStates = {};
   check("the CREATE2 deployer holds the pinned code", (await codeAt(shared.create2.deployer)) === shared.create2.deployerCodeHash);
   for (const token of [chain.wrappedNative, ...chain.tokens]) {
     check(`${token.symbol} at ${token.address} holds the pinned code`, (await codeAt(token.address)) === token.codeHash);
     const facts = await soft(async () => ({ name: (await call(token.address, "name")), symbol: await call(token.address, "symbol"), decimals: Number(await call(token.address, "decimals")) }));
-    check(`${token.symbol} answers the listed name, symbol and decimals`, facts.name === token.name && facts.symbol === token.symbol && facts.decimals === token.decimals, facts);
+    check(`${token.symbol} answers the listed name, symbol and decimals`, facts.name === token.name && facts.symbol === chainSymbolOf(token) && facts.decimals === token.decimals, facts);
+    // Round 20: what the code hash does not show. Every token is asked for the transfer-fee getters; a declared
+    // switch must be off (token-behaviour.mjs).
+    const behaviour = await tokenBehaviourState(ethCall, token);
+    tokenStates[token.symbol] = behaviour.read;
+    check(`${token.symbol} takes no fee on transfer: it has no fee parameter, or its declared ones are zero; none of its declared switches is on`, behaviour.ok, behaviour.problems);
   }
   check("Multicall3 holds the pinned code", (await codeAt(chain.multicall3.address)) === chain.multicall3.codeHash);
   const multicallChain = await soft(() => call(chain.multicall3.address, "getChainId"));
@@ -249,6 +271,12 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       const got = await soft(() => call(f, "getPair", [p.token0, p.token1]));
       const created = same(got, p.address);
       const entry = { tokenA: p.tokenA, tokenB: p.tokenB, address: p.address, token0: p.token0, token1: p.token1, created, state: "absent" };
+      // Round 20: a token whose issuer keeps a blocklist is asked for the pair's address and the router (a pool at
+      // a blocked address cannot pay the token out; an address can be blocked before any code is at it).
+      for (const token of chain.tokens.filter((t) => t.behaviour?.blocklist && [lower(p.token0), lower(p.token1)].includes(lower(t.address)))) {
+        const blocked = await blocklistState(ethCall, token, { "the pair": p.address, "the router": plan.contracts.router.address });
+        check(`the issuer's blocklist of ${token.symbol} names neither the pair ${p.tokenA}/${p.tokenB} nor the router`, blocked.ok, blocked.problems);
+      }
       // Tokens can be sent to the pair's address before it exists; they would join the first deposit.
       const held = await soft(async () => [await call(p.token0, "balanceOf", [p.address]), await call(p.token1, "balanceOf", [p.address])]);
       check(`the token balances at the pair address ${p.tokenA}/${p.tokenB} can be read`, Array.isArray(held), held?.failed);
@@ -320,6 +348,7 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
       finalized: finalized && typeof finalized.hash === "string" ? { number: Number(BigInt(finalized.number)), hash: finalized.hash, timestamp: Number(BigInt(finalized.timestamp ?? "0x0")) } : null,
       feeTo: declared(() => feeTo),
       firstDepositor: declared(() => firstDepositor),
+      tokenStates: declared(() => tokenStates) ?? {},
       stateReads,
       plan: planSummary(plan),
       pairs,

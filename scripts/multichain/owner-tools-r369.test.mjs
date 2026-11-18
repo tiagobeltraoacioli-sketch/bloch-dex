@@ -51,6 +51,9 @@ function gateWorld(local, chain, plan, over = {}) {
     if (method === "eth_call") {
       const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
       const fn = names[params[0].data.slice(0, 10)];
+      // A function the stand-in contract does not have reverts, as on a node (round 20: the gate asks every token
+      // for the transfer-fee getters).
+      if (!fn) throw new Error("execution reverted");
       if (fn === "getChainId") return encodeFunctionResult({ abi, functionName: fn, result: 8453n });
       return encodeFunctionResult({ abi, functionName: fn, result: fn === "decimals" ? token.decimals : token[fn] });
     }

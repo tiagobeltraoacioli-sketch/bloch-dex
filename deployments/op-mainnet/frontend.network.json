@@ -33,6 +33,16 @@
       "decimals": 6,
       "codeHash": "0xaad43333d28e146557f1c682e8a4226743fb231fdd00a577512233bd9e920008",
       "kind": "Circle-issued (native), not the bridged USDC.e; upgradeable proxy, the issuer can pause and blacklist"
+    },
+    {
+      "address": "0x94b008aa00579c1307b0ef2c499ad98a8ce58e58",
+      "symbol": "USDT",
+      "label": "USDT (bridged)",
+      "note": "USDT (bridged) is Tether USD moved from Ethereum by the OP Mainnet bridge; Tether does not issue it here. It is not USD₮0.",
+      "name": "Tether USD",
+      "decimals": 6,
+      "codeHash": "0xb49036bd4151aceb1aeaf736cd44d43f820306b280c5e8a58e430083cc444151",
+      "kind": "NOT Tether-issued here: Tether USD bridged from Ethereum by the OP Mainnet standard bridge (l1Token() is Tether's Ethereum contract, l2Bridge() is the bridge predeploy 0x4200000000000000000000000000000000000010, which alone can mint and burn). The token itself is not upgradeable and has no pause, blocklist or fee; its backing is USDT held by the bridge on Ethereum. Not USD₮0 (0x01bFF41798a0BcF287b996046Ca68b395DbC1071), the other USDT on this chain, which has no established v3 pool with WETH. Listed under the label \"USDT (bridged)\""
     }
   ],
   "multicall3": {

@@ -448,6 +448,9 @@ test("the gate passes a correct chain, reports an EIP-7702 fee address, and fail
       if (method === "eth_call") {
         const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
         const fn = names[params[0].data.slice(0, 10)];
+        // A function the stand-in contract does not have reverts, as on a node (round 20: the gate asks every
+        // token for the transfer-fee getters).
+        if (!fn) throw new Error("execution reverted");
         if (fn === "getChainId") return encodeFunctionResult({ abi, functionName: fn, result: 8453n });
         return encodeFunctionResult({ abi, functionName: fn, result: fn === "decimals" ? token.decimals : token[fn] });
       }
@@ -502,7 +505,7 @@ test("the gate passes a correct chain, reports an EIP-7702 fee address, and fail
 
 test("the post gate reports each pair's state; the record needs every pair open; 'not finalized yet' is reported as WAIT", async () => {
   const require = (await import("node:module")).createRequire(new URL("../../frontend/package.json", import.meta.url));
-  const { keccak256, encodeFunctionResult, decodeFunctionData, parseAbi, toHex } = require("viem");
+  const { keccak256, encodeFunctionResult, decodeFunctionData, parseAbi, toFunctionSelector, toHex } = require("viem");
   const chain = clone(chains.find((c) => c.chain.key === "base"));
   const local = clone(shared);
   const code = (label) => toHex(`code:${label}`);
@@ -549,6 +552,9 @@ test("the post gate reports each pair's state; the record needs every pair open;
       }
       if (method === "eth_call") {
         const to = lower(params[0].to);
+        // A function the stand-in contract does not have reverts, as on a node (round 20: the gate asks every
+        // token for the transfer-fee getters).
+        if (!abi.some((f) => toFunctionSelector(f) === params[0].data.slice(0, 10))) throw new Error("execution reverted");
         const { functionName: fn, args } = decodeFunctionData({ abi, data: params[0].data });
         const out = (result) => encodeFunctionResult({ abi, functionName: fn, result });
         const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === to);
@@ -824,6 +830,7 @@ test("EIP-7702 at the fee address: accepted only to the identified delegate with
     if (method === "eth_call") {
       const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
       const fn = names[params[0].data.slice(0, 10)];
+      if (!fn) throw new Error("execution reverted"); // as a node answers a function the contract does not have
       return encodeFunctionResult({ abi, functionName: fn, result: fn === "getChainId" ? 8453n : fn === "decimals" ? token.decimals : token[fn] });
     }
     throw new Error(`unexpected ${method}`);

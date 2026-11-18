@@ -8,8 +8,10 @@
 // A pool opened away from the market is traded back to it at the depositor's cost. So the opening price is not typed
 // by hand: first-deposit.mjs takes it from here and refuses amounts that are more than `maxDeviationBps` (0.5%) away.
 //
-// The market is read from TWO INDEPENDENT ON-CHAIN REFERENCES, both configured per chain in
-// deployments/<chain>/chain.json `openingPrice.references`, each address taken from its publisher's own page:
+// The market is read from TWO INDEPENDENT ON-CHAIN REFERENCES, both configured per planned pair in
+// deployments/<chain>/chain.json (`openingPrice.references` for the first planned pair,
+// `initialPairs[i].openingPrice.references` for a later one: lib.mjs `openingPriceFor`), each address taken from
+// its publisher's own page:
 //   chainlink  two Chainlink data feeds (aggregated from exchanges by an oracle network, off this chain's pools):
 //              NATIVE / USD divided by TOKEN / USD. Each answer must be positive and not older than the feed's
 //              heartbeat plus STALE_GRACE_SECONDS at the pinned block.
@@ -26,7 +28,7 @@
 import { createRequire } from "node:module";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
-import { EMPTY_CODE_HASH, MultichainError, loadChain, loadShared, lower, refuse, retrying } from "./lib.mjs";
+import { EMPTY_CODE_HASH, MultichainError, loadChain, loadShared, lower, openingPriceFor, refuse, retrying } from "./lib.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, parseUnits, formatUnits } = requireFromFrontend("viem");
@@ -99,7 +101,8 @@ export const priceOf = (nativeWei, tokenUnits) => (tokenUnits * E18) / nativeWei
  * a reference that cannot be read: it is a problem, and `ok` is false.
  */
 export async function readMarket({ chain, token, requests, at }) {
-  const config = chain.openingPrice;
+  // The rule of the planned pair of THIS token (round 20): never another pair's references.
+  const config = openingPriceFor(chain, token);
   const problems = [];
   const pin = { blockHash: at.hash, requireCanonical: true };
   const now = BigInt(at.timestamp);
