@@ -757,3 +757,63 @@ test("verify-chain: the functions a runtime dispatches on are found by walking i
   assert.match(JSON.stringify(split.checks.find((c) => c.name === "USDT takes no fee on transfer and none of its declared switches is on").detail), /basisPointsRate\(\) could not be read: DISAGREEMENT/);
 });
 
+
+// ---------------------------------------------------------------------------------------------------------------
+// The owner's steps for a second pool (docs/OWNER-DEPLOY-NOW.md section 8B, docs/MULTICHAIN-DEPLOY.md section 8).
+// ---------------------------------------------------------------------------------------------------------------
+
+test("the owner's steps for a second pool: one command per block, no comment, no angle bracket, the right chain, pair, token, amount and endpoint", () => {
+  const guide = readFileSync(join(ROOT, "docs/OWNER-DEPLOY-NOW.md"), "utf8");
+  const blocks = {};
+  for (const m of guide.matchAll(/<!-- second-pool: (\S+) (\S+) -->\n```\n([\s\S]*?)\n```/g)) {
+    assert.equal(blocks[`${m[1]} ${m[2]}`], undefined, `${m[1]} ${m[2]} appears twice`);
+    blocks[`${m[1]} ${m[2]}`] = m[3];
+  }
+  const ORDER = ["op-mainnet", "arbitrum-one", "bnb-smart-chain", "ethereum"];
+  const STEPS = ["verify-chain", "post-gate-two-pairs", "market", "depositor-native", "depositor-token", "prepare", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
+  const ONCE = ["cd", "fetch", "origin-main", "rebase", "own-commits", "forge-build", "kit-tests"];
+  assert.deepEqual(Object.keys(blocks), [...ONCE.map((s) => `once ${s}`), ...ORDER.flatMap((k) => STEPS.map((s) => `${k} ${s}`))]);
+  assert.deepEqual(ORDER, committed.chains.filter((k) => SECOND[k]), "the four chains with a second token, in the document's order");
+  // The owner's shell reads `#` as text and `<` `>` as redirections: none in any block, and one line each.
+  for (const [name, command] of Object.entries(blocks)) {
+    assert.ok(!command.includes("\n"), `${name}: one command`);
+    assert.ok(!/(^|\s)#/.test(command) && !/[<>]/.test(command), `${name}: no comment and no angle bracket`);
+    assert.ok(!/--private-key|--mnemonic|0x[0-9a-fA-F]{64}(?![0-9a-fA-F])/.test(command), `${name}: no key`);
+    assert.ok(!/^cast send /.test(command), `${name}: the lines to sign are printed by the tool, never written in the guide`);
+  }
+  // No block of a section before 8B was touched by this round: the dry-run driver's blocks are counted by its own test.
+  assert.equal(blocks["once kit-tests"], "node --test scripts/multichain/second-pair-r20.test.mjs");
+  assert.equal(blocks["once rebase"], "git rebase origin/main");
+  for (const key of ORDER) {
+    const chain = chainOf(key);
+    const token = chain.tokens[1];
+    const pair = `${chain.wrappedNative.symbol}/${token.symbol}`;
+    const minimum = openingPriceFor(chain, token).minimumNative;
+    const b = (step) => blocks[`${key} ${step}`];
+    assert.equal(b("verify-chain"), `node scripts/multichain/verify-chain.mjs ${key}`);
+    assert.equal(b("post-gate-two-pairs"), `node scripts/multichain/gate.mjs ${key} post --out deployments/${key}/gate-report.json`);
+    assert.equal(b("market"), `node scripts/multichain/market.mjs ${key} --pair ${pair} --native ${minimum}`);
+    assert.equal(b("prepare"), `node scripts/multichain/first-deposit.mjs ${key} prepare --pair ${pair} --native ${minimum} --gate-report deployments/${key}/gate-report.json`);
+    assert.equal(b("verify"), `node scripts/multichain/first-deposit.mjs ${key} verify --pair ${pair} --native ${minimum} --token TOKEN_AMOUNT --tx DEPOSIT_HASH`);
+    assert.equal(b("post-gate-open"), `node scripts/multichain/gate.mjs ${key} post --opening ${pair}=DEPOSIT_HASH --out deployments/${key}/gate-report.json`);
+    assert.equal(b("frontend-record"), `node scripts/multichain/frontend-files.mjs ${key} --gate-report deployments/${key}/gate-report.json`);
+    assert.equal(b("depositor-native"), `cast balance ${committed.firstDepositor} --ether --rpc-url ${chain.rpc[0]}`);
+    assert.equal(b("depositor-token"), `cast call ${token.address} "balanceOf(address)(uint256)" ${committed.firstDepositor} --rpc-url ${chain.rpc[0]}`);
+    // The pair's name is typable (the key, not a symbol of another script) and never another chain's.
+    assert.match(pair, /^[A-Z]{3,5}\/[A-Z0-9]{4,5}$/);
+    for (const other of committed.chains.filter((k) => k !== key)) for (const step of STEPS) assert.ok(!b(step).includes(` ${other} `) && !b(step).includes(`deployments/${other}/`), `${key} ${step} names ${other}`);
+  }
+  // The guide says what the tokens are and what to do with Tether's approve; Base and Linea get no second pool.
+  assert.match(guide, /\*\*Base and Linea do not\*\*/);
+  assert.match(guide, /\*\*Never send an `approve` of USDT yourself\*\*/);
+  for (const shown of ["USDT (bridged)", "USD₮0", "USDT (Binance-Peg)"]) assert.ok(guide.includes(shown), shown);
+  // The technical document's own blocks of that subsection obey the same rule.
+  const doc = readFileSync(join(ROOT, "docs/MULTICHAIN-DEPLOY.md"), "utf8");
+  const section = doc.slice(doc.indexOf("**A second pool on a chain (USDT).**"), doc.indexOf("If the sender through the reviewed public endpoint is a problem"));
+  const commands = [...section.matchAll(/```\n([\s\S]*?)\n```/g)].map((m) => m[1]);
+  assert.equal(commands.length, 7);
+  for (const command of commands) assert.ok(!command.includes("\n") && !/(^|\s)#/.test(command) && !/[<>]/.test(command) && / ethereum /.test(`${command} `), command);
+  // The recovery text that was wrong for Tether's contract is gone, and its correction is there.
+  assert.match(doc, /do not send another `approve` yourself/);
+  assert.match(doc, /Tokens with a transfer fee or a rebasing balance are not supported and must not be\s+listed/);
+});

@@ -209,6 +209,31 @@ try {
     return receipt.status === "0x0" && why.includes(reason) ? true : `status ${receipt.status}, ${why}`;
   }
 
+  // ---- 0. round 20: a chain on which the owner has already deployed ----
+  // Since 2026-11-18 the owner's factory, router and lens are on five of the six chains, so a fork of today holds
+  // them: `deploy.sh` then sends nothing ("No transactions to broadcast") and this rehearsal, which is about the
+  // deployment itself, could not run (finding F409-3; it read a broadcast file that was never written). The three
+  // planned addresses are therefore checked to hold EXACTLY the planned code and are then cleared on the fork
+  // (code and nonce; a factory that has created no pair has no storage), so that the documented command deploys
+  // the same bytes to the same addresses again and every later check means what it meant. A planned pair that
+  // already exists cannot be cleared this way (its own storage and the factory's would stay): the rehearsal stops
+  // and says so. rehearse-second-pair.mjs rehearses the pools against the owner's deployment as it is.
+  {
+    const present = [];
+    for (const c of Object.values(plan.contracts)) if ((await rpc("eth_getCode", [c.address, "latest"])) !== "0x") present.push(c);
+    if (present.length) {
+      const same = [];
+      for (const c of present) same.push(keccak256(await rpc("eth_getCode", [c.address, "latest"])) === c.runtimeCodeHash);
+      check(`the ${present.map((c) => c.name).join(", ")} already on the chain (the owner's deployment) hold exactly the planned code; they are cleared on the fork and deployed again by the documented command`, same.every(Boolean), present.map((c, i) => `${c.name} ${same[i]}`));
+      for (const p of plan.pairs) refuse((await rpc("eth_getCode", [p.address, "latest"])) === "0x", `the planned pair ${p.tokenA}/${p.tokenB} already exists on the forked chain: this rehearsal needs a fork from before its creation (--fork-url of an archive endpoint, and a fork block before the opening)`);
+      for (const c of present) {
+        await rpc("anvil_setCode", [c.address, "0x"]);
+        await rpc("anvil_setNonce", [c.address, "0x0"]);
+      }
+      evidence.ownerDeployment = { cleared: present.map((c) => ({ name: c.name, address: c.address })), why: "already deployed on the chain by the owner; cleared on the fork so that the rehearsal deploys them itself" };
+    }
+  }
+
   // ---- 1. the owner's command, as documented ----
   const run = spawnSync("bash", ["scripts/multichain/deploy.sh", key, "broadcast", "--rehearsal-rpc", url, "--reference", "--", "--private-key", deployerKey], { cwd: ROOT, encoding: "utf8", env: { ...process.env, FOUNDRY_DISABLE_NIGHTLY_WARNING: "1" } });
   writeFileSync(join(opt.out, "deploy.log"), `${run.stdout}\n${run.stderr}`.replaceAll(deployerKey, "<throwaway key>"));
@@ -434,7 +459,9 @@ try {
     check("the post gate does not pass an open pool without its opening transaction, even the owner's", unproven.status === 1 && unproven.written?.pairs[0]?.opening?.proven === false, unproven.text.slice(-300));
   }
   const openGate = runGate("gate-report.json", "gate.log", ["--opening", `${pairName}=${opening.hash}`]);
-  check("the post gate passes again and reports the pair open, with its opening proven", openGate.ok && openGate.report.pairs.every((p) => p.state === "open" && p.opening?.proven === true && p.opening.transaction === opening.hash), openGate.detail ?? openGate.report?.pairs.map((p) => p.state));
+  // Round 20: a chain may plan a second pair. This rehearsal opens the first; every other planned pair must still
+  // be absent (rehearse-second-pair.mjs opens it).
+  check("the post gate passes again and reports the pair open, with its opening proven", openGate.ok && openGate.report.pairs.every((p, i) => (i === 0 ? p.state === "open" && p.opening?.proven === true && p.opening.transaction === opening.hash : p.state === "absent")), openGate.detail ?? openGate.report?.pairs.map((p) => p.state));
   if (!opt.hold) {
     const again = runGate("gate-report.json", "gate-again.log");
     check("a later run of the post gate takes the opening transaction from the report it replaces and proves it again", again.ok && again.report.pairs[0].opening?.transaction === opening.hash && again.report.pairs[0].opening.proven === true, again.detail);

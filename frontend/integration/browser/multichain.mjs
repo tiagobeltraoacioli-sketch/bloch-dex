@@ -246,6 +246,20 @@ try {
     const shown = chain.token.shown ?? chain.token.symbol;
     check(`${chain.key}: the pool of ${chain.wrapped.symbol} and ${shown} is shown on screen and the native coin is ${chain.native}`, (onScreen.includes(`${chain.wrapped.symbol}/${shown}`) || onScreen.includes(`${shown}/${chain.wrapped.symbol}`)) && (await page.evaluate(`[...document.querySelectorAll('[data-testid="token-chip-pay"]')].some((c) => c.textContent.includes(${JSON.stringify(chain.native)}) && window.__h.reachable(c))`)), onScreen.slice(0, 300));
     if (chain.token.note) check(`${chain.key}: the token's note is on screen ("${chain.token.note}") and the pool is never named with the bare symbol`, onScreen.includes(chain.token.note) && !((bare) => bare.includes(`${chain.wrapped.symbol}/${chain.token.symbol}`) || bare.includes(`${chain.token.symbol}/${chain.wrapped.symbol}`))(text.split(shown).join("")), onScreen.slice(0, 400));
+    // Round 20: a planned pair whose opening the record does not prove (the chain's second pool here) is named as
+    // not open, on screen; its token appears nowhere else on the page (no pool row, no token to choose, no quote),
+    // its own note aside. A chain whose planned pairs are all open says nothing of the kind.
+    {
+      const pending = chain.pending ?? [];
+      const notice = pending.length ? `Not open yet on ${chain.name}: ${pending.map((p) => `${chain.wrapped.symbol}/${p.shown}`).join(', ')}.` : null;
+      let rest = text;
+      for (const part of [notice, ...pending.map((p) => p.note)].filter(Boolean)) rest = rest.split(part).join(' ');
+      check(
+        pending.length ? `${chain.key}: the pair ${chain.wrapped.symbol}/${pending[0].shown} is named on screen as not open yet, and its token is offered nowhere on the page` : `${chain.key}: no pair is named as not open (every planned pair of this chain is open)`,
+        pending.length ? onScreen.includes(notice) && pending.every((p) => !rest.includes(p.shown)) : !/Not open yet on/.test(text),
+        pending.length ? /.{0,60}(USDT|USD₮0).{0,60}/.exec(rest)?.[0] ?? onScreen.slice(0, 300) : /.{0,40}Not open yet on.{0,80}/.exec(text)?.[0],
+      );
+    }
     const depth = chain.confirmation.settle.depth;
     check(
       `${chain.key}: the page says on screen, without a click, what "${word(chain)}" means on this network (${depth ? `${depth} block${depth === 1 ? '' : 's'} on top` : "the chain's own finalized block"})`,

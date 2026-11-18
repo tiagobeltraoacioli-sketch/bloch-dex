@@ -1145,9 +1145,388 @@ Then delete `"$DEX_DEPLOYER_KEYSTORE_DIR"`. Leftover dust lost with it is harmle
 
 **The depositing key** stays as `docs/MULTICHAIN-DEPLOY.md` section 2.1 says: keep it (and its rule: it sends
 nothing but printed deposits) if you will open further pairs on these factories; otherwise empty it and delete it.
+Section 8B below opens a second pool (USDT) on four chains: **keep the depositing key until that is done.**
 
 **Bloch L2 DEX (separate product).** Not part of this procedure: its fee goes to the Bloch Inc Safe through
 `blochInc`; that is the integrator's owner checklist item (agent 366).
+
+## 8B. A second pool on four chains: USDT
+
+Decision of 2026-11-18 (a curated list of tokens, USDT first). Four chains get a second pool, the wrapped native
+coin with that chain's USDT; **Base and Linea do not** (`docs/MULTICHAIN-DEPLOY.md` section 2.6 says why). Nothing
+is deployed: the factory and the router are the ones of section 4, and only the depositing account can open a
+pool. The page keeps showing a chain's first pool while its second is not open; it names the second as "not open
+yet" and sends nothing for it.
+
+"USDT" is a different token on each chain, and the page shows each under a name that says so:
+
+| Chain | Pair to type | The token | Shown as |
+|---|---|---|---|
+| OP Mainnet | `WETH/USDT` | Tether USD bridged from Ethereum by the chain's bridge; not issued by Tether here | USDT (bridged) |
+| Arbitrum One | `WETH/USDT0` | USDT0, the cross-chain form of Tether USD; its contract calls itself USD₮0 | USD₮0 |
+| BNB Smart Chain | `WBNB/USDT` | Binance-Peg, issued by Binance, **18 decimals** | USDT (Binance-Peg) |
+| Ethereum | `WETH/USDT` | Tether's own contract | USDT |
+
+Do a chain's second pool only after its first pool is open and recorded (section 5, steps 6 to 11 of that chain).
+Same order as before, cheapest first: OP Mainnet, Arbitrum One, BNB Smart Chain, Ethereum.
+
+### 8B.0 Once: bring your copy to the reviewed commit that lists USDT
+
+Your copy has commits of your own by now (the fee address proof, each chain's record), so the line of section
+2.1 that compares the whole copy with one commit id no longer applies (it says so there). Instead: fetch, compare
+the id of the published `main` with the 40 digits you received for this step, and put your own commits on top of
+it.
+
+<!-- second-pool: once cd -->
+```
+cd ~/postern-dex
+```
+
+<!-- second-pool: once fetch -->
+```
+git fetch origin
+```
+
+<!-- second-pool: once origin-main -->
+```
+git rev-parse origin/main
+```
+
+It must print exactly the 40 digits you received. If it prints anything else, stop and ask the coordinator.
+
+<!-- second-pool: once rebase -->
+```
+git rebase origin/main
+```
+
+It replays your own commits on top of the reviewed commit. It must end with `Successfully rebased`; if it reports a conflict, type `git rebase --abort`, change nothing else and ask the coordinator.
+
+<!-- second-pool: once own-commits -->
+```
+git diff --stat origin/main HEAD
+```
+
+It lists what differs between the reviewed commit and your copy: only files under `deployments/` that you committed yourself (`fee-address-proof.json`, and per finished chain `gate-report.json` and `frontend.record.json`). Any other file in that list: stop.
+
+<!-- second-pool: once forge-build -->
+```
+forge build
+```
+
+It must say `Compiler run successful` or `No files changed, compilation skipped`.
+
+<!-- second-pool: once kit-tests -->
+```
+node --test scripts/multichain/second-pair-r20.test.mjs
+```
+
+It must end with `fail 0`. Among other things it checks that the factory, the routers, the lens and every first pool are still the addresses you deployed.
+
+### 8B.1 OP Mainnet (`op-mainnet`, chain id 10): the second pool
+
+**op-mainnet-U1. The chain as the configuration describes it now** (read-only): both tokens, what USDT (bridged) does besides moving balances, and each pool's two price references. It must end with `PASS`.
+
+<!-- second-pool: op-mainnet verify-chain -->
+```
+node scripts/multichain/verify-chain.mjs op-mainnet
+```
+
+**op-mainnet-U2. The post gate with the plan that has two pairs.** It takes the first pool's opening from the report it replaces, must end with `post: PASS`, and reports the pair `WETH/USDT` as `absent`.
+
+<!-- second-pool: op-mainnet post-gate-two-pairs -->
+```
+node scripts/multichain/gate.mjs op-mainnet post --out deployments/op-mainnet/gate-report.json
+```
+
+**op-mainnet-U3. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on OP Mainnet with the native amount you will deposit plus gas, and with the USDT (bridged) amount this command prints for that native amount, **plus 1%**. Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step op-mainnet-U4.
+
+<!-- second-pool: op-mainnet market -->
+```
+node scripts/multichain/market.mjs op-mainnet --pair WETH/USDT --native 0.1
+```
+
+Check both balances arrived (the second number is in base units: 6 decimals):
+
+<!-- second-pool: op-mainnet depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://mainnet.optimism.io
+```
+<!-- second-pool: op-mainnet depositor-token -->
+```
+cast call 0x94b008aA00579c1307B0EF2c499aD98a8ce58e58 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://mainnet.optimism.io
+```
+
+**op-mainnet-U4. Open the second pool.** Use your amount in place of `0.1`. The tool reads this pair's own market, checks the token (no fee switched on, not paused), and prints the `cast send` lines. If it prints `STOP`, or fails on a check that names the token, deposit nothing and go to section 7.
+
+<!-- second-pool: op-mainnet prepare -->
+```
+node scripts/multichain/first-deposit.mjs op-mainnet prepare --pair WETH/USDT --native 0.1 --gate-report deployments/op-mainnet/gate-report.json
+```
+
+Send the printed lines **only with `cast`**, one at a time, exactly as printed, each followed by the same text as in section 5 for this chain (the depositing key's keystore and `--rpc-url https://mainnet.optimism.io`). The rule of section 5 holds: no browser wallet, no "switch to smart account", no batched transaction. The last line prints `transactionHash`: that is `DEPOSIT_HASH` below; `TOKEN_AMOUNT` is the token amount `prepare` printed.
+
+**op-mainnet-U5. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- second-pool: op-mainnet verify -->
+```
+node scripts/multichain/first-deposit.mjs op-mainnet verify --pair WETH/USDT --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**op-mainnet-U6. Post gate with the opening**, after the same wait as in section 4. It must end with `post: PASS` and report **both** pairs `open`, each opened by `0x1ec3…C8f3` (the first pool's opening is taken from the report).
+
+<!-- second-pool: op-mainnet post-gate-open -->
+```
+node scripts/multichain/gate.mjs op-mainnet post --opening WETH/USDT=DEPOSIT_HASH --out deployments/op-mainnet/gate-report.json
+```
+
+**op-mainnet-U7. The page's record**, which now lists both pools:
+
+<!-- second-pool: op-mainnet frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs op-mainnet --gate-report deployments/op-mainnet/gate-report.json
+```
+
+**op-mainnet-U8. Record.**
+
+<!-- second-pool: op-mainnet record-add -->
+```
+git add deployments/op-mainnet
+```
+<!-- second-pool: op-mainnet record-commit -->
+```
+git commit -m "OP Mainnet: second pool opened, WETH/USDT (owner run)"
+```
+
+### 8B.2 Arbitrum One (`arbitrum-one`, chain id 42161): the second pool
+
+**arbitrum-one-U1. The chain as the configuration describes it now** (read-only): both tokens, what USD₮0 does besides moving balances, and each pool's two price references. It must end with `PASS`.
+
+<!-- second-pool: arbitrum-one verify-chain -->
+```
+node scripts/multichain/verify-chain.mjs arbitrum-one
+```
+
+**arbitrum-one-U2. The post gate with the plan that has two pairs.** It takes the first pool's opening from the report it replaces, must end with `post: PASS`, and reports the pair `WETH/USDT0` as `absent`.
+
+<!-- second-pool: arbitrum-one post-gate-two-pairs -->
+```
+node scripts/multichain/gate.mjs arbitrum-one post --out deployments/arbitrum-one/gate-report.json
+```
+
+**arbitrum-one-U3. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Arbitrum One with the native amount you will deposit plus gas, and with the USD₮0 amount this command prints for that native amount, **plus 1%**. Replace `0.1` by your amount (at least 0.1). Transfers **to** the depositing account are safe; it must **send** nothing but step arbitrum-one-U4.
+
+<!-- second-pool: arbitrum-one market -->
+```
+node scripts/multichain/market.mjs arbitrum-one --pair WETH/USDT0 --native 0.1
+```
+
+Check both balances arrived (the second number is in base units: 6 decimals):
+
+<!-- second-pool: arbitrum-one depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://arb1.arbitrum.io/rpc
+```
+<!-- second-pool: arbitrum-one depositor-token -->
+```
+cast call 0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://arb1.arbitrum.io/rpc
+```
+
+**arbitrum-one-U4. Open the second pool.** Use your amount in place of `0.1`. The tool reads this pair's own market, checks the token (no fee switched on, not paused), and prints the `cast send` lines. If it prints `STOP`, or fails on a check that names the token, deposit nothing and go to section 7.
+
+<!-- second-pool: arbitrum-one prepare -->
+```
+node scripts/multichain/first-deposit.mjs arbitrum-one prepare --pair WETH/USDT0 --native 0.1 --gate-report deployments/arbitrum-one/gate-report.json
+```
+
+Send the printed lines **only with `cast`**, one at a time, exactly as printed, each followed by the same text as in section 5 for this chain (the depositing key's keystore and `--rpc-url https://arb1.arbitrum.io/rpc`). The rule of section 5 holds: no browser wallet, no "switch to smart account", no batched transaction. The last line prints `transactionHash`: that is `DEPOSIT_HASH` below; `TOKEN_AMOUNT` is the token amount `prepare` printed.
+
+**arbitrum-one-U5. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- second-pool: arbitrum-one verify -->
+```
+node scripts/multichain/first-deposit.mjs arbitrum-one verify --pair WETH/USDT0 --native 0.1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**arbitrum-one-U6. Post gate with the opening**, after the same wait as in section 4. It must end with `post: PASS` and report **both** pairs `open`, each opened by `0x1ec3…C8f3` (the first pool's opening is taken from the report).
+
+<!-- second-pool: arbitrum-one post-gate-open -->
+```
+node scripts/multichain/gate.mjs arbitrum-one post --opening WETH/USDT0=DEPOSIT_HASH --out deployments/arbitrum-one/gate-report.json
+```
+
+**arbitrum-one-U7. The page's record**, which now lists both pools:
+
+<!-- second-pool: arbitrum-one frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs arbitrum-one --gate-report deployments/arbitrum-one/gate-report.json
+```
+
+**arbitrum-one-U8. Record.**
+
+<!-- second-pool: arbitrum-one record-add -->
+```
+git add deployments/arbitrum-one
+```
+<!-- second-pool: arbitrum-one record-commit -->
+```
+git commit -m "Arbitrum One: second pool opened, WETH/USDT0 (owner run)"
+```
+
+### 8B.3 BNB Smart Chain (`bnb-smart-chain`, chain id 56): the second pool
+
+**bnb-smart-chain-U1. The chain as the configuration describes it now** (read-only): both tokens, what USDT (Binance-Peg) does besides moving balances, and each pool's two price references. It must end with `PASS`.
+
+<!-- second-pool: bnb-smart-chain verify-chain -->
+```
+node scripts/multichain/verify-chain.mjs bnb-smart-chain
+```
+
+**bnb-smart-chain-U2. The post gate with the plan that has two pairs.** It takes the first pool's opening from the report it replaces, must end with `post: PASS`, and reports the pair `WBNB/USDT` as `absent`.
+
+<!-- second-pool: bnb-smart-chain post-gate-two-pairs -->
+```
+node scripts/multichain/gate.mjs bnb-smart-chain post --out deployments/bnb-smart-chain/gate-report.json
+```
+
+**bnb-smart-chain-U3. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on BNB Smart Chain with the native amount you will deposit plus gas, and with the USDT (Binance-Peg) amount this command prints for that native amount, **plus 1%**. Replace `0.5` by your amount (at least 0.5). Transfers **to** the depositing account are safe; it must **send** nothing but step bnb-smart-chain-U4.
+
+<!-- second-pool: bnb-smart-chain market -->
+```
+node scripts/multichain/market.mjs bnb-smart-chain --pair WBNB/USDT --native 0.5
+```
+
+Check both balances arrived (the second number is in base units: 18 decimals):
+
+<!-- second-pool: bnb-smart-chain depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://bsc-rpc.publicnode.com
+```
+<!-- second-pool: bnb-smart-chain depositor-token -->
+```
+cast call 0x55d398326f99059fF775485246999027B3197955 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://bsc-rpc.publicnode.com
+```
+
+**bnb-smart-chain-U4. Open the second pool.** Use your amount in place of `0.5`. The tool reads this pair's own market, checks the token (no fee switched on, not paused), and prints the `cast send` lines. If it prints `STOP`, or fails on a check that names the token, deposit nothing and go to section 7.
+
+<!-- second-pool: bnb-smart-chain prepare -->
+```
+node scripts/multichain/first-deposit.mjs bnb-smart-chain prepare --pair WBNB/USDT --native 0.5 --gate-report deployments/bnb-smart-chain/gate-report.json
+```
+
+Send the printed lines **only with `cast`**, one at a time, exactly as printed, each followed by the same text as in section 5 for this chain (the depositing key's keystore and `--rpc-url https://bsc-rpc.publicnode.com`). The rule of section 5 holds: no browser wallet, no "switch to smart account", no batched transaction. The last line prints `transactionHash`: that is `DEPOSIT_HASH` below; `TOKEN_AMOUNT` is the token amount `prepare` printed.
+
+**bnb-smart-chain-U5. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- second-pool: bnb-smart-chain verify -->
+```
+node scripts/multichain/first-deposit.mjs bnb-smart-chain verify --pair WBNB/USDT --native 0.5 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**bnb-smart-chain-U6. Post gate with the opening**, after the same wait as in section 4. It must end with `post: PASS` and report **both** pairs `open`, each opened by `0x1ec3…C8f3` (the first pool's opening is taken from the report).
+
+<!-- second-pool: bnb-smart-chain post-gate-open -->
+```
+node scripts/multichain/gate.mjs bnb-smart-chain post --opening WBNB/USDT=DEPOSIT_HASH --out deployments/bnb-smart-chain/gate-report.json
+```
+
+**bnb-smart-chain-U7. The page's record**, which now lists both pools:
+
+<!-- second-pool: bnb-smart-chain frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs bnb-smart-chain --gate-report deployments/bnb-smart-chain/gate-report.json
+```
+
+**bnb-smart-chain-U8. Record.**
+
+<!-- second-pool: bnb-smart-chain record-add -->
+```
+git add deployments/bnb-smart-chain
+```
+<!-- second-pool: bnb-smart-chain record-commit -->
+```
+git commit -m "BNB Smart Chain: second pool opened, WBNB/USDT (owner run)"
+```
+
+### 8B.4 Ethereum (`ethereum`, chain id 1): the second pool
+
+**ethereum-U1. The chain as the configuration describes it now** (read-only): both tokens, what USDT does besides moving balances, and each pool's two price references. It must end with `PASS`.
+
+<!-- second-pool: ethereum verify-chain -->
+```
+node scripts/multichain/verify-chain.mjs ethereum
+```
+
+**ethereum-U2. The post gate with the plan that has two pairs.** It takes the first pool's opening from the report it replaces, must end with `post: PASS`, and reports the pair `WETH/USDT` as `absent`.
+
+<!-- second-pool: ethereum post-gate-two-pairs -->
+```
+node scripts/multichain/gate.mjs ethereum post --out deployments/ethereum/gate-report.json
+```
+
+**ethereum-U3. Fund the depositing account** `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3` on Ethereum with the native amount you will deposit plus gas, and with the USDT amount this command prints for that native amount, **plus 1%**. Replace `1` by your amount (at least 1). Transfers **to** the depositing account are safe; it must **send** nothing but step ethereum-U4.
+
+<!-- second-pool: ethereum market -->
+```
+node scripts/multichain/market.mjs ethereum --pair WETH/USDT --native 1
+```
+
+Check both balances arrived (the second number is in base units: 6 decimals):
+
+<!-- second-pool: ethereum depositor-native -->
+```
+cast balance 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --ether --rpc-url https://ethereum-rpc.publicnode.com
+```
+<!-- second-pool: ethereum depositor-token -->
+```
+cast call 0xdAC17F958D2ee523a2206206994597C13D831ec7 "balanceOf(address)(uint256)" 0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3 --rpc-url https://ethereum-rpc.publicnode.com
+```
+
+**ethereum-U4. Open the second pool.** Use your amount in place of `1`. The tool reads this pair's own market, checks the token (no fee switched on, not paused), and prints the `cast send` lines. If it prints `STOP`, or fails on a check that names the token, deposit nothing and go to section 7.
+
+On Ethereum the tool may print **three** lines, or **one**: Tether's contract refuses to change an allowance that is not zero. With an allowance left by an earlier run it prints `approve … 0` first, then the approve, then the deposit; when the allowance already is the amount it prints the deposit alone. Send what is printed, in order, and wait for each to be mined before the next. **Never send an `approve` of USDT yourself**, and if the deposit is not sent in time, run this command again: it reads the allowance and prints what works.
+
+<!-- second-pool: ethereum prepare -->
+```
+node scripts/multichain/first-deposit.mjs ethereum prepare --pair WETH/USDT --native 1 --gate-report deployments/ethereum/gate-report.json
+```
+
+Send the printed lines **only with `cast`**, one at a time, exactly as printed, each followed by the same text as in section 5 for this chain (the depositing key's keystore and `--rpc-url https://ethereum-rpc.publicnode.com`). The rule of section 5 holds: no browser wallet, no "switch to smart account", no batched transaction. The last line prints `transactionHash`: that is `DEPOSIT_HASH` below; `TOKEN_AMOUNT` is the token amount `prepare` printed.
+
+**ethereum-U5. Prove the opening** from the deposit transaction. It must say `PASS`.
+
+<!-- second-pool: ethereum verify -->
+```
+node scripts/multichain/first-deposit.mjs ethereum verify --pair WETH/USDT --native 1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+**ethereum-U6. Post gate with the opening**, after the same wait as in section 4. It must end with `post: PASS` and report **both** pairs `open`, each opened by `0x1ec3…C8f3` (the first pool's opening is taken from the report).
+
+<!-- second-pool: ethereum post-gate-open -->
+```
+node scripts/multichain/gate.mjs ethereum post --opening WETH/USDT=DEPOSIT_HASH --out deployments/ethereum/gate-report.json
+```
+
+**ethereum-U7. The page's record**, which now lists both pools:
+
+<!-- second-pool: ethereum frontend-record -->
+```
+node scripts/multichain/frontend-files.mjs ethereum --gate-report deployments/ethereum/gate-report.json
+```
+
+**ethereum-U8. Record.**
+
+<!-- second-pool: ethereum record-add -->
+```
+git add deployments/ethereum
+```
+<!-- second-pool: ethereum record-commit -->
+```
+git commit -m "Ethereum: second pool opened, WETH/USDT (owner run)"
+```
+
+**If a step of this section fails.** Nothing here can lose what is already deployed or open. A `prepare` that fails prints nothing to send. A check that names the token (`basisPointsRate`, `maximumFee`, `paused`, `deprecated`, a blocklist) means the issuer changed the token, not that anything is wrong with the DEX: deposit nothing into that pool and tell the coordinator. "No market price" means the pair's two references are apart or a feed is old: wait and run the command again. Everything else is as in section 7.
+
+**What was rehearsed.** These commands, with the lines they print sent as they are, on forks of the four chains that hold your own deployed factory and router: the first pool, then the second; the page's record with one pool and then with both; on Ethereum the three-line and the one-line case and Tether's owner switching a fee on (every tool refuses). No real key and no real transaction (`scripts/multichain/rehearse-second-pair.mjs`).
 
 ## 9. The dry run of this document
 
@@ -1213,3 +1592,4 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 - **Review of the tools and this sequence** (agent 369, `agents/369-dex-owner-tools-review-r18.md`): R369-1 to R369-3, R369-5 to R369-8 and R369-10 to R369-14 are closed (in 360's tools at `6b260da`, `274ca45`, `279b900`, and in this document); R369-4 is closed by documentation and the two-phase order, with the residual stated in the next item; R369-9 (what a hardware wallet shows) is moot for this sequence, which signs with keystores, and stands only for a fee-address proof signed on a Ledger (a plain message, whose text the device shows). Note: the two-endpoint agreement those fixes added is not exercised on a fork (third item above).
 - **The depositing key is one for all six chains** (R369-4): this sequence avoids the dead end (deploy everything first) but a replaced key still needs the developer (section 7).
 - **The page after deployment** (build, preview, a real swap) is outside this dry run (agents 366, 368; the owner's own swap).
+- **Section 8B (the second pool, round 20) is not run by this document's dry-run driver.** `owner-dry-run.mjs` executes the blocks marked `run:` (sections 2, 4 and 5) and was not extended; the blocks of section 8B are marked `second-pool:` and are checked by `scripts/multichain/second-pair-r20.test.mjs` (one command each, no comment, no angle bracket, the right chain, pair, token and endpoint). Their commands were run by `scripts/multichain/rehearse-second-pair.mjs` on forks of the four chains, with the printed lines sent as they are; the `git` blocks of 8B.0 (fetch, rebase of the owner's own commits, the comparison) were **not** rehearsed against the owner's copy, which no agent touches, and the comparison of `origin/main` with the 40 digits is weaker than section 2.1's line (it does not show that no tracked file of the copy was changed before the rebase). The Portuguese guide outside the repository carries this section as a separate file until the coordinator joins it.

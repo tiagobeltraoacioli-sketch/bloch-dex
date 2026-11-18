@@ -103,7 +103,13 @@ try {
       children.push(child);
     }
     network.rpc.urls = chain.endpoints;
-    bundle.push({ network, record: JSON.parse(readFileSync(join(files, chain.key, "frontend.record.json"), "utf8")) });
+    const record = JSON.parse(readFileSync(join(files, chain.key, "frontend.record.json"), "utf8"));
+    // Round 20: the fork rehearsal opens the chain's first pool only. A second planned pair is in the record as not
+    // open; the browser scenarios check that the page names it so and offers nothing for it.
+    chain.pending = network.tokens
+      .filter((t) => (record.notOpen ?? []).some((p) => p.token0 === t.address || p.token1 === t.address))
+      .map((t) => ({ shown: t.label ?? t.symbol, note: t.note ?? null }));
+    bundle.push({ network, record });
   }
   const bundleFile = join(out, "bundle.json");
   writeFileSync(bundleFile, `${JSON.stringify(bundle, null, 2)}\n`);

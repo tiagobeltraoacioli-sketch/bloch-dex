@@ -76,6 +76,7 @@ refuses to broadcast if one is ever set back to `TBD-owner`.
 | Opening price | **The chain's market price**, read on the chain by the tool; the owner gives one amount (2.5) | `deployments/<chain>/chain.json` `openingPrice` |
 | First liquidity | The owner's money and the owner's amount, above a stated minimum per chain (2.5) | not in a file |
 | BNB Smart Chain's "USDC" | Listed, as **"USDC (Binance-Peg)"** with a note that Circle does not issue it (2.6) | `deployments/bnb-smart-chain/chain.json` |
+| A second listed token: USDT (owner's decision of 2026-11-18: a curated list, USDT first) | Listed with its own pool on **Ethereum, OP Mainnet, Arbitrum One and BNB Smart Chain**, under a truthful name on each; **not on Base and not on Linea**, where its address or two price references could not be proven (2.6) | `deployments/<chain>/chain.json` `tokens`, `initialPairs` |
 
 What only the owner can still do: sign the fee-address message (2.2), fund the depositing account and send
 the transactions of section 8, and write the copyright holder's name into the licence files
@@ -328,8 +329,22 @@ from the chain itself, at the block of the deposit's preparation:
   an oracle network, independent of this chain's pools), and the **5-minute time-weighted price of an
   established pool** of the wrapped native coin and the listed token (a price one transaction, or one block,
   cannot set).
-- **One pinned block, two endpoints.** Every read is pinned to one block hash and asked of the first two
-  reviewed endpoints; an answer counts only when both give the same bytes.
+- **One rule per planned pair (round 20).** `openingPrice` is the rule of a chain's first planned pair, exactly
+  as before. A later pair (USDT) carries its own block under `initialPairs[i].openingPrice`, with the same
+  fields under the same validation, and the tools take a pair's rule from there (`lib.mjs` `openingPriceFor`):
+  the feed of the listed token itself and a pool of that token, never another pair's. Two pairs of a chain share
+  only the native coin's feed; a configuration in which two pairs name the same quote feed or the same pool, or
+  in which a pair's quote feed is another asset's, is refused. Where the oracle publishes no feed for the token
+  itself (Arbitrum One's USD₮0 is priced by the USDT feed), the reference says so and why (`quoteStandsFor`);
+  the pool reference always prices the listed token itself, so a token that left its peg parts the two.
+- **One pinned block, two endpoints that agree.** Every read is pinned to one block hash and asked of every
+  reviewed endpoint of the chain; an answer counts only when at least two endpoints answered and every endpoint
+  that answered gave the same bytes. (Until round 20 the *first two* endpoints were asked and both had to
+  answer. BNB Smart Chain's second endpoint has since stopped serving `eth_call` to anonymous callers, which
+  left that chain without any market price, for USDC too: finding F409-1. The rule is now the one the gate and
+  the deposit tool already used for every other state read, review R369-1: one endpoint's word is never a
+  price, an endpoint that answers differently stops everything, an endpoint that refuses is not counted. On
+  the three chains with two reviewed endpoints nothing changed.)
 - **The two references must agree within 1%** (`referencesAgreeBps`). If they do not (a feed that lags a fast
   move, a pool being pushed, a token off its peg), or a feed's answer is older than its heartbeat plus ten
   minutes, or the pool is not the one its publisher's factory names, or holds less than its stated depth, there
@@ -366,6 +381,26 @@ slipped, the two would part and the tool would refuse. To see the market without
 node scripts/multichain/market.mjs op-mainnet --native 10
 ```
 
+**The second pair's references (USDT, 2026-11-18).** Each address taken from its publisher's own page on
+2026-11-18 and read on the chain from two endpoints (`verify-chain.mjs`); the factory of each pool is the one
+already pinned for the chain's first pair. The native coin's feed is the first pair's.
+
+| Chain | Pair | Chainlink USDT / USD feed | Pool, 5-minute mean | Its depth when measured |
+|---|---|---|---|---|
+| OP Mainnet | WETH/USDT (bridged) | `0xECef79E1…7F5E` | Uniswap v3 0.05% `0xc858A329…472b` | **151.9 WETH: modest**, a seventh of the chain's WETH/USDC pool (the 0.30% pool held 15.6) |
+| Arbitrum One | WETH/USD₮0 | `0x3f3f5dF8…DdE7` (the USDT feed; Chainlink publishes none for USD₮0) | Uniswap v3 0.05% `0x641C00A8…c79d` | 2,072 WETH |
+| BNB Smart Chain | WBNB/USDT (Binance-Peg) | `0xB97Ad0E7…4320` | PancakeSwap v3 0.01% `0x172fcD41…f849` | 14,006 WBNB |
+| Ethereum | WETH/USDT | `0x3E7d1eAB…e32D` | Uniswap v3 0.05% `0x11b815ef…97F6` | 5,528 WETH (the 0.30% pool held 31,093) |
+
+On the four chains the two references of the USDT pair were 0.04% to 0.09% apart when read. On BNB Smart
+Chain and Arbitrum One the feed prices Tether's USDT and the pool prices the listed token itself (Binance-Peg,
+USD₮0): a token that left the price of USDT by more than 1% leaves no market price. The pair's market, with
+its own name:
+
+```
+node scripts/multichain/market.mjs ethereum --pair WETH/USDT --native 1
+```
+
 What this does not do: it does not hold the price still. The printed deposit is valid for 20 minutes; send it
 within a few, and run `prepare` again if you waited. A market that moves 0.5% in those minutes costs the
 depositor about what a 0.5% opening error costs: a few thousandths of a percent of the deposit, taken by the
@@ -379,6 +414,10 @@ first arbitrage trade.
 | Ethereum | 1 ETH and its USDC | The first deposit costs about 2.54 million gas: 0.013 ETH at 5 gwei, which is 0.64% of a deposit worth 2 ETH. Below that the gas of opening, and of every later change, dominates |
 | OP Mainnet, Base, Arbitrum One, Linea | 0.1 ETH and its USDC | Gas is negligible (under 0.001 ETH in every measurement). The floor keeps the pool above a few hundred dollars a side; below that a 100-dollar swap moves the price by tens of percent and the page's quotes are of no use |
 | BNB Smart Chain | 0.5 BNB and its USDC (Binance-Peg) | as above (0.5 BNB was about 296 USD when measured) |
+
+A chain's second pair has the floor of its first, in the native coin, for the same reason (stated next to it in
+`initialPairs[1].openingPrice.minimumReason`). On Ethereum a first deposit of USDT also pays for one `approve`,
+or three transactions when an old allowance must first be set to zero (2.6).
 
 **The first share cannot be inflated, at any size.** The classic attack needs the attacker to be the first
 minter; here only the depositing account can be, and the pair locks 1,000 share units for ever. The tool also
@@ -398,6 +437,73 @@ show **"USDC (Binance-Peg)"**, 18 decimals, with one line: "USDC (Binance-Peg) i
 Smart Chain, not by Circle, and has 18 decimals." The contract's own symbol stays in the configuration
 (`symbol`, used by the pins and by `--pair WBNB/USDC`); what is shown is `label`, and the page never shows the
 bare symbol for a token that has a label.
+
+#### USDT, chain by chain (round 20, 2026-11-18)
+
+"USDT" is not one token. Tether's own page (`https://tether.to/en/supported-protocols/`, fetched 2026-11-18)
+names a USD₮ contract on Ethereum and on **none** of the other five chains. Each chain was therefore treated
+by itself: the address only from the issuer's or the chain's own published page, the contract read from two
+endpoints, its behaviour established from its code and by calls on a loopback fork, and a pair planned only
+where two price references of its own exist.
+
+| Chain | Listed as | Contract | What it is | Source of the address |
+|---|---|---|---|---|
+| Ethereum | **USDT** | `0xdAC17F958D2ee523a2206206994597C13D831ec7`, 6 decimals | **Tether-issued**: the issuer's own contract, not a proxy. Not a plain ERC-20 (below) | Tether's page, section "Ethereum Network" |
+| OP Mainnet | **USDT (bridged)** | `0x94b008aA00579c1307B0EF2c499aD98a8ce58e58`, 6 decimals | **Not issued by Tether here**: Tether USD bridged from Ethereum by the chain's standard bridge (`l1Token()` is the Ethereum contract, `l2Bridge()` the bridge predeploy, the only minter). A plain token: no owner, pause, blocklist or fee. Not USD₮0 | The Superchain Token List that Optimism publishes (`https://static.optimism.io/optimism.tokenlist.json`), entry chainId 10 |
+| Arbitrum One | **USD₮0** | `0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9`, 6 decimals | **USDT0**, the cross-chain form of Tether USD: an upgradeable proxy whose tokens are minted and burned by its OFT contract against USDT locked on Ethereum (LayerZero). Its owner can block an address and destroy a blocked balance. The contract's `symbol()` is "USD₮0"; the tools' key is `USDT0` | The publisher's deployment list (`https://docs.usdt0.to/technical-documentation/deployments`), entry "Arbitrum One"; Binance's network list names the same address |
+| BNB Smart Chain | **USDT (Binance-Peg)** | `0x55d398326f99059fF775485246999027B3197955`, **18 decimals** | **Not issued by Tether**: Binance-Peg BSC-USD, issued by Binance against USDT it holds; the contract says `symbol() = "USDT"`. Not a proxy; its owner can mint | Binance's public network list (coin USDT, network BSC); Tether's page names only an XAU₮ contract on this chain |
+| Base | not listed | | Tether issues none. The one candidate (`0xfde4C96c…9bb2`, bridged by Base's standard bridge) is named by Optimism's Superchain Token List, **not by a page of Base or of Tether** (Base's documentation, read through its own full-text export `docs.base.org/llms-full.txt` and its contracts page, does not contain the address), and anyone can deploy a bridge token that points at Tether's Ethereum contract: the address is not proven by the rule above. Its deepest v3 pool with WETH held 51 WETH and 17,902 USDT | |
+| Linea | not listed | | The bridged token (`0xA2194392…2B93`) is in Linea's own token list, so the address is proven; **no second price reference exists**: the deepest pool of the pinned publisher's factory held 1.23 WETH, and the three pools found have an observation cardinality of 1 (no 5-minute mean worth the name). Linea is not deployed | |
+
+Three names for three different things, so that nobody mistakes one for another: plain **USDT** only for
+Tether's own contract; **USDT (bridged)** and **USDT (Binance-Peg)** with a line saying who stands behind the
+token; and **USD₮0** under the name its contract and every wallet give it, with a line saying that it is not
+the Ethereum contract. Where the contract's symbol cannot be typed on a command line (Arbitrum One), the
+configuration keeps a plain key (`symbol: "USDT0"`, used by `--pair WETH/USDT0`) next to the contract's own
+symbol (`chainSymbol: "USD₮0"`, which the gate and the page pin against the chain). OP Mainnet has a second USDT
+(USD₮0, `0x01bFF417…1071`); it is not listed, because no pool of the pinned factory holds it with WETH (both
+found were empty).
+
+#### What a token can do to a pool, and what the tools read
+
+The pair and the router assume that a transfer of N units moves N units, and they never call `approve`. What
+each listed USDT does was established from its code and by calls on a fork, is written in the token's
+`behaviour` block in `chain.json`, and is checked by the tools:
+
+| | Ethereum (Tether) | OP Mainnet (bridged) | Arbitrum One (USD₮0) | BNB Smart Chain (Binance-Peg) |
+|---|---|---|---|---|
+| `transfer`, `transferFrom`, `approve` return | **nothing** | `true` | `true` | `true` |
+| `approve` from one non-zero allowance to another | **reverts** (the same value included) | allowed | allowed | allowed |
+| Fee on transfer | **parameters exist, zero now** (`basisPointsRate`, `maximumFee`; the owner can set up to 19 basis points, at most 49 USDT a transfer) | none | none | none |
+| Pause | **yes** (transfers; `approve` stays open) | no | no | no |
+| Blocklist | **yes** (`isBlackListed`; a listed address cannot send, and its balance can be destroyed) | no | **yes** (`isBlocked`) | no |
+| Replaceable | **yes**: `deprecate` forwards every call to another contract | the bridge predeploy is upgradeable by the chain's governance | **yes**: an upgradeable proxy | no; the owner can mint |
+
+- **No return value** is handled by the frozen contracts: the pair and the router accept a transfer that
+  returns nothing (`test/TetherDeviations.t.sol`: first deposit, later deposit, swaps both ways, a two-pool
+  swap, withdrawal, skim).
+- **`approve` that needs zero first.** The contracts are not affected (the router never approves); the caller
+  is. `first-deposit.mjs` reads the allowance the router already holds and prints what works from there: one
+  `approve` when it is zero; `approve 0`, then the `approve`, when an older allowance stands; no `approve` at
+  all when it already is the amount. **Never send an `approve` of USDT by hand on Ethereum**: a second one
+  reverts. The page does the same for its users: with an allowance left from an earlier quote it asks for
+  "Reset the USDT allowance to zero" before the exact approval.
+- **A transfer fee is not supported, and is refused while it is on.** With the fee switched on, the frozen
+  contracts do this (forge tests against a stand-in whose 44 observed answers equal the real contract's): a
+  strict first deposit does **not** revert, it opens the pool short of the fee, at another price, and its
+  opening can then not be proven; a sale of the token through the router reverts; a purchase pays the buyer
+  less than the minimum the router checked. So the gate (pre and post), `first-deposit.mjs prepare` and `add`,
+  and `verify-chain.mjs` read `basisPointsRate()` and `maximumFee()` and fail while either is not zero. They
+  ask **every** listed token for these getters: one that answers them without declaring them, or declares them
+  and does not answer, fails too.
+- **Pause and deprecation** are read the same way (`paused()`, `deprecated()` must be false), and the
+  **blocklist** is read for the pair's address, the router and the depositing account before a deposit, and
+  for the pair and the router by the post gate.
+- **What no tool can do:** stop the issuer. Tether can switch the fee on, pause, blacklist the pool's address
+  or deprecate the contract at any time after a pool is open; the upgrade key of USD₮0 can replace its code;
+  Binance and the OP Mainnet bridge stand behind their tokens. None of this changes a pinned code hash. The
+  tools see it at the next gate or deposit; the page does not read it. The liquidity in such a pool carries
+  that risk (section 12.13), as it does on every exchange that lists these tokens.
 
 ### 2.7 The plan
 
@@ -432,6 +538,13 @@ Base `0x1807A84b90C535F8AF4d76634C6bD792A80B496F`, Arbitrum One `0x5D1885394A404
 Linea `0xe99683328159b896F596cCF742b446e32b1E8205`, BNB Smart Chain `0x7CC3289655f5aA3147Dd8538b089Ee760c2c8851`,
 Ethereum `0x03DCe4f378e64B4620ba8b9791b1d45245505Cd8`.
 
+The second pair of four chains (USDT, round 20), created by its own first deposit: OP Mainnet
+`0x9A2F10130cc55Ef82542F0Ef03f2336a405FF242`, Arbitrum One `0x3FeF4552d08AA99c65994D8C6C18f17eA3B65b38`, BNB Smart
+Chain `0x0690f9F80FEd8dbA5648D0CA2eEBd7EDDd41d18F`, Ethereum `0x1763B24792D780ED9F6b90a9F4c5Cc27a5db495a`. A pair's
+address follows from the factory and the two tokens only: listing a second token moves no other address (the
+kit test `second-pair-r20.test.mjs` pins the factory, the lens, each router and each first pair to the
+addresses above, and the factory's constructor arguments).
+
 Why the router differs: the wrapped native token is a constructor argument, and it has another address on each
 chain except the two OP Stack chains. Pair addresses differ everywhere, because token addresses differ. (These
 addresses are not those of earlier editions of this document, whose plans had the zero address, the fee address
@@ -459,6 +572,16 @@ PASS on all six). Each token is pinned by address, runtime code hash, `name()`, 
 | BNB Smart Chain | 56 | WBNB `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` | "USDC" `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d`, **18 decimals, Binance-Peg, not issued by Circle** | Both: Binance's public network list, `https://www.binance.com/bapi/capital/v1/public/capital/getNetworkCoinAll` (coins WBNB and USDC, network BSC); the `docs.bnbchain.org` pages reached did not show the WBNB address. Circle's page has no BNB Smart Chain row |
 | Ethereum | 1 | WETH `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` | USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`, 6 decimals | WETH: `https://ethereum.org/en/wrapped-eth/` ("canonical implementation of WETH"); the same address is "L1 Weth" on Arbitrum's page. USDC: Circle's page (row "Ethereum") |
 
+The second listed token (2026-11-18; section 2.6 says what each is and why Base and Linea have none), read from
+the reviewed endpoints by `node scripts/multichain/verify-chain.mjs <chain>` (PASS on the four):
+
+| Chain | Second token | Shown as | Runtime code hash | Source page fetched and compared (2026-11-18) |
+|---|---|---|---|---|
+| OP Mainnet | `0x94b008aA00579c1307B0EF2c499aD98a8ce58e58`, `symbol()` "USDT", 6 decimals | USDT (bridged) | `0xb49036bd…4151` | `https://static.optimism.io/optimism.tokenlist.json` (Superchain Token List 10.0.1772, chainId 10, bridge `0x4200…0010`) |
+| Arbitrum One | `0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9`, `symbol()` "USD₮0", 6 decimals | USD₮0 | `0xfc1ea81d…3986` (the proxy; implementation `0x3263CD78…A3F4` when read) | `https://docs.usdt0.to/technical-documentation/deployments` (entry "Arbitrum One", row "Token") |
+| BNB Smart Chain | `0x55d398326f99059fF775485246999027B3197955`, `symbol()` "USDT", **18 decimals** | USDT (Binance-Peg) | `0x97a48aa4…4a59` | Binance's public network list (coin USDT, network BSC) |
+| Ethereum | `0xdAC17F958D2ee523a2206206994597C13D831ec7`, `symbol()` "USDT", 6 decimals | USDT | `0xb44fb4e9…ea55` | `https://tether.to/en/supported-protocols/` (section "Ethereum Network") |
+
 Each address in the table was found on the page named, fetched read-only on 2026-11-16; the URL, the date and what
 was found are recorded next to each address in `deployments/<chain>/chain.json` (`sourceChecked`). Two sources are
 not the issuer's documentation in the strict sense: Linea's WETH comes from Linea's token list on GitHub, and
@@ -483,6 +606,13 @@ Other facts:
   proxy's. A blacklisted pair address could not pay out USDC. This is USDC's own risk on every exchange.
 - **Multicall3** `0xcA11bde05977b3631167028862bE2a173976CA11` exists on all six; on Linea its code hash is another
   build's (`0x8ec8aa5d…99ad`), pinned per chain and checked by a `getChainId()` call.
+- **The USDTs are four different tokens** (section 2.6): Tether's own contract on Ethereum (no return values,
+  `approve` needs zero first, dormant fee parameters, pause, blacklist, deprecation), a bridge token on OP
+  Mainnet, the upgradeable USD₮0 on Arbitrum One, Binance's 18-decimal token on BNB Smart Chain.
+- **BNB Smart Chain's second reviewed endpoint** (`api.zan.top`) answers `eth_call` and `eth_getCode` with "not
+  available for unregistered accounts" since at least 2026-11-18 (it still serves blocks). The kit reads through
+  the two of four endpoints that agree (finding F409-1, section 2.5); the endpoint list was not changed, because
+  the page's list and its Content-Security-Policy follow it (section 13).
 - **Block 0.** Not every public node serves it any more (history pruning). The gate needs it from at least one of
   the two endpoints; the page asks the next endpoint when one does not serve it.
 
@@ -703,7 +833,10 @@ a time, exactly as printed** (review R369-3): never import the depositing key in
 the account itself instead of to the router; the pair accepts it (by transaction origin) and opens, but no tool
 can then prove who opened it, so the page never lists that pair and it is lost for this factory (section 10).
 Send them within a few minutes. The first approves
-exactly the token amount to the router. The second is the router's `addLiquidityBLCH` with **minimums equal to the
+exactly the token amount to the router. (For USDT on Ethereum the tool may print three lines, or one: its
+`approve` cannot change an allowance that is not zero, so an allowance left by an earlier run is first set to
+zero, and an allowance that already is the amount needs no approve. Send what is printed, in order, waiting for
+each to be mined; never an `approve` of your own. Section 2.6.) The second is the router's `addLiquidityBLCH` with **minimums equal to the
 amounts**; the tool has no option for other minimums. In that one transaction the router creates the pair and
 deposits. What this does and does not guarantee:
 
@@ -750,8 +883,12 @@ node scripts/multichain/gate.mjs op-mainnet post --opening WETH/USDC=DEPOSIT_HAS
 A later run with the same `--out` file takes the hash from the report it replaces and proves it again; the
 option is needed once.
 
-Step 6. Write the page's record of this chain from that report. The tool refuses a report whose pairs are not all
-open, one that does not prove who opened each pool, or one whose factory has open first deposits.
+Step 6. Write the page's record of this chain from that report. The record lists exactly the pairs the report
+shows open with their opening proven. The tool refuses a report in which no planned pair is open, one that does
+not prove who opened each open pool, and one whose factory has open first deposits. (Until round 20 it refused
+unless *every* planned pair was open. A chain now plans two pairs and they open one at a time: a planned pair
+that is not open yet is named in the record under `notOpen`, the page says "not open yet" for it and builds no
+transaction with its token; section 9.)
 
 ```
 node scripts/multichain/frontend-files.mjs op-mainnet --gate-report deployments/op-mainnet/gate-report.json
@@ -781,15 +918,90 @@ used, the rule of section 2 still holds (the printed transactions and nothing el
 - *What the page lists.* Only the pairs of the bundled record, which is written from a passed post gate with
   every opening proven, and only tokens of the reviewed list with their pinned code. A pair of another token
   never appears on the page.
-- *How the owner adds one.* Add the token and the pair to `deployments/<chain>/chain.json` (`tokens`,
-  `initialPairs`), run the pre gate (it pins the token's code), then step 4 for the new pair, step 5 and step 6.
+- *How the owner adds one* (as USDT was added in round 20; a change of the reviewed configuration, so it is
+  made on a branch and reviewed like any other):
+  1. The token's address from the issuer's or the chain's own published page, never from a search or an
+     explorer's label; `node scripts/multichain/verify-chain.mjs <chain> --candidate ADDRESS` prints its code
+     hash, `name()`, `symbol()`, `decimals()`, whether it is a proxy, the fee getters it answers and the
+     functions of interest its code has (fee, pause, blocklist, mint, upgrade).
+  2. Its behaviour, from its code and from calls on a fork: what `transfer`, `transferFrom` and `approve`
+     return, whether a non-zero allowance can be changed, whether a transfer delivers what was sent. That goes
+     into the token's `behaviour` block, with what the issuer can still do to it.
+  3. Two price references of its own: a Chainlink feed of the token and an established v3 pool of the token
+     with the wrapped native coin, from a publisher's factory, deep enough to mean something and with enough
+     observations for a 5-minute mean. **No two references, no listing.**
+  4. `tokens` and `initialPairs` (with the pair's `openingPrice`) in `deployments/<chain>/chain.json`; then
+     `plan.mjs <chain> --write-gate-config`, `frontend-files.mjs all`, `verify-chain.mjs <chain>` and the pre
+     gate; then step 4 for the new pair, step 5 and step 6.
   The owner's liquidity only ever enters through `first-deposit.mjs`: `prepare` for a pool's first deposit,
-  `add` afterwards. Tokens with a transfer fee or a rebasing balance are not supported by the strict minimums
-  (the deposit reverts) and should not be listed.
+  `add` afterwards. **Tokens with a transfer fee or a rebasing balance are not supported and must not be
+  listed.** (Earlier editions said that the strict minimums make such a deposit revert. They do not: the
+  router compares its minimums with what it sends, not with what the pair receives, so a first deposit of a
+  fee-taking token opens the pool short of the fee; finding F409-2, `test/TetherDeviations.t.sol`. What
+  protects the owner is that the gate and `prepare` read the fee parameters first and refuse.) The limits
+  stand: at most four planned pairs and eight listed tokens per chain, each pair the wrapped native coin with
+  one token.
 - *The depositing key stays what it is.* As long as the owner may open another pair, the key keeps the rule of
   section 2.1; once it is retired (section 2.1, "Retiring it") no further pair can ever be opened on this
   factory. A key that has been used elsewhere in the meantime can still open pools, but anyone it called may
   have opened one first; the gate's proof of the opening is what tells.
+
+**A second pool on a chain (USDT).** For Ethereum, OP Mainnet, Arbitrum One and BNB Smart Chain, after the
+chain's first pool is open and its record written (steps 4 to 6). Nothing is deployed: the factory and the
+router are the ones already there, and only the depositing account can open the pool. The pair's name per
+chain: `WETH/USDT` on Ethereum and OP Mainnet, `WETH/USDT0` on Arbitrum One, `WBNB/USDT` on BNB Smart Chain. With
+the chain's key in place of `ethereum` and that name in place of `WETH/USDT`:
+
+The chain as the configuration describes it now, both tokens and both pairs' references (read-only; it must end
+with `PASS`):
+
+```
+node scripts/multichain/verify-chain.mjs ethereum
+```
+
+The post gate again, with the plan that has two pairs. It takes the first pool's opening from the report it
+replaces, must say `PASS`, and reports the second pair `absent`:
+
+```
+node scripts/multichain/gate.mjs ethereum post --out deployments/ethereum/gate-report.json
+```
+
+How much USDT the native amount needs now (fund the depositing account with a little more, and with the native
+coin of the deposit plus gas):
+
+```
+node scripts/multichain/market.mjs ethereum --pair WETH/USDT --native 1
+```
+
+The first deposit of the second pool, as step 4:
+
+```
+node scripts/multichain/first-deposit.mjs ethereum prepare --pair WETH/USDT --native 1 --gate-report deployments/ethereum/gate-report.json
+```
+
+Send the printed lines as they are, as in step 4 (two lines; on Ethereum possibly three or one, see there).
+Then prove the opening, with the amounts `prepare` printed and the hash of the deposit:
+
+```
+node scripts/multichain/first-deposit.mjs ethereum verify --pair WETH/USDT --native 1 --token TOKEN_AMOUNT --tx DEPOSIT_HASH
+```
+
+After the wait of step 3, the post gate with the new opening (the first pool's is taken from the report):
+
+```
+node scripts/multichain/gate.mjs ethereum post --opening WETH/USDT=DEPOSIT_HASH --out deployments/ethereum/gate-report.json
+```
+
+And the page's record, which now lists both pools:
+
+```
+node scripts/multichain/frontend-files.mjs ethereum --gate-report deployments/ethereum/gate-report.json
+```
+
+Between the first pool's record and this one the chain stays live on the page with its first pool; the second
+is shown as not open yet (section 9). If `prepare` fails on a check that names the token (a fee switched on, a
+pause, a blocklist entry), nothing is wrong with the DEX: the issuer changed the token. Deposit nothing and
+read section 2.6. Rehearsed on forks of the four chains with these commands (section 11).
 
 If the sender through the reviewed public endpoint is a problem (rate limits), set `MC_RPC_URL` to the owner's own
 provider for `deploy.sh`; the gate and the deposit tool still read the two reviewed endpoints.
@@ -809,6 +1021,27 @@ npm --prefix frontend run build:multichain
 
 The build writes `dist-multichain/_headers` with a Content-Security-Policy that names the seventeen reviewed
 endpoints (two on OP Mainnet, Base and Ethereum, three on Linea, four on Arbitrum One and BNB Smart Chain). Hosting is the owner's step and follows `docs/FRONTEND-HOSTING-CHECKLIST.md`.
+
+**Pairs open one at a time (round 20).** The guarantee is unchanged: the page lists a pair only when its
+opening is proven by the post gate, and it never shows an empty market. What changed is that a chain no longer
+has to wait for *all* its planned pairs:
+
+- The record (`frontend.record.json`) lists exactly the pairs that the gate reports open with their opening
+  proven, and names every other planned pair under `notOpen`.
+- The page hands the route only the wrapped native token and the tokens of the listed pairs. A listed token
+  whose pool is not in the record cannot be chosen, quoted or approved, its code hash is not even read, and a
+  saved call that names it does not pass the page's own review of what it may send. This also holds for a
+  record written before the token was listed (it does not name the pair at all).
+- Above the route the page says, for such a pair: "Not open yet on <network>: WETH/USDT. This page lists a
+  pool only after its opening has been verified, and sends no transaction for a pair that is not listed."
+- A chain with no pool open is "Not yet live", as before, and the planned pools are named there.
+
+**Tether's `approve` on Ethereum.** The page approves the exact amount of a swap, never more. Tether's
+contract refuses to change an allowance that is not zero, so with an allowance left from an earlier quote that
+approval would revert in the user's wallet. For a token whose network file says `approve: "zero-first"` (only
+Ethereum's USDT) the page then shows "Reset the USDT allowance to zero" first, and offers no approval while
+the allowance of such a token has not been read. An approval of zero is accepted by the page's review of its
+own calls for such a token only.
 
 What the page does on these chains, by configuration and not by deleted code:
 
@@ -964,8 +1197,18 @@ made as in section 8, withdrawals as in section 6); see also section 13.
   gate changes nothing. The one exception is the line that starts with `WAIT`: the chain has not finalized the
   deployment yet (section 8, step 3).
 - If `first-deposit.mjs prepare` fails, nothing is to be sent; it says which check failed. If the deposit
-  transaction reverts, nothing was deposited (the approval can stay or be set to zero); run `prepare` again and
-  read what it reports about the pair. Never work around it with a hand-written deposit or other minimums.
+  transaction reverts, or is not sent in time, nothing was deposited and the approval stays; run `prepare`
+  again and read what it reports about the pair. Never work around it with a hand-written deposit or other
+  minimums. **For USDT on Ethereum, do not send another `approve` yourself**: Tether's contract reverts when
+  an allowance that is not zero is changed to another amount (earlier editions said "the new approve replaces
+  the old allowance"; for this token it does not, shown on a fork). `prepare` reads the allowance that stands
+  and prints the sequence that works: `approve 0` first, or no approve at all when the allowance already is the
+  amount.
+- If `prepare`, `add` or the gate fails on a listed token's own state (`basisPointsRate()` or `maximumFee()` not
+  zero, `paused()` or `deprecated()` true, an address on the issuer's blocklist): the issuer changed the token
+  (section 2.6). Deposit nothing into that token's pool while it lasts. A pool already open keeps its liquidity,
+  which its providers can withdraw as far as the token still moves; with a fee on, the page's plain swaps that
+  sell the token revert, and those that buy it pay the buyer less than quoted.
 - **If `prepare` says STOP (the pool is already open), or `verify` or the post gate cannot prove the opening:**
   someone else opened that pool, through a transaction of the depositing account that did not go straight to the
   router (section 2), or with the depositing key itself. Deposit nothing there and do not use `add`. That pair
@@ -1027,6 +1270,9 @@ the simulations and costs were not repeated in round 18.
 | Pre gate on the public chains | `node scripts/multichain/gate.mjs <chain> pre` | pins against the real chains, the depositing account, the fee address and its proof, read-only | every check ok on six of six except the missing owner proof (FAIL, by design until it is signed); `--reference` at `77b5d61`: PASS six of six |
 | Simulation on the real nodes | `node scripts/multichain/simulate-chain.mjs <chain> --out FILE` (BNB Smart Chain: add `--endpoint https://bsc-dataseed.bnbchain.org`) | deployment, the hostile first mint and deposit (must revert), the guarded opening by the depositing account and the flow on the chain's own node software, read-only | PASS, six of six |
 | Fork rehearsal | `node scripts/multichain/rehearse-fork.mjs <chain> --port PORT --out DIR` | the owner's command and the post gate; **review R328-1 on the fork** (the depositing account calls a hostile contract, which opens the planned pool: `prepare` says STOP, the gate fails without and with that transaction as the opening, `verify` fails, `add` prints nothing, no record can be written); **reviews R328-2 and R328-3** (one unit at the pair does not block `prepare`, 1% does, the same 1% in front of the deposit joins as a gift that `verify` and the gate report); **review R309-MC-1** (a stranger's first mint and first deposit revert); the first deposit as printed; `verify` after a swap has moved the reserves; the post gate without, with and again without `--opening`; the flow with signed transactions; a later deposit as `add` prints it, after its refusal at a price 5% away; gas, fee amounts | PASS, six of six, 41 checks each |
+| Second pool (round 20) | `node scripts/multichain/rehearse-second-pair.mjs <chain> --port PORT --out DIR` | on a fork that holds **the owner's own deployment**: the first pool, then the second, each opened with the lines `prepare` prints, sent as they are; the record with one pool and the other named as not open, then with both; `add` and `prepare` refusals; trades through both pools; on Ethereum the allowance sequences of Tether's `approve` (the plain new approve reverts; approve 0, approve, deposit; the deposit alone) and the token's owner switching the fee on, pausing and blacklisting the pair (every tool refuses); the real token's answers next to the forge tests' stand-in, call by call | PASS on Ethereum (36 checks, 44 calls alike), BNB Smart Chain, OP Mainnet and Arbitrum One (24 checks each, 12 calls alike) |
+| Chain facts (round 20) | `node scripts/multichain/verify-chain.mjs <chain>` | chain id, genesis, every token's code, name, symbol and decimals, its fee getters and switches, the functions its code has against its `behaviour` block, and both pairs' price references, from the reviewed endpoints (two must answer and agree) | PASS on the six real chains |
+| USDT against the frozen contracts (round 20) | `forge test --match-contract TetherDeviationsTest` | the pair and the router against stand-ins of each USDT: no return value, approve that needs zero first, the fee on before and after the opening, pause, blacklist, deprecation, 6 and 18 decimals | 14 pass |
 | Page rehearsal | `node scripts/multichain/rehearse-page.mjs --port PORT --out DIR` | the multichain site in a real browser engine against six forks whose pools were opened by a first deposit that also created the pair and whose records come from gates with the opening proven: network switch, one swap per chain settled by the chain's confirmation rule at the chain's block time, holds per chain | PASS: 6 chains, 59 assertions, 0 failed |
 | Live check | `cd frontend && npx vite-node integration/live/multichain-live.ts` (`-- --hold 600` to keep a snapshot ten minutes) | the page's own RPC code against the real endpoints of the six chains, read-only, no wallet: a snapshot with reads agreed by two endpoints and the pinned code hashes, the head, the strict block with the nonce read that ends a hold, a snapshot kept open, a renewed snapshot | PASS, six of six, twice; with the snapshot kept ten minutes every read was still answered on all six (38 to 40 reads each). Strict blocks read: 14 to 24 minutes old on four chains, 79 and 80 minutes on Linea |
 | Page unit tests | `npm --prefix frontend test` | the above plus confirmation rules, agreeing endpoints for reads, heads, tags and receipts, the strict reader for deadlines, replacements and reverts | 533 pass (513 in the first edition, 526 in the second), 1 skipped |
@@ -1070,6 +1316,14 @@ A rehearsal no longer waits on the public fork source while it mines: under the 
 storage slot of the EIP-2935 history contract from it for every block, which ended runs with HTTP 429 and made
 the page's timings depend on the endpoint (at `0566af3` the page rehearsal failed its timing assertion on Base and
 BNB Smart Chain under load). The slots of the blocks a rehearsal mines are now written locally first.
+
+**The owner's deployment and the fork rehearsal (round 20, finding F409-3).** Since 2026-11-18 the factory, the
+router and the lens are on five chains. A fork of today holds them, `deploy.sh` then sends nothing, and
+`rehearse-fork.mjs` at `ba1455b` stops there (it reads a broadcast file that is not written). It now checks
+that the three addresses hold exactly the planned code, clears them on the fork and lets the documented command
+deploy them again, so its checks keep their meaning (one more check on a deployed chain). Once a planned pair
+exists on a chain, that rehearsal needs a fork from before the pair's creation; `rehearse-second-pair.mjs`
+has the same limit. Neither was made to fork from an older block: the public endpoints do not keep that state.
 
 Fork sources: the reviewed first endpoint, except BNB Smart Chain (blastapi, which keeps state) and Ethereum (its first endpoint
 answered the fork's block 0 request from a history-pruned backend; the second is used). OP Mainnet's first
@@ -1137,6 +1391,21 @@ endpoint answered one trial with a rate limit (HTTP 429); the run of record pass
     endpoints change what they serve without notice, which is what the live check is for. The owner's own
     endpoint in each list would reduce both risks.
 
+13. **USDT is four tokens, each with its own counterparty** (section 2.6). On Ethereum Tether can, without
+    notice and without changing the contract's code: charge a fee on every transfer (up to 19 basis points, at
+    most 49 USDT a transfer), pause all transfers, blacklist an address and destroy its balance (a blacklisted
+    pool can never pay USDT out), and replace the contract. The tools read those states before the owner
+    deposits and at every gate; **nothing reads them for a user of the page, and nothing can undo them for
+    liquidity already in the pool.** On OP Mainnet the token is a claim on USDT held by the chain's bridge; on
+    Arbitrum One it is USD₮0, whose code can be replaced by its upgrade key and whose owner can block
+    addresses; on BNB Smart Chain it is Binance's token with 18 decimals, mintable by its owner. Each is shown
+    under a name that says so. USDC carries the same kind of risk (pause, blacklist, upgrade), stated in section
+    4.
+14. **The second pools' price references.** OP Mainnet's WETH/USDT reference pool is modest (151.9 WETH when
+    measured), and on Arbitrum One and BNB Smart Chain the feed prices Tether's USDT while the pool prices the
+    listed token. The opening price is never one reference alone, and never more than 0.5% from their mean; on
+    a day when they part, `prepare` says "no market price" and nothing is printed.
+
 ## 13. Known issues
 
 Recorded, not fixed in this package:
@@ -1153,5 +1422,9 @@ Recorded, not fixed in this package:
 | **After a reverted swap the account is held for the reverted rule's time** (reviews R328-7, R328-3P-3; section 9). The third rule was added in `9e4b5d1`: `safe` on OP Mainnet, Base, Arbitrum One and Ethereum, 30 blocks on Linea, `finalized` on BNB Smart Chain | A user whose swap reverted waits about half a minute (OP Mainnet), a minute and a half (Base), 12 to 15 minutes (Arbitrum One, Ethereum), 6 to 9 minutes (Linea) or seconds (BNB Smart Chain) before the page lets them retry. Whether `safe` from a sequencer-run endpoint is decisive at that depth is reviewer 364's open question | The page says so in the note above the form; the redesigned route renders "reverted; this account can send again at HH:MM" (agent 361) |
 | **The page was never run in a browser against the real endpoints with a wallet** | The live check runs the page's RPC code in Node; the browser rehearsals use forks. Reviewer 328 loaded the page read-only in headless Chrome against the then fifteen endpoints (no CSP or CORS refusal); the two added in `9e4b5d1` answered a browser's preflight when measured. A wallet flow against them was not rehearsed | A real page load and a small swap by the owner on the first chain before publishing |
 | **A hold that cannot be decided says nothing new** (review R328-4): when the strict reads are refused the page keeps its hold text and tries again | The user sees a hold without a reason | The route's texts belong to the UI line (agent 327); the endpoint lists and the live check keep the case from being permanent |
+| **BNB Smart Chain's second endpoint refuses `eth_call`** (finding F409-1; `api.zan.top`: "not available for unregistered accounts") | The kit reads through two of the chain's four endpoints that agree, so the gate, the market and the deposit tool work. **The page was not examined against it**: its reads go to the listed endpoints by its own rule (section 9, "Two endpoints must agree"), and whether that rule still finds two on this chain was not rehearsed against the real endpoints in this round | Run the live check for BNB Smart Chain before its page is published; replace the endpoint (a reviewed change of `chain.json`, the network file and the page's Content-Security-Policy) if it fails |
+| **A fee-taking token's first deposit does not revert** (finding F409-2; frozen router and pair) | Tether's fee parameters on Ethereum, if switched on between `prepare` and the deposit being mined (minutes) | `prepare` and the gate refuse while a parameter is not zero; a switch inside those minutes would open the pool short of the fee (at most 49 USDT) and leave its opening unprovable. Not closable without a new router |
+| **No USDT on Base and Linea** (section 2.6) | Base: the address is named only by another party's list. Linea: no second price reference | Base: the owner may decide that the Superchain Token List is source enough; the two references exist (a feed, and a thin pool of 51 WETH). Linea: when a deep pool exists |
+| **The page does not read a token's fee, pause or blocklist state** | A user of the page, when an issuer has changed the token | The gate does at every run; a read by the page would be a change to the route |
 | **Linea's `finalized`** differs between the two reviewed endpoints | The gate reads the first (the proven block); the page uses the tag for nothing on Linea | Stated in sections 8 and 9 |
 | **No real wallet and no real transaction** were used anywhere (section 5) | The rehearsals show the code paths, not a wallet's behaviour or a chain's inclusion | A small real swap by the owner on the first chain before publishing the page |
