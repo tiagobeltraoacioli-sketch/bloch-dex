@@ -1,7 +1,7 @@
 # PosternDEX on six public chains: the owner's deployment, step by step
 
-Status: **ready for the owner to run; dry-run on a fork of each of the six chains at commit `cf93f6e`: PASS on all six (section 9); nothing deployed.** Written
-2026-11-17 by agent 367 (round 18) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
+Status: **ready for the owner to run; dry-run on a fork of each of the six chains: PASS on all six (section 9); nothing deployed.** Written
+2026-11-17 by agent 367 (round 18; the tools section by agent 401, round 19) from the tools of `docs/MULTICHAIN-DEPLOY.md` (agent 360's line). The reasons
 behind every rule are in that document; this one is only the sequence, with every command exactly as you type it.
 A Portuguese copy for the owner is kept outside this public repository (the repository is English only), with the same command blocks; this English file is the one the dry run executes.
 
@@ -20,29 +20,100 @@ Once, on this Mac: get the repository (the folder `~/postern-dex` does not exist
 git clone https://github.com/tiagobeltraoacioli-sketch/postern-dex.git ~/postern-dex
 ```
 
-Once, on this Mac: three small launchers for Foundry. The Foundry 1.7.1 installed here needs its own copy of the
-`libusb` library, which it finds only through `DYLD_LIBRARY_PATH`; macOS removes that variable whenever a script
-runs (`deploy.sh` is one), so exporting it in the terminal is not enough: the deployment's `forge` would stop with
-"Library not loaded: libusb". Each launcher sets it right before starting the real program (found by the dry run).
+The scripts you are about to run, and the SHA-256 values they compare your tools with, come from this copy. Print
+its commit in full and compare **all 40 characters** with the reviewed commit stated in section 2.1 before you
+run anything from it (a short form of seven characters can be imitated in minutes, review R402-4):
 
-<!-- run: once shim-dir -->
+<!-- run: once clone-commit -->
 ```
-mkdir -p ~/.local/share/dex-tools/shim
-```
-
-<!-- run: once shims -->
-```
-for t in forge cast anvil; do printf '#!/bin/sh\nDYLD_LIBRARY_PATH="$HOME/.local/share/dex-tools/libusb/lib" exec "$HOME/.local/share/dex-tools/foundry/%s" "$@"\n' $t > ~/.local/share/dex-tools/shim/$t; chmod +x ~/.local/share/dex-tools/shim/$t; done
+git -C ~/postern-dex rev-parse HEAD
 ```
 
-In **every new terminal** you use for this guide, first this line. It puts Node.js 24 and the Foundry launchers in
-front of the terminal's path (`forge --version` then shows 1.7.1 and `node --version` v24.21.0, the versions of the
-dry run); without it `node`, `forge` and `cast` are not found.
+### Your own tools, checked before any key is used
+
+`forge` and `cast` sign your transactions, `node` runs every check of this guide and `anvil` rehearses: whoever can
+change those programs decides what you sign and what the checks print (review R369-16). So you do not use a copy
+somebody else put on this Mac (in particular not the one in `~/.local/share/dex-tools/`, which an agent installed
+and agents can write). You install your own, from the publishers, into a new directory, and a script of this
+repository compares every program with SHA-256 values committed here before each session.
+
+**No agent while you sign.** Before a signing session (any terminal in which you will type a keystore password or
+confirm in a wallet), close every assistant or agent session on this Mac (Claude Code, Codex, their terminals and
+desktop apps) and leave them closed until you have finished. An agent runs as your macOS user: a directory closed
+to other users is not closed to it. This line lists what is still running; it must print nothing:
+
+<!-- run: once no-agents -->
+```
+pgrep -lf -i "claude|codex"
+```
+
+**Once: install.** The directory `~/dex-owner-tools` must not exist yet. The script downloads Foundry v1.7.1 from
+its GitHub release, Node.js v24.21.0 from nodejs.org, the Solidity compiler 0.8.24 from the Solidity project's own
+site and, on an Intel Mac such as this one (`uname -m` prints `x86_64`), the `libusb` library that Foundry's Intel
+build loads, from Homebrew's package store; it compares each
+download's SHA-256 with the committed value (`scripts/multichain/owner-toolchain.pins`, which says where every value
+comes from) before unpacking it, builds the directory with access for you only, and ends with the check below. It
+uses only programs of macOS itself and asks for no password. About 230 MB, about a minute.
+
+<!-- run: once tools-install -->
+```
+/bin/bash ~/postern-dex/scripts/multichain/owner-toolchain.sh install ~/dex-owner-tools
+```
+
+It must end with `owner tools: installed and verified`. If it ends with `FAIL`, nothing was installed: stop.
+
+In **every new terminal** you use for this guide, first these three lines. Use the terminal for this guide only.
+The first makes the terminal find programs in two places and nowhere else: your tools, and macOS's own four
+directories. What your terminal usually has in its path (for example `~/.local/bin`, where agents install
+programs) is deliberately left out: any directory in the path can supply `bash`, `git` or `mkdir` to the commands
+below (review R402-1).
 
 <!-- run: once env-path -->
 ```
-export PATH="$HOME/.local/share/dex-tools/node/node-v24.21.0-darwin-x64/bin:$HOME/.local/share/dex-tools/shim:$PATH"
+export PATH="$HOME/dex-owner-tools/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ```
+
+The second is the check. It refuses unless: the directory and everything in it is yours alone (no access for group
+or others, no access-control list); `forge`, `cast`, `anvil`, `node`, the compiler and `libusb` have the committed
+SHA-256, and the directory as a whole (every file, including `npm`) the committed digest; this terminal's path is
+exactly the line above, it finds the five programs in your directory and every helper the guide uses (`bash`,
+`git`, `mkdir`, `pgrep`, `python3` and the like) in macOS's own directories; no variable is set that would redirect
+a program (`NODE_…`, `FOUNDRY_…`, `ETH_…`, a proxy, certificate or git override: the script lists them with the
+reason for each; the guide needs none); each program, started as `deploy.sh` will start it, reports Foundry 1.7.1,
+Node.js v24.21.0 or Solidity 0.8.24; and `forge` itself reports that it will compile with the compiler in your
+directory, with fetching another one switched off. Nothing of the directory is run before the hashes pass. It
+takes about ten seconds.
+
+<!-- run: once tools-check -->
+```
+/bin/bash ~/postern-dex/scripts/multichain/owner-toolchain.sh check ~/dex-owner-tools
+```
+
+The last line must be exactly `owner tools: PASS`. **On any `FAIL`, type no password and confirm nothing in a
+wallet**: remove the directory (`~/dex-owner-tools` holds nothing but the tools), install again, and if it fails
+again, stop and ask.
+
+The third shows what this terminal will really start when you type the five names:
+
+<!-- run: once tools-type -->
+```
+type forge cast anvil node npm
+```
+
+Each of the five lines must end with your home directory followed by `/dex-owner-tools/bin/` and the program's
+name (for example `forge is /Users/you/dex-owner-tools/bin/forge`). A line saying `alias` or `function`, or
+another path: stop.
+
+`deploy.sh` (steps 3 and 4) and `first-deposit.mjs prepare` (step 7) run the same check again by themselves and
+stop unless it passes (review R402-5), so a terminal in which you forgot it cannot sign. Run it yourself all the
+same: `cast` is started by you, not by a script.
+
+Why launchers (`~/dex-owner-tools/bin`): Foundry's build for Intel Macs looks for `libusb` at a Homebrew path, and
+macOS removes the variable that could point it elsewhere whenever a script runs (`deploy.sh` is one), so each
+launcher sets it right before starting the real program (found by the dry run). Each launcher also removes the
+variables the check refuses before it starts its program, and the launcher of `forge` names the compiler: the
+checked file in your directory, never the copy `forge` would otherwise take from, or download into, your Library
+folder (review R402-2).
 
 Then the two keystore variables of the rules below, and section 2.
 
@@ -76,8 +147,8 @@ export DEX_DEPLOYER_KEYSTORE_DIR=<owner-deployer-keystore-dir>
 | What | Detail |
 |---|---|
 | This repository | postern-dex at the commit the integrator (agent 366) names as reviewed, on `main`; `git status` clean |
-| Foundry | `forge`, `cast` (the dry run used Foundry 1.7.1) |
-| Node.js | version 24, and the frontend's packages installed once (section 2.1) |
+| Foundry | `forge`, `cast`, `anvil` 1.7.1 and the Solidity compiler 0.8.24: your own copy in `~/dex-owner-tools`, installed from the publishers and checked in every terminal ("Your own tools" above) |
+| Node.js | v24.21.0, in the same directory and under the same check; the frontend's packages installed once (section 2.1) |
 | The fee address's wallet | the wallet that holds `0x775a…0544` (a MetaMask account, or a Ledger): used once, to sign one message, no transaction (section 2.3) |
 | The depositing key | the encrypted keystore `"$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"` (address `0x1ec3fe62f416cA8984b0AB415F144a29eE5CC8f3`, created 2026-11-17). It signs only the two transactions step 7 prints on each chain |
 | A deploying key (new) | a **plain hot key, used once**: created in section 2.4, funded with a little gas money per chain, used for the three deployment transactions of each chain and nothing else, emptied and deleted at the end. It has **no power** over anything it deploys (the contracts have no owner); losing it or leaking it after the deployment costs nothing but its leftover gas money |
@@ -107,15 +178,25 @@ git pull --ff-only
 ```
 
 ```
-git log -1 --oneline
+git rev-parse HEAD
 ```
 
-Compare the commit printed with the one the integrator names (`a99f761` when this was written, or a later one the integrator announces). Then install the frontend's packages (used by the
-tools as a library; no install script runs):
+Compare all 40 characters printed with the reviewed commit: `TBD-integrator` (the integrator, agent 400, replaces
+this with the full 40-digit id of the `main` it publishes; while it reads `TBD-integrator`, do not go on). Then
+install the frontend's packages (used by the tools as a library; no install script runs) and build the contracts
+(the tests and the plan below read the built code; this is the first run of the compiler in your directory):
 
+<!-- run: once npm-ci -->
 ```
 npm --prefix frontend ci --ignore-scripts
 ```
+
+<!-- run: once forge-build -->
+```
+forge build
+```
+
+It must say `Compiler run successful` (warnings of the linter are not errors).
 
 <!-- run: once kit-tests -->
 ```
@@ -1054,20 +1135,20 @@ nothing but printed deposits) if you will open further pairs on these factories;
 
 ## 9. The dry run of this document
 
-Run of record: commit `cf93f6e` for the once section and OP Mainnet (after the clone and terminal lines were added); the other five chains at `ab2a3fa`, whose chain blocks are byte-identical to these (checked), 2026-11-17 19:38 UTC onward, on the Mac, anvil 1.7.1 forks of each chain on loopback (ports 46710 to 46760), Foundry 1.7.1, Node 24. Command: `node scripts/multichain/owner-dry-run.mjs once --out DIR --pt FILE`, then `node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR` per chain. Evidence (every command run, its output, `evidence.json`) is kept in the agent's scratch (`agents/367-dex-deploykit-r18.md` names it); it contains no key of the owner's (none was used) and the throwaway key never leaves it.
+Run of record: commit `36eca5f` for the once section and OP Mainnet (2026-11-17 22:11 UTC, after review 402's findings R402-1 to R402-8 were fixed; port 47130; in a fresh clone at that commit, with the tools installed from the pinned URLs by this document's block and every program really started); the other five chains at `ab2a3fa` (05:46 UTC onward; ports 46720 to 46760, with the tools of that time), whose 80 chain blocks are byte-identical to these: the 96 chain blocks of this file equal those of `2656604`, `cf93f6e`, `d61c559` and `0dd50c5` (parsed and compared), and every block the dry run executes is found verbatim in those runs' command logs. On the Mac (Intel, macOS 26.6), anvil 1.7.1 forks of each chain on loopback, Foundry 1.7.1, Node v24.21.0. Command: `node scripts/multichain/owner-dry-run.mjs once --out DIR --pt FILE`, then `node scripts/multichain/owner-dry-run.mjs <chain> --port PORT --out DIR --clone DIR/postern-dex --tools DIR/owner-tools` per chain. Evidence (every command run, its output, `evidence.json`) is kept in the agent's scratch (`agents/367-dex-deploykit-r18.md` names it); it contains no key of the owner's (none was used) and the throwaway key never leaves it.
 
-Once (section 2): **PASS, 15 checks** (kit tests; `check-depositor` FIT on the six chains against the public endpoints; the fee-proof message equal to the one printed here; the signing page written; `record` refusing a throwaway key's signature of the exact message and writing nothing; `verify` NOT VALID because the owner has not signed yet; the deploying key created, read back and distinct from the two other accounts; the plan's addresses; the Portuguese copy's 110 blocks equal to these).
+Once ("Before anything" and section 2): **PASS, 32 checks** (the clone: made by the clone block, its commit printed in full, moved to the commit under test and unchanged; the tools: the install block fetches the four downloads from the pinned URLs, each SHA-256 checked before unpacking, and starts every program; the PATH line and the check block end with `owner tools: PASS`; seven refusals on the real directory, each undone: one byte added to `cast`, the directory opened to the group, no PATH line, another directory in the path, one byte added to the compiler, `NODE_TLS_REJECT_UNAUTHORIZED` and `ETH_RPC_URL` set, an access-control list on `cast`; then passing again; `type` finds the five programs in the tools directory only; `npm ci` and `forge build` in the fresh clone, the pair's init code hash built by the pinned compiler equal to the audited `0x16bd5cad…6683`; the no-agent line lists the agent session the dry run was started from; Node v24.21.0, npm 11.19.0 and Foundry 1.7.1 through the launchers inside a script; then the 15 checks of the earlier runs, all kept: kit tests; `check-depositor` FIT on the six chains against the public endpoints; the fee-proof message equal to the one printed here; the signing page written; `record` refusing a throwaway key's signature of the exact message and writing nothing; `verify` NOT VALID because the owner has not signed yet; the deploying key created, read back and distinct from the two other accounts; the plan's addresses; the Portuguese copy's 115 blocks equal to these).
 
 | Chain | Result | Fork block | Public pre gate (real chain, read-only) | Gas: factory, router, lens | Gas: approve, first deposit | Midway drills | Depositing account after (left of the funding) |
 |---|---|---|---|---|---|---|---|
-| OP Mainnet | **PASS, 38 checks** | 159,672,810 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,138 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.0005 ETH, 1.787465 USDC |
+| OP Mainnet | **PASS, 44 checks** (the 38 of the first run, all kept, and six more: the clone at the commit under test, the check block, `type`, the pair's init code hash, and `deploy.sh` and `prepare` against the public chain each running the tools check themselves) | 159,677,512 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,138 | 11 of 11 pass; M3 after the clock jump: PASS | 0.0005 ETH, 1.804243 USDC |
 | Base | **PASS, 38 checks** | 58,520,653 | every check passes but the missing fee-address proof | 2,617,692, 4,082,527, 2,261,269 | 55,449, 2,527,198 | 11 of 11 pass; M3 after the clock jump: PASS | 0.0005 ETH, 1.836708 USDC |
 | Arbitrum One | **PASS, 38 checks** | 524,954,169 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 55,449, 2,542,345 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.001 ETH, 1.836442 USDC |
 | Linea | **PASS, 38 checks** | 32,629,084 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 59,854, 2,531,067 | 11 of 11 pass; M3 after the clock jump: PASS | 0.003 ETH, 1.840888 USDC |
 | BNB Smart Chain | **PASS, 38 checks** | 134,066,155 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 53,476, 2,529,694 | 11 of 11 pass; M3 after the clock jump: refused: a feed is stale on the fork after 21 minutes | 0.003 BNB, 2.969527 USDC (Binance-Peg) |
 | Ethereum | **PASS, 38 checks** | 26,432,779 | every check passes but the missing fee-address proof | 2,617,692, 4,082,743, 2,261,269 | 55,570, 2,528,862 | 11 of 11 pass; M3 after the clock jump: PASS | 0.015 ETH, 18.386004 USDC |
 
-What each chain's run checked, in order: the owner's step 1 against the public chain untouched (read-only; it fails today on the fee-address proof alone, which is the owner's step 2.3); then on the fork: step 1 PASS; the deploying account funded with exactly the stated amount and read back by step 2; step 3 ends "nothing was sent", the deploying nonce stays 0, and forge's own `Estimated amount required` is below the stated funding; step 4 sends three successful transactions from the throwaway key, the three contracts at the planned addresses; **M1** step 4 again sends nothing; **M4** step 5 before finality prints WAIT and no PASS; step 5 PASS with the pair absent; step 6's market read, the depositing account funded with deposit + allowance and token + 1% and both balances read back by step 6's commands; step 7's `prepare` prints two `cast send` lines from `0x1ec3…C8f3` with `--chain`; **M2** a lone approve, then `prepare` again and its fresh pair opens the pool; **M3** the deposit sent after its 20-minute deadline reverts and creates no pool (then `prepare` either passes or refuses a feed made stale by the clock jump on the fork; both are correct); **M3b** a deposit that runs out of gas reverts, creates no pool, and `prepare` again gives a pair that opens it; M2, M3 and M3b on snapshots, reverted; then the real sequence: `prepare`, the two printed lines with the documented suffix (`--unlocked` for the impersonated account), both mined from the depositing account, exactly two transactions sent by it; step 8 `verify` PASS; step 9 post gate PASS with the pair open and its opening proven; step 10 the page's record written; today's cost from the public chain, cross-checked with `cost.mjs` on the three deployment transactions.
+What each chain's run checked, in order (OP Mainnet's run first passes the document's check block on the tools directory, in the fresh clone): the owner's step 1 against the public chain untouched (read-only; it fails today on the fee-address proof alone, which is the owner's step 2.3); then on the fork: step 1 PASS; the deploying account funded with exactly the stated amount and read back by step 2; step 3 ends "nothing was sent", the deploying nonce stays 0, and forge's own `Estimated amount required` is below the stated funding; step 4 sends three successful transactions from the throwaway key, the three contracts at the planned addresses; **M1** step 4 again sends nothing; **M4** step 5 before finality prints WAIT and no PASS; step 5 PASS with the pair absent; step 6's market read, the depositing account funded with deposit + allowance and token + 1% and both balances read back by step 6's commands; step 7's `prepare` prints two `cast send` lines from `0x1ec3…C8f3` with `--chain`; **M2** a lone approve, then `prepare` again and its fresh pair opens the pool; **M3** the deposit sent after its 20-minute deadline reverts and creates no pool (then `prepare` either passes or refuses a feed made stale by the clock jump on the fork; both are correct); **M3b** a deposit that runs out of gas reverts, creates no pool, and `prepare` again gives a pair that opens it; M2, M3 and M3b on snapshots, reverted; then the real sequence: `prepare`, the two printed lines with the documented suffix (`--unlocked` for the impersonated account), both mined from the depositing account, exactly two transactions sent by it; step 8 `verify` PASS; step 9 post gate PASS with the pair open and its opening proven; step 10 the page's record written; today's cost from the public chain, cross-checked with `cost.mjs` on the three deployment transactions.
 
 
 ## 10. What the dry run changes, exactly
@@ -1089,6 +1170,12 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 | funding (steps 2 and 6) and waiting (steps 5 and 9) | `anvil_setBalance` with exactly the amounts of section 3, the token by its balance slot; 70 blocks mined so that anvil's `finalized` (64 behind) covers the transactions | the owner funds from a wallet and waits for the chain |
 | `fee-proof.mjs record` | not run (it needs the fee address's signature); the pre gates of the dry run report the proof as "not required (rehearsal)", and the public pre gate is run read-only to show that it fails on the missing proof only | no one but the owner can sign it |
 | `git add`, `git commit`, `npm ci`, `git checkout` | not run | they change the repository, not a chain |
+| `~/postern-dex` (the clone) | the dry run's own directory; after the document's clone block and its commit line have run on the public `main`, the clone is moved to the commit under test, fetched from the agent's worktree (which must have no uncommitted change) | every later block runs in that fresh clone (review R402-3): `npm ci`, `forge build`, the tests, the plan, `deploy.sh`; nothing built or installed in an agent's worktree is used |
+| `~/dex-owner-tools` (install, PATH line, check, `type`) | the dry run's own directory | the owner's directory is never written by a dry run |
+| the terminal's environment | only `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `LANG`, the PATH line of this document and the two keystore variables | an agent session's own variables are not the owner's terminal; the check's refusal of a set variable is shown separately (T6) |
+| `owner-toolchain.sh install`, only with `--archives DIR` | `--from DIR` added | archives already fetched from the same pinned URLs; each is still compared with the pins before it is unpacked |
+| `pgrep` (no agent running) | run as written; the dry run is itself started by an agent, so it must list at least one process there (and nothing when a person runs it with no agent) | shows the line finds a running agent |
+| `deploy.sh … dry-run` and `first-deposit.mjs … prepare`, once more, exactly as written, against the public chain | nothing changed; read-only up to where they stop today (the missing fee-address proof; the missing gate report) | shows that each runs the owner tools check itself first (review R402-5) |
 | the Portuguese owner copy | its marked blocks are compared with this file's (`once --pt FILE`); any difference fails the run | the owner may follow either |
 
 ## 11. Not done / not proven
@@ -1096,7 +1183,11 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 - **Nothing was sent to any public chain and no key of the owner's was used.** Every transaction of the dry run went to a loopback fork; the depositing account and nothing else was impersonated there. Real inclusion, real fees charged, and Linea's prover limits on a real transaction are not shown.
 - **The accepting path of the fee-address proof** (`record` with the fee address's real signature) needs the owner's key; only its refusals were exercised here (a throwaway key's signature). The signing page was written, not used with a wallet. The pre gates on the forks run with `--rehearsal`, where the proof is "not required"; on the public chains they fail on it today, by design.
 - **Two endpoints on the fork.** With `--rpc … --rehearsal` the tools read one URL (the fork), so the two-endpoint agreement of the gates and of `prepare` was not exercised by this dry run (it is by the tools' own tests and by the read-only public pre gate and `check-depositor` runs above).
-- **The owner's machine.** Run on the coordinator's Mac with Foundry 1.7.1. The owner's zsh, Foundry version and keystore prompts were not seen; `npm ci`, `git` and the Ledger and MetaMask paths were not run.
+- **The owner's machine.** Run on the coordinator's Mac with Foundry 1.7.1. The owner's zsh and keystore prompts were not seen; `npm ci`, `git` and the Ledger and MetaMask paths were not run.
+- **The owner's tools (review R369-16): what the check cannot see.** The directory is closed to other macOS users, not to a program running as the owner's own user: such a program could also change the shell's start-up files, this clone, or the guide itself, and no script can rule that out from inside the same account. That is why the check is repeated in every terminal, `type` is shown, and no agent may run during a signing session; a separate macOS user account used only for signing would be the stronger separation (an owner decision). `pgrep` finds only processes whose command line contains "claude" or "codex".
+- **Signatures of the releases were not verified, only their published checksums.** Foundry's Sigstore bundles and GitHub attestations, the PGP signature of Node's `SHASUMS256.txt` and Homebrew's attestation were not verified; for the compiler the checksum is the Solidity project's `list.json`. The checksums come from the same publishers' sites as the downloads (the pins file names each source).
+- **Apple silicon.** The `darwin-arm64` pins were hashed from the official archives and the directory was built from them on this Intel Mac; nothing was run on an Apple-silicon Mac.
+- **What still comes from outside the checked directory.** macOS's own programs in `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` (`bash`, `git`, `curl`, `python3`, `shasum`, `pgrep`: root-owned and system-protected, required to be the only other entries of the path); the 400 npm packages of `frontend/` (each fixed by a sha512 in the committed lockfile and installed without scripts, then lying in the clone under no later check); the clone itself after the commit comparison. `DYLD_…` variables cannot be seen by a script on macOS (the system removes them first, which is also what keeps them from the programs).
 - **Gas prices are of one hour.** The cost table is today's reading; Linea's `eth_gasPrice` moved eightfold within the day. The funding column, not the "today" columns, is what to plan with.
 - **The deposit size.** The dry run used each chain's minimum (0.1 ETH; 0.5 BNB; 1 ETH on Ethereum). A larger deposit changes the token amount and nothing else in the sequence.
 - **Waiting is simulated.** 70 mined blocks stand for the chain's finality; the real waits are in steps 5 and 9.

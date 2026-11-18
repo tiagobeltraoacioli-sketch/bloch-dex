@@ -8,7 +8,7 @@
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
@@ -45,6 +45,18 @@ const ADDRESS_ANY = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL = /^[1-9][0-9]*$/;
 
 export class MultichainError extends Error {}
+/**
+ * Review R402-5: the owner tools check (owner-toolchain.sh check), run by a tool itself on the directory the node
+ * that runs it comes from (<tools>/node/bin/node), so that a terminal in which the check was skipped cannot go on.
+ * ok only when the script exits 0 and its last line is the PASS line.
+ */
+export function ownerToolsCheck({ execPath = process.execPath, env = process.env, script = join(ROOT, "scripts/multichain/owner-toolchain.sh") } = {}) {
+  const directory = dirname(dirname(dirname(execPath)));
+  const r = spawnSync("/bin/bash", [script, "check", directory], { encoding: "utf8", env });
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  return { ok: r.status === 0 && output.trim().split("\n").at(-1) === "owner tools: PASS", directory, output };
+}
+
 export function refuse(condition, message) {
   if (!condition) throw new MultichainError(`multichain: ${message}`);
 }

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CHAIN_STEPS, DOC, ONCE_STEPS, ORDER, blocksOf, fundingOf } from "./owner-dry-run.mjs";
+import { CHAIN_STEPS, DOC, ONCE_STEPS, ORDER, OWNER_TOOLS, TOOLCHAIN_SCRIPT, blocksOf, fundingOf, pinnedFiles } from "./owner-dry-run.mjs";
 import { ROOT, loadChain, loadShared } from "./lib.mjs";
 
 const text = readFileSync(join(ROOT, DOC), "utf8");
@@ -77,4 +77,55 @@ test("blocksOf refuses a block that appears twice or spans two lines", () => {
   assert.throws(() => blocksOf("<!-- run: once a -->\n```\nx\n```\n<!-- run: once a -->\n```\ny\n```\n"), /appears twice/);
   assert.throws(() => blocksOf("<!-- run: once a -->\n```\nx\ny\n```\n"), /one line/);
   assert.throws(() => blocksOf("<!-- run: once a -->\n```\nx # note\n```\n"), /one line without a comment/);
+});
+
+test("the owner installs his own tools and checks their SHA-256 before the first step that touches a key (review R369-16)", () => {
+  // The three blocks, exactly: macOS's own bash, the script of the owner's clone, the owner-only directory.
+  assert.equal(blocks["once tools-install"], `/bin/bash ${TOOLCHAIN_SCRIPT} install ${OWNER_TOOLS[0]}`);
+  assert.equal(blocks["once tools-check"], `/bin/bash ${TOOLCHAIN_SCRIPT} check ${OWNER_TOOLS[0]}`);
+  // R402-1: the tools and macOS's own four directories, nothing of the terminal's earlier PATH.
+  assert.equal(blocks["once env-path"], `export PATH="${OWNER_TOOLS[1]}/bin:/usr/bin:/bin:/usr/sbin:/sbin"`);
+  for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/\$PATH|\$\{PATH/.test(cmd), `${k} keeps the terminal's PATH`);
+  assert.equal(blocks["once tools-type"], "type forge cast anvil node npm");
+  // R402-4: the commit is compared in full, in both places, and the reviewed one is stated in full (or still open).
+  assert.equal(blocks["once clone-commit"], "git -C ~/postern-dex rev-parse HEAD");
+  assert.ok(!/git[^\n]*log -1 --oneline/.test(text) && !/when this was written/.test(text));
+  assert.match(text, /```\ngit rev-parse HEAD\n```\n\nCompare all 40 characters printed with the reviewed commit: `(TBD-integrator|[0-9a-f]{40})`/);
+  // R402-3: the packages and the build come before the first block that reads the built code.
+  assert.equal(blocks["once npm-ci"], "npm --prefix frontend ci --ignore-scripts");
+  assert.equal(blocks["once forge-build"], "forge build");
+  // R402-1: every tool of the kit is started as `node <file>` or by /bin/bash or its own #!/bin/bash, never through
+  // a `#!/usr/bin/env` line resolved on the PATH.
+  for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/^scripts\/\S+\.mjs/.test(cmd), k);
+  assert.ok(readFileSync(join(ROOT, "scripts/multichain/deploy.sh"), "utf8").startsWith("#!/bin/bash\n"));
+  assert.ok(readFileSync(join(ROOT, "scripts/multichain/owner-toolchain.sh"), "utf8").startsWith("#!/bin/bash\n"));
+  // R402-5: the text says the scripts check again by themselves.
+  assert.match(text, /`deploy\.sh` \(steps 3 and 4\) and `first-deposit\.mjs prepare` \(step 7\) run the same check again by themselves/);
+  // Neither rehearsal flag of the script is in the owner's blocks.
+  for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/--no-run|--platform|--from /.test(cmd), k);
+  // Order: clone, its commit, install, PATH, check, type; all before anything that signs, unlocks or creates a key.
+  const at = (step) => text.indexOf(`<!-- run: once ${step} -->`);
+  const order = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "npm-ci", "forge-build", "kit-tests", "check-depositor", "plan"].map(at);
+  assert.ok(order.every((p, i) => p > 0 && (i === 0 || p > order[i - 1])), order.join(","));
+  // The first command block (marked or not) that names a keystore, a wallet, a signature or a send.
+  const firstKeyUse = [...text.matchAll(/```\n([\s\S]*?)\n```/g)].find((m) => /cast wallet|--keystore|--ledger|KEYSTORE_DIR|fee-proof\.mjs (record|page)|deploy\.sh|cast send/.test(m[1]));
+  assert.ok(firstKeyUse && firstKeyUse[1].startsWith("export DEX_DEPOSITOR_KEYSTORE_DIR="), firstKeyUse?.[1]);
+  assert.ok(at("tools-type") < firstKeyUse.index, "the check comes before the first key use");
+  // No block uses the agent-installed directory; the text names it only to say it is not used.
+  for (const [k, cmd] of Object.entries(blocks)) assert.ok(!cmd.includes(".local/share"), k);
+  assert.equal(text.split(".local/share/dex-tools").length - 1, 1);
+  assert.match(text, /in particular not the one in `~\/\.local\/share\/dex-tools\/`/);
+  // The rules the owner must read: every new terminal, exact PASS line, stop on FAIL, no agent while signing.
+  assert.match(text, /In \*\*every new terminal\*\* you use for this guide, first these three lines/);
+  assert.match(text, /The last line must be exactly `owner tools: PASS`\. \*\*On any `FAIL`, type no password and confirm nothing in a\nwallet\*\*/);
+  assert.match(text, /\*\*No agent while you sign\.\*\*/);
+  assert.equal(blocks["once no-agents"], 'pgrep -lf -i "claude|codex"');
+});
+
+test("the pins the dry run compares a stand-in with are the committed ones, for both platforms", () => {
+  for (const platform of ["darwin-x64", "darwin-arm64"]) {
+    const pins = pinnedFiles(platform);
+    for (const f of ["foundry/forge", "foundry/cast", "foundry/anvil", "node/bin/node"]) assert.match(pins[f] ?? "", /^[0-9a-f]{64}$/, `${platform} ${f}`);
+  }
+  assert.deepEqual(pinnedFiles("darwin-x64", "darwin-x64 file aa foundry/forge\ndarwin-arm64 file bb foundry/forge\ndarwin-x64 tree cc .\n"), { "foundry/forge": "aa" });
 });
