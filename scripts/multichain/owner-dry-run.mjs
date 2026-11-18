@@ -44,7 +44,7 @@ const { keccak256, encodeAbiParameters, encodeFunctionData, decodeFunctionResult
 
 export const DOC = "docs/OWNER-DEPLOY-NOW.md";
 export const CHAIN_STEPS = ["pre-gate", "deployer-balance", "gas-price", "deploy-dry-run", "deploy-broadcast", "post-gate-deployed", "market", "depositor-native", "depositor-token", "prepare", "send-suffix", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
-export const ONCE_STEPS = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "npm-ci", "forge-build", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
+export const ONCE_STEPS = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "reviewed-commit", "npm-ci", "forge-build", "kit-tests", "check-depositor", "fee-proof-message", "fee-proof-page", "fee-proof-record", "fee-proof-verify", "deployer-dir", "deployer-new", "deployer-address", "plan"];
 export const ORDER = ["op-mainnet", "base", "arbitrum-one", "linea", "bnb-smart-chain", "ethereum"];
 const DEPOSITOR_KEYSTORE = '--keystore "$DEX_DEPOSITOR_KEYSTORE_DIR/depositante"';
 // The document names the deploying key's directory only as DEX_DEPLOYER_KEYSTORE_DIR (H398-3); the dry run sets it
@@ -53,6 +53,9 @@ const DEPLOYER_DIR = '"$DEX_DEPLOYER_KEYSTORE_DIR"';
 // The owner's tools directory and the path of the toolchain script, as the document writes them.
 export const OWNER_TOOLS = ["~/dex-owner-tools", "$HOME/dex-owner-tools"];
 export const OWNER_CLONE = "~/postern-dex";
+// Review R402-4: the reviewed commit id is not in the document; the owner pastes it over this placeholder, in both
+// comparisons. The dry run pastes the id of the commit it is at, and shows that the lines refuse when left as printed.
+export const COMMIT_PLACEHOLDER = "PASTE-THE-40-DIGIT-COMMIT-ID";
 export const TOOLCHAIN_SCRIPT = `${OWNER_CLONE}/scripts/multichain/owner-toolchain.sh`;
 // The pair's init code hash of the audited build (test/Core.t.sol pins it): unchanged by the pinned compiler.
 export const PAIR_INIT_CODE_HASH = "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f5416ffe0357d7880444556683";
@@ -152,8 +155,16 @@ async function main() {
     const r = shell("clone", blocks["once clone"], swap(blocks["once clone"]), { cwd: out });
     const reviewed = git(["merge-base", "--is-ancestor", "a99f761", "origin/main"], REPO);
     check("0 the clone succeeds and its main contains the reviewed a99f761", r.status === 0 && reviewed.status === 0, `${r.output.slice(-200)} ${reviewed.stderr}`);
-    const commit = shell("clone-commit", blocks["once clone-commit"], swap(blocks["once clone-commit"]), { cwd: out });
-    check("0 the clone's commit is printed in full (40 hexadecimal digits) for comparison with the integrator's (R402-4)", commit.status === 0 && /^[0-9a-f]{40}\n$/.test(commit.output) && commit.output.trim() === git(["rev-parse", "origin/main"], REPO).stdout.trim(), commit.output);
+    // R402-4, first comparison (macOS's own programs, nothing from the clone): the id the owner received, pasted
+    // over the placeholder. Here: the id of the clone's own main (what the integrator announces for a real run).
+    const cloneHead = git(["rev-parse", "origin/main"], REPO).stdout.trim();
+    const pasted = (id) => swap(blocks["once clone-commit"]).replaceAll(COMMIT_PLACEHOLDER, id);
+    const commit = shell("clone-commit", blocks["once clone-commit"], pasted(cloneHead), { cwd: out });
+    check("0 the clone's commit compared in full (40 digits) with the id pasted over the placeholder: MATCH (R402-4)", /^[0-9a-f]{40}$/.test(cloneHead) && commit.status === 0 && commit.output === "reviewed commit: MATCH\n", commit.output);
+    const unpasted = shell("clone-commit-as-printed", blocks["once clone-commit"], swap(blocks["once clone-commit"]), { cwd: out });
+    const oneOff = shell("clone-commit-one-digit", blocks["once clone-commit"], pasted(`${cloneHead.slice(0, 39)}${cloneHead[39] === "0" ? "1" : "0"}`), { cwd: out });
+    const short = shell("clone-commit-seven-digits", blocks["once clone-commit"], pasted(cloneHead.slice(0, 7)), { cwd: out });
+    check("0 the same line left as printed, with one digit changed, or with seven digits: MISMATCH and no MATCH (R402-4)", [unpasted, oneOff, short].every((r) => r.output.startsWith("reviewed commit: MISMATCH; stop") && !/reviewed commit: MATCH/.test(r.output)), `${unpasted.output}${oneOff.output}${short.output}`);
     // The clone is of the public main; the blocks under test are this commit's: fetched from the worktree.
     const moved = git(["fetch", "-q", ROOT, head], REPO).status === 0 && git(["checkout", "-q", "--detach", head], REPO).status === 0;
     refuse(moved, `the clone could not be moved to the commit under test ${head}`);
@@ -222,6 +233,27 @@ async function main() {
   }
   if (!opt.clone) {
     // Section 2.1 in the fresh clone: the packages and the build (R402-3), with the checked npm and forge.
+    // R402-4, second comparison: the script of the clone, in the tools-checked terminal, before anything is built.
+    {
+      const block = blocks["once reviewed-commit"];
+      const at = (id) => block.replaceAll(COMMIT_PLACEHOLDER, id);
+      const last = (x) => x.output.trim().split("\n").at(-1) ?? "";
+      let c = shell("reviewed-commit", block, `${envPrefix}${at(head)}`);
+      check("2.1 the reviewed-commit line with the id pasted: last line \"reviewed commit: PASS <40 digits>\" (R402-4)", c.status === 0 && last(c) === `reviewed commit: PASS ${head}`, c.output.slice(-300));
+      const refused = (x) => x.status === 1 && last(x).startsWith("reviewed commit: FAIL") && !/reviewed commit: PASS/.test(x.output);
+      c = shell("reviewed-commit-as-printed", block, `${envPrefix}${block}`);
+      check("2.1 the same line left as printed (placeholder not replaced): refused, no PASS", refused(c) && c.output.includes(COMMIT_PLACEHOLDER), c.output.slice(-300));
+      c = shell("reviewed-commit-other", block, `${envPrefix}${at(git(["rev-parse", "HEAD~1"], REPO).stdout.trim())}`);
+      check("2.1 the id of another commit (this one's parent): refused, both ids shown", refused(c) && c.output.includes(`this copy is at ${head}`), c.output.slice(-300));
+      c = shell("reviewed-commit-seven", block, `${envPrefix}${at(head.slice(0, 7))}`);
+      check("2.1 the seven-digit short form: refused", refused(c) && /has 7 digits/.test(c.output), c.output.slice(-300));
+      const guide = join(REPO, DOC);
+      appendFileSync(guide, "\n");
+      c = shell("reviewed-commit-file-changed", block, `${envPrefix}${at(head)}`);
+      writeFileSync(guide, text);
+      check("2.1 one byte added to a tracked file of the clone: refused, the file named", refused(c) && c.output.includes(DOC), c.output.slice(-300));
+      check("2.1 the clone is unchanged after these refusals", git(["status", "--porcelain", "--untracked-files=no"], REPO).stdout.trim() === "");
+    }
     let r = shell("npm-ci", blocks["once npm-ci"], `${envPrefix}${blocks["once npm-ci"]}`);
     check("2.1 npm ci in the fresh clone installs the frontend's packages from the lockfile (no install script)", r.status === 0 && existsSync(join(REPO, "frontend/node_modules/viem/package.json")), r.output.slice(-400));
     r = shell("forge-build", blocks["once forge-build"], `${envPrefix}${blocks["once forge-build"]}`);

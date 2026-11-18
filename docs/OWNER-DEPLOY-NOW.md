@@ -20,14 +20,24 @@ Once, on this Mac: get the repository (the folder `~/postern-dex` does not exist
 git clone https://github.com/tiagobeltraoacioli-sketch/postern-dex.git ~/postern-dex
 ```
 
-The scripts you are about to run, and the SHA-256 values they compare your tools with, come from this copy. Print
-its commit in full and compare **all 40 characters** with the reviewed commit stated in section 2.1 before you
-run anything from it (a short form of seven characters can be imitated in minutes, review R402-4):
+The scripts you are about to run, and the SHA-256 values they compare your tools with, come from this copy.
+Before you run anything from it, compare its commit, **all 40 characters**, with the reviewed commit id (a short
+form of seven characters can be imitated in minutes, review R402-4).
+
+**The reviewed commit id is not written in this page, on purpose.** A commit cannot contain its own id, and a
+copy of the repository that someone altered could print any id it likes. You received the 40-digit id outside
+the repository: in the coordinator's message and in your own Portuguese copy of this guide, which is not in the
+repository. In the line below, replace `PASTE-THE-40-DIGIT-COMMIT-ID` with those 40 digits, then run it. The
+line uses only macOS's own programs and nothing from the clone:
 
 <!-- run: once clone-commit -->
 ```
-git -C ~/postern-dex rev-parse HEAD
+[ "$(/usr/bin/git -C ~/postern-dex rev-parse HEAD)" = "PASTE-THE-40-DIGIT-COMMIT-ID" ] && echo "reviewed commit: MATCH" || echo "reviewed commit: MISMATCH; stop and run nothing from this copy"
 ```
+
+It must print exactly `reviewed commit: MATCH`. **On `MISMATCH`, stop**: run nothing from `~/postern-dex`, and
+ask the coordinator. The line printed as it stands here (the placeholder not replaced) prints `MISMATCH` too: it
+cannot be skipped by pasting it unchanged.
 
 ### Your own tools, checked before any key is used
 
@@ -177,12 +187,18 @@ git checkout main
 git pull --ff-only
 ```
 
+<!-- run: once reviewed-commit -->
 ```
-git rev-parse HEAD
+/bin/bash scripts/multichain/reviewed-commit.sh PASTE-THE-40-DIGIT-COMMIT-ID
 ```
 
-Compare all 40 characters printed with the reviewed commit: `TBD-integrator` (the integrator, agent 400, replaces
-this with the full 40-digit id of the `main` it publishes; while it reads `TBD-integrator`, do not go on). Then
+Replace `PASTE-THE-40-DIGIT-COMMIT-ID` with the same 40-digit id as at the start (received outside the
+repository; this page does not state it). The last line must be exactly `reviewed commit: PASS` followed by
+that id. The script refuses, with a last line starting `reviewed commit: FAIL`, when the copy is at any other
+commit, when a file of the copy differs from that commit, and when the placeholder was left as printed or fewer
+than 40 digits were given. **On `FAIL`, stop here**: take a fresh clone and ask the coordinator; do not go on
+with this copy. (Later, after you commit the files a chain's deployment generates, this copy is at your own new
+commit and this line no longer applies; it is for this point, before anything is built or signed.) Then
 install the frontend's packages (used by the tools as a library; no install script runs) and build the contracts
 (the tests and the plan below read the built code; this is the first run of the compiler in your directory):
 
@@ -1171,6 +1187,7 @@ command it actually ran is in its evidence (`commands.log`), next to the block i
 | `fee-proof.mjs record` | not run (it needs the fee address's signature); the pre gates of the dry run report the proof as "not required (rehearsal)", and the public pre gate is run read-only to show that it fails on the missing proof only | no one but the owner can sign it |
 | `git add`, `git commit`, `npm ci`, `git checkout` | not run | they change the repository, not a chain |
 | `~/postern-dex` (the clone) | the dry run's own directory; after the document's clone block and its commit line have run on the public `main`, the clone is moved to the commit under test, fetched from the agent's worktree (which must have no uncommitted change) | every later block runs in that fresh clone (review R402-3): `npm ci`, `forge build`, the tests, the plan, `deploy.sh`; nothing built or installed in an agent's worktree is used |
+| `PASTE-THE-40-DIGIT-COMMIT-ID` (the two commit comparisons, review R402-4) | the id of the commit the clone is at: the public `main`'s for the first line (run right after the clone block), the commit under test for the script's line in section 2.1 | the owner pastes the id he received outside the repository. Each line is also run as printed (placeholder not replaced), with one digit changed or the parent's id, and with seven digits; the script's line also with one byte added to a tracked file: all must refuse |
 | `~/dex-owner-tools` (install, PATH line, check, `type`) | the dry run's own directory | the owner's directory is never written by a dry run |
 | the terminal's environment | only `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `LANG`, the PATH line of this document and the two keystore variables | an agent session's own variables are not the owner's terminal; the check's refusal of a set variable is shown separately (T6) |
 | `owner-toolchain.sh install`, only with `--archives DIR` | `--from DIR` added | archives already fetched from the same pinned URLs; each is still compared with the pins before it is unpacked |

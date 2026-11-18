@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CHAIN_STEPS, DOC, ONCE_STEPS, ORDER, OWNER_TOOLS, TOOLCHAIN_SCRIPT, blocksOf, fundingOf, pinnedFiles } from "./owner-dry-run.mjs";
+import { CHAIN_STEPS, COMMIT_PLACEHOLDER, DOC, ONCE_STEPS, ORDER, OWNER_TOOLS, TOOLCHAIN_SCRIPT, blocksOf, fundingOf, pinnedFiles } from "./owner-dry-run.mjs";
 import { ROOT, loadChain, loadShared } from "./lib.mjs";
 
 const text = readFileSync(join(ROOT, DOC), "utf8");
@@ -87,10 +87,20 @@ test("the owner installs his own tools and checks their SHA-256 before the first
   assert.equal(blocks["once env-path"], `export PATH="${OWNER_TOOLS[1]}/bin:/usr/bin:/bin:/usr/sbin:/sbin"`);
   for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/\$PATH|\$\{PATH/.test(cmd), `${k} keeps the terminal's PATH`);
   assert.equal(blocks["once tools-type"], "type forge cast anvil node npm");
-  // R402-4: the commit is compared in full, in both places, and the reviewed one is stated in full (or still open).
-  assert.equal(blocks["once clone-commit"], "git -C ~/postern-dex rev-parse HEAD");
+  // R402-4, restated in round 19 by agent 400 (401's assertion accepted `TBD-integrator` or an id written in the
+  // page): the commit is compared in full in both places, and the reviewed id is NOT in the page (a commit cannot
+  // contain its own id; an altered copy could state any id). The owner pastes the id he received outside the
+  // repository over a placeholder that the lines refuse when left as printed (reviewed-commit.test.mjs runs them).
+  assert.equal(blocks["once clone-commit"], `[ "$(/usr/bin/git -C ~/postern-dex rev-parse HEAD)" = "${COMMIT_PLACEHOLDER}" ] && echo "reviewed commit: MATCH" || echo "reviewed commit: MISMATCH; stop and run nothing from this copy"`);
+  assert.equal(blocks["once reviewed-commit"], `/bin/bash scripts/multichain/reviewed-commit.sh ${COMMIT_PLACEHOLDER}`);
   assert.ok(!/git[^\n]*log -1 --oneline/.test(text) && !/when this was written/.test(text));
-  assert.match(text, /```\ngit rev-parse HEAD\n```\n\nCompare all 40 characters printed with the reviewed commit: `(TBD-integrator|[0-9a-f]{40})`/);
+  assert.ok(!text.includes("TBD-integrator"));
+  assert.ok(!/reviewed commit[^\n]{0,80}`[0-9a-f]{7,40}`/.test(text), "no commit id is stated as the reviewed one");
+  assert.match(text, /\*\*The reviewed commit id is not written in this page, on purpose\.\*\*/);
+  assert.match(text, /\*\*On `MISMATCH`, stop\*\*/);
+  assert.match(text, /\*\*On `FAIL`, stop here\*\*/);
+  // The first comparison runs nothing from the clone: git by absolute path and shell builtins only.
+  assert.ok(!/postern-dex\/scripts|node |bash /.test(blocks["once clone-commit"]));
   // R402-3: the packages and the build come before the first block that reads the built code.
   assert.equal(blocks["once npm-ci"], "npm --prefix frontend ci --ignore-scripts");
   assert.equal(blocks["once forge-build"], "forge build");
@@ -105,7 +115,7 @@ test("the owner installs his own tools and checks their SHA-256 before the first
   for (const [k, cmd] of Object.entries(blocks)) assert.ok(!/--no-run|--platform|--from /.test(cmd), k);
   // Order: clone, its commit, install, PATH, check, type; all before anything that signs, unlocks or creates a key.
   const at = (step) => text.indexOf(`<!-- run: once ${step} -->`);
-  const order = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "npm-ci", "forge-build", "kit-tests", "check-depositor", "plan"].map(at);
+  const order = ["clone", "clone-commit", "no-agents", "tools-install", "env-path", "tools-check", "tools-type", "reviewed-commit", "npm-ci", "forge-build", "kit-tests", "check-depositor", "plan"].map(at);
   assert.ok(order.every((p, i) => p > 0 && (i === 0 || p > order[i - 1])), order.join(","));
   // The first command block (marked or not) that names a keystore, a wallet, a signature or a send.
   const firstKeyUse = [...text.matchAll(/```\n([\s\S]*?)\n```/g)].find((m) => /cast wallet|--keystore|--ledger|KEYSTORE_DIR|fee-proof\.mjs (record|page)|deploy\.sh|cast send/.test(m[1]));
