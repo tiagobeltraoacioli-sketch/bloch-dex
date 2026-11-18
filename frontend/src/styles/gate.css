@@ -1782,6 +1782,14 @@
   }
 }
 
+/* The site-wide line shown while no pool is open anywhere: in the page column, above everything else. */
+.not-active-banner {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto var(--s-4);
+  font-weight: 500;
+}
+
 /* A token note (such as the Binance-Peg line) belongs to the page column, not to the full width of the shell. */
 .token-note {
   width: 100%;

@@ -28,6 +28,11 @@ const RECEIPT_POLL_MS = 4_000;
  * refused as UNCONFIRMED) and must never renew under a user who is typing or reading a quote.
  */
 export const SNAPSHOT_MAX_AGE_MS = 240_000;
+/** The site's name (owner, 2026-11-18: this DEX is "Bloch DEX"; "PosternDEX" is the perpetuals exchange). */
+export const MULTICHAIN_SITE_NAME = 'Bloch DEX';
+/** Shown on every route while no bundled record is of an open pool: the site is published before activation. */
+export const MULTICHAIN_NOT_ACTIVE_BANNER =
+  'Bloch DEX is not active yet. No pool is open on any network: nothing can be traded here, and this site sends no transaction.';
 export const MULTICHAIN_RENDER_BANNER =
   'Local rehearsal build against loopback forks: not for publication.';
 
@@ -62,7 +67,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
     [chain],
   );
   useEffect(() => {
-    document.title = `PosternDEX — ${chain.network.chainName}`;
+    document.title = `${MULTICHAIN_SITE_NAME} — ${chain.network.chainName}`;
   }, [chain]);
   // Header status of each network, from its bundled record (no RPC request: `load` reads the bundle).
   const [live, setLive] = useState<Record<string, boolean>>({});
@@ -97,7 +102,8 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
   return (
     <Shell
       network={chain.key}
-      brandLabel="Postern home"
+      brandLabel={`${MULTICHAIN_SITE_NAME} home`}
+      wordmark={MULTICHAIN_SITE_NAME}
       homeHref={`#/${chains[0].key}`}
       navLabel="Networks"
       nav={chains.map((c) => (
@@ -138,6 +144,11 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         </>
       }
     >
+      {Object.keys(live).length === chains.length && !Object.values(live).some(Boolean) && (
+        <p className="notice not-active-banner" role="status" data-testid="not-active-banner">
+          {MULTICHAIN_NOT_ACTIVE_BANNER}
+        </p>
+      )}
       {/* Agent 343's token notes (a label such as "USDC (Binance-Peg)" is explained on screen, without a click). */}
       {chain.tokenNotes.map((note) => (
         <p className="muted token-note" data-testid="token-note" key={note}>

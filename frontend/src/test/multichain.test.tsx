@@ -322,15 +322,23 @@ describe('multichain application', () => {
       'BNB Smart Chain',
     ]);
     expect(nav.querySelector('[aria-current="page"]')!.textContent).toBe('Base');
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('PosternDEX on Base');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Base');
     const panel = await screen.findByLabelText('Not yet live');
     expect(panel.textContent).toContain('The DEX is not deployed on Base yet.');
+    // Published before activation: one line on every route while no bundled record is of an open pool.
+    expect((await screen.findByTestId('not-active-banner')).textContent).toBe(
+      'Bloch DEX is not active yet. No pool is open on any network: nothing can be traded here, and this site sends no transaction.',
+    );
+    expect(document.querySelector('.brand .wordmark')!.textContent).toBe('Bloch DEX');
     expect(panel.textContent).toContain(
       'No verified deployment record for Base has been published with this site.',
     );
     expect(panel.textContent).toContain('Pools: WETH/USDC.');
     expect(screen.queryByRole('button', { name: 'Swap' })).toBeNull();
-    expect(document.body.textContent).not.toMatch(/Bloch|BLCH|bUSDC/);
+    // The site is named "Bloch DEX" (owner, 2026-11-18). Apart from that name, nothing of the Bloch L2 (the chain,
+    // BLCH, bUSDC) may appear on a public-chain route: the guard keeps its meaning with the name taken out.
+    expect(document.body.textContent).toContain('Bloch DEX');
+    expect(document.body.textContent!.replaceAll('Bloch DEX', '')).not.toMatch(/Bloch|BLCH|bUSDC/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -343,7 +351,7 @@ describe('multichain application', () => {
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
-      'PosternDEX on BNB Smart Chain',
+      'Bloch DEX on BNB Smart Chain',
     );
     expect((await screen.findByLabelText('Not yet live')).textContent).toContain(
       'Pools: WBNB/USDC (Binance-Peg).',
@@ -352,12 +360,12 @@ describe('multichain application', () => {
     expect(screen.getByTestId('token-note').textContent).toBe(
       'USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.',
     );
-    expect(document.title).toBe('PosternDEX — BNB Smart Chain');
+    expect(document.title).toBe('Bloch DEX — BNB Smart Chain');
     // An unknown key shows the first network.
     await act(async () => {
       history.replaceState(null, '', '/#/bloch-l2');
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('PosternDEX on Ethereum');
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Ethereum');
   });
 });

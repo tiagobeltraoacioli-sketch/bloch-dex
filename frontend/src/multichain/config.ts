@@ -298,7 +298,7 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
   };
   const wording: Wording = {
     network: n.chainName,
-    title: `PosternDEX on ${n.chainName}`,
+    title: `Bloch DEX on ${n.chainName}`,
     where: n.chainName,
     block: 'block',
     finality: byFinality ? 'Finality' : 'Confirmation',
@@ -417,7 +417,7 @@ export function parseRecord(
     'two contracts share an address',
   );
   const deployment: DevnetDeployment = {
-    name: `PosternDEX on ${chain.network.chainName}`,
+    name: `Bloch DEX on ${chain.network.chainName}`,
     path: `deployments/${chain.key}/frontend.record.json`,
     revision: 'multichain',
     chainId: chain.network.chainId,

@@ -14,6 +14,7 @@ export function Shell({
   network,
   brandLabel,
   homeHref = '#/trade',
+  wordmark = 'Postern',
   navLabel,
   nav,
   actions,
@@ -26,6 +27,8 @@ export function Shell({
   brandLabel: string;
   /** Where the brand links (the Bloch L2 site's preview by default). */
   homeHref?: string;
+  /** The name beside the mark. The multichain site is "Bloch DEX" (owner, 2026-11-18); the others keep "Postern". */
+  wordmark?: string;
   navLabel: string;
   nav: ReactNode;
   actions: ReactNode;
@@ -52,7 +55,7 @@ export function Shell({
         <div className="topbar-inner">
           <a className="brand" href={homeHref} aria-label={brandLabel}>
             <BrandMark />
-            <span className="wordmark">Postern</span>
+            <span className="wordmark">{wordmark}</span>
           </a>
           <nav className="main-nav" aria-label={navLabel}>
             {nav}
