@@ -450,8 +450,9 @@ export async function main(argv, print = console.log, toolsCheck = null) {
       print("");
       // Two lines for every token but one whose approve needs zero first: three with an old allowance to clear, one
       // when the allowance already is the amount.
-      const count = transactions.length === 1 ? "this one transaction" : `these ${["", "", "two", "three"][transactions.length]} transactions`;
-      print(`Send ${count} FROM ${depositor} (the factory's first depositor), exactly as printed${transactions.length > 1 ? ", in this order" : ""}, and send nothing else from that account.`);
+      // (The two-line sentence is the one printed before round 20, unchanged.)
+      if (transactions.length === 2) print(`Send these two transactions FROM ${depositor} (the factory's first depositor), exactly as printed, and send nothing else from that account.`);
+      else print(`Send ${transactions.length === 1 ? "this one transaction" : "these three transactions"} FROM ${depositor} (the factory's first depositor), exactly as printed${transactions.length === 3 ? ", in this order" : ""}, and send nothing else from that account.`);
       if (zeroFirst && allowance > 0n && allowance !== need)
         print(`${token.symbol} refuses to change an allowance that is not zero into another amount (its approve reverts): the router still holds an allowance of ${amountText(allowance, token)} from an earlier run, so the first line sets it to zero and the second sets the new amount. Wait until each is mined before sending the next.`);
       else if (zeroFirst && allowance === need) print(`The router already holds an allowance of exactly ${amountText(allowance, token)} from an earlier run: no approve is printed (${token.symbol} would refuse a second one), only the deposit.`);
