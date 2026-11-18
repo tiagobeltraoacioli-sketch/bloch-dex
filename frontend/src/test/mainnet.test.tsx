@@ -1,6 +1,7 @@
 import { act, cleanup, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ConnectSlotContext } from '../shell/connect-slot';
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -3600,5 +3601,55 @@ describe('renewed snapshot block and the swap form', () => {
     );
     expect((screen.getByLabelText('Amount') as HTMLInputElement).value).toBe('');
     expect(screen.queryByLabelText('Quote')).toBeNull();
+  });
+});
+
+describe('connect step (agent 410)', () => {
+  const page = (wallet: Devnet4Wallet) => (
+    <MainnetLive
+      network={network}
+      load={async () => ({ status: 'live', deployment })}
+      rpc={fakeChain().rpc}
+      wallet={wallet}
+      planned={PLANNED}
+      now={() => NOW_MS}
+    />
+  );
+  it('a site may place one more way to connect inside the route’s connect step; without one the step is as before', async () => {
+    const { wallet } = fakeWallet(undefined, false);
+    const view = render(page(wallet));
+    await screen.findByRole('table');
+    const step = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-wallet-connect]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(step.textContent).toBe('No browser wallet found.');
+    expect(step.querySelector('button')).toBeNull();
+    view.unmount();
+    render(
+      <ConnectSlotContext.Provider value={<button type="button">Another way in</button>}>
+        {page(wallet)}
+      </ConnectSlotContext.Provider>,
+    );
+    await screen.findByRole('table');
+    const withSlot = await waitFor(() => {
+      const found = document.querySelector<HTMLElement>('[data-wallet-connect]');
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    expect(withSlot.textContent).toBe('No browser wallet found.Another way in');
+    expect(within(withSlot).getByRole('button', { name: 'Another way in' })).toBeTruthy();
+  });
+  it('a connected wallet shows no connect step and no slot', async () => {
+    const { wallet } = fakeWallet();
+    render(
+      <ConnectSlotContext.Provider value={<button type="button">Another way in</button>}>
+        {page(wallet)}
+      </ConnectSlotContext.Provider>,
+    );
+    await screen.findByLabelText('Finalized balances');
+    expect(document.querySelector('[data-wallet-connect]')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Another way in' })).toBeNull();
   });
 });

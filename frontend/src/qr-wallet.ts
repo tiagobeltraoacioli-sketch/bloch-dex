@@ -5,7 +5,11 @@ import {
   DEX_STAGING_CHAIN_HEX as CHAIN_HEX,
   DEX_STAGING_CHAIN_ID,
 } from './network-identity';
-const projectId = 'e263eead656b6d61ecdee75a71e100bb';
+import {
+  REOWN_PROJECT_ID as projectId,
+  exactPermissionList,
+  isRecord,
+} from './walletconnect-shared';
 let client: SignClientType | undefined;
 let appkit: Awaited<ReturnType<typeof createModal>> | undefined;
 const METHODS = ['eth_accounts', 'eth_chainId'];
@@ -17,16 +21,6 @@ type SessionEvent = {
 };
 type Namespace = { accounts?: unknown; chains?: unknown; methods?: unknown; events?: unknown };
 type SessionUpdate = { topic?: unknown; params?: { namespaces?: unknown } };
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-function exactPermissionList(value: unknown, required: string[]) {
-  return (
-    Array.isArray(value) &&
-    value.length === required.length &&
-    new Set(value).size === value.length &&
-    required.every((item) => value.includes(item))
-  );
-}
 export function normalizeWalletNamespace(value: Namespace | undefined) {
   const accounts = value?.accounts,
     chains = value?.chains;

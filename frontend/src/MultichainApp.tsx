@@ -16,6 +16,8 @@ import { NetworkSwitcher } from './shell/NetworkSwitcher';
 import { WalletStatus } from './shell/WalletStatus';
 import { networkEntries } from './shell/networks';
 import { NetworkGlyph } from './marks/NetworkGlyph';
+import { ConnectSlotContext } from './shell/connect-slot';
+import { useMobileWalletConnect } from './multichain/MobileWalletConnect';
 
 const CHAINS = bundledChains();
 /** A pending swap is looked up this often: these chains settle in seconds, the Bloch L2 route's default is 10 s. */
@@ -33,6 +35,9 @@ export const MULTICHAIN_SITE_NAME = 'Bloch DEX';
 /** Shown on every route while no bundled record is of an open pool: the site is published before activation. */
 export const MULTICHAIN_NOT_ACTIVE_BANNER =
   'Bloch DEX is not active yet. No pool is open on any network: nothing can be traded here, and this site sends no transaction.';
+/** The header's "Connect wallet" on a route whose record is not live: said, not silent; nothing is asked or read. */
+export const connectUnavailableNote = (chainName: string) =>
+  `Connecting a wallet becomes available when ${chainName} is live on ${MULTICHAIN_SITE_NAME}. Nothing was asked of any wallet.`;
 export const MULTICHAIN_RENDER_BANNER =
   'Local rehearsal build against loopback forks: not for publication.';
 
@@ -85,6 +90,20 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
       current = false;
     };
   }, [chains]);
+  // The mobile-wallet session is offered the networks whose bundled record is live, and only those: a record goes
+  // live with a new build of the site, which a session (kept in memory) does not outlive anyway.
+  const liveChains = useMemo(
+    () =>
+      chains
+        .filter((c) => live[c.key])
+        .map((c) => ({ chainId: c.network.chainId, name: c.network.chainName })),
+    [chains, live],
+  );
+  const mobile = useMobileWalletConnect({
+    wallet,
+    chains: liveChains,
+    route: { chainId: chain.network.chainId, name: chain.network.chainName },
+  });
   const entries = useMemo(
     () =>
       networkEntries(
@@ -128,9 +147,15 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
             chainId={chain.network.chainId}
             chainName={chain.network.chainName}
             explorerUrl={chain.network.explorerUrl || undefined}
+            unavailable={
+              live[chain.key] === false
+                ? connectUnavailableNote(chain.network.chainName)
+                : undefined
+            }
           />
         </>
       }
+      after={mobile.dialog}
       footer={
         <>
           <span className="footer-status">
@@ -155,17 +180,19 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
           {note}
         </p>
       ))}
-      <MainnetLive
-        key={chain.key}
-        network={chain.network}
-        load={chain.load}
-        rpc={rpc}
-        wallet={wallet}
-        planned={chain.planned}
-        receiptPollMs={RECEIPT_POLL_MS}
-        snapshotMaxAgeMs={SNAPSHOT_MAX_AGE_MS}
-        confirmation={confirmationView}
-      />
+      <ConnectSlotContext.Provider value={mobile.button}>
+        <MainnetLive
+          key={chain.key}
+          network={chain.network}
+          load={chain.load}
+          rpc={rpc}
+          wallet={wallet}
+          planned={chain.planned}
+          receiptPollMs={RECEIPT_POLL_MS}
+          snapshotMaxAgeMs={SNAPSHOT_MAX_AGE_MS}
+          confirmation={confirmationView}
+        />
+      </ConnectSlotContext.Provider>
     </Shell>
   );
 }

@@ -84,6 +84,7 @@ import {
 } from './devnet4/chain';
 import type { DevnetDeployment } from './devnet4/record';
 import type { Devnet4Wallet } from './Devnet4Live';
+import { ConnectSlot } from './shell/connect-slot';
 import {
   addChainParameters,
   DEFAULT_DEADLINE_MINUTES,
@@ -2285,6 +2286,7 @@ function SwapPanel({
               <Wallet size={18} /> Connect {w.name}
             </button>
           ))}
+          <ConnectSlot />
           {wallet.error && <p className="form-error">{wallet.error}</p>}
         </div>
       ) : (

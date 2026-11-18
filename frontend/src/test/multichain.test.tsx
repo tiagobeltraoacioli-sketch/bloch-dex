@@ -1,7 +1,8 @@
 // The multichain site (src/multichain, MultichainApp.tsx): the same route on public EVM chains, by configuration.
 import { act, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MultichainApplication } from '../MultichainApp';
+import { MultichainApplication, connectUnavailableNote } from '../MultichainApp';
 import { decodeFunctionData, encodeFunctionResult, parseAbi, type Hex } from 'viem';
 import { ChainError, readSnapshot, type Rpc } from '../devnet4/chain';
 import { addChainParameters, swapClock } from '../mainnet/config';
@@ -11,6 +12,32 @@ import bundle from '../multichain/bundle';
 import { bundledChains, parseChain, parseRecord } from '../multichain/config';
 import { multichainHeadersFile } from '../multichain/headers';
 import { fallbackRpc } from '../multichain/rpc';
+
+// Agent 410: the mobile-wallet session module and the WalletConnect client are loaded only when the user presses
+// the connect button of a live route. A mock factory runs when its module is first imported: these counters stay
+// at zero on a route that is not live.
+const loaded = vi.hoisted(() => ({ session: 0, client: 0, init: 0 }));
+vi.mock('../multichain/walletconnect', () => {
+  loaded.session++;
+  return {};
+});
+vi.mock('@walletconnect/sign-client', () => {
+  loaded.client++;
+  return { default: { init: () => (loaded.init++, Promise.reject(new Error('not in this test'))) } };
+});
+/** Counts relay (or any other) sockets the page opens. */
+function socketSpy() {
+  const opened: string[] = [];
+  vi.stubGlobal(
+    'WebSocket',
+    class {
+      constructor(url: string) {
+        opened.push(String(url));
+      }
+    },
+  );
+  return opened;
+}
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const entry = (key: string) => {
@@ -46,7 +73,10 @@ function deployedRecord(key: string, over: Record<string, unknown> = {}) {
     ...over,
   };
 }
-afterEach(() => setWording({ ...BLOCH_L2_WORDING }));
+afterEach(() => {
+  setWording({ ...BLOCH_L2_WORDING });
+  vi.unstubAllGlobals();
+});
 
 describe('multichain configuration', () => {
   it('bundles the six chains, none of them the Bloch L2, each with two https endpoints and the fee address', () => {
@@ -310,6 +340,7 @@ describe('multichain headers', () => {
 describe('multichain application', () => {
   it('offers the six networks, shows the selected one as not yet live, and makes no request', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const sockets = socketSpy();
     history.replaceState(null, '', '/#/base');
     render(<MultichainApplication />);
     const nav = screen.getByRole('navigation', { name: 'Networks' });
@@ -340,6 +371,45 @@ describe('multichain application', () => {
     expect(document.body.textContent).toContain('Bloch DEX');
     expect(document.body.textContent!.replaceAll('Bloch DEX', '')).not.toMatch(/Bloch|BLCH|bUSDC/);
     expect(fetchSpy).not.toHaveBeenCalled();
+    // Agent 410: nor is the mobile-wallet path there: no connect step, no session module, no client, no socket.
+    expect(document.querySelector('[data-wallet-connect]')).toBeNull();
+    expect(document.querySelector('[data-mobile-wallet]')).toBeNull();
+    expect(loaded).toEqual({ session: 0, client: 0, init: 0 });
+    expect(sockets).toEqual([]);
+  });
+
+  it('the header "Connect wallet" on a route that is not live says when connecting becomes available, and still asks and loads nothing', async () => {
+    const user = userEvent.setup();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const sockets = socketSpy();
+    const request = vi.fn();
+    window.ethereum = { request };
+    history.replaceState(null, '', '/#/base');
+    render(<MultichainApplication />);
+    await screen.findByTestId('not-active-banner');
+    const region = screen.getByTestId('wallet-unavailable');
+    expect(region.getAttribute('role')).toBe('status');
+    expect(region.textContent).toBe('');
+    await user.click(screen.getByRole('button', { name: 'Connect wallet' }));
+    expect(region.textContent).toBe(
+      'Connecting a wallet becomes available when Base is live on Bloch DEX. Nothing was asked of any wallet.',
+    );
+    expect(region.textContent).toBe(connectUnavailableNote('Base'));
+    // The note is this page's: another network's page starts without it and names its own network.
+    await act(async () => {
+      history.replaceState(null, '', '/#/linea');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(region.textContent).toBe('');
+    await user.click(screen.getByRole('button', { name: 'Connect wallet' }));
+    expect(region.textContent).toBe(connectUnavailableNote('Linea'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.querySelector('[data-mobile-wallet]')).toBeNull();
+    expect(document.body.textContent!.replaceAll('Bloch DEX', '')).not.toMatch(/Bloch|BLCH|bUSDC/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+    expect(loaded).toEqual({ session: 0, client: 0, init: 0 });
+    expect(sockets).toEqual([]);
   });
 
   it('follows the selector: another network is another page with its own words', async () => {

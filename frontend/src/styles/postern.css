@@ -2692,3 +2692,55 @@ li[data-state='failed'] .state-pill {
   display: block;
   margin-top: var(--s-2);
 }
+
+/* Header "Connect wallet" on a page without a connect step (shell/WalletStatus.tsx): the note uses the popover
+   panel; until asked, its live region is in the document and takes no room. */
+.wallet-unavailable-idle {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.wallet-unavailable {
+  margin: 0;
+  padding: var(--s-4);
+  color: var(--text);
+  line-height: 1.5;
+}
+
+/* Mobile-wallet pairing dialog of the multichain site (multichain/MobileWalletConnect.tsx). */
+.mobile-connect {
+  display: grid;
+  gap: var(--s-3);
+}
+.mobile-connect p {
+  margin: 0;
+}
+.mobile-connect .button {
+  margin-top: 0;
+}
+.mobile-connect-links {
+  display: grid;
+  gap: var(--s-2);
+}
+.mobile-connect-code {
+  justify-self: center;
+  width: min(100%, 288px);
+  padding: var(--s-2);
+  border-radius: var(--r-2);
+  /* A QR code is read dark on light, in either theme. */
+  background: #fff;
+  line-height: 0;
+}
+.mobile-connect-code img {
+  display: block;
+  width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+}
+.mobile-connect-copy {
+  justify-content: space-between;
+}
