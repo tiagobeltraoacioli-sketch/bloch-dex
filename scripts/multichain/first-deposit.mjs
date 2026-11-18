@@ -448,8 +448,10 @@ export async function main(argv, print = console.log, toolsCheck = null) {
     result.deadline = deadline.toString();
     if (checks.every((c) => c.ok)) {
       print("");
-      const words = ["no", "one", "two", "three"];
-      print(`Send these ${words[transactions.length]} transactions FROM ${depositor} (the factory's first depositor), exactly as printed, in this order, and send nothing else from that account.`);
+      // Two lines for every token but one whose approve needs zero first: three with an old allowance to clear, one
+      // when the allowance already is the amount.
+      const count = transactions.length === 1 ? "this one transaction" : `these ${["", "", "two", "three"][transactions.length]} transactions`;
+      print(`Send ${count} FROM ${depositor} (the factory's first depositor), exactly as printed${transactions.length > 1 ? ", in this order" : ""}, and send nothing else from that account.`);
       if (zeroFirst && allowance > 0n && allowance !== need)
         print(`${token.symbol} refuses to change an allowance that is not zero into another amount (its approve reverts): the router still holds an allowance of ${amountText(allowance, token)} from an earlier run, so the first line sets it to zero and the second sets the new amount. Wait until each is mined before sending the next.`);
       else if (zeroFirst && allowance === need) print(`The router already holds an allowance of exactly ${amountText(allowance, token)} from an earlier run: no approve is printed (${token.symbol} would refuse a second one), only the deposit.`);
@@ -460,7 +462,7 @@ export async function main(argv, print = console.log, toolsCheck = null) {
       // One or three lines are printed for a token that needs its allowance set to zero first (round 20).
       const batching = transactions.length === 2
         ? `Never import this key into a browser wallet, never accept "switch to smart account", and never send the two as one batched transaction`
-        : `Never import this key into a browser wallet, never accept "switch to smart account", and never send these as one batched transaction`;
+        : `Never import this key into a browser wallet, never accept "switch to smart account", and never send several of these as one batched transaction`;
       print(`Send them with \`cast send\`, one at a time, exactly as printed. ${batching}: a deposit that does not go straight from ${depositor} to the router ${router.address} opens the pool in a way no tool can prove, and that pair is then lost for this factory.`);
       // --chain: the transaction is signed for this chain id only (EIP-155); another chain's node rejects it
       // (review R369-8: cast itself does not compare the id with the RPC URL's chain).
