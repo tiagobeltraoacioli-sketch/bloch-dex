@@ -963,8 +963,12 @@ describe('allowance reset of a token that needs zero first', () => {
 
   it('builds approve(router, 0) for the flagged token only', () => {
     expect(resetAllowanceTransaction(zeroFirst, TOKEN, FROM)).toEqual(reset(zeroFirst, TOKEN));
-    expect(() => resetAllowanceTransaction(zeroFirst, OTHER, FROM)).toThrow(/needs no allowance reset/);
-    expect(() => resetAllowanceTransaction(deployment, TOKEN, FROM)).toThrow(/needs no allowance reset/);
+    expect(() => resetAllowanceTransaction(zeroFirst, OTHER, FROM)).toThrow(
+      /needs no allowance reset/,
+    );
+    expect(() => resetAllowanceTransaction(deployment, TOKEN, FROM)).toThrow(
+      /needs no allowance reset/,
+    );
     // The exact approval is unchanged, and still never zero.
     expect(() => approveTransaction(zeroFirst, TOKEN, FROM, 0n)).toThrow(/Nothing to approve/);
   });
@@ -981,7 +985,9 @@ describe('allowance reset of a token that needs zero first', () => {
       '0',
     ]);
     // The same bytes against a record that does not flag the token: refused, as before round 20.
-    expect(() => transactionForSameNonceReview(intent, 0n, deployment)).toThrow(/allowed transaction/);
+    expect(() => transactionForSameNonceReview(intent, 0n, deployment)).toThrow(
+      /allowed transaction/,
+    );
     // Another token of the flagged record: refused.
     expect(() =>
       transactionForSameNonceReview(intentOf(reset(zeroFirst, OTHER)), 0n, zeroFirst),
@@ -991,7 +997,9 @@ describe('allowance reset of a token that needs zero first', () => {
       ...reset(zeroFirst, TOKEN),
       data: encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [OTHER, 0n] }),
     });
-    expect(() => transactionForSameNonceReview(elsewhere, 0n, zeroFirst)).toThrow(/allowed transaction/);
+    expect(() => transactionForSameNonceReview(elsewhere, 0n, zeroFirst)).toThrow(
+      /allowed transaction/,
+    );
     // An unlimited approval stays refused for the flagged token too.
     const unlimited = intentOf({
       ...reset(zeroFirst, TOKEN),
@@ -1001,6 +1009,8 @@ describe('allowance reset of a token that needs zero first', () => {
         args: [zeroFirst.router, 2n ** 256n - 1n],
       }),
     });
-    expect(() => transactionForSameNonceReview(unlimited, 0n, zeroFirst)).toThrow(/allowed transaction/);
+    expect(() => transactionForSameNonceReview(unlimited, 0n, zeroFirst)).toThrow(
+      /allowed transaction/,
+    );
   });
 });
