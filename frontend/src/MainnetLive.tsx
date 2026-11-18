@@ -71,7 +71,13 @@ import type { ProgressRule } from './ui/confirmation-progress';
 import { quoteRate } from './ui/rate';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from './amm';
-import { approveTransaction, ensureChain, sendTransaction, swapTransaction } from './devnet4/swap';
+import {
+  approveTransaction,
+  ensureChain,
+  resetAllowanceTransaction,
+  sendTransaction,
+  swapTransaction,
+} from './devnet4/swap';
 import {
   quoteExactInput,
   readSnapshot,
@@ -1712,6 +1718,13 @@ function SwapPanel({
       : null;
 
   const needsApproval = !!quote && !!input && !input.native && (allowance ?? 0n) < quote.amountIn;
+  // Round 20: a token whose approve reverts when a non-zero allowance is changed to another non-zero amount
+  // (Tether on Ethereum; the record's `approveZeroFirst`). While an allowance from an earlier quote stands, the
+  // exact approval would revert: the page asks for a reset to zero first, and offers no approval while the
+  // allowance of such a token has not been read.
+  const zeroFirst = !!input && !input.native && input.token.approveZeroFirst === true;
+  const needsReset = needsApproval && zeroFirst && (allowance ?? 0n) > 0n;
+  const allowanceUnread = needsApproval && zeroFirst && allowance === null;
   const balanceIn =
     balances && input
       ? input.native
@@ -2294,10 +2307,32 @@ function SwapPanel({
             {BigInt(wallet.account.chainId).toString()}
             {!onChain && ` (it will be asked to switch to chain ${d.chainId})`}
           </p>
-          {needsApproval && quote && input && (
+          {needsReset && quote && input && (
+            <>
+              <p className="microcopy" data-testid="allowance-reset-note">
+                {input.label} does not let an allowance be changed from one amount to another: the
+                router still holds an allowance of{' '}
+                {formatAmount(allowance ?? 0n, input.token.decimals)} {input.label} from an earlier
+                approval, less than this swap needs. Set it to zero first (one transaction), then
+                approve the exact amount.
+              </p>
+              <button
+                className="button primary"
+                disabled={busy || staleForm || pendingSwap.open}
+                onClick={() =>
+                  void run(`Reset the ${input.label} allowance to zero`, () =>
+                    resetAllowanceTransaction(d, input.token.address, account!),
+                  )
+                }
+              >
+                Reset the {input.label} allowance to zero
+              </button>
+            </>
+          )}
+          {needsApproval && !needsReset && quote && input && (
             <button
               className="button primary"
-              disabled={busy || staleForm || pendingSwap.open}
+              disabled={busy || staleForm || pendingSwap.open || allowanceUnread}
               onClick={() =>
                 void run(
                   `Approve ${formatAmount(quote.amountIn, input.token.decimals)} ${input.label}`,

@@ -24,6 +24,12 @@ export type DevnetToken = {
   /** Optional display name (multichain network files only: "USDC (Binance-Peg)"); never pinned against the chain.
    * Review R344-UI-16. */
   label?: string;
+  /**
+   * Multichain network files only (round 20): the token's `approve` reverts when a non-zero allowance is changed
+   * to another non-zero amount (Tether on Ethereum). The route asks for a reset to zero first, and the same-nonce
+   * review allows an approval of zero for such a token only.
+   */
+  approveZeroFirst?: true;
   cap: bigint;
   wrapped: boolean;
 };

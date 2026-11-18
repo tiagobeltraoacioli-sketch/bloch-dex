@@ -106,6 +106,30 @@ export function approveTransaction(
   };
 }
 
+/**
+ * Set the router's allowance of `token` to zero. Only for a token whose record says `approveZeroFirst` (Tether on
+ * Ethereum: its `approve` reverts when a non-zero allowance is changed to another non-zero amount, so an allowance
+ * left from an earlier quote must be cleared before the exact one is set). Any other token is refused: this page
+ * sends no transaction that does nothing.
+ */
+export function resetAllowanceTransaction(
+  d: DevnetDeployment,
+  token: Address,
+  from: Address,
+): TransactionRequest {
+  refuse(
+    d.tokens.some((t) => t.address === token && t.approveZeroFirst === true),
+    'This token needs no allowance reset.',
+  );
+  return {
+    from,
+    to: token,
+    data: encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [d.router, 0n] }),
+    value: 0n,
+    gas: APPROVE_GAS,
+  };
+}
+
 export function deadlineFrom(nowMs: number, minutes: number = DEFAULT_DEADLINE_MINUTES): bigint {
   return BigInt(Math.floor(nowMs / 1000) + minutes * 60);
 }

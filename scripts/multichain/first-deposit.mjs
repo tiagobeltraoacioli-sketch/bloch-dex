@@ -322,9 +322,10 @@ export async function main(argv, print = console.log, toolsCheck = null) {
   const price = (pool) => (pool.native > 0n ? formatUnits((pool.token * 10n ** 18n) / pool.native, token.decimals) : "?");
   if (o.mode === "prepare") {
     // The opening price is the chain's market price, read here and now, at the same block as everything else and
-    // from the first two reviewed endpoints, which must give the same answers.
+    // from the reviewed endpoints, by the rule of every other state read.
     const rule = openingPriceFor(chain, token);
-    const market = await readMarket({ chain, token, requests: [request, ...others].slice(0, 2), at: head });
+    // Every reviewed endpoint: two must answer each read and all that answer must agree (finding F409-1).
+    const market = await readMarket({ chain, token, requests: [request, ...others], at: head });
     result.market = marketRecord(market);
     for (const r of market.references) print(`     ${r.name}: ${r.problem ?? `1 ${chain.nativeCurrency.symbol} = ${formatUnits(r.price, token.decimals)} ${token.symbol}`}`);
     check(`the chain's market price is established: two independent on-chain references agree within ${rule.referencesAgreeBps / 100}%`, market.ok, market.problems.join("; "));

@@ -42,6 +42,12 @@ export type ChainToken = {
   codeHash: Hex;
   label?: string;
   note?: string;
+  /**
+   * The network file's `approve: "zero-first"` (round 20): the token's `approve` reverts when a non-zero
+   * allowance is changed to another non-zero amount (Tether on Ethereum). The route then asks for a reset to zero
+   * before a new approval.
+   */
+  approveZeroFirst?: true;
 };
 /** The name the page shows for a token. */
 export const shownSymbol = (t: ChainToken): string => t.label ?? t.symbol;
@@ -63,13 +69,22 @@ export type Chain = {
   /** One line per listed token that carries a note (network file `tokens[].note`), shown with the route. */
   tokenNotes: string[];
   planned: { caps: PlannedCap[]; pairs: [string, string][] };
+  /**
+   * Round 20: the planned pairs of a LIVE chain whose opening the record does not prove (the names the page
+   * shows). Such a pair is stated as "not open yet"; its token is not in the route's token list, so the route
+   * shows no price for it and can build no transaction with it. Empty while the chain is not live (the "Not yet
+   * live" view lists the planned pools) and when every planned pair is open.
+   */
+  pendingPairs: [string, string][];
   load: () => Promise<MainnetState>;
 };
 
 function token(value: AnyRecord, field: string): ChainToken {
   refuse(value && ADDRESS.test(value.address ?? ''), `${field}.address`);
+  // The contract's own symbol. Plain letters, digits and dots, and the tugrik sign of "USD₮0" (Arbitrum One's
+  // USDT0 names itself so; round 20). Nothing else: no space, no markup, no look-alike of another script.
   refuse(
-    typeof value.symbol === 'string' && /^[A-Za-z0-9.]{2,12}$/.test(value.symbol),
+    typeof value.symbol === 'string' && /^[A-Za-z0-9.₮]{2,12}$/u.test(value.symbol),
     `${field}.symbol`,
   );
   refuse(HASH.test(value.codeHash ?? ''), `${field}.codeHash`);
@@ -79,7 +94,7 @@ function token(value: AnyRecord, field: string): ChainToken {
   if (value.label !== undefined || value.note !== undefined) {
     refuse(
       typeof value.label === 'string' &&
-        /^[A-Za-z0-9. ()-]{2,24}$/.test(value.label) &&
+        /^[A-Za-z0-9. ()₮-]{2,24}$/u.test(value.label) &&
         value.label.startsWith(value.symbol),
       `${field}.label`,
     );
@@ -93,12 +108,16 @@ function token(value: AnyRecord, field: string): ChainToken {
     shown.label = value.label;
     shown.note = value.note;
   }
+  // Optional; the only value is "zero-first". An unknown value is refused, never ignored: a page that did not
+  // understand how a token's approval works would send approvals that revert.
+  refuse(value.approve === undefined || value.approve === 'zero-first', `${field}.approve`);
   return {
     address: value.address,
     symbol: value.symbol,
     decimals,
     codeHash: value.codeHash,
     ...shown,
+    ...(value.approve === 'zero-first' ? { approveZeroFirst: true as const } : {}),
   };
 }
 
@@ -316,7 +335,7 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     address: n.multicall3.address as Address,
     codeHash: n.multicall3.codeHash as Hex,
   };
-  const chain: Omit<Chain, 'load'> = {
+  const chain: Omit<Chain, 'load' | 'pendingPairs'> = {
     key: n.key,
     network,
     rpcUrls,
@@ -332,13 +351,34 @@ export function parseChain(networkInput: unknown, recordInput: unknown): Chain {
     planned: { caps: [], pairs: tokens.map((t) => [wrapped.symbol, shownSymbol(t)]) },
   };
   const state = parseRecord(recordInput, chain, rehearsal);
-  return { ...chain, load: () => Promise.resolve(state) };
+  return {
+    ...chain,
+    pendingPairs: pendingPairsOf(chain, state),
+    load: () => Promise.resolve(state),
+  };
+}
+
+/**
+ * Round 20: every listed token of a live chain that has no pool in the record, as the pair the page names
+ * ("WETH", "USDT (bridged)"). The record lists a pair only when the post gate proved its opening
+ * (scripts/multichain/frontend-files.mjs), so this is "planned, not open yet"; it also covers a record written
+ * before the token was listed, which does not name the pair at all.
+ */
+export function pendingPairsOf(
+  chain: Pick<Chain, 'wrapped' | 'tokens'>,
+  state: MainnetState,
+): [string, string][] {
+  if (state.status !== 'live') return [];
+  const open = new Set(state.deployment.pairs.flatMap((p) => [p.token0, p.token1]));
+  return chain.tokens
+    .filter((t) => !open.has(t.address))
+    .map((t) => [chain.wrapped.symbol, shownSymbol(t)]);
 }
 
 /** The route state of one chain from its bundled record. */
 export function parseRecord(
   recordInput: unknown,
-  chain: Omit<Chain, 'load'>,
+  chain: Omit<Chain, 'load' | 'pendingPairs'>,
   rehearsal = false,
 ): MainnetState {
   const r = recordInput as AnyRecord;
@@ -404,16 +444,42 @@ export function parseRecord(
       token1: p.token1 as Address,
     };
   });
+  // Round 20: pairs open one at a time. `notOpen` (optional) names the planned pairs whose opening the gate has
+  // not proven; the page takes nothing from it but the certainty that it is well formed and names no listed pair.
+  refuse(r.notOpen === undefined || (Array.isArray(r.notOpen) && r.notOpen.length <= 8), 'notOpen');
+  const notOpen = ((r.notOpen ?? []) as AnyRecord[]).map((p, i) => {
+    refuse(
+      ADDRESS.test(p.address ?? '') &&
+        listed.has(p.token0) &&
+        listed.has(p.token1) &&
+        p.token0 < p.token1 &&
+        ['absent', 'empty', 'donated'].includes(p.state),
+      `notOpen[${i}] names a token that is not listed, is not sorted, or has an unknown state`,
+    );
+    return p.address as Address;
+  });
+  refuse(
+    new Set([...pairs.map((p) => p.address), ...notOpen]).size === pairs.length + notOpen.length,
+    'a pair is recorded twice, or both as open and as not open',
+  );
+  // The route's tokens are the wrapped native token and the tokens of the recorded (open, proven) pairs. A listed
+  // token without such a pair is NOT handed to the route: it cannot be selected, quoted or approved, and no saved
+  // call that names it passes the same-nonce review (mainnet/submission-review.ts checks the deployment's tokens).
+  const inPairs = new Set(pairs.flatMap((p) => [p.token0, p.token1]));
+  const routed = [...listed.values()].filter(
+    (t) => t.address === chain.wrapped.address || inPairs.has(t.address),
+  );
   const codeHashes: Record<Address, Hex> = {
     [factory.address]: factory.codeHash,
     [router.address]: router.codeHash,
     [lens.address]: lens.codeHash,
     [chain.multicall3.address]: chain.multicall3.codeHash,
   };
-  for (const t of listed.values()) codeHashes[t.address] = t.codeHash;
+  for (const t of routed) codeHashes[t.address] = t.codeHash;
   for (const p of pairs) codeHashes[p.address] = r.pairCodeHash;
   refuse(
-    Object.keys(codeHashes).length === 4 + listed.size + pairs.length,
+    Object.keys(codeHashes).length === 4 + routed.length + pairs.length &&
+      notOpen.every((a) => codeHashes[a] === undefined && !listed.has(a)),
     'two contracts share an address',
   );
   const deployment: DevnetDeployment = {
@@ -428,12 +494,13 @@ export function parseRecord(
     wrapped: chain.wrapped.address,
     feeTo: chain.feeTo,
     codeHashes,
-    tokens: [...listed.values()].map((t) => ({
+    tokens: routed.map((t) => ({
       address: t.address,
       // Review R344-UI-16: `symbol` stays the contract's own (readSnapshot pins it against the chain); the label,
       // where the network file gives one, travels separately and is what the route shows.
       symbol: t.symbol,
       ...(t.label ? { label: t.label } : {}),
+      ...(t.approveZeroFirst ? { approveZeroFirst: true as const } : {}),
       cap: caps.get(t.address) ?? 0n,
       wrapped: t.address === chain.wrapped.address,
     })),

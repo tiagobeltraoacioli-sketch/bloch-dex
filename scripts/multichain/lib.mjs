@@ -79,14 +79,28 @@ export function checksummed(value, field) {
 /**
  * A public endpoint that fails once (a dropped connection, a rate limit) is asked again, twice, with a pause: a
  * refused request is not the chain's answer. An execution error (a revert) is, and is returned at once.
+ * Round 20 (finding F409-1): an endpoint that refuses a METHOD by policy (HTTP 401 or 403: BNB Smart Chain's second
+ * reviewed endpoint stopped serving eth_call to anonymous callers) refused it on all three tries of one call; the
+ * next calls of that method are then asked ONCE each, without the pauses, until one is answered. Every call still
+ * asks the endpoint (a recovered endpoint is used again at once); what is saved is 4.5 s of waiting per read, which
+ * on such a chain made `prepare` run for minutes of its 20-minute deposit window.
  */
 export function retrying(request, { tries = 3, delayMs = 1500 } = {}) {
+  const refusedByPolicy = new Set();
   return async (method, params) => {
+    const limit = refusedByPolicy.has(method) ? 1 : tries;
     for (let attempt = 1; ; attempt++) {
       try {
-        return await request(method, params);
+        const value = await request(method, params);
+        refusedByPolicy.delete(method);
+        return value;
       } catch (error) {
-        if (attempt >= tries || /execution reverted|revert/i.test(String(error?.message ?? error))) throw error;
+        const text = String(error?.message ?? error);
+        if (/execution reverted|revert/i.test(text)) throw error;
+        if (attempt >= limit) {
+          if (/\bHTTP 40[13]\b/.test(text)) refusedByPolicy.add(method);
+          throw error;
+        }
         await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
       }
     }

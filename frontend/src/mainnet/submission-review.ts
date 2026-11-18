@@ -5,6 +5,7 @@ import { ERC20_ABI } from '../devnet4/chain';
 import type { DevnetDeployment } from '../devnet4/record';
 import {
   approveTransaction,
+  resetAllowanceTransaction,
   ROUTER_ABI,
   swapTransaction,
   type TransactionRequest,
@@ -36,10 +37,18 @@ export function transactionForSameNonceReview(
     const call = decodeFunctionData({ abi: ERC20_ABI, data: intent.data });
     requireCall(call.functionName === 'approve');
     const [spender, amount] = call.args;
+    // Round 20: an approval of zero is the allowance reset of a token whose record says `approveZeroFirst`
+    // (Tether on Ethereum), and of no other token. Every other approval is an exact, non-zero, bounded amount.
+    const reset =
+      amount === 0n &&
+      deployment.tokens.some((token) => token.address === intent.to && token.approveZeroFirst);
     requireCall(
-      spender.toLowerCase() === deployment.router && amount > 0n && amount < 2n ** 256n - 1n,
+      spender.toLowerCase() === deployment.router &&
+        (reset || (amount > 0n && amount < 2n ** 256n - 1n)),
     );
-    expected = approveTransaction(deployment, intent.to, from, amount);
+    expected = reset
+      ? resetAllowanceTransaction(deployment, intent.to, from)
+      : approveTransaction(deployment, intent.to, from, amount);
   } else if (intent.kind === 'skim') {
     requireCall(deadline === 0n && deployment.pairs.some((pair) => pair.address === intent.to));
     expected = skimTransaction(intent.to, from);

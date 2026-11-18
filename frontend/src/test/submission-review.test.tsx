@@ -5,6 +5,7 @@ import { ERC20_ABI, type Rpc } from '../devnet4/chain';
 import type { DevnetDeployment } from '../devnet4/record';
 import {
   approveTransaction,
+  resetAllowanceTransaction,
   ROUTER_ABI,
   swapTransaction,
   type TransactionRequest,
@@ -939,5 +940,67 @@ describe('explicit local closure after a finalized replacement', () => {
     });
     expect(stored()?.hash).toBe(TWO);
     expect(f.provider.request).not.toHaveBeenCalled();
+  });
+});
+
+// Round 20 (agent 409): Tether's contract on Ethereum reverts when a non-zero allowance is changed to another
+// non-zero amount. The page resets the allowance to zero first. An approval of zero is allowed for a token whose
+// record says `approveZeroFirst`, and for no other token.
+describe('allowance reset of a token that needs zero first', () => {
+  const zeroFirst: DevnetDeployment = {
+    ...deployment,
+    tokens: deployment.tokens.map((t) =>
+      t.address === TOKEN ? { ...t, approveZeroFirst: true as const } : t,
+    ),
+  };
+  const reset = (d: DevnetDeployment, token: Address): TransactionRequest => ({
+    from: FROM,
+    to: token,
+    data: encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [d.router, 0n] }),
+    value: 0n,
+    gas: 100_000n,
+  });
+
+  it('builds approve(router, 0) for the flagged token only', () => {
+    expect(resetAllowanceTransaction(zeroFirst, TOKEN, FROM)).toEqual(reset(zeroFirst, TOKEN));
+    expect(() => resetAllowanceTransaction(zeroFirst, OTHER, FROM)).toThrow(/needs no allowance reset/);
+    expect(() => resetAllowanceTransaction(deployment, TOKEN, FROM)).toThrow(/needs no allowance reset/);
+    // The exact approval is unchanged, and still never zero.
+    expect(() => approveTransaction(zeroFirst, TOKEN, FROM, 0n)).toThrow(/Nothing to approve/);
+  });
+
+  it('the same-nonce review rebuilds the reset for the flagged token and refuses a zero approval of any other', () => {
+    const intent = intentOf(reset(zeroFirst, TOKEN));
+    expect(transactionForSameNonceReview(intent, 0n, zeroFirst)).toEqual({
+      ...reset(zeroFirst, TOKEN),
+      chainId: zeroFirst.chainId,
+      nonce: 4n,
+    });
+    expect(sameNonceReviewDetails(intent, 0n, zeroFirst)).toContainEqual([
+      'Exact allowance (base units)',
+      '0',
+    ]);
+    // The same bytes against a record that does not flag the token: refused, as before round 20.
+    expect(() => transactionForSameNonceReview(intent, 0n, deployment)).toThrow(/allowed transaction/);
+    // Another token of the flagged record: refused.
+    expect(() =>
+      transactionForSameNonceReview(intentOf(reset(zeroFirst, OTHER)), 0n, zeroFirst),
+    ).toThrow(/allowed transaction/);
+    // A reset to another spender, or with a value, is not the reset.
+    const elsewhere = intentOf({
+      ...reset(zeroFirst, TOKEN),
+      data: encodeFunctionData({ abi: ERC20_ABI, functionName: 'approve', args: [OTHER, 0n] }),
+    });
+    expect(() => transactionForSameNonceReview(elsewhere, 0n, zeroFirst)).toThrow(/allowed transaction/);
+    // An unlimited approval stays refused for the flagged token too.
+    const unlimited = intentOf({
+      ...reset(zeroFirst, TOKEN),
+      data: encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: 'approve',
+        args: [zeroFirst.router, 2n ** 256n - 1n],
+      }),
+    });
+    expect(() => transactionForSameNonceReview(unlimited, 0n, zeroFirst)).toThrow(/allowed transaction/);
   });
 });

@@ -19,8 +19,13 @@
 //              pool of the wrapped native token and the listed token (`observe`): a price that one transaction,
 //              or one block, cannot set. The pool must be the one its publisher's factory names for the two tokens
 //              and the fee tier, and must hold liquidity.
-// Every read is pinned to ONE block hash and asked of every endpoint given (the two reviewed endpoints); an answer
-// counts only when all give the same bytes. The two references must agree with each other within
+// Every read is pinned to ONE block hash and asked of every endpoint given (the chain's reviewed endpoints); an
+// answer counts only when at least two endpoints answered and every endpoint that answered gave the same bytes
+// (lib.mjs `pinnedStateReader`, the rule of review R369-1 that the gate and the deposit tool already use for every
+// state read; round 20, finding F409-1: before, the FIRST TWO endpoints were asked and both had to answer, so a
+// chain whose second endpoint stopped serving eth_call to anonymous callers, as BNB Smart Chain's did, had no
+// market price at all, although two other reviewed endpoints agreed). One endpoint's word is never a price; an
+// endpoint that answers differently is a disagreement and there is no price. The two references must agree with each other within
 // `referencesAgreeBps`; when they do not (a feed that lags a fast move, a pool being pushed, a token that left its
 // peg), there is no market price and the caller refuses. The market price is the mean of the two.
 //
@@ -28,7 +33,7 @@
 import { createRequire } from "node:module";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
-import { EMPTY_CODE_HASH, MultichainError, loadChain, loadShared, lower, openingPriceFor, refuse, retrying } from "./lib.mjs";
+import { EMPTY_CODE_HASH, MultichainError, loadChain, loadShared, lower, openingPriceFor, pinnedStateReader, refuse, retrying } from "./lib.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, parseUnits, formatUnits } = requireFromFrontend("viem");
@@ -106,11 +111,8 @@ export async function readMarket({ chain, token, requests, at }) {
   const problems = [];
   const pin = { blockHash: at.hash, requireCanonical: true };
   const now = BigInt(at.timestamp);
-  const agreed = async (method, params) => {
-    const answers = await Promise.all(requests.map((r) => r(method, params)));
-    refuse(answers.every((a) => JSON.stringify(a) === JSON.stringify(answers[0])), `the endpoints give different answers to ${method} at the pinned block`);
-    return answers[0];
-  };
+  // Two endpoints must answer (one in a loopback rehearsal, where one is given) and all that answer must agree.
+  const agreed = pinnedStateReader(requests, at.hash);
   const call = async (to, functionName, args = []) => decodeFunctionResult({ abi: ABI, functionName, data: await agreed("eth_call", [{ to, data: encodeFunctionData({ abi: ABI, functionName, args }) }, pin]) });
   const codeHash = async (address) => {
     const code = await agreed("eth_getCode", [address, pin]);
@@ -219,8 +221,9 @@ export async function main(argv, print = console.log) {
   const chain = loadChain(key);
   const pairName = o.pair ?? `${chain.initialPairs[0].tokenA}/${chain.initialPairs[0].tokenB}`;
   const token = listedTokenOf(chain, pairName);
-  // The first two reviewed endpoints (Linea lists three and Arbitrum One and BNB Smart Chain four, for the page).
-  const requests = (o.rehearsal ? [o.rpc] : chain.rpc.slice(0, 2)).map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
+  // Every reviewed endpoint (two on OP Mainnet, Base and Ethereum, three on Linea, four on Arbitrum One and BNB
+  // Smart Chain): two must answer each read and all that answer must agree (finding F409-1).
+  const requests = (o.rehearsal ? [o.rpc] : chain.rpc).map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
   const at = await pinnedBlock(requests);
   const market = await readMarket({ chain, token, requests, at });
   const coin = chain.nativeCurrency.symbol;
@@ -233,7 +236,7 @@ export async function main(argv, print = console.log) {
   }
   if (o.json) print(JSON.stringify(result, null, 2));
   else {
-    print(`${chain.chain.name}, block ${market.block.number} (${at.hash}), read from ${requests.length} endpoint${requests.length === 1 ? "" : "s"} that gave the same answers`);
+    print(`${chain.chain.name}, block ${market.block.number} (${at.hash}), read from ${requests.length} endpoint${requests.length === 1 ? "" : `s: an answer counts when two answered and all that answered agree`}`);
     for (const r of market.references) print(`${r.problem ? "FAIL" : "ok  "} ${r.name}: ${r.problem ?? `1 ${coin} = ${text(r.price)}  ${JSON.stringify(r.detail)}`}`);
     if (market.ok) {
       print(`market: 1 ${coin} = ${text(market.market)} (the two references are ${(market.spreadBps / 100).toFixed(2)}% apart; they must agree within ${market.referencesAgreeBps / 100}%)`);

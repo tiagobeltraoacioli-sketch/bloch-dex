@@ -71,10 +71,10 @@
         "transferFee": null,
         "switches": [],
         "blocklist": "isBlocked",
-        "issuerPowers": "An upgradeable proxy (admin 0x553ec478A66Be27BA25a6BC5DB20aeC2ED6A1b4A when read): its code can be replaced, which the pinned hash of the proxy does not show. The owner (the Safe 0x4DFF9b5b0143E642a3F63a5bcf2d1C328e600bf8 of the publisher's list) can block an address and destroy its balance; the OFT contract mints and burns. Its value rests on the USDT locked on Ethereum and on the cross-chain messaging.",
+        "issuerPowers": "An upgradeable proxy (admin 0x553ec478A66BE27Ba25A6bc5dB20AEc2eD6A1B4A when read): its code can be replaced, which the pinned hash of the proxy does not show. The owner (the Safe 0x4DFF9b5b0143E642a3F63a5bcf2d1C328e600bf8 of the publisher's list) can block an address and destroy its balance; the OFT contract mints and burns. Its value rests on the USDT locked on Ethereum and on the cross-chain messaging.",
         "checked": {
           "at": "2026-11-18",
-          "how": "the functions the implementation (0x3263CD783823D04a6B9819517E0e6840d37CA3f4, code 0x1d4c20a1a19a0e182c0d2bffbe433a96bd70a1dbb383b7a2d293976df4042279) dispatches on (PUSH4 scan: isBlocked, addToBlockedList, destroyBlockedFunds, mint, burn, oftContract; no pause and no fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
+          "how": "the functions the implementation (0x3263CD783823d04a6B9819517E0E6840d37cA3F4, code 0x1d4c20a1a19a0e182c0d2bffbe433a96bd70a1dbb383b7a2d293976df4042279) dispatches on (PUSH4 scan: isBlocked, addToBlockedList, destroyBlockedFunds, mint, burn, oftContract; no pause and no fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
         }
       }
     }

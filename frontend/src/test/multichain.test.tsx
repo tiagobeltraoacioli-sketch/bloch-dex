@@ -47,6 +47,15 @@ function deployedRecord(key: string, over: Record<string, unknown> = {}) {
   };
 }
 afterEach(() => setWording({ ...BLOCH_L2_WORDING }));
+/** The reviewed token list of each chain, by the contract's own symbol (round 20). */
+const LISTED: Record<string, string[]> = {
+  ethereum: ['USDC', 'USDT'],
+  base: ['USDC'],
+  'arbitrum-one': ['USDC', 'USD₮0'],
+  'op-mainnet': ['USDC', 'USDT'],
+  linea: ['USDC'],
+  'bnb-smart-chain': ['USDC', 'USDT'],
+};
 
 describe('multichain configuration', () => {
   it('bundles the six chains, none of them the Bloch L2, each with two https endpoints and the fee address', () => {
@@ -68,7 +77,11 @@ describe('multichain configuration', () => {
       expect(c.network.newSlotFee.enabled).toBe(false);
       expect(c.network.noIdleHeartbeat).toBe(true);
       expect(c.wording.quiet).toBe('stale-rpc');
-      expect(c.tokens.map((t) => t.symbol)).toEqual(['USDC']);
+      // Restated in round 20 (agent 409): every chain listed exactly ['USDC']. The property kept: the token list
+      // is exactly the reviewed one, by the contracts' own symbols (Arbitrum One's second token names itself
+      // "USD₮0"), and USDC is first on every chain.
+      expect(c.tokens.map((t) => t.symbol)).toEqual(LISTED[c.key]);
+      expect(c.tokens[0].symbol).toBe('USDC');
     }
     expect(chains.find((c) => c.key === 'bnb-smart-chain')!.wording.native).toBe('BNB');
     expect(chains.find((c) => c.key === 'bnb-smart-chain')!.tokens[0].decimals).toBe(18);
@@ -143,21 +156,49 @@ describe('multichain configuration', () => {
       'USDC (Binance-Peg)',
       18,
     ]);
+    // Restated in round 20: the chain now lists a second Binance-Peg token; the first note and the first pair
+    // are the ones this test always pinned, and the second token is never shown as plain USDT either.
     expect(chain.tokenNotes).toEqual([
       'USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.',
+      'USDT (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Tether, and has 18 decimals.',
     ]);
-    expect(chain.planned.pairs).toEqual([['WBNB', 'USDC (Binance-Peg)']]);
+    expect(chain.planned.pairs).toEqual([
+      ['WBNB', 'USDC (Binance-Peg)'],
+      ['WBNB', 'USDT (Binance-Peg)'],
+    ]);
+    expect([chain.tokens[1].symbol, chain.tokens[1].label, chain.tokens[1].decimals]).toEqual([
+      'USDT',
+      'USDT (Binance-Peg)',
+      18,
+    ]);
     const state = parseRecord(deployedRecord('bnb-smart-chain'), chain);
     if (state.status !== 'live') throw new Error('expected a live state');
     // Review R344-UI-16: the deployment keeps the contract's own symbol (what readSnapshot pins against the
     // chain) and carries the label separately; the label is what the route shows.
     expect(state.deployment.tokens.map((t) => t.symbol)).toEqual(['WBNB', 'USDC']);
     expect(state.deployment.tokens.map((t) => t.label)).toEqual([undefined, 'USDC (Binance-Peg)']);
+    // Restated in round 20: "no other chain has a label" was true of USDC and still is; the second token of a
+    // chain carries a label wherever its bare symbol would say more than is true, and only there.
     for (const c of bundledChains().filter((x) => x.key !== 'bnb-smart-chain')) {
       expect(c.tokens[0].label).toBeUndefined();
-      expect(c.tokenNotes).toEqual([]);
+      expect(c.tokens[0].note).toBeUndefined();
       expect(c.planned.pairs[0][1]).toBe('USDC');
     }
+    const shown = Object.fromEntries(
+      bundledChains().map((c) => [c.key, c.tokens.map((t) => t.label ?? t.symbol)]),
+    );
+    expect(shown).toEqual({
+      ethereum: ['USDC', 'USDT'],
+      base: ['USDC'],
+      'arbitrum-one': ['USDC', 'USD₮0'],
+      'op-mainnet': ['USDC', 'USDT (bridged)'],
+      linea: ['USDC'],
+      'bnb-smart-chain': ['USDC (Binance-Peg)', 'USDT (Binance-Peg)'],
+    });
+    // Only Tether's own contract on Ethereum is shown as plain "USDT"; every other USDT carries a note.
+    for (const c of bundledChains())
+      for (const t of c.tokens.slice(1))
+        expect(t.note === undefined).toBe(c.key === 'ethereum');
     // A label goes with a note and begins with the contract's own symbol.
     const bad = clone(e) as unknown as { network: { tokens: { label?: string; note?: string }[] }; record: unknown };
     bad.network.tokens[0].label = 'Dollar';
@@ -345,13 +386,17 @@ describe('multichain application', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
       'PosternDEX on BNB Smart Chain',
     );
+    // Restated in round 20: the chain plans a second pool, so the sentence names both and two notes are shown.
     expect((await screen.findByLabelText('Not yet live')).textContent).toContain(
-      'Pools: WBNB/USDC (Binance-Peg).',
+      'Pools: WBNB/USDC (Binance-Peg), WBNB/USDT (Binance-Peg).',
     );
-    // The token's note is on screen with the route: this "USDC" is not Circle's.
-    expect(screen.getByTestId('token-note').textContent).toBe(
+    // The tokens' notes are on screen with the route: this "USDC" is not Circle's, this "USDT" not Tether's.
+    expect(screen.getAllByTestId('token-note').map((n) => n.textContent)).toEqual([
       'USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.',
-    );
+      'USDT (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Tether, and has 18 decimals.',
+    ]);
+    // A chain that is not live names no pair as "not open yet": the planned pools are in the panel above.
+    expect(screen.queryByTestId('pairs-not-open')).toBeNull();
     expect(document.title).toBe('PosternDEX — BNB Smart Chain');
     // An unknown key shows the first network.
     await act(async () => {
@@ -359,5 +404,99 @@ describe('multichain application', () => {
       window.dispatchEvent(new HashChangeEvent('hashchange'));
     });
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('PosternDEX on Ethereum');
+  });
+});
+
+// Round 20 (agent 409): a second listed token per chain. Pairs open one at a time; a token whose pool is not
+// proven open is not handed to the route; Tether's approve on Ethereum needs a reset to zero.
+describe('multichain: a second token, pairs opening one at a time', () => {
+  const second = (key: string) => entry(key).network.tokens[1].address as `0x${string}`;
+  const pairOf = (key: string, index: number, address: string) => {
+    const { network } = entry(key);
+    const [token0, token1] = [network.wrappedNative.address, network.tokens[index].address].sort();
+    return { address, token0, token1 };
+  };
+
+  it('a chain live with its first pool stays live while the second is not open: the second token is not in the route, and the pair is named as not open', () => {
+    for (const key of ['ethereum', 'op-mainnet', 'arbitrum-one', 'bnb-smart-chain']) {
+      const e = entry(key);
+      // The record as it stands after the first pool only, with and without the `notOpen` entry.
+      for (const over of [{}, { notOpen: [{ ...pairOf(key, 1, a(0xf5)), state: 'absent' }] }]) {
+        const chain = parseChain(e.network, deployedRecord(key, over));
+        const state = parseRecord(deployedRecord(key, over), chain);
+        if (state.status !== 'live') throw new Error('expected a live state');
+        const d = state.deployment;
+        expect(d.tokens.map((t) => t.address)).toEqual([e.network.wrappedNative.address, e.network.tokens[0].address]);
+        expect(d.pairs).toHaveLength(1);
+        // No pin of the unopened token is read, and no saved call naming it can pass review.
+        expect(d.codeHashes[second(key)]).toBeUndefined();
+        expect(Object.keys(d.codeHashes)).toHaveLength(7);
+        expect(chain.pendingPairs).toEqual([[chain.wrapped.symbol, chain.tokens[1].label ?? chain.tokens[1].symbol]]);
+      }
+    }
+    expect(parseChain(entry('ethereum').network, deployedRecord('ethereum')).pendingPairs).toEqual([['WETH', 'USDT']]);
+    expect(parseChain(entry('arbitrum-one').network, deployedRecord('arbitrum-one')).pendingPairs).toEqual([['WETH', 'USD₮0']]);
+    expect(parseChain(entry('op-mainnet').network, deployedRecord('op-mainnet')).pendingPairs).toEqual([['WETH', 'USDT (bridged)']]);
+    expect(parseChain(entry('bnb-smart-chain').network, deployedRecord('bnb-smart-chain')).pendingPairs).toEqual([['WBNB', 'USDT (Binance-Peg)']]);
+    // A chain with one listed token, or one that is not deployed, names nothing as pending.
+    expect(parseChain(entry('base').network, deployedRecord('base')).pendingPairs).toEqual([]);
+    expect(parseChain(entry('ethereum').network, entry('ethereum').record).pendingPairs).toEqual([]);
+  });
+
+  it('once the record lists the second pair, its token joins the route with its own code hash and nothing is pending', () => {
+    const e = entry('ethereum');
+    const record = deployedRecord('ethereum', { pairs: [pairOf('ethereum', 0, a(0xf4)), pairOf('ethereum', 1, a(0xf5))] });
+    const chain = parseChain(e.network, record);
+    const state = parseRecord(record, chain);
+    if (state.status !== 'live') throw new Error('expected a live state');
+    expect(state.deployment.tokens.map((t) => t.symbol)).toEqual(['WETH', 'USDC', 'USDT']);
+    expect(state.deployment.codeHashes[second('ethereum')]).toBe(e.network.tokens[1].codeHash);
+    expect(Object.keys(state.deployment.codeHashes)).toHaveLength(9);
+    expect(chain.pendingPairs).toEqual([]);
+    // Only Tether's contract on Ethereum needs its allowance reset; the network file says so and nothing else does.
+    expect(state.deployment.tokens.map((t) => t.approveZeroFirst)).toEqual([undefined, undefined, true]);
+    for (const c of bundledChains())
+      for (const t of c.tokens)
+        expect(t.approveZeroFirst === true).toBe(c.key === 'ethereum' && t.symbol === 'USDT');
+  });
+
+  it('refuses a record whose notOpen entry is malformed, names an open pair, or collides with a contract; and an unknown approve mode', () => {
+    const e = entry('ethereum');
+    const chain = parseChain(e.network, e.record);
+    const bad = (over: Record<string, unknown>, message: RegExp) =>
+      expect(() => parseRecord(deployedRecord('ethereum', over), chain)).toThrow(message);
+    const pending = { ...pairOf('ethereum', 1, a(0xf5)), state: 'absent' };
+    expect(parseRecord(deployedRecord('ethereum', { notOpen: [pending] }), chain).status).toBe('live');
+    bad({ notOpen: 'none' }, /notOpen/);
+    bad({ notOpen: [{ ...pending, state: 'open' }] }, /unknown state/);
+    bad({ notOpen: [{ ...pending, token1: a(0xbad) }] }, /not listed/);
+    bad({ notOpen: [{ ...pending, token0: pending.token1, token1: pending.token0 }] }, /not sorted/);
+    bad({ notOpen: [{ ...pending, address: a(0xf4) }] }, /both as open and as not open/);
+    bad({ notOpen: [pending, pending] }, /recorded twice/);
+    bad({ notOpen: [{ ...pending, address: a(0xf2) }] }, /share an address/);
+    const odd = clone(e);
+    odd.network.tokens[1].approve = 'unlimited';
+    expect(() => parseChain(odd.network, odd.record)).toThrow(/approve/);
+    // A symbol with anything but letters, digits, a dot or the tugrik sign of "USD₮0" is refused.
+    for (const symbol of ['USD T', 'USD<0', 'USDТ']) {
+      const other = clone(entry('arbitrum-one'));
+      other.network.tokens[1].symbol = symbol;
+      other.network.tokens[1].label = symbol;
+      expect(() => parseChain(other.network, other.record)).toThrow(/symbol/);
+    }
+  });
+
+  it('the page names the unopened pair, shows no price for it and offers nothing to send', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('no network in this test'));
+    const e = entry('op-mainnet');
+    const chains = [parseChain(e.network, deployedRecord('op-mainnet'))];
+    history.replaceState(null, '', '/#/op-mainnet');
+    render(<MultichainApplication chains={chains} />);
+    const notice = await screen.findByTestId('pairs-not-open');
+    expect(notice.textContent).toBe(
+      'Not open yet on OP Mainnet: WETH/USDT (bridged). This page lists a pool only after its opening has been verified, and sends no transaction for a pair that is not listed.',
+    );
+    expect(screen.queryByRole('button', { name: /Approve|Swap|Reset/ })).toBeNull();
+    fetchSpy.mockRestore();
   });
 });

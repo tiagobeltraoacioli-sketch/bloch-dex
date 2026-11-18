@@ -3602,3 +3602,104 @@ describe('renewed snapshot block and the swap form', () => {
     expect(screen.queryByLabelText('Quote')).toBeNull();
   });
 });
+
+// Round 20 (agent 409): a token whose approve reverts when a non-zero allowance is changed to another non-zero
+// amount (Tether's contract on Ethereum; the record's `approveZeroFirst`). With an allowance left from an earlier
+// quote the exact approval would revert in the user's wallet, so the route first asks for a reset to zero.
+describe('allowance reset for a token that needs zero first', () => {
+  const zeroFirst = (): typeof deployment => ({
+    ...deployment,
+    tokens: deployment.tokens.map((t) =>
+      t.address === BUSDC ? { ...t, approveZeroFirst: true as const } : t,
+    ),
+  });
+  const open = async (d: typeof deployment, allowance: bigint) => {
+    const { rpc, state } = fakeChain({ allowance });
+    const user = userEvent.setup();
+    const { wallet, requests } = fakeWallet(state);
+    // The fake wallet models "the finalized block lags" by zeroing the allowance on every send to the token; here
+    // the allowance must stand until the reset is mined, so it is restored after the send and the receipt (which
+    // carries the approve's own amount) decides.
+    const provider = wallet.provider!;
+    const keeping = {
+      ...wallet,
+      provider: {
+        ...provider,
+        request: async (args: { method: string; params?: unknown[] }) => {
+          const before = state.allowance;
+          const result = await provider.request(args as never);
+          if (args.method === 'eth_sendTransaction') state.allowance = before;
+          return result;
+        },
+      },
+    } as typeof wallet;
+    render(
+      <MainnetLive
+        network={network}
+        load={async () => ({ status: 'live', deployment: d })}
+        rpc={rpc}
+        wallet={keeping}
+        planned={PLANNED}
+        now={() => NOW_MS}
+        receiptPollMs={5}
+      />,
+    );
+    await screen.findByRole('table');
+    await screen.findByLabelText('Finalized balances');
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+    const sends = () => requests.filter((r) => r.method === 'eth_sendTransaction');
+    return { user, sends, state };
+  };
+  const sentApproval = (request: { params?: unknown[] }) => {
+    const tx = request.params![0] as { to: Address; data: Hex };
+    const [spender, amount] = decodeFunctionData({ abi: ERC20_ABI, data: tx.data }).args as [
+      Address,
+      bigint,
+    ];
+    return [tx.to, spender.toLowerCase(), amount.toString()];
+  };
+
+  it('with a non-zero allowance below the amount it offers the reset, not an approval that would revert; then the exact approval', async () => {
+    const { user, sends } = await open(zeroFirst(), 400_000n);
+    const reset = await screen.findByRole('button', { name: 'Reset the bUSDC allowance to zero' });
+    expect(screen.queryByRole('button', { name: /^Approve/ })).toBeNull();
+    expect(screen.getByTestId('allowance-reset-note').textContent).toContain(
+      'the router still holds an allowance of 0.4 bUSDC from an earlier approval',
+    );
+    expect((screen.getByRole('button', { name: 'Swap' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(reset);
+    await waitFor(() => expect(sends()).toHaveLength(1));
+    expect(sentApproval(sends()[0])).toEqual([BUSDC, ROUTER, '0']);
+    // The settled reset refreshes the snapshot and the form, as every settled approval does. With the next
+    // quote the allowance reads zero: the exact approval is offered, the reset is not.
+    await screen.findByText(/Pools at finalized block 442/);
+    await user.selectOptions(screen.getByLabelText('You pay'), 'bUSDC');
+    await user.selectOptions(screen.getByLabelText('You receive'), 'BLCH');
+    await user.type(screen.getByLabelText('Amount'), '1');
+    await user.click(screen.getByRole('button', { name: 'Get quote' }));
+    await screen.findByLabelText('Quote');
+    const approve = await screen.findByRole('button', { name: 'Approve 1 bUSDC' });
+    expect(screen.queryByRole('button', { name: /Reset the bUSDC allowance/ })).toBeNull();
+    await user.click(approve);
+    await waitFor(() => expect(sends()).toHaveLength(2));
+    expect(sentApproval(sends()[1])).toEqual([BUSDC, ROUTER, '1000000']);
+  });
+
+  it('with no allowance it approves at once, and a token that is not flagged never sees the reset', async () => {
+    const first = await open(zeroFirst(), 0n);
+    await screen.findByRole('button', { name: 'Approve 1 bUSDC' });
+    expect(screen.queryByRole('button', { name: /Reset the bUSDC allowance/ })).toBeNull();
+    expect(first.sends()).toHaveLength(0);
+    cleanup();
+    localStorage.clear();
+    // The same stale allowance on a token without the flag: the plain exact approval, as before round 20.
+    await open(deployment, 400_000n);
+    await screen.findByRole('button', { name: 'Approve 1 bUSDC' });
+    expect(screen.queryByRole('button', { name: /Reset the bUSDC allowance/ })).toBeNull();
+    expect(screen.queryByTestId('allowance-reset-note')).toBeNull();
+  });
+});

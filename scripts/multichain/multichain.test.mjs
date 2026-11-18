@@ -158,10 +158,17 @@ test("the committed gate configuration of each chain is the generated one", () =
   }
 });
 
-test("each chain lists two https endpoints, the wrapped native token and one token, each with a source", () => {
+// Restated in round 20 (agent 409): until then every chain listed exactly one token (`tokens.length === 1`). The
+// property kept: the token list of each chain is EXACTLY the reviewed one, now stated by name (USDC everywhere;
+// a second token on the four chains where its address and two price references could be proven), and every listed
+// token still carries its source, as before.
+const LISTED = { "op-mainnet": ["USDC", "USDT"], base: ["USDC"], "arbitrum-one": ["USDC", "USDT0"], linea: ["USDC"], "bnb-smart-chain": ["USDC", "USDT"], ethereum: ["USDC", "USDT"] };
+test("each chain lists two https endpoints, the wrapped native token and its reviewed tokens, each with a source", () => {
+  assert.deepEqual(Object.keys(LISTED).sort(), chains.map((c) => c.chain.key).sort());
   for (const chain of chains) {
     assert.ok(chain.rpc.length >= 2 && chain.rpc.every((u) => u.startsWith("https://")));
-    assert.equal(chain.tokens.length, 1);
+    assert.deepEqual(chain.tokens.map((t) => t.symbol), LISTED[chain.chain.key], chain.chain.key);
+    assert.equal(chain.tokens[0].symbol, "USDC");
     for (const t of [chain.wrappedNative, ...chain.tokens]) {
       assert.ok(t.source.length > 10 && t.kind.length > 5);
       // The address was compared with the issuer's or the chain's own page, fetched on the date stated.
@@ -705,7 +712,10 @@ test("check-depositor: only an address with no code, nonce 0 and no delegation o
   };
   const fit = await checkDepositor(OWNER_DEPOSITOR, shared, { transportFor: world(), artifacts });
   assert.equal(fit.fit, true, fit.problems.join());
-  assert.equal(fit.planned.length, 6 * 4);
+  // Restated in round 20: factory, router and lens per chain, plus one address per planned pair (there were 6 x 4
+  // while every chain planned one pair; four chains now plan a second).
+  assert.equal(fit.planned.length, 6 * 3 + chains.reduce((n, c) => n + c.initialPairs.length, 0));
+  assert.equal(fit.planned.length, 28);
   const record = checkRecord(fit, "2026-11-17T00:00:00Z");
   assert.deepEqual([record.address, Object.keys(record.chains).length, record.chains.linea.length], [OWNER_DEPOSITOR, 6, 3]);
   // A balance is reported, not refused (the account is funded before its deposit).

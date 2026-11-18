@@ -144,6 +144,16 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
           {note}
         </p>
       ))}
+      {/* Round 20: a planned pair whose opening the record does not prove. It is named as not open; the route
+          below does not know its token, so it shows no price for it and builds no transaction with it. */}
+      {chain.pendingPairs.length > 0 && (
+        <p className="muted" data-testid="pairs-not-open" role="status">
+          Not open yet on {chain.network.chainName}:{' '}
+          {chain.pendingPairs.map(([a, b]) => `${a}/${b}`).join(', ')}. This page lists a pool only
+          after its opening has been verified, and sends no transaction for a pair that is not
+          listed.
+        </p>
+      )}
       <MainnetLive
         key={chain.key}
         network={chain.network}
