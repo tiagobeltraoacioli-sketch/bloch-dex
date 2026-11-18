@@ -140,7 +140,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
     >
       {/* Agent 343's token notes (a label such as "USDC (Binance-Peg)" is explained on screen, without a click). */}
       {chain.tokenNotes.map((note) => (
-        <p className="muted" data-testid="token-note" key={note}>
+        <p className="muted token-note" data-testid="token-note" key={note}>
           {note}
         </p>
       ))}

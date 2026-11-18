@@ -1755,6 +1755,40 @@
   }
 }
 
+/* Five or more networks never fit beside the controls: the shell is at most 1280px wide at any window size, so the
+   sideways scroll above always hid the last names (the owner saw "BNB Smart Chain" cut off, 2026-11-18). With that
+   many links the list takes its own row under the brand and the controls and every name is whole; the scroll stays
+   as the fallback for a window too narrow for the row. A browser without :has() keeps the scrolling list. */
+@media (min-width: 861px) {
+  .topbar-inner:has(.main-nav a:nth-child(5)) {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+  .topbar-inner:has(.main-nav a:nth-child(5)) .brand {
+    min-height: 56px;
+  }
+  .topbar-inner:has(.main-nav a:nth-child(5)) .header-actions {
+    margin-left: auto;
+  }
+  .topbar-inner:has(.main-nav a:nth-child(5)) .main-nav {
+    order: 3;
+    flex: 0 0 calc(100% + var(--s-3));
+    margin: 0 0 0 calc(-1 * var(--s-3));
+    min-height: 44px;
+    border-top: 1px solid var(--line);
+  }
+  .topbar-inner:has(.main-nav a:nth-child(5)) .main-nav a[aria-current]::after {
+    bottom: 0;
+  }
+}
+
+/* A token note (such as the Binance-Peg line) belongs to the page column, not to the full width of the shell. */
+.token-note {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto var(--s-3);
+}
+
 /* ---------- Footer ---------- */
 .footer-licences {
   display: inline-flex;
