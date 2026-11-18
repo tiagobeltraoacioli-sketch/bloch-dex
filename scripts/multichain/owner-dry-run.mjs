@@ -157,7 +157,8 @@ async function main() {
     check("0 the clone succeeds and its main contains the reviewed a99f761", r.status === 0 && reviewed.status === 0, `${r.output.slice(-200)} ${reviewed.stderr}`);
     // R402-4, first comparison (macOS's own programs, nothing from the clone): the id the owner received, pasted
     // over the placeholder. Here: the id of the clone's own main (what the integrator announces for a real run).
-    const cloneHead = git(["rev-parse", "origin/main"], REPO).stdout.trim();
+    refuse(r.status === 0, `the document's clone block failed (network?): ${r.output.trim().split("\n").at(-1)}; nothing else was run`);
+    const cloneHead = (git(["rev-parse", "origin/main"], REPO).stdout ?? "").trim();
     const pasted = (id) => swap(blocks["once clone-commit"]).replaceAll(COMMIT_PLACEHOLDER, id);
     const commit = shell("clone-commit", blocks["once clone-commit"], pasted(cloneHead), { cwd: out });
     check("0 the clone's commit compared in full (40 digits) with the id pasted over the placeholder: MATCH (R402-4)", /^[0-9a-f]{40}$/.test(cloneHead) && commit.status === 0 && commit.output === "reviewed commit: MATCH\n", commit.output);
