@@ -5,11 +5,13 @@ import { decodeFunctionData, sha256, stringToBytes, type Address, type Hex } fro
 import type { Rpc } from '../devnet4/chain';
 import { stableJson, type DevnetDeployment } from '../devnet4/record';
 import { ROUTER_ABI, type Receipt } from '../devnet4/swap';
+import { savedLiquidityDeadline } from './liquidity-tx';
 
 export type SubmissionContext = { chainId: number; genesisHash: Hex; deploymentId: Hex };
 export type SubmissionIntent = SubmissionContext & {
   id: string;
-  kind: 'swap' | 'approval' | 'skim';
+  /** `liquidity` (round 20): a deposit or a removal through the router; held like a swap (`holdsUntilDeadline`). */
+  kind: 'swap' | 'approval' | 'skim' | 'liquidity';
   from: Address;
   to: Address;
   data: Hex;
@@ -19,6 +21,14 @@ export type SubmissionIntent = SubmissionContext & {
   afterBlockNumber: string;
   afterBlockHash: Hex;
 };
+/**
+ * The requests a second copy of which would spend twice: a swap, and a deposit or removal of liquidity. Each
+ * carries a deadline in its call. Such a request is never asked of the wallet a second time, its hold ends by
+ * that deadline at a canonical finalized block, and its REVERTED receipt frees the account only by the chain's
+ * rule for reverted requests. An approval or a skim is harmless twice and carries no deadline.
+ */
+export const holdsUntilDeadline = (kind: SubmissionIntent['kind']): boolean =>
+  kind === 'swap' || kind === 'liquidity';
 const HASH = /^0x[0-9a-f]{64}$/;
 const QUANTITY = /^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/;
 export const isSubmissionHash = (value: unknown): value is Hex =>
@@ -235,7 +245,8 @@ export function savedSwapDeadline(data: Hex): bigint | null {
     const deadline = call.args[call.args.length - 1];
     return typeof deadline === 'bigint' ? deadline : null;
   } catch {
-    return null;
+    // Round 20: the router's deposit and removal calls carry their deadline the same way (last argument).
+    return savedLiquidityDeadline(data);
   }
 }
 
@@ -277,7 +288,7 @@ export async function expiredSwap(
 ): Promise<ExpiredSwap | null> {
   rpc = strictOf(rpc);
   assertSubmissionContext(intent, context);
-  if (intent.kind !== 'swap' || deadline <= 0n) return null;
+  if (!holdsUntilDeadline(intent.kind) || deadline <= 0n) return null;
   // Never on a deadline other than the one in the call a wallet may have signed.
   if (savedSwapDeadline(intent.data) !== deadline) return null;
   const read = async () => {
@@ -466,7 +477,8 @@ async function finalizedTransactionReceipt(
   // minimum): if its block were replaced, the first transaction and the retry could both execute. Like the two
   // decisions that end a hold without a receipt, it therefore waits for the strict rule where the RPC carries
   // one (review R328-7). A success is released by the settle rule: nothing is sent again after it.
-  const settling = r.status === 'reverted' && intent.kind === 'swap' ? revertedOf(rpc) : rpc;
+  const settling =
+    r.status === 'reverted' && holdsUntilDeadline(intent.kind) ? revertedOf(rpc) : rpc;
   const finalized = block(await settling('eth_getBlockByNumber', ['finalized', false]));
   if (finalized.number < r.blockNumber) return null;
   const included = { number: r.blockNumber, hash: r.blockHash };

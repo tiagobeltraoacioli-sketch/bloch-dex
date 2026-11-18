@@ -32,7 +32,13 @@ export function transactionForSameNonceReview(
   const { from } = intent;
   let expected: TransactionRequest;
   if (intent.kind === 'approval') {
-    requireCall(deadline === 0n && deployment.tokens.some((token) => token.address === intent.to));
+    // A token of the deployment, or the share token of one of its pools (a pair is its own ERC-20; the router
+    // pulls shares for a removal). Round 20.
+    requireCall(
+      deadline === 0n &&
+        (deployment.tokens.some((token) => token.address === intent.to) ||
+          deployment.pairs.some((pair) => pair.address === intent.to)),
+    );
     const call = decodeFunctionData({ abi: ERC20_ABI, data: intent.data });
     requireCall(call.functionName === 'approve');
     const [spender, amount] = call.args;

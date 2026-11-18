@@ -19,6 +19,7 @@ import {
   savedSwapDeadline,
   finalizedSubmissionReceipt,
   finalizedReplacementReceipt,
+  holdsUntilDeadline,
   isSubmissionHash,
   savedCallNonce,
   submissionContext,
@@ -67,6 +68,8 @@ export type TrackedSwap = PendingSwap & {
   detail: string;
   /** Set on a failed swap once the page has read why it reverted. */
   cause?: RevertCause;
+  /** The block of the verified receipt (mined or reverted), for a caller that explains the outcome (round 20). */
+  receiptBlock?: bigint;
 };
 export type SwapPoll =
   | { kind: 'receipt'; hash: Hex; receipt: Receipt }
@@ -95,7 +98,7 @@ function parseIntent(value: unknown): SubmissionIntent | undefined {
   if (
     typeof v.id !== 'string' ||
     !/^[0-9a-f-]{36}$/.test(v.id) ||
-    !['swap', 'approval', 'skim'].includes(String(v.kind)) ||
+    !['swap', 'approval', 'skim', 'liquidity'].includes(String(v.kind)) ||
     !Number.isSafeInteger(v.chainId) ||
     Number(v.chainId) <= 0 ||
     !isSubmissionHash(v.genesisHash) ||
@@ -199,7 +202,8 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
       // A record where they differ is corrupt or edited and is unreadable as a whole (review R309-2P-4).
       (intent !== null &&
         intent !== undefined &&
-        BigInt(v.deadline) !== (intent.kind === 'swap' ? savedSwapDeadline(intent.data) : 0n))
+        BigInt(v.deadline) !==
+          (holdsUntilDeadline(intent.kind) ? savedSwapDeadline(intent.data) : 0n))
     )
       return null;
     const retry = parseRetry(v.retry);
@@ -335,13 +339,40 @@ export const UNREADABLE_RECORD =
 export const REVIEW_WITH_HASH =
   'Your wallet already returned a transaction hash for this request and may still publish it. A second wallet request could execute the same call twice. Speed it up or cancel it in the wallet itself, then check the resulting hash here. No wallet request was made.';
 
+/**
+ * The hold texts were written for a swap. A deposit or removal of liquidity is held by the same rules (round 20);
+ * for it the same sentences name "the request". `DO_NOT_RESEND` is left as it is: Swap stays disabled too. A
+ * swap's text is returned unchanged.
+ */
+export function requestWords(kind: SubmissionIntent['kind'] | undefined, text: string): string {
+  if (kind !== 'liquidity') return text;
+  return text
+    .split(DO_NOT_RESEND)
+    .map((part) =>
+      part
+        .replace(/\bA swap is never\b/g, 'A liquidity request is never')
+        .replace(/\bThe swap deadline\b/g, "The request's deadline")
+        .replace(/\bthe swap deadline\b/g, "the request's deadline")
+        .replace(/\bthe swap's\b/g, "the request's")
+        .replace(/\bbefore swapping again\b/g, 'before sending it again')
+        .replace(
+          /\bif you then swap again, both swaps execute\b/g,
+          'if you then send it again, both execute',
+        )
+        .replace(/\ba second swap\b/g, 'a second request')
+        .replace(/\b(this|This|the|The) swap\b/g, '$1 request'),
+    )
+    .join(DO_NOT_RESEND);
+}
+
 const DO_NOT_RESEND =
   'Do not resend with a new nonce; Swap stays disabled until the outcome is known.';
 
 /** What ends the wait of a swap hold on a quiet chain, said to the user who is waiting (review R309-3P-3). */
 export function idleWaitNote(swap: PendingSwap, heartbeatSeconds: number): string {
   // No heartbeat: a chain that makes blocks whether or not it has work (the public chains of src/multichain).
-  if (swap.intent?.kind !== 'swap' || swap.deadline <= 0n || !(heartbeatSeconds > 0)) return '';
+  if (!swap.intent || !holdsUntilDeadline(swap.intent.kind) || swap.deadline <= 0n) return '';
+  if (!(heartbeatSeconds > 0)) return '';
   const hours = Math.max(1, Math.round(heartbeatSeconds / 3_600));
   return ` The L2 makes a block only when it has work: on a quiet chain the finalized block that ends this wait can be up to ${hours} hours away (the L2's heartbeat, then its proof), and comes sooner when anyone transacts.`;
 }
@@ -359,7 +390,10 @@ function describeHold(
     return {
       ...swap,
       state: 'unknown',
-      detail: `Wallet submission outcome unknown: no transaction hash was returned. ${DO_NOT_RESEND} Check your wallet activity and explorer; a timeout or fee error does not prove that nothing was sent.${swap.intent?.kind === 'swap' && swap.deadline > 0n ? ' If your wallet still shows this request and you do not want it, reject it there. The hold ends by itself once the swap deadline has passed in a finalized block.' : ''}${wait}${swap.note ? ` ${swap.note}` : ''}`,
+      detail: requestWords(
+        swap.intent?.kind,
+        `Wallet submission outcome unknown: no transaction hash was returned. ${DO_NOT_RESEND} Check your wallet activity and explorer; a timeout or fee error does not prove that nothing was sent.${swap.intent && holdsUntilDeadline(swap.intent.kind) && swap.deadline > 0n ? ' If your wallet still shows this request and you do not want it, reject it there. The hold ends by itself once the swap deadline has passed in a finalized block.' : ''}${wait}${swap.note ? ` ${swap.note}` : ''}`,
+      ),
     };
   const what =
     poll === 'unreachable'
@@ -373,7 +407,10 @@ function describeHold(
   return {
     ...swap,
     state: late || poll === 'unreachable' ? 'unknown' : 'pending',
-    detail: `${what} ${DO_NOT_RESEND}${lost}${swap.hash && wait ? ` This hold ends with the swap's finalized receipt, or once its deadline has passed in a finalized block.${wait}` : ''}`,
+    detail: requestWords(
+      swap.intent?.kind,
+      `${what} ${DO_NOT_RESEND}${lost}${swap.hash && wait ? ` This hold ends with the swap's finalized receipt, or once its deadline has passed in a finalized block.${wait}` : ''}`,
+    ),
   };
 }
 
@@ -603,6 +640,7 @@ export function usePendingSwap({
         setTracked({
           ...swap,
           hash: poll.hash,
+          receiptBlock: blockNumber,
           state: ok ? 'mined' : 'failed',
           detail: ok
             ? `Mined in block ${blockNumber}; verified canonical and finalized.`
@@ -669,7 +707,8 @@ export function usePendingSwap({
   // finalized block: no copy of it can execute after that (review R309-A1).
   const expiring =
     isOpen(visibleTracked) &&
-    visibleTracked!.intent?.kind === 'swap' &&
+    !!visibleTracked!.intent &&
+    holdsUntilDeadline(visibleTracked!.intent.kind) &&
     visibleTracked!.deadline > 0n
       ? visibleTracked!.intent.id
       : null;
@@ -712,9 +751,12 @@ export function usePendingSwap({
             setTracked({
               ...swap,
               state: 'expired',
-              detail: expired.nonceUsed
-                ? `The swap deadline passed in canonical finalized block ${expired.blockNumber}, so this request can no longer execute. A transaction of this account used nonce ${swap.intent!.nonce} before that: it may have been this swap. Check your wallet activity and the finalized balances below before swapping again. Nothing was sent.`
-                : `The swap deadline passed in canonical finalized block ${expired.blockNumber}, and no transaction of this account used nonce ${swap.intent!.nonce} before it: sent from an ordinary wallet account this swap did not execute, and it can no longer execute. If your wallet still shows the request, reject it there; signed now it would only revert. Nothing was sent.`,
+              detail: requestWords(
+                swap.intent!.kind,
+                expired.nonceUsed
+                  ? `The swap deadline passed in canonical finalized block ${expired.blockNumber}, so this request can no longer execute. A transaction of this account used nonce ${swap.intent!.nonce} before that: it may have been this swap. Check your wallet activity and the finalized balances below before swapping again. Nothing was sent.`
+                  : `The swap deadline passed in canonical finalized block ${expired.blockNumber}, and no transaction of this account used nonce ${swap.intent!.nonce} before it: sent from an ordinary wallet account this swap did not execute, and it can no longer execute. If your wallet still shows the request, reject it there; signed now it would only revert. Nothing was sent.`,
+              ),
             });
             latest.current.onMined();
             return;
@@ -936,7 +978,8 @@ export function usePendingSwap({
         // Nothing the page can read shows whether an earlier request is still open, or signed, in the wallet,
         // and the nonce it asks for is only a request. A duplicate approval or skim is harmless; a duplicate
         // swap spends twice. So a swap is never requested again (review R309-A1).
-        if (intent.kind === 'swap') throw new Error(REVIEW_NOT_FOR_SWAPS);
+        if (holdsUntilDeadline(intent.kind))
+          throw new Error(requestWords(intent.kind, REVIEW_NOT_FOR_SWAPS));
         const tx = transactionForSameNonceReview(intent, held.swap.deadline, deployment);
         // A wallet that returned a hash holds that transaction and may publish it later, whatever the sequencer
         // shows now. Many wallets ignore the nonce a site asks for and would sign this review at their next nonce:
@@ -1061,7 +1104,7 @@ export function usePendingSwap({
   const review = useMemo(() => {
     if (!visibleTracked?.intent || !deployment || !isOpen(visibleTracked)) return undefined;
     // Not offered once the wallet returned a hash, and never for a swap: see reviewInWallet.
-    if (submissionHashes(visibleTracked).length || visibleTracked.intent.kind === 'swap')
+    if (submissionHashes(visibleTracked).length || holdsUntilDeadline(visibleTracked.intent.kind))
       return undefined;
     try {
       return {
@@ -1114,8 +1157,8 @@ export function usePendingSwap({
       // shows the saved call itself (hash recovery). Another transaction at the nonce proves nothing: the first
       // prompt may still be open, and a wallet that assigns its own nonce would sign it at the next one inside
       // the deadline, after a second swap was sent (review R309-2P-1, coordinator decision).
-      if (held.swap.intent.kind === 'swap' && submissionHashes(held.swap).length === 0)
-        throw new Error(REPLACEMENT_NOT_FOR_UNSEEN_SWAPS);
+      if (holdsUntilDeadline(held.swap.intent.kind) && submissionHashes(held.swap).length === 0)
+        throw new Error(requestWords(held.swap.intent.kind, REPLACEMENT_NOT_FOR_UNSEEN_SWAPS));
       // A wallet that ignored the requested nonce signed the saved call at another one. A different transaction at
       // the original nonce then proves nothing about the request: it can still execute, or already has.
       for (const candidate of submissionHashes(held.swap)) {
@@ -1129,12 +1172,15 @@ export function usePendingSwap({
         // dropped since) is dead with that nonce. A second approval or skim is harmless: earlier rule.
         if (
           body === null &&
-          held.swap.intent.kind === 'swap' &&
+          holdsUntilDeadline(held.swap.intent.kind) &&
           !(held.swap.nonceSeen ?? []).includes(candidate) &&
           !(await expiredSwap(rpc, held.swap.intent, context, held.swap.deadline, []))
         )
           throw new Error(
-            `The RPC cannot show the transaction ${candidate} your wallet returned for this swap, so the nonce it was signed with is unknown: it may still be published and execute. This hold cannot be closed as replaced before the swap deadline has passed in a finalized block; it then ends by itself.`,
+            requestWords(
+              held.swap.intent.kind,
+              `The RPC cannot show the transaction ${candidate} your wallet returned for this swap, so the nonce it was signed with is unknown: it may still be published and execute. This hold cannot be closed as replaced before the swap deadline has passed in a finalized block; it then ends by itself.`,
+            ),
           );
         if (signedNonce !== null && signedNonce !== BigInt(held.swap.intent.nonce))
           throw new Error(
