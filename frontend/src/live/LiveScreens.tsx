@@ -26,6 +26,7 @@ import {
   LiveLiquidityDialog,
   poolName,
   sideName,
+  type DialogMemory,
   type LiquidityMode,
   type LiveFreshness,
 } from './LiveLiquidityDialog';
@@ -95,7 +96,12 @@ export function LiveScreens(props: LiveScreensProps) {
     ]),
   );
   const notOpen = live ? props.plannedPairs.filter(([a, b]) => !openNames.has(`${a}/${b}`)) : [];
-  const open = (mode: LiquidityMode, pool: LivePool) => setDialog({ mode, pool: pool.address });
+  // The dialog's inputs across a failed read (it is unmounted with the screens); forgotten when it is closed.
+  const dialogMemory = useRef<DialogMemory | null>(null);
+  const open = (mode: LiquidityMode, pool: LivePool) => {
+    dialogMemory.current = null;
+    setDialog({ mode, pool: pool.address });
+  };
   const status = live && (
     <div className="live-status">
       <p className="microcopy finality-line">
@@ -368,6 +374,7 @@ export function LiveScreens(props: LiveScreensProps) {
       {live && dialog && (
         <LiveLiquidityDialog
           mode={dialog.mode}
+          poolAddress={dialog.pool}
           item={dialogItem}
           network={network}
           deployment={live.deployment}
@@ -384,7 +391,11 @@ export function LiveScreens(props: LiveScreensProps) {
           initialSlippage={props.slippage() ?? (DEFAULT_SLIPPAGE_BPS / 100).toFixed(2)}
           onMode={(mode) => setDialog({ ...dialog, mode })}
           onActivity={() => go('trade')}
-          onClose={() => setDialog(null)}
+          memory={dialogMemory}
+          onClose={() => {
+            dialogMemory.current = null;
+            setDialog(null);
+          }}
         />
       )}
     </>

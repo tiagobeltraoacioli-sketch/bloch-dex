@@ -57,6 +57,19 @@ export type LiveFreshness = {
 
 export type LiquidityMode = 'add' | 'remove';
 
+/**
+ * What the dialog holds when the route loses its figures for a moment (a read that fails takes the screens and
+ * the dialog away until the next read succeeds): the user's own inputs for one pool, never a figure. The dialog
+ * that comes back starts from them and computes everything again at the new block.
+ */
+export type DialogMemory = {
+  pool: Address;
+  typed: { side: 0 | 1; text: string };
+  percent: number;
+  slippage: string;
+  deadline: string;
+};
+
 /** The name the page shows for a pool side: the native coin for the wrapped native token. */
 export const sideName = (pool: LivePool, side: 0 | 1): string => {
   const token = side === 0 ? pool.token0 : pool.token1;
@@ -83,6 +96,7 @@ const stepLabel = (step: ApprovalStep): string =>
 
 export function LiveLiquidityDialog({
   mode,
+  poolAddress,
   item,
   network,
   deployment: d,
@@ -97,11 +111,14 @@ export function LiveLiquidityDialog({
   busyRef,
   facts,
   initialSlippage,
+  memory,
   onMode,
   onActivity,
   onClose,
 }: {
   mode: LiquidityMode;
+  /** The pool the dialog is about (a pair of the record). */
+  poolAddress: Address;
   /** The pool with its figures at the snapshot block; null while they are being read again. */
   item: PoolLiquidity | null;
   network: MainnetNetwork;
@@ -119,16 +136,27 @@ export function LiveLiquidityDialog({
   facts: TokenFact[];
   /** The page's slippage setting when the dialog opens (the swap card's, or the default). */
   initialSlippage: string;
+  /** The inputs of the dialog this one replaces after a failed read, and where this one notes its own. */
+  memory?: MutableRefObject<DialogMemory | null>;
   onMode: (mode: LiquidityMode) => void;
   onActivity: () => void;
   onClose: () => void;
 }) {
-  const [typed, setTyped] = useState<{ side: 0 | 1; text: string }>({ side: 0, text: '' });
-  const [percent, setPercent] = useState(25);
-  const [slippage, setSlippage] = useState(initialSlippage);
-  const [deadline, setDeadline] = useState(
-    String(network.defaultDeadlineMinutes ?? DEFAULT_DEADLINE_MINUTES),
+  // Read once, at mount: only for the same pool.
+  const [kept] = useState(() =>
+    memory?.current && memory.current.pool === poolAddress ? memory.current : null,
   );
+  const [typed, setTyped] = useState<{ side: 0 | 1; text: string }>(
+    kept?.typed ?? { side: 0, text: '' },
+  );
+  const [percent, setPercent] = useState(kept?.percent ?? 25);
+  const [slippage, setSlippage] = useState(kept?.slippage ?? initialSlippage);
+  const [deadline, setDeadline] = useState(
+    kept?.deadline ?? String(network.defaultDeadlineMinutes ?? DEFAULT_DEADLINE_MINUTES),
+  );
+  useEffect(() => {
+    if (memory) memory.current = { pool: poolAddress, typed, percent, slippage, deadline };
+  });
   const [note, setNote] = useState<{ tone: 'error' | 'info'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   // Bumped on every change of the form: a send that started under an older value is dropped.

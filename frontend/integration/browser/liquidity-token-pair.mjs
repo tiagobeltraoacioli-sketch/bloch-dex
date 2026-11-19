@@ -136,7 +136,8 @@ const browser = await launch(config.chrome, config.debugPort);
 let unexpected = null;
 let snapshot = null;
 try {
-  snapshot = await rpc('evm_snapshot');
+  // As in liquidity.mjs: the fork is put back only on request (a reverted anvil fork cannot carry another run).
+  if (process.env.LIQUIDITY_RESTORE === '1') snapshot = await rpc('evm_snapshot');
   await rpc('evm_setAutomine', [false]);
   await rpc('anvil_setBalance', [address, hex(50n * 10n ** 18n)]);
   const far = BigInt(Math.floor(Date.now() / 1000) + 86_400);

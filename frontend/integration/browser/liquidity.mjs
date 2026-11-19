@@ -205,8 +205,11 @@ try {
     const N = chain.native;
     const units = { [N]: 18, [T]: chain.token.decimals };
     const far = BigInt(Math.floor(Date.now() / 1000) + 86_400);
-    // The fork is put back as it was found at the end of this chain's scenarios (the last one moves its clock).
-    restore.push([chain, await rpc(chain, 'evm_snapshot')]);
+    // LIQUIDITY_RESTORE=1 puts the fork back as it was found when this file ends (the last scenario moves the
+    // chain's clock). Off by default: after `evm_revert` anvil no longer serves token contracts at older blocks
+    // ("missing bytecode for code hash"), so a fork that was put back cannot carry another run of the page.
+    if (process.env.LIQUIDITY_RESTORE === '1')
+      restore.push([chain, await rpc(chain, 'evm_snapshot')]);
     await rpc(chain, 'evm_setAutomine', [false]);
     for (const who of [wallet.address, other.address])
       await rpc(chain, 'anvil_setBalance', [who, hex(50n * 10n ** 18n)]);

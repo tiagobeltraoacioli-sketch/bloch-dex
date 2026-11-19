@@ -104,6 +104,14 @@ does they count for whoever adds or removes liquidity next: `UniswapV2Pair.sol` 
 of the deployment document); the 0.30% fee, the protocol's sixth of its growth and the recipient's address from
 the record; an issuer's powers, with the token list's own statement per token (the network file's `kind`).
 
+## A read that fails while the dialog is open
+
+When a read of the route fails (an endpoint that does not answer, two that disagree), the route shows its own
+failure state and the screens and the dialog are taken away with the figures: nothing can be sent. The dialog
+that comes back after the next successful read starts from what the user had typed for that pool (amount or
+percentage, tolerance, deadline) and computes everything again at the new block; nothing is sent without a new
+press. Closing the dialog forgets its inputs.
+
 ## A liquidity hold and an older build of the site (review R413-8)
 
 A build from before this change does not know the `liquidity` kind. With such a hold saved, that build reads the
@@ -134,7 +142,8 @@ figure shown is the ratio exactly ("≈" otherwise).
 ## Not done / not proven
 
 - No real wallet and no public chain: the proof is a simulated wallet over anvil forks
-  (`frontend/integration/browser/liquidity.mjs`).
+  (`frontend/integration/browser/liquidity.mjs` on Ethereum, BNB Smart Chain, OP Mainnet and Linea;
+  `liquidity-token-pair.mjs` for the router's token/token calls, on a pair that exists on the fork only).
 - Reserve caps and the k ceiling are covered by unit tests of the arithmetic only: no public chain of this package
   has caps.
 - A token whose approve or transfer deviates (agent 409's USDT work) is not handled here beyond the seam in

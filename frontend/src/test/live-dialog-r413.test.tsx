@@ -495,6 +495,39 @@ describe('R413-3: no frame is left to run after the route is gone', () => {
   });
 });
 
+describe('a read that fails while the dialog is open', () => {
+  it('takes the dialog away with the route’s figures and brings it back with what the user had typed', async () => {
+    const { rpc } = fakeChain({ usdcAllowance: 10n ** 12n });
+    const { sent, wallet } = fakeWallet();
+    let down = false;
+    const hooked: Rpc = async (method, params) => {
+      if (down && method === 'eth_getBlockByNumber' && params[0] === 'finalized')
+        throw new Error('chain: eth_getBlockByNumber returned HTTP 500');
+      return rpc(method, params);
+    };
+    mount(hooked, wallet);
+    const user = await openAdd();
+    await type(/^Amount of ETH/, '0.75');
+    await type('Slippage tolerance (%)', '1');
+    down = true;
+    await user.click(document.querySelector('.live-status .page-refresh') as HTMLButtonElement);
+    // The route's own failure state: no screens, no dialog, nothing can be sent.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByRole('navigation', { name: 'Screens' })).toBeNull();
+    down = false;
+    await user.click(await screen.findByRole('button', { name: /Read (now|again)/ }));
+    await waitFor(() => expect(field(/^Amount of ETH/).value).toBe('0.75'));
+    expect(field(/^Slippage tolerance/).value).toBe('1');
+    expect(sends(sent)).toBe(0);
+    // Closing the dialog forgets it: the next one starts empty.
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Close dialog' }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Add liquidity to USDC/WETH' }));
+    await waitFor(() => expect(field(/^Amount of ETH/).value).toBe(''));
+  });
+});
+
 describe('the fee sentence follows the record', () => {
   it('names no recipient and no "cannot be changed" when the factory has none', () => {
     const zero = `0x${'0'.repeat(40)}` as const;
