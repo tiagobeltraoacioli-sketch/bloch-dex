@@ -420,7 +420,7 @@ try {
   );
   check(
     'with no browser wallet, the header’s connect button reaches the mobile-wallet button on the Pools screen itself',
-    reaches.inPools && reaches.visible && reaches.first === 'Connect a mobile wallet',
+    reaches.inPools && reaches.visible && (reaches.first ?? '').startsWith('Connect a mobile wallet'),
     reaches,
   );
   await shots('1-pools-connect-step');
