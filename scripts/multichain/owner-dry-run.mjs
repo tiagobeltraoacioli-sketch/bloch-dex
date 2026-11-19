@@ -771,7 +771,13 @@ async function main() {
         await rpc("anvil_impersonateAccount", [holder]);
         await rpc("anvil_setBalance", [holder, hex(10n ** 18n)]);
         const had = await read(token2.address, "balanceOf", [depositor]);
-        const sent = await rpc("eth_sendTransaction", [{ from: holder, to: token2.address, data: encodeFunctionData({ abi: parseAbi(["function transfer(address,uint256)"]), functionName: "transfer", args: [depositor, amount2 - had] }), gas: hex(300_000n) }]);
+        // The fee is stated, with a tip of 1 wei. Left to anvil, this transfer pays a tip of 1 gwei, anvil then
+        // suggests 1 gwei to `cast send`, and the deposit that follows costs about 0.0025 of the native coin where
+        // the guide's gas allowance for a cheap chain is 0.0005: on OP Mainnet's fork the deposit's gas estimate
+        // then reverted with empty data (seen 2026-11-19; the first pool's steps paid 8 wei per gas on the same
+        // fork). A real chain's suggestion does not depend on this driver's own funding transfer.
+        const base = BigInt((await rpc("eth_getBlockByNumber", ["latest", false])).baseFeePerGas ?? "0x0");
+        const sent = await rpc("eth_sendTransaction", [{ from: holder, to: token2.address, data: encodeFunctionData({ abi: parseAbi(["function transfer(address,uint256)"]), functionName: "transfer", args: [depositor, amount2 - had] }), gas: hex(300_000n), maxPriorityFeePerGas: hex(1n), maxFeePerGas: hex(base * 2n + 1n) }]);
         for (let i = 0; i < 100 && !(await rpc("eth_getTransactionReceipt", [sent])); i++) await delay(100);
       }
       r = run2("depositor-native");
