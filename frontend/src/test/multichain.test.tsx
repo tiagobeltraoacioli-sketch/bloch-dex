@@ -346,6 +346,27 @@ describe('multichain headers', () => {
     expect(csp).toContain('upgrade-insecure-requests');
     expect(file.split('\n')[0]).toMatch(/multichain/);
   });
+
+  it('lets the page connect to BNB Smart Chain through its four reviewed origins, the replaced one no longer among them', () => {
+    // The policy is generated from the network files, never written by hand. On 2026-11-19 BNB Smart Chain's
+    // second endpoint (api.zan.top, which refuses eth_call to anonymous callers) was replaced by a host of BNB
+    // Chain's own published list: one origin leaves the published policy, one enters, the total is unchanged.
+    const urls = bundledChains().flatMap((c) => c.rpcUrls);
+    const csp = multichainHeadersFile(urls, renderHeadersFile)
+      .split('\n')
+      .find((l) => l.includes('Content-Security-Policy'))!;
+    const connect = csp.match(/connect-src ([^;]*)/)![1].split(' ');
+    const reviewed = [
+      'https://bsc-rpc.publicnode.com',
+      'https://bsc-dataseed.defibit.io',
+      'https://bsc-mainnet.public.blastapi.io',
+      'https://bsc-dataseed.bnbchain.org',
+    ];
+    for (const origin of reviewed) expect(connect).toContain(origin);
+    expect(csp).not.toContain('zan.top');
+    expect(new Set(urls.map((u) => new URL(u).origin)).size).toBe(17);
+    expect(bundledChains().find((c) => c.key === 'bnb-smart-chain')!.rpcUrls).toEqual(reviewed);
+  });
 });
 
 describe('multichain application', () => {

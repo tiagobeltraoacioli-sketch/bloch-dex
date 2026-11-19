@@ -13,7 +13,7 @@
   "rpc": {
     "urls": [
       "https://bsc-rpc.publicnode.com",
-      "https://api.zan.top/bsc-mainnet",
+      "https://bsc-dataseed.defibit.io",
       "https://bsc-mainnet.public.blastapi.io",
       "https://bsc-dataseed.bnbchain.org"
     ],

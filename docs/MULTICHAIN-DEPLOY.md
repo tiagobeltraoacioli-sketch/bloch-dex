@@ -350,15 +350,16 @@ from the chain itself, at the block of the deposit's preparation:
   without any market price, for USDC too (finding F409-1). The first fix asked every endpoint and took any two
   that agreed; review R414-1 showed that this lets two endpoints decide whenever the others are silent, and
   that on BNB Smart Chain the two that then decide run the same client build. With "all but one" a price on a
-  four-endpoint chain needs three operators; one endpoint's word is never a price, and an endpoint that
+  four-endpoint chain needs three endpoints (on BNB Smart Chain two of the four are BNB Chain's own dataseed
+  hosts, so three endpoints there are at least two publishers and both client programs, never three); one endpoint's word is never a price, and an endpoint that
   answers differently stops everything, whoever else is silent. What the rule does not do: it cannot tell
   three endpoints that are wrong alike from the truth. Measured on the real chains (2026-11-19, read-only,
   spaced reads; section 13): how often the answer was `TRY AGAIN`.
   *The market is read first.* `prepare` and `verify-chain.mjs` pin their block and read the market before any
   other state, and report it in its usual place. One of BNB Smart Chain's reviewed endpoints (the chain's own
   dataseed) keeps the state of a block for about a minute ("missing trie node" at 90 s, measured); with the
-  market read after the other checks, and the chain's second endpoint refusing `eth_call`, only two endpoints
-  were left by then and `verify-chain.mjs` said `TRY AGAIN` on every run (seen 2026-11-19). The block, the rule
+  market read after the other checks, and the chain's second endpoint (then `api.zan.top`) refusing `eth_call`,
+  only two endpoints were left by then and `verify-chain.mjs` said `TRY AGAIN` on every run (seen 2026-11-19). The block, the rule
   and the printed order are unchanged.
 - **The two references must agree within 1%** (`referencesAgreeBps`). If they do not (a feed that lags a fast
   move, a pool being pushed, a token off its peg), or a feed's answer is older than its heartbeat plus ten
@@ -642,12 +643,17 @@ Other facts:
 - **The USDTs are four different tokens** (section 2.6): Tether's own contract on Ethereum (no return values,
   `approve` needs zero first, dormant fee parameters, pause, blacklist, deprecation), a bridge token on OP
   Mainnet, the upgradeable USD₮0 on Arbitrum One, Binance's 18-decimal token on BNB Smart Chain.
-- **BNB Smart Chain's second reviewed endpoint** (`api.zan.top`) answers `eth_call` with HTTP 403 "Method
-  "eth_call" is not available for unregistered accounts" since at least 2026-11-18; it still serves blocks,
-  `eth_getCode` and `eth_getStorageAt` (review R414-8). A market read on that chain therefore needs its three
-  other endpoints, all of them (finding F409-1, review R414-1, section 2.5); the endpoint list was not changed
-  (a replacement is proposed to the coordinator, not applied; the page's list and its Content-Security-Policy
-  follow the list; section 13).
+- **BNB Smart Chain's second reviewed endpoint was replaced on 2026-11-19.** `api.zan.top` answered
+  `eth_call` with HTTP 403 "Method "eth_call" is not available for unregistered accounts" since at least
+  2026-11-18 (it still served blocks, `eth_getCode` and `eth_getStorageAt`; review R414-8), so a market read on
+  that chain needed its three other endpoints, all of them (finding F409-1, review R414-1, section 2.5), and it
+  ran the same client build as the first and third. Its place is taken by `bsc-dataseed.defibit.io`, a host of
+  BNB Chain's own published endpoint list running BNB Chain's own client (`rpcSourceChecked` in the chain
+  file). **This changes the published page's Content-Security-Policy by one origin** (`https://api.zan.top`
+  leaves `connect-src`, `https://bsc-dataseed.defibit.io` enters; 17 origins as before): the policy is
+  generated from the network files. What the new host does not do: it keeps a block's state for about a minute
+  (as the fourth endpoint does), it refuses `eth_getLogs`, and it is published by the same party as the fourth
+  endpoint. Any three of the four now include two publishers and both client programs.
 - **Block 0.** Not every public node serves it any more (history pruning). The gate needs it from at least one of
   the two endpoints; the page asks the next endpoint when one does not serve it.
 
@@ -1194,7 +1200,8 @@ page does now:
 - **endpoint lists**, ordered so that the first two keep state longest: OP Mainnet, Base and Ethereum two each;
   Linea three (its own endpoint, dRPC, publicnode); Arbitrum One four (its own endpoint,
   `arbitrum.gateway.tenderly.co`, blastapi, publicnode); BNB Smart Chain four (publicnode,
-  `api.zan.top/bsc-mainnet`, blastapi, the chain's dataseed). The two added in the third revision (Tenderly, ZAN)
+  `bsc-dataseed.defibit.io` since 2026-11-19 in the place of `api.zan.top/bsc-mainnet`, blastapi, the chain's
+  dataseed; old state is served by publicnode and blastapi only). The two added in the third revision (Tenderly, ZAN)
   were each measured to serve pinned state 45 minutes old and a browser's preflight, and are placed second so
   that strict reads no longer depend on blastapi's shared anonymous quota. Operator independence is judged from
   the hostnames and response headers only (reviewer 364 checks it against the operators' own documentation);
@@ -1462,7 +1469,7 @@ Recorded, not fixed in this package:
 | **After a reverted swap the account is held for the reverted rule's time** (reviews R328-7, R328-3P-3; section 9). The third rule was added in `9e4b5d1`: `safe` on OP Mainnet, Base, Arbitrum One and Ethereum, 30 blocks on Linea, `finalized` on BNB Smart Chain | A user whose swap reverted waits about half a minute (OP Mainnet), a minute and a half (Base), 12 to 15 minutes (Arbitrum One, Ethereum), 6 to 9 minutes (Linea) or seconds (BNB Smart Chain) before the page lets them retry. Whether `safe` from a sequencer-run endpoint is decisive at that depth is reviewer 364's open question | The page says so in the note above the form; the redesigned route renders "reverted; this account can send again at HH:MM" (agent 361) |
 | **The page was never run in a browser against the real endpoints with a wallet** | The live check runs the page's RPC code in Node; the browser rehearsals use forks. Reviewer 328 loaded the page read-only in headless Chrome against the then fifteen endpoints (no CSP or CORS refusal); the two added in `9e4b5d1` answered a browser's preflight when measured. A wallet flow against them was not rehearsed | A real page load and a small swap by the owner on the first chain before publishing |
 | **A hold that cannot be decided says nothing new** (review R328-4): when the strict reads are refused the page keeps its hold text and tries again | The user sees a hold without a reason | The route's texts belong to the UI line (agent 327); the endpoint lists and the live check keep the case from being permanent |
-| **BNB Smart Chain's second endpoint refuses `eth_call`** (finding F409-1; `api.zan.top`: "not available for unregistered accounts") | A market read needs three of the chain's four endpoints, so on this chain the three others must all answer every read: `prepare` and `market.mjs` say `TRY AGAIN` whenever one of them drops a read (measured rate in the round's report). The gate's other reads need two. The page's own read code passed its live check against the four endpoints | Replace the endpoint: a proposal with candidates is with the coordinator (a reviewed change of `chain.json`, the network file and the page's Content-Security-Policy); until then, run the command again. One endpoint of this chain keeps a block's state for about a minute only, which is why the market is read first (section 2.5); a tool run that takes longer than that between pinning its block and its last market read will still say `TRY AGAIN` |
+| **BNB Smart Chain: two of the four endpoints keep a block's state for about a minute** (the two dataseed hosts; the second replaced `api.zan.top`, finding F409-1, on 2026-11-19) | A market read needs three of the four, so one dataseed must answer while the block is fresh: the market is read first (section 2.5). A tool run that takes longer than about a minute between pinning its block and its last market read says `TRY AGAIN`; so does a read on which two endpoints fail at once (measured rate in the round's report). State older than a minute is served by publicnode and blastapi alone: the page's strict reads on this chain rest on those two, as they did before | Run the command again. A fifth endpoint that keeps old state and is run by a third operator would remove both limits (a reviewed change of `chain.json`, the network file and so of the page's Content-Security-Policy) |
 | **A fee-taking token's first deposit does not revert** (finding F409-2; frozen router and pair) | Tether's fee parameters on Ethereum, if switched on between `prepare` and the deposit being mined (minutes) | `prepare` and the gate refuse while a parameter is not zero; a switch inside those minutes would open the pool short of the fee (at most 49 USDT) and leave its opening unprovable. Not closable without a new router |
 | **No USDT on Base and Linea** (section 2.6) | Base: the address is named only by another party's list. Linea: no second price reference | Base: the owner may decide that the Superchain Token List is source enough; the two references exist (a feed, and a thin pool of 51 WETH). Linea: when a deep pool exists |
 | **The page does not read a token's fee, pause or blocklist state** | A user of the page, when an issuer has changed the token | The gate does at every run; a read by the page would be a change to the route |

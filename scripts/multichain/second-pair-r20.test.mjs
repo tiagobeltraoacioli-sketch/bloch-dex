@@ -884,7 +884,10 @@ test("R414-1: a market read needs all but one of the reviewed endpoints (never f
   const chain = clone(chainOf("bnb-smart-chain"));
   const world = marketWorld(chain);
   const token = chain.tokens[1];
-  const names = chain.rpc.map((u) => new URL(u).host);
+  // The chain's endpoints as they were when this was measured (2026-11-18 and 19): the second, api.zan.top,
+  // refused eth_call for ever. It has since been replaced (the test after this one pins the list as it is); the
+  // names are kept here because the cases below are what was seen with that list.
+  const names = ["bsc-rpc.publicnode.com", "api.zan.top", "bsc-mainnet.public.blastapi.io", "bsc-dataseed.bnbchain.org"];
   const read = (...endpoints) => readMarket({ chain, token, requests: endpoints, at: world.at, names });
   const honest = world.endpoint();
   const liar = world.endpoint({ usd: 90_000_000n });
@@ -900,7 +903,8 @@ test("R414-1: a market read needs all but one of the reviewed endpoints (never f
     assert.deepEqual([r.answered.reviewed, r.answered.mustAnswer, r.answered.fewestAnswered], [4, 3, 2]);
     assert.match(r.problems.join(), /2 endpoints answered, 3 must agree/);
   }
-  // BNB Smart Chain as it is: one of four refuses eth_call for ever. Three answer and agree: a price.
+  // BNB Smart Chain as it was until its second endpoint was replaced: one of four refuses eth_call for ever.
+  // Three answer and agree: a price.
   const today = await read(honest, refusing, honest, honest);
   assert.equal(today.ok, true, today.problems.join());
   assert.equal(today.tryAgain, false);
@@ -944,6 +948,40 @@ test("R414-1: a market read needs all but one of the reviewed endpoints (never f
   assert.match(TRY_AGAIN, /^TRY AGAIN in a minute: .*not a fault.*Nothing was printed to send\.$/);
   for (const file of ["scripts/multichain/market.mjs", "scripts/multichain/first-deposit.mjs"]) assert.match(readFileSync(join(ROOT, file), "utf8"), /if \(market\.tryAgain\) print\(TRY_AGAIN\)/, file);
   for (const doc of ["docs/OWNER-DEPLOY-NOW.md", "docs/MULTICHAIN-DEPLOY.md"]) assert.match(readFileSync(join(ROOT, doc), "utf8"), /TRY AGAIN/, doc);
+});
+
+test("each chain's reviewed endpoints are exactly these; BNB Smart Chain's second is the dataseed that replaced api.zan.top, with its source", () => {
+  // Pinned because the list decides three things at once: who the tools believe (the market's "all but one"), what
+  // the page may connect to (its Content-Security-Policy is generated from the network files), and what the owner's
+  // wallet is offered. A change here must be a reviewed change.
+  const ENDPOINTS = {
+    "op-mainnet": chainOf("op-mainnet").rpc.length,
+    base: chainOf("base").rpc.length,
+    ethereum: chainOf("ethereum").rpc.length,
+    linea: chainOf("linea").rpc.length,
+    "arbitrum-one": chainOf("arbitrum-one").rpc.length,
+  };
+  assert.deepEqual(ENDPOINTS, { "op-mainnet": 2, base: 2, ethereum: 2, linea: 3, "arbitrum-one": 4 });
+  const bnb = chainOf("bnb-smart-chain");
+  // 2026-11-19: api.zan.top answered every eth_call with HTTP 403 ("not available for unregistered accounts"), so
+  // the chain ran at exactly its quorum (three of four) and said TRY AGAIN on 3 of 20 measured market reads; it
+  // also ran the same client build as the first and third endpoints. Its place is taken by a host of BNB Chain's
+  // own published list that runs BNB Chain's own client.
+  assert.deepEqual(bnb.rpc, ["https://bsc-rpc.publicnode.com", "https://bsc-dataseed.defibit.io", "https://bsc-mainnet.public.blastapi.io", "https://bsc-dataseed.bnbchain.org"]);
+  const source = bnb.rpcSourceChecked["https://bsc-dataseed.defibit.io"];
+  assert.equal(source.url, "https://docs.bnbchain.org/bnb-smart-chain/developers/json_rpc/json-rpc-endpoint/");
+  assert.match(source.found, /https:\/\/bsc-dataseed\.defibit\.io/);
+  assert.match(source.limits, /about a minute/);
+  assert.deepEqual(JSON.parse(readFileSync(join(ROOT, "deployments/bnb-smart-chain/frontend.network.json"), "utf8")).rpc.urls, bnb.rpc);
+  for (const chain of ["op-mainnet", "base", "ethereum", "linea", "arbitrum-one", "bnb-smart-chain"])
+    assert.ok(!JSON.stringify([chainOf(chain).rpc, JSON.parse(readFileSync(join(ROOT, `deployments/${chain}/frontend.network.json`), "utf8")).rpc]).includes("zan.top"), chain);
+  // The record is validated: an endpoint that is not in the list, or a record without its page, is refused.
+  const stray = clone(bnb);
+  stray.rpcSourceChecked["https://example.org"] = source;
+  assert.throws(() => validateChain(stray, "bnb-smart-chain"), /rpcSourceChecked names https:\/\/example\.org, which is not a reviewed endpoint/);
+  const bare = clone(bnb);
+  delete bare.rpcSourceChecked["https://bsc-dataseed.defibit.io"].url;
+  assert.throws(() => validateChain(bare, "bnb-smart-chain"), /rpcSourceChecked\[https:\/\/bsc-dataseed\.defibit\.io\]: url/);
 });
 
 test("R414-4: a 403 is a refusal of the METHOD only when its body names the method; any other 403 is retried in full", async () => {

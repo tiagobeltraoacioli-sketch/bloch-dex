@@ -15,10 +15,20 @@
   },
   "rpc": [
     "https://bsc-rpc.publicnode.com",
-    "https://api.zan.top/bsc-mainnet",
+    "https://bsc-dataseed.defibit.io",
     "https://bsc-mainnet.public.blastapi.io",
     "https://bsc-dataseed.bnbchain.org"
   ],
+  "rpcSourceChecked": {
+    "https://bsc-dataseed.defibit.io": {
+      "url": "https://docs.bnbchain.org/bnb-smart-chain/developers/json_rpc/json-rpc-endpoint/",
+      "fetched": "2026-11-19",
+      "found": "BNB Chain's own list of JSON-RPC endpoints, BSC Mainnet: names https://bsc-dataseed.defibit.io beside https://bsc-dataseed.bnbchain.org, https://bsc-dataseed.nariox.org and https://bsc-dataseed.ninicoin.io (saved page sha256 5709f373bdb01d83...)",
+      "client": "Geth/v1.8.2/linux-amd64/go1.26.10 (web3_clientVersion, 2026-11-19): BNB Chain's own client, not the reth-bsc build of the first and third endpoints",
+      "replaces": "https://api.zan.top/bsc-mainnet, which answers eth_call with HTTP 403 \"not available for unregistered accounts\" since at least 2026-11-18 (finding F409-1)",
+      "limits": "keeps the state of a block for about a minute (eth_call at a block hash 54 s old answered, 90 s old: missing trie node), as bsc-dataseed.bnbchain.org does; refuses eth_getLogs; published by BNB Chain as one of its own mainnet endpoints, as the fourth endpoint is: the two are counted as one publisher (whether the hosts behind them are run by different operators was not established)"
+    }
+  },
   "explorer": "https://bscscan.com",
   "wrappedNative": {
     "address": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",

@@ -545,6 +545,19 @@ export function validateChain(chain, key) {
     "rpc: at least two distinct https endpoints without credentials or query strings",
   );
   refuse(typeof chain.explorer === "string" && /^https:\/\/[a-z0-9.-]+$/.test(chain.explorer), "explorer");
+  // An endpoint added after the first review carries where it was found (the publisher's page, fetched), like a
+  // token does (round 20: BNB Smart Chain's second endpoint was replaced). A record for an endpoint that is not in
+  // the list, or without its page, date and finding, is refused.
+  if (chain.rpcSourceChecked !== undefined) {
+    refuse(chain.rpcSourceChecked && typeof chain.rpcSourceChecked === "object" && !Array.isArray(chain.rpcSourceChecked), "rpcSourceChecked must be an object keyed by endpoint");
+    for (const [endpoint, r] of Object.entries(chain.rpcSourceChecked)) {
+      refuse(chain.rpc.includes(endpoint), `rpcSourceChecked names ${endpoint}, which is not a reviewed endpoint of the chain`);
+      refuse(
+        r && typeof r === "object" && typeof r.url === "string" && /^https:\/\//.test(r.url) && /^\d{4}-\d{2}-\d{2}$/.test(r.fetched ?? "") && typeof r.found === "string" && r.found.includes(endpoint),
+        `rpcSourceChecked[${endpoint}]: url (the publisher's page), fetched (date) and found (naming the endpoint) are required`,
+      );
+    }
+  }
   validateToken(chain.wrappedNative, "wrappedNative");
   refuse(chain.wrappedNative.decimals === 18, "wrappedNative.decimals");
   refuse(Array.isArray(chain.tokens) && chain.tokens.length >= 1 && chain.tokens.length <= 8, "tokens");
