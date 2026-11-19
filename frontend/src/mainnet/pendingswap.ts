@@ -305,9 +305,10 @@ function removeStored(key: string, swap: PendingSwap): boolean {
     if (raw !== null && !retained) throw new Error(UNREADABLE_RECORD);
     if (retained && (identityOf(retained) !== identityOf(swap) || !sameIntent(retained, swap)))
       return false;
-    localStorage.removeItem(key);
-    if (localStorage.getItem(key) !== null) return false;
-    // The second copy of a liquidity hold goes with the hold it mirrors, and only with that one.
+    // The second copy of a liquidity hold goes with the hold it mirrors, and only with that one. It goes FIRST
+    // (review R413-14): another tab reads outside the cross-tab lock, and a read between the two removals must
+    // find either the main record (an ordinary hold, still there) or nothing, never a copy without its record,
+    // which it would put back although the hold has just ended. A stop between the two leaves an ordinary hold.
     const second = secondKeyOf(key);
     if (second && swap.intent?.kind === 'liquidity') {
       const copy = parsePendingSwap(localStorage.getItem(second));
@@ -316,6 +317,8 @@ function removeStored(key: string, swap: PendingSwap): boolean {
         if (localStorage.getItem(second) !== null) return false;
       }
     }
+    localStorage.removeItem(key);
+    if (localStorage.getItem(key) !== null) return false;
     return true;
   } catch {
     return false;

@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useContext, useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { Modal } from './Modal';
 import { TokenMark } from '../marks/TokenMark';
+import { NetworkKeyContext } from '../shell/network-context';
 
 export type TokenChoice = { key: string; label: string; detail?: string };
 
@@ -23,6 +24,9 @@ export function TokenSheet({
   onChoose: (key: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // The sheet is rendered outside the shell element that carries the network key; it names its network itself,
+  // so that it is drawn with the lamp of the route it belongs to (review R413-16).
+  const network = useContext(NetworkKeyContext);
   const current = options.find((o) => o.key === value);
   return (
     <>
@@ -39,7 +43,11 @@ export function TokenSheet({
         <ChevronDown size={16} aria-hidden="true" />
       </button>
       {open && (
-        <Modal title={`${caption}: choose a token`} onClose={() => setOpen(false)}>
+        <Modal
+          title={`${caption}: choose a token`}
+          onClose={() => setOpen(false)}
+          network={network}
+        >
           <ul className="token-sheet-list">
             {options.map((o) => (
               <li key={o.key}>

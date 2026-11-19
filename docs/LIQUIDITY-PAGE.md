@@ -131,6 +131,16 @@ that the older build marked in a way this build cannot read does not occur (the 
 record as it is or removes it). Operationally: do not roll back across this change while liquidity requests may
 be open, or wait 180 minutes after the last one.
 
+The copy is removed BEFORE the main record when a hold ends (review R413-14): another tab of the same account
+reads outside the cross-tab lock, and between the two removals it must find the main record or nothing, never the
+copy alone, which it would put back.
+
+A screen link after a rollback (review R413-15): the older build does not know screen hashes. It reads the whole
+hash as a network key, finds none, and opens the FIRST network of the selector: `#/ethereum/pools` and
+`#/base/portfolio` both show the first listed network's Trade page, under that network's own name. Nothing is
+sent and no wallet is asked, but a user with a saved Pools link is on another network than the link names. The
+plain network links (`#/ethereum`) are unaffected.
+
 ## What the screens do not show
 
 No price history, no 24-hour volume or fees, no value in a currency and no value history: the page reads one block

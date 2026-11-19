@@ -713,3 +713,78 @@ describe('R413-13: what the same-nonce review says of an approval of zero today'
     }
   });
 });
+
+describe('R413-14: a hold that ended is not put back by another tab reading while it is removed', () => {
+  const shadowKey = liquidityHoldKey(deployment.chainId, FROM);
+
+  it('with a read by another tab after every single removal, both copies are gone and stay gone', async () => {
+    // Tab B: the same account, on a view where the deadline has not passed (it does not end the hold itself).
+    store(hold('awaiting-wallet'));
+    localStorage.setItem(shadowKey, localStorage.getItem(key)!);
+    const b = mount(chain(), walletThatMustNotBeAsked().provider, () => 300_000);
+    await waitFor(() => expect(b.hook.result.current.open).toBe(true));
+    // Tab A sees the deadline pass at the strict block and ends the hold. After each removal of either key, tab B
+    // reads (as its effects and `holds()` do, outside the cross-tab lock).
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE + 1n };
+    const removeOriginal = Storage.prototype.removeItem;
+    const removed: string[] = [];
+    const seenByB: (string | null)[] = [];
+    let reading = false;
+    const spy = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (
+      this: Storage,
+      k: string,
+    ) {
+      removeOriginal.call(this, k);
+      if (reading || (k !== key && k !== shadowKey)) return;
+      removed.push(k === key ? 'main' : 'second');
+      reading = true;
+      try {
+        b.hook.result.current.holds();
+        seenByB.push(localStorage.getItem(key) === null ? null : 'main record present');
+      } finally {
+        reading = false;
+      }
+    });
+    const a = mount(c, walletThatMustNotBeAsked().provider, AFTER);
+    await waitFor(() => expect(a.hook.result.current.tracked?.state).toBe('expired'));
+    spy.mockRestore();
+    // The second copy goes first: a read between the two removals finds the main record still there (an ordinary
+    // hold), and a read after the second finds nothing to put back.
+    expect(removed).toEqual(['second', 'main']);
+    expect(seenByB).toEqual(['main record present', null]);
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(localStorage.getItem(shadowKey)).toBeNull();
+    a.hook.unmount();
+    b.hook.unmount();
+    const later = mount(chain(), walletThatMustNotBeAsked().provider, () => 300_000);
+    await settle();
+    expect(later.hook.result.current.open).toBe(false);
+    expect(stored()).toBeNull();
+  });
+
+  it('a removal that stops between the two leaves an ordinary hold, never a hold without its record', () => {
+    store(hold('awaiting-wallet'));
+    localStorage.setItem(shadowKey, localStorage.getItem(key)!);
+    // The browser refuses the removal of the main record (storage failure) after the second copy went.
+    const removeOriginal = Storage.prototype.removeItem;
+    const spy = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(function (
+      this: Storage,
+      k: string,
+    ) {
+      if (k === key) throw new Error('storage refused');
+      removeOriginal.call(this, k);
+    });
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE + 1n };
+    const { hook } = mount(c, walletThatMustNotBeAsked().provider, AFTER);
+    return (async () => {
+      await settle();
+      spy.mockRestore();
+      // Still held (the main record is there); the hold was not reported as ended.
+      expect(stored()?.intent?.id).toBe(addIntent.id);
+      expect(hook.result.current.tracked?.state).not.toBe('expired');
+      hook.unmount();
+    })();
+  });
+});

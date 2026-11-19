@@ -13,6 +13,9 @@ import { historyKey } from '../mainnet/txhistory';
 import { NetworkKeyContext } from '../shell/network-context';
 import { pendingSwapKey } from '../mainnet/pendingswap';
 import { renewalClock } from '../ui/snapshot-renewal';
+import { TokenSheet } from '../ui/TokenSheet';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   ACCOUNT,
   chain,
@@ -550,6 +553,53 @@ describe('the dialog carries the lamp of its network', () => {
     const primary = dialog.querySelector('button.primary')!;
     expect(primary.closest('[data-network]')?.getAttribute('data-network')).toBe('ethereum');
     expect(dialog.querySelector('.token-icon')!.closest('[data-network]')).not.toBeNull();
+  });
+});
+
+describe('R413-16: the swap card’s token chooser carries the lamp of its network too', () => {
+  it('names the route’s network on a public chain, and the default key (the Bloch L2’s own) without a shell', async () => {
+    const user = userEvent.setup();
+    const options = [
+      { key: 'a', label: 'ETH' },
+      { key: 'b', label: 'USDC' },
+    ];
+    const first = render(
+      <NetworkKeyContext.Provider value="base">
+        <TokenSheet caption="You pay" value="a" options={options} onChoose={() => {}} />
+      </NetworkKeyContext.Provider>,
+    );
+    await user.click(screen.getByTestId('token-chip-pay'));
+    expect(screen.getByRole('dialog').getAttribute('data-network')).toBe('base');
+    first.unmount();
+    render(<TokenSheet caption="You pay" value="a" options={options} onChoose={() => {}} />);
+    await user.click(screen.getByTestId('token-chip-pay'));
+    expect(screen.getByRole('dialog').getAttribute('data-network')).toBe('bloch-l2');
+  });
+
+  it('the Bloch L2 key sets the lamp to exactly the default, in both themes: the L2 site’s chooser is drawn as before', () => {
+    const css = readFileSync(resolve(__dirname, '../styles/tokens.css'), 'utf8').replace(
+      /\/\*[\s\S]*?\*\//g,
+      '',
+    );
+    const block = (selector: string) => {
+      const at = css.indexOf(`${selector} {`);
+      expect(at, selector).toBeGreaterThan(-1);
+      return css.slice(at, css.indexOf('}', at));
+    };
+    const value = (text: string, name: string) =>
+      new RegExp(`${name}:\\s*([^;]+);`).exec(text)?.[1].trim();
+    // Every rule keyed on the attribute only sets the lamp.
+    for (const m of css.matchAll(/\[data-network='[a-z0-9-]+'\] \{([^}]*)\}/g))
+      expect(m[1].replace(/\s*--net(-bright)?:[^;]+;/g, '').trim()).toBe('');
+    const dark = block("\n[data-network='bloch-l2']");
+    expect(value(dark, '--net-bright')).toBe('#c8fa72');
+    expect(value(dark, '--net')).toBe('var(--net-bright)');
+    const light = block(":root[data-theme='light'] [data-network='bloch-l2']");
+    expect(value(light, '--net')).toBe('#486f00');
+    // The defaults a dialog outside the shell had until now.
+    const roots = [...css.matchAll(/--net:\s*(#[0-9a-f]{6});/g)].map((m) => m[1]);
+    expect(roots.slice(0, 2)).toEqual(['#c8fa72', '#486f00']);
+    expect(/--net-bright:\s*(#[0-9a-f]{6});/.exec(css)?.[1]).toBe('#c8fa72');
   });
 });
 
