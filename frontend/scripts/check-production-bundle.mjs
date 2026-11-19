@@ -56,6 +56,13 @@ const VENDOR_LITERALS = [
   'isLocalhostUrl',
 ];
 
+// The multichain site shows real pools only (round 20: its Trade, Pools and Portfolio screens are drawn over the
+// chain). Nothing of the sample-data preview (src/data.ts and the screens of App.tsx) may be in its bundle: these
+// are literals that exist only there.
+const DEMO_DATA = [
+  ['sample-data preview', /USTAV|Ustav|blch-usdc|blch-ustav|ustav-usdc|Sample market data|Sample activity|Preview only|No funds will move|Review demo swap|does not update your position|Estimated at sample pool prices/g],
+];
+
 const walk = (dir) =>
   readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -77,7 +84,7 @@ for (const path of files) {
   const lower = text.toLowerCase();
   for (const value of TEST_VALUES)
     if (lower.includes(value)) hits.push([name, 'test key or address', value.slice(0, 12)]);
-  for (const [label, pattern] of FORBIDDEN)
+  for (const [label, pattern] of multichain ? [...FORBIDDEN, ...DEMO_DATA] : FORBIDDEN)
     for (const match of text.matchAll(pattern))
       hits.push([name, label, text.slice(Math.max(0, match.index - 40), match.index + 40)]);
 }

@@ -9,6 +9,8 @@ import { Component, useEffect, useMemo, useState, type ReactNode } from 'react';
 import MainnetLive from './MainnetLive';
 import { setWording } from './mainnet/wording';
 import { bundledChains, type Chain } from './multichain/config';
+import { tokenFacts } from './multichain/token-facts';
+import { routeKeyOfHash } from './live/view';
 import { chainHttpRpc } from './multichain/rpc';
 import { useWallet } from './useWallet';
 import { Shell } from './shell/Shell';
@@ -18,6 +20,8 @@ import { networkEntries } from './shell/networks';
 import { NetworkGlyph } from './marks/NetworkGlyph';
 
 const CHAINS = bundledChains();
+/** The token list's statement per listed token (the liquidity screens' issuer-powers line). */
+const TOKEN_FACTS = tokenFacts();
 /** A pending swap is looked up this often: these chains settle in seconds, the Bloch L2 route's default is 10 s. */
 const RECEIPT_POLL_MS = 4_000;
 /**
@@ -37,7 +41,8 @@ export const MULTICHAIN_RENDER_BANNER =
   'Local rehearsal build against loopback forks: not for publication.';
 
 const keyFromHash = (chains: Chain[]): string => {
-  const wanted = location.hash.replace(/^#\/?/, '');
+  // The first segment names the network; a second names a screen of it (`#/ethereum/pools`, live/view.ts).
+  const wanted = routeKeyOfHash(location.hash);
   return chains.some((c) => c.key === wanted) ? wanted : chains[0].key;
 };
 
@@ -165,6 +170,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         receiptPollMs={RECEIPT_POLL_MS}
         snapshotMaxAgeMs={SNAPSHOT_MAX_AGE_MS}
         confirmation={confirmationView}
+        screens={{ base: `#/${chain.key}`, tokenFacts: TOKEN_FACTS[chain.key] }}
       />
     </Shell>
   );

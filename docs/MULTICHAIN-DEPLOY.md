@@ -949,8 +949,10 @@ Selecting a network asks nothing of the wallet; "Add or switch to …" and every
 switch (`wallet_switchEthereumChain`, then `wallet_addEthereumChain` if the wallet does not know the chain). A
 pending swap on one chain does not hold another chain.
 
-Limits of the page on these chains: it lists only the pairs of the record; it has no liquidity form (deposits are
-made as in section 8, withdrawals as in section 6); see also section 13.
+Limits of the page on these chains: it lists only the pairs of the record. Since round 20 it has liquidity
+screens (Pools, Portfolio and a deposit / removal dialog, `docs/LIQUIDITY-PAGE.md`) for the pools the record lists
+as open; it never builds a first deposit (the owner's deposits that open a pool are made as in section 8, the fee
+address's withdrawals as in section 6); see also section 13.
 
 ## 10. If something goes wrong
 

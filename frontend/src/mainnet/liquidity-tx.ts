@@ -22,12 +22,13 @@ export const LIQUIDITY_ABI = parseAbi([
 
 /**
  * Explicit gas limits, as for every transaction of the route (the page does not depend on an estimate).
- * Measured on forks of Ethereum and BNB Smart Chain on 2026-11-18 (agent 411's report): a deposit with the native
- * coin used up to about 190,000 gas, a removal up to about 215,000 (both include the protocol-fee mint and, for
- * USDC on Ethereum, the token's proxy). The limits leave about half as much again.
+ * Measured in the fork rehearsal of 2026-11-18 (frontend/integration/browser/liquidity.mjs, forks of Ethereum and
+ * BNB Smart Chain, each with the pending protocol-fee mint and a first-time holder of the shares): a deposit with
+ * the native coin used 221,643 and 227,997 gas, a removal 205,058 to 209,237. The limit leaves about three
+ * quarters as much again, as the swap's limit does over its own measurements.
  */
-export const ADD_LIQUIDITY_GAS = 350_000n;
-export const REMOVE_LIQUIDITY_GAS = 350_000n;
+export const ADD_LIQUIDITY_GAS = 400_000n;
+export const REMOVE_LIQUIDITY_GAS = 400_000n;
 
 export class LiquidityTxError extends Error {}
 function refuse(condition: unknown, message: string): asserts condition {

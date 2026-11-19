@@ -130,6 +130,9 @@ import {
   skimTransaction,
   type Balances,
 } from './mainnet/reads';
+import { LiveScreens } from './live/LiveScreens';
+import type { TokenFact } from './multichain/token-facts';
+import { holdsUntilDeadline } from './mainnet/submission-outcome';
 
 type Option = { key: string; label: string; token: LiveToken; native: boolean };
 type Step = {
@@ -234,6 +237,7 @@ export default function MainnetLive({
   snapshotMaxAgeMs,
   ethRpc,
   confirmation,
+  screens,
 }: {
   network: MainnetNetwork;
   load: () => Promise<MainnetState>;
@@ -248,6 +252,11 @@ export default function MainnetLive({
   ethRpc?: Rpc;
   /** A public network's confirmation rule in words and numbers (the multichain site); none on the Bloch L2. */
   confirmation?: ConfirmationView;
+  /**
+   * Round 20: the Trade, Pools and Portfolio screens with the liquidity dialog (live/LiveScreens.tsx), under the
+   * hash `base`. Set by the multichain site; without it the route is this page alone, as before.
+   */
+  screens?: { base: string; tokenFacts?: TokenFact[] };
 }) {
   const [state, setState] = useState<MainnetState | null>(null);
   const [hold, setHold] = useState<BridgeHold | null>(null);
@@ -441,7 +450,7 @@ export default function MainnetLive({
         headroom(p.reserve0 + (p.excess?.excess0 ?? 0n), p.cap0) === 0n ||
         headroom(p.reserve1 + (p.excess?.excess1 ?? 0n), p.cap1) === 0n,
     );
-  return (
+  const page = (
     <section
       className="page devnet4-page mainnet-page"
       aria-labelledby="mainnet-title"
@@ -574,6 +583,32 @@ export default function MainnetLive({
         {network.bridges.length > 0 && <BridgePanel network={network} />}
       </ReferencePanel>
     </section>
+  );
+  if (!screens) return page;
+  return (
+    <LiveScreens
+      base={screens.base}
+      network={network}
+      live={
+        ready && state.status === 'live' && snapshot
+          ? { deployment: state.deployment, snapshot, multicall3: state.multicall3 }
+          : null
+      }
+      rpc={rpc}
+      wallet={wallet}
+      now={now}
+      pendingSwap={pendingSwap}
+      confirmation={confirmation}
+      receiptPollMs={receiptPollMs}
+      freshness={freshness}
+      busyRef={cardBusy}
+      plannedPairs={planned.pairs}
+      tokenFacts={screens.tokenFacts}
+      slippage={() => formMemory.current?.slippage}
+      onRefresh={() => setGeneration((g) => g + 1)}
+    >
+      {page}
+    </LiveScreens>
   );
 }
 
@@ -1913,7 +1948,11 @@ function SwapPanel({
                     rule={confirmation.rule}
                     blockSeconds={confirmation.blockSeconds}
                     pollMs={receiptPollMs}
-                    reverted={tracked.intent?.kind === 'swap' ? confirmation.reverted : undefined}
+                    reverted={
+                      tracked.intent && holdsUntilDeadline(tracked.intent.kind)
+                        ? confirmation.reverted
+                        : undefined
+                    }
                     now={now}
                   />
                 )}
@@ -2119,10 +2158,10 @@ function SwapPanel({
           kept.amount === amount &&
           kept.slippage === slippage &&
           kept.deadline === deadline && (
-          <p className="microcopy renewal-note" role="status" data-testid="renewal-note">
-            {renewalText(renewedBy, freshness.maxAgeMs)}
-          </p>
-        )}
+            <p className="microcopy renewal-note" role="status" data-testid="renewal-note">
+              {renewalText(renewedBy, freshness.maxAgeMs)}
+            </p>
+          )}
       </div>
       {balances && (
         <p className="microcopy balances-line" aria-label={`${settledCapital()} balances`}>

@@ -36,6 +36,9 @@ export const PAIR_SHARES_ABI = parseAbi([
   'function allowance(address owner, address spender) view returns (uint256)',
 ]);
 const FACTORY_ABI = parseAbi(['function feeTo() view returns (address)']);
+const PAIR_RESERVES_ABI = parseAbi([
+  'function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 timestamp)',
+]);
 
 /** libraries/Math.sol `sqrt` (Babylonian, floor). */
 export function sqrt(y: bigint): bigint {
@@ -407,12 +410,9 @@ export async function readPoolState(
   pool: LivePool,
   wrapped: Address,
 ): Promise<PoolState> {
-  const pairAbi = parseAbi([
-    'function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 timestamp)',
-  ]);
   const [reserve0, reserve1] = await readCall<readonly [bigint, bigint, number]>(
     rpc,
-    pairAbi,
+    PAIR_RESERVES_ABI,
     pool.address,
     'getReserves',
     [],
@@ -430,6 +430,32 @@ export async function readPoolState(
     cap1: pool.cap1,
     excess0: balance0 > reserve0 ? balance0 - reserve0 : 0n,
     excess1: balance1 > reserve1 ? balance1 - reserve1 : 0n,
+  };
+}
+
+/** The pool from the pair's own storage alone: reserves, nothing above them. */
+export async function readPoolReserves(
+  rpc: Rpc,
+  at: BlockTag,
+  pool: LivePool,
+  wrapped: Address,
+): Promise<PoolState> {
+  const [reserve0, reserve1] = await readCall<readonly [bigint, bigint, number]>(
+    rpc,
+    PAIR_RESERVES_ABI,
+    pool.address,
+    'getReserves',
+    [],
+    at,
+  );
+  return {
+    aSide: routerASide(pool, wrapped),
+    reserve0,
+    reserve1,
+    cap0: pool.cap0,
+    cap1: pool.cap1,
+    excess0: 0n,
+    excess1: 0n,
   };
 }
 
@@ -526,7 +552,12 @@ export async function explainLiquidityRevert(
   for (const blockHash of [block.parentHash, block.hash]) {
     try {
       const at = { blockHash };
-      const state = await readPoolState(rpc, at, pool, d.wrapped);
+      // A token contract may be unreadable at an older block where the pair itself still is (an endpoint that no
+      // longer serves that state). The reserves alone decide the ratio and the minimums; what only the token
+      // balances could show (a gift at the pair, the wallet's balance and approval) then stays unknown.
+      const state = await readPoolState(rpc, at, pool, d.wrapped).catch(() =>
+        readPoolReserves(rpc, at, pool, d.wrapped),
+      );
       const shares = await readPoolShares(rpc, at, d, pool.address);
       if (decoded.action === 'add') {
         const outcome = evaluateAdd(
@@ -550,8 +581,23 @@ export async function explainLiquidityRevert(
         )
           return { cause: 'transfer', side: 1, call: decoded };
       } else {
-        const account = await readLiquidityAccount(rpc, blockHash, d, pool, call.from);
-        if (account.shares < decoded.liquidity || account.sharesAllowance < decoded.liquidity)
+        const held = await readCall<bigint>(
+          rpc,
+          PAIR_SHARES_ABI,
+          pool.address,
+          'balanceOf',
+          [call.from],
+          at,
+        );
+        const approved = await readCall<bigint>(
+          rpc,
+          PAIR_SHARES_ABI,
+          pool.address,
+          'allowance',
+          [call.from, d.router],
+          at,
+        );
+        if (held < decoded.liquidity || approved < decoded.liquidity)
           return { cause: 'shares', call: decoded };
         const outcome = evaluateRemove(state, shares, decoded.liquidity);
         if (!outcome.ok) return { cause: 'refused', refusal: outcome.refusal, call: decoded };
@@ -591,6 +637,6 @@ export function liquidityRevertText(
     case 'shares':
       return `It reverted when the router pulled the pool shares: this account's shares or its approval of them were short when it ran. ${tail}`;
     case 'unknown':
-      return `The page could not tell why from the chain. ${tail} Check the transaction in the explorer before you try again.`;
+      return `The page could not tell why from the chain. ${tail} The pool's figures around its block would have let it through, so a token may have refused the transfer (an issuer can pause its token or block an address), or the pool changed inside that block. Check the transaction in the explorer before you try again.`;
   }
 }

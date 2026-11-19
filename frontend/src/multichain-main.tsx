@@ -5,6 +5,7 @@ import './styles/tokens.css';
 import './styles/preview.css';
 import './styles/postern.css';
 import './styles/gate.css';
+import './styles/live-screens.css';
 import { applyTheme, initialTheme } from './shell/theme';
 
 applyTheme(initialTheme());

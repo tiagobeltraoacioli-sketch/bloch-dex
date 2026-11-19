@@ -138,6 +138,18 @@ all of them use the existing blocks (rail notice, bordered status line, bar), no
 | `#/devnet4`                         | zero-value devnet route (development builds only)                                                                                                                                                              |
 | error boundary, local-render banner | full-page states                                                                                                                                                                                               |
 
+## Screens of a live public route (round 20)
+
+On the multichain site a live network has three screens, in the layout the sample-data preview established and
+under a tab row at the top of the page (`#/<network>`, `#/<network>/pools`, `#/<network>/portfolio`): **Trade** is
+the gate itself, unchanged, followed by a Market block (each pool's ratio, reserves and fee at the pinned block);
+**Pools** is the preview's pool list (three figures, the table, the guide block, here the risks of providing
+liquidity, always open); **Portfolio** is the preview's position page (pool share, the two amounts, details,
+activity). Add and remove liquidity open the preview's dialog (a sheet on phones). The rule above holds on all of
+them: where the preview drew a figure this page has no source for (price chart, 24-hour volume and fees, a value
+in a currency, value history), the place says "Not available" with the reason, or is left out; nothing of the
+preview's sample data is in the multichain bundle. Their styles are `src/styles/live-screens.css`.
+
 ## What the design may not do
 
 It may not change what is sent to a wallet or an RPC, weaken or hide a safety message, or show a number the page did
