@@ -36,6 +36,7 @@ const ABI = parseAbi([
   'function approve(address,uint256) returns (bool)',
   'function getReserves() view returns (uint112,uint112,uint32)',
   'function getPair(address,address) view returns (address)',
+  'function factory() view returns (address)',
   'function blacklister() view returns (address)',
   'function blacklist(address)',
   'function unBlacklist(address)',
@@ -199,7 +200,11 @@ try {
     evidence.chains.push(record);
     const wallet = makeWallet(chain);
     const other = privateKeyToAccount(generatePrivateKey());
-    const pair = `0x${(await call(chain, chain.factory, 'getPair', [chain.wrapped.address, chain.token.address])).toString(16).padStart(40, '0')}`;
+    // The factory: the harness's, or read from the router (the stage of walletconnect-rehearsal.mjs does not name it).
+    const factoryOf =
+      chain.factory ??
+      `0x${(await call(chain, chain.router, 'factory')).toString(16).padStart(40, '0')}`;
+    const pair = `0x${(await call(chain, factoryOf, 'getPair', [chain.wrapped.address, chain.token.address])).toString(16).padStart(40, '0')}`;
     const tokenFirst = chain.token.address.toLowerCase() < chain.wrapped.address.toLowerCase();
     const T = chain.token.shown ?? chain.token.symbol;
     const N = chain.native;
@@ -411,16 +416,30 @@ try {
     const closeDialog = () =>
       page.evaluate(`${D}?.querySelector('button[aria-label="Close dialog"]')?.click()`);
 
-    // ---- connect: the new screens send the user to the route's own connect step ----
+    // ---- connect: on the Pools screen itself. The header's wallet button takes the first connect step of the
+    // document and its first enabled button; that must be a connect option of this screen, not a detour. ----
     await page.waitVisibleText(`/(Confirmed|Finalized) block \\d+ is /`, 60_000);
     await tab('Pools');
     await shots('1-pools-not-connected');
-    await page.click('Connect a wallet on the Trade screen');
+    const headerReaches = await page.evaluate(
+      `(() => { const step = document.querySelector('[data-wallet-connect]'); const first = step?.querySelector('button:not(:disabled)'); return { inPools: !!step && !!document.querySelector('[data-view="pools"]')?.contains(step), first: first?.textContent.trim() ?? null, visible: !!first && first.getClientRects().length > 0 }; })()`,
+    );
     await page.click('Connect Harness wallet');
     await page.waitFor(
       'balances',
       `!![...document.querySelectorAll('[aria-label]')].find((x) => / balances$/.test(x.getAttribute('aria-label')))`,
     );
+    check(
+      `${chain.key}: the wallet is connected on the Pools screen itself: the header's button reaches a visible connect option there, and one press connects without leaving the screen`,
+      headerReaches.inPools &&
+        headerReaches.visible &&
+        headerReaches.first === 'Connect Harness wallet' &&
+        (await page.evaluate(
+          `document.querySelector('nav[aria-label="Screens"] a[aria-current="page"]')?.textContent.trim()`,
+        )) === 'Pools',
+      headerReaches,
+    );
+    await tab('Trade');
     await shots('0-trade');
     await tab('Pools');
     await page.waitText('/0%|<0\\.0001%/', 60_000);

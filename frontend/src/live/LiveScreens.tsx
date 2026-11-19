@@ -4,7 +4,14 @@
 // from the route's snapshot and from reads pinned to the same block. Nothing on these screens is a sample: where
 // the preview showed a figure this page has no truthful source for (price history, 24-hour volume and fees,
 // values in a currency), the place says so or is left out.
-import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
+import {
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from 'react';
 import { Info, Minus, Plus, RefreshCw, Wallet } from 'lucide-react';
 import type { Address } from 'viem';
 import { formatAmount } from '../amm';
@@ -17,6 +24,7 @@ import type { usePendingSwap } from '../mainnet/pendingswap';
 import { loadHistory } from '../mainnet/txhistory';
 import { settledCapital, worded, wording } from '../mainnet/wording';
 import { TokenMark } from '../marks/TokenMark';
+import { ConnectSlot, ConnectSlotContext } from '../shell/connect-slot';
 import type { TokenFact } from '../multichain/token-facts';
 import { DEFAULT_SLIPPAGE_BPS } from '../slippage';
 import { CopyButton } from '../ui/CopyButton';
@@ -137,7 +145,28 @@ export function LiveScreens(props: LiveScreensProps) {
   );
   // The wallet is connected by the route's own connect step, which is on the Trade screen. The block carries the
   // attribute the header's wallet button looks for, and stands before the Trade screen in the document.
-  const connect = (
+  // What the site put into the connect slot (agent 410: the mobile wallet on the multichain site), and the
+  // browser wallets the page found. With either, this screen connects by itself, with the same options as the
+  // route's own connect step; with neither it leads to that step on Trade, as before.
+  const slot = useContext(ConnectSlotContext);
+  const direct = wallet.wallets.length > 0 || slot !== null;
+  const connect = direct ? (
+    <div className="wallet-options" data-wallet-connect tabIndex={-1}>
+      {wallet.wallets.map((w) => (
+        <button
+          key={w.id}
+          type="button"
+          className="wallet-option"
+          disabled={wallet.pending}
+          onClick={() => void wallet.connect(w)}
+        >
+          <Wallet size={18} aria-hidden="true" /> Connect {w.name}
+        </button>
+      ))}
+      <ConnectSlot />
+      {wallet.error && <p className="form-error">{wallet.error}</p>}
+    </div>
+  ) : (
     <div className="wallet-options" data-wallet-connect tabIndex={-1}>
       <button
         type="button"
