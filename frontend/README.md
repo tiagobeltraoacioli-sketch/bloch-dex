@@ -114,9 +114,18 @@ chain-switch requests of the page are answered in the page from the approved ses
 refused in the page, so the wallet is never asked to read the chain or to sign a message, and the page keeps
 reading from its own two agreeing endpoints. A transaction is sent only when it names its chain, that chain is
 the one selected in the session and the sender is the session's account; the returned hash is verified by the page
-as for an injected wallet. The approved namespace, every later update and every session event are compared
-exactly; a chain, account set, method or event outside the request closes the session. Session state is kept in
-memory, not in browser storage: a reload ends the session on the page. The dialog draws its own QR code (`qr`);
+as for an injected wallet. The approved namespace and every later update must be `eip155` alone, hold only chains
+that were asked for (the page's among them) and one and the same account, and contain the asked method and
+events. A wallet may list more methods and events than asked (MetaMask Mobile approves its whole list): the
+extra ones are ignored, since the page sends one method and refuses every other one itself, whatever the session
+lists. An `accountsChanged` event may only repeat the namespace's account (anything else ends the session; the
+account changes with a session update). A `chainChanged` event for a chain outside the session is ignored: the
+wallet's selected network is not what a request is for; every request names this page's chain. WalletConnect's
+error code 5000 is read as a user rejection only with one of three sentences read in the wallets' own sources
+(`USER_REJECTION_SENTENCES`); any other 5000 is an unknown outcome and keeps the page's hold. A request the
+session refuses in the page before the relay is called is marked as not sent (`src/wallet-unsent.ts`, a mark a
+wallet cannot set), and the route then releases the intent it had saved instead of holding it. Session state is
+kept in memory, not in browser storage: a reload ends the session on the page. The dialog draws its own QR code (`qr`);
 the AppKit modal is not part of this site's build. `frontend/integration/browser/walletconnect-rehearsal.mjs`
 rehearses the flow with a scripted wallet through the real relay; real phones and real wallets are test 12 of
 `docs/WALLET-MANUAL-TEST.md`.

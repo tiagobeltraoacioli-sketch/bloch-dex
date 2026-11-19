@@ -51,7 +51,8 @@ function rename(file, from, to) {
 rename("404.html", "<title>Postern: no gate here</title>", `<title>${SITE}: no gate here</title>`);
 rename("THIRD-PARTY-NOTICES.txt", "This page is built from PosternDEX's own code", `This page is built from ${SITE}'s own code`);
 const sha256 = (data) => createHash("sha256").update(data).digest("hex");
-const art = join(here, "multichain-public");
+// POSTERN_MULTICHAIN_PUBLIC: another directory for the image, its source and their record (the test of the refusals below).
+const art = process.env.POSTERN_MULTICHAIN_PUBLIC ?? join(here, "multichain-public");
 const made = JSON.parse(readFileSync(join(art, "social-preview.json"), "utf8"));
 if (sha256(readFileSync(join(art, made.source.file))) !== made.source.sha256) throw new Error("multichain-public/social-preview.svg changed since the image was rendered: run scripts/render-social-preview.mjs");
 if (sha256(readFileSync(join(art, made.image.file))) !== made.image.sha256) throw new Error("multichain-public/social-preview.png is not the image scripts/render-social-preview.mjs wrote");

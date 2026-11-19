@@ -135,4 +135,43 @@ describe('multichain-finish.mjs', () => {
     expect(run.status).not.toBe(0);
     expect(run.stderr).toContain('404.html: expected exactly one');
   });
+
+  it('refuses an image whose source changed since it was rendered, and an image that is not the rendered one', () => {
+    const art = (change: (dir: string) => void) => {
+      const dir = mkdtempSync(join(tmpdir(), 'postern-multichain-public-'));
+      made.push(dir);
+      for (const file of ['social-preview.svg', 'social-preview.png', 'social-preview.json'])
+        copyFileSync(join(FRONTEND, 'multichain-public', file), join(dir, file));
+      change(dir);
+      return dir;
+    };
+    const run = (dir: string) =>
+      spawnSync(process.execPath, ['scripts/multichain-finish.mjs', built()], {
+        cwd: FRONTEND,
+        encoding: 'utf8',
+        env: { ...process.env, POSTERN_MULTICHAIN_PUBLIC: dir },
+      });
+    // An untouched copy passes: the refusals below are about the change, not the directory.
+    expect(run(art(() => {})).status).toBe(0);
+    const edited = run(
+      art((dir) =>
+        writeFileSync(
+          join(dir, 'social-preview.svg'),
+          readFileSync(join(dir, 'social-preview.svg'), 'utf8').replace(
+            'Bloch DEX</text>',
+            'Another name</text>',
+          ),
+        ),
+      ),
+    );
+    expect(edited.status).not.toBe(0);
+    expect(edited.stderr).toContain('social-preview.svg changed since the image was rendered');
+    const swapped = run(
+      art((dir) =>
+        copyFileSync(join(FRONTEND, 'public/social-preview.png'), join(dir, 'social-preview.png')),
+      ),
+    );
+    expect(swapped.status).not.toBe(0);
+    expect(swapped.stderr).toContain('is not the image scripts/render-social-preview.mjs wrote');
+  });
 });

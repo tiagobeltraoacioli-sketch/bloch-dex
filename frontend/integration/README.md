@@ -117,7 +117,10 @@ node frontend/integration/browser/walletconnect-rehearsal.mjs --port 48000 --out
 ```
 
 Options: `--chains key,key` (default `base,op-mainnet`; at least two), `--shots DIR` (screenshots), `--stage 1`
-(bring the stage up and hold it; run `browser/multichain-walletconnect.mjs <DIR>/harness.json` by hand).
+(bring the stage up and hold it; run `browser/multichain-walletconnect.mjs <DIR>/harness.json` by hand),
+`--also-page 1` (first run the page rehearsal's own driver, `browser/multichain.mjs`, with its injected simulated
+wallet, on the same stage: `scripts/multichain/rehearse-page.mjs` cannot bring up a chain that already holds the
+deployment).
 It uses the tools of the page rehearsal (`scripts/multichain/rehearse-fork.mjs --hold`, `endpoint-proxy.mjs`,
 `frontend-files.mjs`), builds the site twice (a rehearsal bundle of the forked chains, and the committed records,
 where no chain is live) and serves both on loopback with their own headers. The page runs in headless Chrome
@@ -128,15 +131,21 @@ pixels of the QR image on screen (desktop) or from the wallet-app link (phone em
 What it asserts (`walletconnect-result.json`, schema `postern.frontend.multichain-walletconnect.v1`):
 
 - not live: the header "Connect wallet" shows its note; no socket, no request off the origin, no WalletConnect
-  code loaded;
+  code loaded; at 390 and 360 px the header's network list is a sheet at the bottom of the screen with all six
+  networks on screen;
 - live, before the press: the same three; after it: the proposal the wallet received (nothing required, the live
   chains, one method, two events, the site's name and origin), the origins the page contacted against the
   Content-Security-Policy;
 - on two forked chains: a swap, an approval and a swap of the approved token, each signed by the scripted wallet,
   each checked on the fork, the second chain reached without any switch request to the wallet;
-- refusals: a rejection in the wallet; an account change followed; a chain outside the session; sessions with an
-  added method, an added chain, two accounts, or without the page's network; a declined connection; an update
-  that adds a method; a disconnection by the wallet and by the page; a transaction hash that is on no chain;
+- the first wallet approves MetaMask Mobile's whole list of 31 methods and is connected; in the whole flow it
+  receives nothing but `eth_sendTransaction`;
+- a rejection in the wallet (code 5000 with WalletConnect's and with MetaMask's sentence); code 5000 with a
+  failure text, which keeps the hold; a chain report outside the session, ignored, and a swap after it; an
+  account moved by a session update; an `accountsChanged` for an account the session never approved, which ends
+  it; sessions without `eth_sendTransaction`, with an added chain, with two accounts, or without the page's
+  network; a declined connection; an update that adds a method (accepted) and one that adds a chain (ends the
+  session); a disconnection by the wallet and by the page; a transaction hash that is on no chain;
 - phone emulation: the links of the dialog and a connection through the `wc:` link.
 
 A chain on which the DEX is already deployed is forked from a loopback copy from which the three planned
