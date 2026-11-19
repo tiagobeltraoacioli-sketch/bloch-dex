@@ -468,6 +468,12 @@ describe('the Bloch L2 route of the multichain site, not live', () => {
     );
     expect(document.querySelector('main')!.textContent).not.toMatch(/L2|BLCH|bUSDC|deposit-only/);
     expect(screen.getByTestId('confirmation-rule')).toBeTruthy();
+    // An unknown key shows the first network, as before; names close to the L2's are unknown keys too. (Until
+    // round 20 `bloch-l2` itself was the unknown key of multichain.test.tsx.)
+    for (const unknown of ['mainnet', 'bloch', 'devnet4', 'bloch-l2x', 'Bloch-L2']) {
+      await go(`#/${unknown}`);
+      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Ethereum');
+    }
     // A second segment is not a screen of the L2 route: the route is the one page.
     await go('#/bloch-l2/pools');
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Bloch L2');

@@ -20,7 +20,8 @@ import { bundledChains } from '../multichain/config';
 import { mobileSessionProvider, normalizeApprovedMobileSession } from '../multichain/walletconnect';
 import type { Provider } from '../wallet';
 import { browserLocksForTest } from './browser-locks';
-import { fetchOver, L2_NOW_MS, L2_RPC_URL, liveL2Entry } from './bloch-l2-fixture';
+import { blochL2PolicyUrls } from '../multichain/headers';
+import { BUSDC, fetchOver, L2_NOW_MS, L2_RPC_URL, liveL2Entry } from './bloch-l2-fixture';
 
 const ACCOUNT = '0x72dc623d4c03c996a3d20ed2674f24570e8acf44';
 const noWallet: Devnet4Wallet = {
@@ -239,6 +240,41 @@ describe('the live Bloch L2 route in the multichain shell', () => {
         rpcUrls: [L2_RPC_URL],
       },
     ]);
+  });
+});
+
+describe('the bridge hold of the Bloch L2 in the multichain shell', () => {
+  it('is read as on the Bloch L2 site, from the Ethereum RPC of the network file’s status block, and the policy names exactly the endpoints contacted', async () => {
+    const ethRpcUrl = 'https://ethereum-rpc.example.invalid';
+    const held = await liveL2Entry((files) => {
+      files.network.bridges[0].status = {
+        ethRpcUrl,
+        vault: `0x${'11'.repeat(20)}`,
+        token: BUSDC,
+        vaultCodeHash: `0x${'33'.repeat(32)}`,
+      };
+    });
+    // An "Ethereum" endpoint that serves another chain: the hold cannot be checked, and the page says so.
+    const eth = vi.fn(async (method: string) => {
+      if (method === 'eth_chainId') return '0x2';
+      throw new Error(`unexpected ${method}`);
+    });
+    const over = fetchOver(held.rpc, { [ethRpcUrl]: eth });
+    vi.stubGlobal('fetch', over.fetch);
+    render(<MultichainApplication l2={held.entry} />);
+    await screen.findByTestId('trust-strip');
+    const status = await screen.findByLabelText('Bridge exit status');
+    expect(status.textContent).toBe(
+      'Whether bUSDC can leave to Ethereum could not be checked (the Ethereum RPC serves another chain). Check the bridge page before you buy bUSDC or remove liquidity from a bUSDC pool.',
+    );
+    expect(eth).toHaveBeenCalledWith('eth_chainId', []);
+    // What the route contacted is what `connect-src` gains for a live L2, origin for origin: no more, no less.
+    const contacted = new Set(over.urls.map((u) => new URL(u).origin));
+    const named = new Set(
+      blochL2PolicyUrls(held.files.network, held.files.record).map((u) => new URL(u).origin),
+    );
+    expect(contacted).toEqual(new Set([L2_RPC_URL, ethRpcUrl]));
+    expect(named).toEqual(contacted);
   });
 });
 

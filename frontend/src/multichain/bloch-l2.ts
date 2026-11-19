@@ -100,6 +100,8 @@ export type BlochL2Entry = {
   load: () => Promise<MainnetState>;
   /** The L2's own reader: one endpoint, read at the chain's finalized block by the route. */
   rpc: Rpc;
+  /** Lines the shell prints above a route for a listed token that carries a note: the L2 file has none. */
+  tokenNotes: string[];
   phase: L2Phase;
 };
 
@@ -126,6 +128,7 @@ export function blochL2Entry(
         s.status === 'not-live' ? { ...s, reasons: notLiveReasons(s.reasons, phase) } : s,
       ),
     rpc: httpRpc(network.rpcUrl),
+    tokenNotes: [],
     phase,
   };
 }

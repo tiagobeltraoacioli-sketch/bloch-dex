@@ -46,7 +46,7 @@ export function BlochL2Route({
             {L2_SCREENS_NOTE}
           </p>
           {mobileSession ? (
-            <p className="notice" role="status" data-testid="l2-mobile-session-note">
+            <p className="notice token-note" role="status" data-testid="l2-mobile-session-note">
               {L2_MOBILE_SESSION_NOTE}
             </p>
           ) : (

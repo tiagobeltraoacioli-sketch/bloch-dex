@@ -73,12 +73,16 @@ export function liveL2Files(): { network: Json; record: Json } {
  * `loadMainnetState`); only the runtime code hashes are then replaced by those of the fake chain's code, as
  * mainnet.test.tsx does, because no test chain holds the real bytecode.
  */
-export async function liveL2Entry(): Promise<{
+export async function liveL2Entry(
+  change: (files: { network: Json; record: Json }) => void = () => {},
+): Promise<{
   entry: BlochL2Entry;
   rpc: Rpc;
   calls: { method: string; params: unknown[] }[];
+  files: { network: Json; record: Json };
 }> {
   const files = liveL2Files();
+  change(files);
   const real = blochL2Entry(files);
   const state = await real.load();
   if (state.status !== 'live') throw new Error('expected a live state');
@@ -169,11 +173,14 @@ export async function liveL2Entry(): Promise<{
         throw new Error(`unexpected ${method}`);
     }
   };
-  return { entry: { ...real, load: () => Promise.resolve(live) }, rpc, calls };
+  return { entry: { ...real, load: () => Promise.resolve(live) }, rpc, calls, files };
 }
 
 /** `fetch` for the entry's own reader (`httpRpc`): JSON-RPC over the fake chain, with every URL it was asked at. */
-export function fetchOver(rpc: Rpc): { fetch: typeof fetch; urls: string[] } {
+export function fetchOver(
+  rpc: Rpc,
+  others: Record<string, Rpc> = {},
+): { fetch: typeof fetch; urls: string[] } {
   const urls: string[] = [];
   const impl = async (input: RequestInfo | URL, init?: RequestInit) => {
     urls.push(String(input));
@@ -183,7 +190,7 @@ export function fetchOver(rpc: Rpc): { fetch: typeof fetch; urls: string[] } {
       params: unknown[];
     };
     try {
-      const result = await rpc(body.method, body.params);
+      const result = await (others[String(input)] ?? rpc)(body.method, body.params);
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), { status: 200 });
     } catch (error) {
       return new Response(

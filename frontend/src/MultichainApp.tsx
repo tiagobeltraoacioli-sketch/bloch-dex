@@ -223,7 +223,7 @@ export function MultichainApplication({
         </p>
       )}
       {/* Agent 343's token notes (a label such as "USDC (Binance-Peg)" is explained on screen, without a click). */}
-      {(isBlochL2(chain) ? [] : chain.tokenNotes).map((note) => (
+      {chain.tokenNotes.map((note) => (
         <p className="muted token-note" data-testid="token-note" key={note}>
           {note}
         </p>

@@ -152,6 +152,21 @@ const L2_WORDS = /Bloch|BLCH|bUSDC|\bL2\b|new storage slot|heartbeat|Safe\b/;
 // The site's name since 2026-11-18 (owner): "Bloch DEX". It is the one place where the word may appear on a
 // public-chain route; the guard is applied to the text with the name taken out, as in src/test/multichain.test.tsx.
 const SITE = 'Bloch DEX';
+// Restated in round 20 (agent 415): the Bloch L2 is the seventh network of the site, so every page has the controls
+// that lead to its route: one link in the header's list and, while the switcher is open, one row. They are checked
+// to be exactly that (a link to #/bloch-l2 whose text begins with the network's name) and only they are taken out
+// of the text for the moment of the read; every other word of the page is held to the guard as before.
+const TEXT_WITHOUT_L2_LINK = `(() => {
+  const named = [...document.querySelectorAll('a[href="#/bloch-l2"]')];
+  if (named.length < 1 || named.length > 2 || !named.every((a) => /^\s*Bloch L2/.test(a.textContent))) return null;
+  const kept = named.map((a) => [a, a.style.getPropertyValue('display'), a.style.getPropertyPriority('display')]);
+  for (const [a] of kept) a.style.setProperty('display', 'none', 'important');
+  try {
+    return document.body.innerText.replace(/\s+/g, ' ');
+  } finally {
+    for (const [a, value, priority] of kept) value ? a.style.setProperty('display', value, priority) : a.style.removeProperty('display');
+  }
+})()`;
 
 const browser = await launch(config.chrome, config.debugPort);
 let unexpected = null;
@@ -243,7 +258,8 @@ try {
     }
     const text = await flat();
     const onScreen = await page.visibleText();
-    check(`${chain.key}: the page shows this network's words and none of the Bloch L2's`, new RegExp(`${SITE} on ${chain.name}`).test(text) && !L2_WORDS.test(text.replaceAll(SITE, '')), L2_WORDS.exec(text.replaceAll(SITE, ''))?.[0]);
+    const guarded = await page.evaluate(TEXT_WITHOUT_L2_LINK);
+    check(`${chain.key}: the page shows this network's words and none of the Bloch L2's (the link to the seventh network apart)`, new RegExp(`${SITE} on ${chain.name}`).test(text) && guarded !== null && !L2_WORDS.test(guarded.replaceAll(SITE, '')), guarded === null ? 'the link to the Bloch L2 route is not as expected' : L2_WORDS.exec(guarded.replaceAll(SITE, ''))?.[0]);
     // Merge (agent 366): the redesign's on-screen check (visible text, the pay chip reachable) with 360's label rule
     // (review R344-UI-16): a token with a label is printed under its label, with its note on screen.
     const shown = chain.token.shown ?? chain.token.symbol;

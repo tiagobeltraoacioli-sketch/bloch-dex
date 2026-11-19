@@ -80,31 +80,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/**
- * The Bloch-words guard of a PUBLIC-chain route, restated for the site with seven networks (agent 415, round 20).
- * It exists so that nobody mistakes an asset on a public chain for a Bloch L2 asset. Since the Bloch L2 is a
- * network of this site, two controls name it so that it can be chosen: its link in the header's list and its row
- * in the network switcher. Each is checked to be exactly that (a link to the L2 route whose text is the network's
- * name) and only those elements are set aside; with the site's name taken out as before, no other text of the
- * page, and nothing at all inside the route (the `main` region), may say Bloch, BLCH or bUSDC.
- */
-function publicRouteWords(): string {
-  const route = document.querySelector('main')!.textContent!.replaceAll('Bloch DEX', '');
-  expect(route).not.toMatch(/Bloch|BLCH|bUSDC/);
-  const copy = document.body.cloneNode(true) as HTMLElement;
-  const named = [...copy.querySelectorAll('a[href="#/bloch-l2"]')];
-  // One link in the header list; one more row while the switcher is open.
-  expect(named.length === 1 || named.length === 2).toBe(true);
-  expect(named[0].closest('nav')!.getAttribute('aria-label')).toBe('Networks');
-  expect(named[0].textContent).toBe('Bloch L2');
-  if (named[1]) {
-    expect(named[1].className).toBe('network-row');
-    expect(named[1].textContent).toMatch(/^Bloch L2Chain 700770 · (Not yet live|Live)$/);
-  }
-  for (const link of named) link.remove();
-  return copy.textContent!.replaceAll('Bloch DEX', '');
-}
-
 describe('multichain configuration', () => {
   it('bundles the six chains, none of them the Bloch L2, each with two https endpoints and the fee address', () => {
     const chains = bundledChains();
@@ -375,6 +350,31 @@ describe('multichain headers', () => {
   });
 });
 
+/**
+ * The Bloch-words guard of a PUBLIC-chain route, restated for the site with seven networks (agent 415, round 20).
+ * It exists so that nobody mistakes an asset on a public chain for a Bloch L2 asset. Since the Bloch L2 is a
+ * network of this site, two controls name it so that it can be chosen: its link in the header's list and its row
+ * in the network switcher. Each is checked to be exactly that (a link to the L2 route whose text is the network's
+ * name) and only those elements are set aside; with the site's name taken out as before, no other text of the
+ * page, and nothing at all inside the route (the `main` region), may say Bloch, BLCH or bUSDC.
+ */
+function publicRouteWords(): string {
+  const route = document.querySelector('main')!.textContent!.replaceAll('Bloch DEX', '');
+  expect(route).not.toMatch(/Bloch|BLCH|bUSDC/);
+  const copy = document.body.cloneNode(true) as HTMLElement;
+  const named = [...copy.querySelectorAll('a[href="#/bloch-l2"]')];
+  // One link in the header list; one more row while the switcher is open.
+  expect(named.length === 1 || named.length === 2).toBe(true);
+  expect(named[0].closest('nav')!.getAttribute('aria-label')).toBe('Networks');
+  expect(named[0].textContent).toBe('Bloch L2');
+  if (named[1]) {
+    expect(named[1].className).toBe('network-row');
+    expect(named[1].textContent).toMatch(/^Bloch L2Chain 700770 · (Not yet live|Live)$/);
+  }
+  for (const link of named) link.remove();
+  return copy.textContent!.replaceAll('Bloch DEX', '');
+}
+
 describe('multichain application', () => {
   it('offers the seven networks (the six public chains, then the Bloch L2), shows the selected one as not yet live, and makes no request', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
@@ -473,14 +473,11 @@ describe('multichain application', () => {
       'USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.',
     );
     expect(document.title).toBe('Bloch DEX — BNB Smart Chain');
-    // An unknown key shows the first network. (Before round 20 the unknown key of this test was `bloch-l2`, which
-    // is the seventh network's route now: multichain-bloch-l2.test.tsx.)
-    for (const unknown of ['mainnet', 'bloch', 'devnet4', 'bloch-l2x']) {
-      await act(async () => {
-        history.replaceState(null, '', `/#/${unknown}`);
-        window.dispatchEvent(new HashChangeEvent('hashchange'));
-      });
-      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Ethereum');
-    }
+    // An unknown key shows the first network.
+    await act(async () => {
+      history.replaceState(null, '', '/#/no-such-network');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Ethereum');
   });
 });
