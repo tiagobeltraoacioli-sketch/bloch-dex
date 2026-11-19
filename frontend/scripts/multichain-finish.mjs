@@ -6,6 +6,11 @@
 // multichain.html becomes index.html, and _headers is written with a Content-Security-Policy that names every
 // endpoint of every bundled chain (--bundle: the same rehearsal file the build was given; then the policy names
 // the loopback forks and drops upgrade-insecure-requests, because a rehearsal is served over plain http).
+// The Bloch L2, the site's seventh network, is not in that list of chains: its endpoints come from the Bloch L2
+// site's own two files (deployments/mainnet/frontend.network.json and dex-mainnet.record.json) and enter the
+// policy only when those files make its route live (src/multichain/headers.ts `blochL2PolicyUrls`).
+// POSTERN_MAINNET_NETWORK / POSTERN_MAINNET_RECORD: the same two rehearsal overrides as the L2 site's build
+// (vite.config.ts), which the multichain build takes as well; with either, the build is a rehearsal.
 // The files of public/ are shared with the Bloch L2 site and say "Postern"; the multichain site is "Bloch DEX"
 // (owner, 2026-11-18; review R412-7). Three of them name the site and are put right here, in the output only:
 // the 404 page's title, the first sentence of THIRD-PARTY-NOTICES.txt, and social-preview.png, which is replaced
@@ -16,7 +21,7 @@ import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } fro
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderHeadersFile } from "../src/mainnet/headers.ts";
-import { multichainHeadersFile } from "../src/multichain/headers.ts";
+import { blochL2PolicyUrls, multichainHeadersFile } from "../src/multichain/headers.ts";
 
 const here = fileURLToPath(new URL("..", import.meta.url));
 const argv = process.argv.slice(2);
@@ -31,9 +36,12 @@ else {
   const shared = JSON.parse(readFileSync(join(here, "../deployments/multichain.json"), "utf8"));
   networks = shared.chains.map((key) => JSON.parse(readFileSync(join(here, "../deployments", key, "frontend.network.json"), "utf8")));
 }
-const urls = networks.flatMap((n) => n.rpc.urls);
+const l2Override = Boolean(process.env.POSTERN_MAINNET_NETWORK || process.env.POSTERN_MAINNET_RECORD);
+const l2File = (name, committed) => JSON.parse(readFileSync(process.env[name] ?? join(here, "../deployments/mainnet", committed), "utf8"));
+const l2Urls = blochL2PolicyUrls(l2File("POSTERN_MAINNET_NETWORK", "frontend.network.json"), l2File("POSTERN_MAINNET_RECORD", "dex-mainnet.record.json"));
+const urls = [...networks.flatMap((n) => n.rpc.urls), ...l2Urls];
 let headers = multichainHeadersFile(urls, renderHeadersFile);
-if (bundleFile) headers = headers.replace(/; *upgrade-insecure-requests/, "");
+if (bundleFile || l2Override) headers = headers.replace(/; *upgrade-insecure-requests/, "");
 if (existsSync(join(out, "multichain.html"))) renameSync(join(out, "multichain.html"), join(out, "index.html"));
 if (!existsSync(join(out, "index.html"))) throw new Error(`${out} holds no built page`);
 writeFileSync(join(out, "_headers"), headers);
@@ -57,4 +65,4 @@ const made = JSON.parse(readFileSync(join(art, "social-preview.json"), "utf8"));
 if (sha256(readFileSync(join(art, made.source.file))) !== made.source.sha256) throw new Error("multichain-public/social-preview.svg changed since the image was rendered: run scripts/render-social-preview.mjs");
 if (sha256(readFileSync(join(art, made.image.file))) !== made.image.sha256) throw new Error("multichain-public/social-preview.png is not the image scripts/render-social-preview.mjs wrote");
 copyFileSync(join(art, made.image.file), join(out, "social-preview.png"));
-console.log(`multichain site: ${out}/index.html and _headers (${new Set(urls.map((u) => new URL(u).origin)).size} RPC origins in connect-src)`);
+console.log(`multichain site: ${out}/index.html and _headers (${new Set(urls.map((u) => new URL(u).origin)).size} RPC origins in connect-src; Bloch L2: ${l2Urls.length ? `live, ${l2Urls.length} origin${l2Urls.length > 1 ? "s" : ""}` : "not live, no origin"})`);

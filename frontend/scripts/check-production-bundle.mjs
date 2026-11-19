@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // Release gate for a built site: node scripts/check-production-bundle.mjs <dist> [--multichain]
 // --multichain: <dist> is the multichain site (npm run build:multichain); its CSP is checked against the per-chain
-// network files of deployments/multichain.json instead of the Bloch L2's (review R309-UI-6).
+// network files of deployments/multichain.json instead of the Bloch L2's (review R309-UI-6), and, since the Bloch
+// L2 is that site's seventh network (round 20), against the Bloch L2's two files as well: its endpoints must be in
+// the policy when they make its route live and must not be while they do not, and the whole _headers file must be
+// the one the committed files give.
 // (ported from the bridge frontend line, e3c9d31, by frontends-sec r10; the DEX tree has no bridge-only build)
 // Fails on dev RPCs, loopback endpoints, test keys, source maps, or a CSP that
 // does not allow the RPCs the committed config publishes.
@@ -12,6 +15,8 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { renderHeadersFile } from '../src/mainnet/headers.ts';
+import { blochL2PolicyUrls, multichainHeadersFile } from '../src/multichain/headers.ts';
 
 const multichain = process.argv.includes('--multichain');
 const [dist] = process.argv.slice(2).filter((a) => a !== '--multichain');
@@ -97,8 +102,10 @@ const csp = readFileSync(join(dist, '_headers'), 'utf8').match(/connect-src ([^;
 const network = committed('frontend.network.json');
 const allowed = csp.split(' ').filter(Boolean);
 if (multichain) {
-  // Every reviewed endpoint of every chain, and nothing else that is an RPC: the Bloch L2's endpoint is not part
-  // of this site.
+  // Every reviewed endpoint of every chain, and nothing else that is an RPC. The Bloch L2's endpoints are part of
+  // this site's policy exactly when its committed record and network file make its route live (restated in round
+  // 20 from "never": the L2 is the site's seventh network; while its route cannot read, its RPC in the policy is
+  // still a hit).
   const deployments = (file) =>
     JSON.parse(readFileSync(new URL(`../../deployments/${file}`, import.meta.url), 'utf8'));
   const wanted = new Set();
@@ -108,9 +115,31 @@ if (multichain) {
       if (!allowed.includes(new URL(url).origin))
         hits.push(['_headers', 'RPC missing from connect-src', url]);
     }
-  if (allowed.includes(new URL(network.rpc.url).origin))
-    hits.push(['_headers', 'the Bloch L2 RPC is in the multichain connect-src', network.rpc.url]);
-  console.log(`multichain: ${wanted.size} endpoint origin(s) required in connect-src`);
+  const l2Urls = blochL2PolicyUrls(network, committed('dex-mainnet.record.json'));
+  if (l2Urls.length === 0 && allowed.includes(new URL(network.rpc.url).origin))
+    hits.push([
+      '_headers',
+      'the Bloch L2 RPC is in the multichain connect-src while its route cannot be live',
+      network.rpc.url,
+    ]);
+  for (const url of l2Urls) {
+    wanted.add(new URL(url).origin);
+    if (!allowed.includes(new URL(url).origin))
+      hits.push(['_headers', 'Bloch L2 endpoint missing from connect-src', url]);
+  }
+  // Nothing broader: the file is exactly the one these committed files give (the same call as
+  // scripts/multichain-finish.mjs makes).
+  const publicUrls = deployments('multichain.json').chains.flatMap(
+    (key) => deployments(`${key}/frontend.network.json`).rpc.urls,
+  );
+  if (
+    readFileSync(join(dist, '_headers'), 'utf8') !==
+    multichainHeadersFile([...publicUrls, ...l2Urls], renderHeadersFile)
+  )
+    hits.push(['_headers', '_headers is not the policy the committed files give', '']);
+  console.log(
+    `multichain: ${wanted.size} endpoint origin(s) required in connect-src (Bloch L2: ${l2Urls.length})`,
+  );
   // The files this site shares with the Bloch L2 site's public/ and that name the site: the multichain site is
   // "Bloch DEX" (scripts/multichain-finish.mjs puts the three right; review R412-7).
   const title =

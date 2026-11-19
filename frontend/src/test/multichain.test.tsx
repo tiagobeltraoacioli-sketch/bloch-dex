@@ -10,7 +10,9 @@ import { renderHeadersFile } from '../mainnet/headers';
 import { BLOCH_L2_WORDING, setWording, wording } from '../mainnet/wording';
 import bundle from '../multichain/bundle';
 import { bundledChains, parseChain, parseRecord } from '../multichain/config';
-import { multichainHeadersFile } from '../multichain/headers';
+import { blochL2PolicyUrls, multichainHeadersFile } from '../multichain/headers';
+import l2Network from '../../../deployments/mainnet/frontend.network.json';
+import l2Record from '../../../deployments/mainnet/dex-mainnet.record.json';
 import { fallbackRpc } from '../multichain/rpc';
 
 // Agent 410: the mobile-wallet session module and the WalletConnect client are loaded only when the user presses
@@ -77,6 +79,31 @@ afterEach(() => {
   setWording({ ...BLOCH_L2_WORDING });
   vi.unstubAllGlobals();
 });
+
+/**
+ * The Bloch-words guard of a PUBLIC-chain route, restated for the site with seven networks (agent 415, round 20).
+ * It exists so that nobody mistakes an asset on a public chain for a Bloch L2 asset. Since the Bloch L2 is a
+ * network of this site, two controls name it so that it can be chosen: its link in the header's list and its row
+ * in the network switcher. Each is checked to be exactly that (a link to the L2 route whose text is the network's
+ * name) and only those elements are set aside; with the site's name taken out as before, no other text of the
+ * page, and nothing at all inside the route (the `main` region), may say Bloch, BLCH or bUSDC.
+ */
+function publicRouteWords(): string {
+  const route = document.querySelector('main')!.textContent!.replaceAll('Bloch DEX', '');
+  expect(route).not.toMatch(/Bloch|BLCH|bUSDC/);
+  const copy = document.body.cloneNode(true) as HTMLElement;
+  const named = [...copy.querySelectorAll('a[href="#/bloch-l2"]')];
+  // One link in the header list; one more row while the switcher is open.
+  expect(named.length === 1 || named.length === 2).toBe(true);
+  expect(named[0].closest('nav')!.getAttribute('aria-label')).toBe('Networks');
+  expect(named[0].textContent).toBe('Bloch L2');
+  if (named[1]) {
+    expect(named[1].className).toBe('network-row');
+    expect(named[1].textContent).toMatch(/^Bloch L2Chain 700770 · (Not yet live|Live)$/);
+  }
+  for (const link of named) link.remove();
+  return copy.textContent!.replaceAll('Bloch DEX', '');
+}
 
 describe('multichain configuration', () => {
   it('bundles the six chains, none of them the Bloch L2, each with two https endpoints and the fee address', () => {
@@ -325,12 +352,23 @@ describe('multichain wording and clock', () => {
 });
 
 describe('multichain headers', () => {
-  it('names every bundled endpoint in connect-src and not the Bloch L2 RPC', () => {
+  // Restated (agent 415, round 20): the Bloch L2 is a network of this site now, so the pin is no longer "never the
+  // Bloch L2 RPC" but "the Bloch L2 RPC only when the built site can contact it". With the committed L2 files (the
+  // record `not-deployed`, the RPC a placeholder, no genesis pinned) the route sends no request, so the policy
+  // must not name the L2 endpoint: the published text is what it was. The live case and every state in between are
+  // in multichain-bloch-l2.test.tsx.
+  it('names every bundled endpoint in connect-src, and the Bloch L2 RPC not while the L2 route cannot be live', () => {
     const urls = bundledChains().flatMap((c) => c.rpcUrls);
-    const file = multichainHeadersFile(urls, renderHeadersFile);
+    expect(blochL2PolicyUrls(l2Network, l2Record)).toEqual([]);
+    const file = multichainHeadersFile(
+      [...urls, ...blochL2PolicyUrls(l2Network, l2Record)],
+      renderHeadersFile,
+    );
     const csp = file.split('\n').find((l) => l.includes('Content-Security-Policy'))!;
     for (const url of urls) expect(csp).toContain(` ${new URL(url).origin} `);
     expect(csp).not.toContain('blochl1.com');
+    // Nothing broader: the policy is exactly the one of the six public chains' endpoints.
+    expect(file).toBe(multichainHeadersFile(urls, renderHeadersFile));
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain('upgrade-insecure-requests');
     expect(file.split('\n')[0]).toMatch(/multichain/);
@@ -338,7 +376,7 @@ describe('multichain headers', () => {
 });
 
 describe('multichain application', () => {
-  it('offers the six networks, shows the selected one as not yet live, and makes no request', async () => {
+  it('offers the seven networks (the six public chains, then the Bloch L2), shows the selected one as not yet live, and makes no request', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const sockets = socketSpy();
     history.replaceState(null, '', '/#/base');
@@ -351,6 +389,7 @@ describe('multichain application', () => {
       'OP Mainnet',
       'Linea',
       'BNB Smart Chain',
+      'Bloch L2',
     ]);
     expect(nav.querySelector('[aria-current="page"]')!.textContent).toBe('Base');
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Base');
@@ -368,10 +407,11 @@ describe('multichain application', () => {
     );
     expect(panel.textContent).toContain('Pools: WETH/USDC.');
     expect(screen.queryByRole('button', { name: 'Swap' })).toBeNull();
-    // The site is named "Bloch DEX" (owner, 2026-11-18). Apart from that name, nothing of the Bloch L2 (the chain,
-    // BLCH, bUSDC) may appear on a public-chain route: the guard keeps its meaning with the name taken out.
+    // The site is named "Bloch DEX" (owner, 2026-11-18). Apart from that name and the two controls that lead to
+    // the seventh network, nothing of the Bloch L2 (the chain, BLCH, bUSDC) may appear on a public-chain route
+    // (`publicRouteWords` above; every public route is walked in multichain-bloch-l2.test.tsx).
     expect(document.body.textContent).toContain('Bloch DEX');
-    expect(document.body.textContent!.replaceAll('Bloch DEX', '')).not.toMatch(/Bloch|BLCH|bUSDC/);
+    expect(publicRouteWords()).not.toMatch(/Bloch|BLCH|bUSDC/);
     expect(fetchSpy).not.toHaveBeenCalled();
     // Agent 410: nor is the mobile-wallet path there: no connect step, no session module, no client, no socket.
     expect(document.querySelector('[data-wallet-connect]')).toBeNull();
@@ -407,7 +447,7 @@ describe('multichain application', () => {
     expect(region.textContent).toBe(connectUnavailableNote('Linea'));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(document.querySelector('[data-mobile-wallet]')).toBeNull();
-    expect(document.body.textContent!.replaceAll('Bloch DEX', '')).not.toMatch(/Bloch|BLCH|bUSDC/);
+    expect(publicRouteWords()).not.toMatch(/Bloch|BLCH|bUSDC/);
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
     expect(loaded).toEqual({ session: 0, client: 0, init: 0 });
@@ -433,11 +473,14 @@ describe('multichain application', () => {
       'USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.',
     );
     expect(document.title).toBe('Bloch DEX — BNB Smart Chain');
-    // An unknown key shows the first network.
-    await act(async () => {
-      history.replaceState(null, '', '/#/bloch-l2');
-      window.dispatchEvent(new HashChangeEvent('hashchange'));
-    });
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Ethereum');
+    // An unknown key shows the first network. (Before round 20 the unknown key of this test was `bloch-l2`, which
+    // is the seventh network's route now: multichain-bloch-l2.test.tsx.)
+    for (const unknown of ['mainnet', 'bloch', 'devnet4', 'bloch-l2x']) {
+      await act(async () => {
+        history.replaceState(null, '', `/#/${unknown}`);
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+      expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Bloch DEX on Ethereum');
+    }
   });
 });

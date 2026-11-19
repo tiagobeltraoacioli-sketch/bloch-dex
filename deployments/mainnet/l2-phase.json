@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "domain": "postern.dex.l2-network-phase.v1",
+  "network": "bloch-l2-mainnet",
+  "chainId": 700770,
+  "userTransactions": "not-enabled",
+  "note": "What the Bloch L2 accepts, for the Bloch DEX site's Bloch L2 route while that route is not live (frontend/src/multichain/bloch-l2.ts). not-enabled: the L2 runs its deposit-only launch release (docs/MAINNET-700770-PACKAGE.md), which takes no user transaction, so the first precondition of the deployment runbook (docs/MAINNET-READINESS.md, section 6: the L2 accepts user transactions) does not hold and the exchange cannot be deployed there. Set enabled in a reviewed change once an L2 release that accepts user transactions is the one in production. This file configures nothing: the route goes live by dex-mainnet.record.json and frontend.network.json alone, and a live route does not show this field."
+}

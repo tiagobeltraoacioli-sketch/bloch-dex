@@ -1,4 +1,5 @@
-// The multichain site: the DEX on public EVM chains other than the Bloch L2 (docs/MULTICHAIN-DEPLOY.md). A
+// The multichain site: the DEX on public EVM chains other than the Bloch L2 (docs/MULTICHAIN-DEPLOY.md), and
+// since round 20 the Bloch L2 itself as a seventh network of its own kind (`BLOCH_L2` below). A
 // network selector over the bundled chains; the selected chain is shown by the same route component as the
 // Bloch L2 mainnet (MainnetLive), with that chain's network file, record, endpoints and wording. Selecting a
 // network asks nothing of the wallet: the wallet is asked to switch (wallet_switchEthereumChain, then
@@ -20,8 +21,16 @@ import { networkEntries } from './shell/networks';
 import { NetworkGlyph } from './marks/NetworkGlyph';
 import { ConnectSlotContext } from './shell/connect-slot';
 import { useMobileWalletConnect } from './multichain/MobileWalletConnect';
+import { blochL2Entry, isBlochL2, type BlochL2Entry } from './multichain/bloch-l2';
+import { BlochL2Route } from './multichain/BlochL2Route';
 
 const CHAINS = bundledChains();
+/**
+ * The seventh network (owner, 2026-11-19): the Bloch L2, from the Bloch L2 site's own files, with its own reader
+ * and rules (multichain/bloch-l2.ts). It is not a chain of deployments/multichain.json and takes none of the
+ * public chains' props below.
+ */
+const BLOCH_L2 = blochL2Entry();
 /** The token list's statement per listed token (the liquidity screens' issuer-powers line). */
 const TOKEN_FACTS = tokenFacts();
 /** A pending swap is looked up this often: these chains settle in seconds, the Bloch L2 route's default is 10 s. */
@@ -45,14 +54,25 @@ export const connectUnavailableNote = (chainName: string) =>
 export const MULTICHAIN_RENDER_BANNER =
   'Local rehearsal build against loopback forks: not for publication.';
 
-const keyFromHash = (chains: Chain[]): string => {
+const keyFromHash = (chains: { key: string }[]): string => {
   // The first segment names the network; a second names a screen of it (`#/ethereum/pools`, live/view.ts).
   const wanted = routeKeyOfHash(location.hash);
   return chains.some((c) => c.key === wanted) ? wanted : chains[0].key;
 };
 
-export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] }) {
+export function MultichainApplication({
+  chains: publicChains = CHAINS,
+  l2 = BLOCH_L2,
+}: {
+  chains?: Chain[];
+  /** The Bloch L2 entry, listed after the public chains; `null` leaves it out. */
+  l2?: BlochL2Entry | null;
+}) {
   const wallet = useWallet();
+  const chains = useMemo<(Chain | BlochL2Entry)[]>(
+    () => (l2 ? [...publicChains, l2] : publicChains),
+    [publicChains, l2],
+  );
   const [key, setKey] = useState(() => keyFromHash(chains));
   useEffect(() => {
     const change = () => setKey(keyFromHash(chains));
@@ -64,16 +84,24 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
   // The route's chain words, before it renders (mainnet/wording.ts).
   setWording(chain.wording);
   // Hash-pinned reads from two agreeing endpoints, settled by this chain's confirmation rule (multichain/rpc.ts).
-  const rpc = useMemo(() => chainHttpRpc(chain.rpcUrls, chain.confirmation), [chain]);
+  // The Bloch L2 has neither: its route (multichain/BlochL2Route.tsx) reads through its entry's own reader and
+  // gets no confirmation rule; for it the value below is that same reader and is not passed on from here.
+  const rpc = useMemo(
+    () => (isBlochL2(chain) ? chain.rpc : chainHttpRpc(chain.rpcUrls, chain.confirmation)),
+    [chain],
+  );
   // What the route shows of the rule: the note (always on the page) and the count a sent swap is measured by.
   const confirmationView = useMemo(
-    () => ({
-      note: chain.confirmationNote,
-      rule: chain.confirmation.settle,
-      blockSeconds: chain.blockSeconds,
-      // A reverted swap holds the account until this rule has passed (submission-outcome.ts `revertedOf`).
-      reverted: chain.confirmation.reverted ?? chain.confirmation.strict,
-    }),
+    () =>
+      isBlochL2(chain)
+        ? undefined
+        : {
+            note: chain.confirmationNote,
+            rule: chain.confirmation.settle,
+            blockSeconds: chain.blockSeconds,
+            // A reverted swap holds the account until this rule has passed (submission-outcome.ts `revertedOf`).
+            reverted: chain.confirmation.reverted ?? chain.confirmation.strict,
+          },
     [chain],
   );
   useEffect(() => {
@@ -97,10 +125,13 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
   }, [chains]);
   // The mobile-wallet session is offered the networks whose bundled record is live, and only those: a record goes
   // live with a new build of the site, which a session (kept in memory) does not outlive anyway.
+  // Never the Bloch L2 (agent 415): wallet apps do not know chain 700770 and a network cannot be added inside a
+  // session, so asking for it would change what every wallet is shown on the six public networks for a chain the
+  // session could not serve. Its route says which connection works there (multichain/BlochL2Route.tsx).
   const liveChains = useMemo(
     () =>
       chains
-        .filter((c) => live[c.key])
+        .filter((c) => !isBlochL2(c) && live[c.key])
         .map((c) => ({ chainId: c.network.chainId, name: c.network.chainName })),
     [chains, live],
   );
@@ -167,11 +198,19 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
           <span className="footer-status">
             {chain.network.chainName} · chain {chain.network.chainId}
           </span>
-          <span className="muted">
-            Reviewed deployment record · Reads pinned to one block, from two endpoints that agree ·
-            Explicit wallet transactions · The same contracts on every listed network; each network
-            has its own pools and liquidity
-          </span>
+          {isBlochL2(chain) ? (
+            // The Bloch L2 site's own line: one endpoint read at the chain's finalized block, and fixed caps.
+            <span className="muted">
+              Reviewed deployment record · Finalized reads · Fixed reserve caps · Explicit wallet
+              transactions
+            </span>
+          ) : (
+            <span className="muted">
+              Reviewed deployment record · Reads pinned to one block, from two endpoints that agree
+              · Explicit wallet transactions · The same contracts on every listed network; each
+              network has its own pools and liquidity
+            </span>
+          )}
         </>
       }
     >
@@ -181,25 +220,35 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
         </p>
       )}
       {/* Agent 343's token notes (a label such as "USDC (Binance-Peg)" is explained on screen, without a click). */}
-      {chain.tokenNotes.map((note) => (
+      {(isBlochL2(chain) ? [] : chain.tokenNotes).map((note) => (
         <p className="muted token-note" data-testid="token-note" key={note}>
           {note}
         </p>
       ))}
       {mobile.session}
       <ConnectSlotContext.Provider value={mobile.button}>
-        <MainnetLive
-          key={chain.key}
-          network={chain.network}
-          load={chain.load}
-          rpc={rpc}
-          wallet={wallet}
-          planned={chain.planned}
-          receiptPollMs={RECEIPT_POLL_MS}
-          snapshotMaxAgeMs={SNAPSHOT_MAX_AGE_MS}
-          confirmation={confirmationView}
-          screens={{ base: `#/${chain.key}`, tokenFacts: TOKEN_FACTS[chain.key] }}
-        />
+        {isBlochL2(chain) ? (
+          <BlochL2Route
+            key={chain.key}
+            entry={chain}
+            wallet={wallet}
+            live={live[chain.key] === true}
+            mobileSession={mobile.session !== null}
+          />
+        ) : (
+          <MainnetLive
+            key={chain.key}
+            network={chain.network}
+            load={chain.load}
+            rpc={rpc}
+            wallet={wallet}
+            planned={chain.planned}
+            receiptPollMs={RECEIPT_POLL_MS}
+            snapshotMaxAgeMs={SNAPSHOT_MAX_AGE_MS}
+            confirmation={confirmationView}
+            screens={{ base: `#/${chain.key}`, tokenFacts: TOKEN_FACTS[chain.key] }}
+          />
+        )}
       </ConnectSlotContext.Provider>
     </Shell>
   );
