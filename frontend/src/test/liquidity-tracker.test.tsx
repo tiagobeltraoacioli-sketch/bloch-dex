@@ -8,7 +8,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type Address, type Hex } from 'viem';
 import type { Rpc } from '../devnet4/chain';
 import type { DevnetDeployment } from '../devnet4/record';
-import { approveTransaction, type TransactionRequest } from '../devnet4/swap';
+import {
+  approveTransaction,
+  ROUTER_ABI,
+  swapTransaction,
+  type TransactionRequest,
+} from '../devnet4/swap';
+import { encodeFunctionData } from 'viem';
+import { ERC20_ABI } from '../devnet4/chain';
 import {
   addLiquidityTransaction,
   decodeLiquidityCall,
@@ -16,6 +23,7 @@ import {
   savedLiquidityDeadline,
 } from '../mainnet/liquidity-tx';
 import {
+  liquidityHoldKey,
   parsePendingSwap,
   pendingSwapKey,
   usePendingSwap,
@@ -25,6 +33,7 @@ import {
   expiredSwap,
   finalizedSubmissionReceipt,
   holdsUntilDeadline,
+  savedCallDeadline,
   savedSwapDeadline,
   submissionContext,
   type SubmissionIntent,
@@ -81,6 +90,22 @@ const REMOVE: TransactionRequest = removeLiquidityTransaction(
   deployment,
   TOKEN_PAIR,
   { liquidity: 500n, min0: 10n, min1: 20n },
+  FROM,
+  DEADLINE,
+);
+const SWAP: TransactionRequest = swapTransaction(
+  deployment,
+  {
+    amountIn: 10n ** 18n,
+    minimumOut: 100n,
+    amountOut: 110n,
+    path: [WRAPPED, TOKEN],
+    amounts: [],
+    executionLossBps: [],
+    blockNumber: 16n,
+  },
+  { token: WRAPPED, native: true },
+  { token: TOKEN, native: false },
   FROM,
   DEADLINE,
 );
@@ -274,8 +299,16 @@ describe('a liquidity request is held like a swap', () => {
   });
 
   it('reads the deadline of a saved liquidity call, and a stored record must carry exactly that deadline', () => {
-    expect(savedSwapDeadline(ADD.data)).toBe(DEADLINE);
-    expect(savedSwapDeadline(REMOVE.data)).toBe(DEADLINE);
+    // Each family is read by the decoder of its own kind (review R413-7): the swap decoder does not read a
+    // deposit or a removal, and the other way round.
+    expect(savedSwapDeadline(ADD.data)).toBeNull();
+    expect(savedSwapDeadline(REMOVE.data)).toBeNull();
+    expect(savedCallDeadline('liquidity', ADD.data)).toBe(DEADLINE);
+    expect(savedCallDeadline('liquidity', REMOVE.data)).toBe(DEADLINE);
+    expect(savedCallDeadline('swap', SWAP.data)).toBe(DEADLINE);
+    expect(savedCallDeadline('liquidity', SWAP.data)).toBeNull();
+    expect(savedCallDeadline('swap', ADD.data)).toBeNull();
+    expect(savedCallDeadline('approval', ADD.data)).toBeNull();
     store(hold('unknown'));
     expect(stored()?.intent?.kind).toBe('liquidity');
     expect(stored()?.deadline).toBe(DEADLINE);
@@ -441,5 +474,242 @@ describe('the approval of pool shares is an approval', () => {
     expect(() => transactionForSameNonceReview(unlimited, 0n, deployment)).toThrow(
       /does not match an allowed transaction/,
     );
+  });
+});
+
+describe('R413-7: a saved record carries the call family of its own kind', () => {
+  // The reviewer's corpus (scratchpad/a413, `r413-tracker.test.ts`): every router call of each family, saved under
+  // each kind, with and without a hash, in each state of the wallet attempt.
+  const swapCalls: Record<string, { data: Hex; value: bigint }> = {
+    swapTokens: {
+      data: encodeFunctionData({
+        abi: ROUTER_ABI,
+        functionName: 'swapExactTokensForTokens',
+        args: [1000n, 990n, [TOKEN, OTHER], FROM, DEADLINE],
+      }),
+      value: 0n,
+    },
+    swapTokens2hop: {
+      data: encodeFunctionData({
+        abi: ROUTER_ABI,
+        functionName: 'swapExactTokensForTokens',
+        args: [1000n, 990n, [OTHER, TOKEN, WRAPPED], FROM, DEADLINE],
+      }),
+      value: 0n,
+    },
+    swapNativeIn: {
+      data: encodeFunctionData({
+        abi: ROUTER_ABI,
+        functionName: 'swapExactBLCHForTokens',
+        args: [990n, [WRAPPED, TOKEN], FROM, DEADLINE],
+      }),
+      value: 1000n,
+    },
+    swapNativeOut: {
+      data: encodeFunctionData({
+        abi: ROUTER_ABI,
+        functionName: 'swapExactTokensForBLCH',
+        args: [1000n, 990n, [TOKEN, WRAPPED], FROM, DEADLINE],
+      }),
+      value: 0n,
+    },
+    swapOtherRecipient: {
+      data: encodeFunctionData({
+        abi: ROUTER_ABI,
+        functionName: 'swapExactTokensForTokens',
+        args: [1000n, 990n, [TOKEN, OTHER], OTHER, DEADLINE],
+      }),
+      value: 0n,
+    },
+  };
+  const amounts = { desired0: 10n, desired1: 20n, min0: 9n, min1: 19n };
+  const liquidityCalls: Record<string, { data: Hex; value: bigint }> = {
+    addLiquidity: addLiquidityTransaction(deployment, TOKEN_PAIR, amounts, FROM, DEADLINE),
+    addLiquidityNative: addLiquidityTransaction(deployment, NATIVE_PAIR, amounts, FROM, DEADLINE),
+    removeLiquidity: removeLiquidityTransaction(
+      deployment,
+      TOKEN_PAIR,
+      { liquidity: 10n, min0: 9n, min1: 19n },
+      FROM,
+      DEADLINE,
+    ),
+    removeLiquidityNative: removeLiquidityTransaction(
+      deployment,
+      NATIVE_PAIR,
+      { liquidity: 10n, min0: 9n, min1: 19n },
+      FROM,
+      DEADLINE,
+    ),
+  };
+  const records = (kind: SubmissionIntent['kind'], calls: typeof swapCalls) =>
+    Object.entries(calls).flatMap(([name, call]) =>
+      ([[], [ONE]] as Hex[][]).flatMap((hashes) =>
+        (['awaiting-wallet', 'unknown', 'returned'] as const).map((state) => {
+          const intent = {
+            ...intentOf(
+              {
+                from: FROM,
+                to: deployment.router,
+                data: call.data,
+                value: call.value,
+                gas: 400_000n,
+              },
+              kind,
+            ),
+          };
+          const record = {
+            label: name,
+            deadline: DEADLINE.toString(),
+            sentAtMs: 0,
+            intent,
+            ...(hashes.length ? { hash: hashes[0], candidateHashes: hashes } : {}),
+            walletAttempt: {
+              id: '87654321-1234-1234-1234-123456789abc',
+              mode: 'initial',
+              state,
+              startedAtMs: 0,
+            },
+          };
+          return parsePendingSwap(JSON.stringify(record));
+        }),
+      ),
+    );
+
+  it('the 24 swap-kind records with liquidity bytes and the 30 liquidity-kind records with swap bytes are unreadable', () => {
+    const swapKindLiquidityBytes = records('swap', liquidityCalls);
+    const liquidityKindSwapBytes = records('liquidity', swapCalls);
+    expect(swapKindLiquidityBytes).toHaveLength(24);
+    expect(liquidityKindSwapBytes).toHaveLength(30);
+    expect(swapKindLiquidityBytes.filter((r) => r !== null)).toEqual([]);
+    expect(liquidityKindSwapBytes.filter((r) => r !== null)).toEqual([]);
+  });
+
+  it('a record of each kind with its own family is read, with the deadline of its call', () => {
+    const swaps = records('swap', swapCalls);
+    const liquidity = records('liquidity', liquidityCalls);
+    expect(swaps).toHaveLength(30);
+    expect(liquidity).toHaveLength(24);
+    for (const r of [...swaps, ...liquidity]) expect(r?.deadline).toBe(DEADLINE);
+  });
+
+  it('a liquidity hold with swap bytes cannot end by a deadline either', async () => {
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE + 1n };
+    const crossed = intentOf(SWAP, 'liquidity');
+    expect(await expiredSwap(c.rpc, crossed, context, DEADLINE, [])).toBeNull();
+    expect(await expiredSwap(c.rpc, intentOf(ADD, 'swap'), context, DEADLINE, [])).toBeNull();
+  });
+});
+
+describe('R413-8: a liquidity hold outlives a page that cannot read it', () => {
+  const shadowKey = liquidityHoldKey(deployment.chainId, FROM);
+
+  it('is saved a second time under a key of its own, which a swap or an approval never is', async () => {
+    const c = chain();
+    const { hook } = mount(c, walletThatMustNotBeAsked().provider, () => 300_000);
+    await act(async () => {
+      await hook.result.current.reserve(
+        { label: 'Add liquidity', deadline: DEADLINE, sentAtMs: 0 },
+        'liquidity',
+        { ...ADD, chainId: 700770 },
+      );
+    });
+    expect(stored()?.intent?.kind).toBe('liquidity');
+    expect(localStorage.getItem(shadowKey)).toBe(localStorage.getItem(key));
+    hook.unmount();
+    localStorage.clear();
+    const again = mount(chain(), walletThatMustNotBeAsked().provider, () => 300_000);
+    await act(async () => {
+      await again.hook.result.current.reserve(
+        { label: 'Approve', deadline: 0n, sentAtMs: 0 },
+        'approval',
+        { ...approveTransaction(deployment, TOKEN, FROM, 5n), chainId: 700770 },
+      );
+    });
+    expect(stored()?.intent?.kind).toBe('approval');
+    expect(localStorage.getItem(shadowKey)).toBeNull();
+  });
+
+  it('comes back after an older page discarded the record it could not read, and still holds the account', async () => {
+    const c = chain();
+    store(hold('awaiting-wallet'));
+    localStorage.setItem(shadowKey, localStorage.getItem(key)!);
+    // The older page (it does not know the kind): the record is unreadable there; the user discards it.
+    localStorage.removeItem(key);
+    const wallet = walletThatMustNotBeAsked();
+    const { hook } = mount(c, wallet.provider, () => 300_000);
+    await waitFor(() => expect(hook.result.current.open).toBe(true));
+    expect(hook.result.current.tracked?.intent?.id).toBe(addIntent.id);
+    expect(stored()?.intent?.id).toBe(addIntent.id);
+    expect(hook.result.current.holds()).toBe(true);
+    await act(async () => {
+      await expect(
+        hook.result.current.reserve({ label: 'Another', deadline: 0n, sentAtMs: 0 }, 'approval', {
+          ...approveTransaction(deployment, TOKEN, FROM, 5n),
+          chainId: 700770,
+        }),
+      ).rejects.toThrow(/Another submission is unresolved/);
+    });
+    expect(wallet.request).not.toHaveBeenCalled();
+  });
+
+  it('is cleared with the hold when the hold ends, so nothing comes back afterwards', async () => {
+    const c = chain();
+    c.state.finalized = c.state.latest = { number: 20n, hash: hash('9'), timestamp: DEADLINE + 1n };
+    store(hold('awaiting-wallet'));
+    localStorage.setItem(shadowKey, localStorage.getItem(key)!);
+    const { hook } = mount(c, walletThatMustNotBeAsked().provider, AFTER);
+    await waitFor(() => expect(hook.result.current.tracked?.state).toBe('expired'));
+    expect(localStorage.getItem(key)).toBeNull();
+    expect(localStorage.getItem(shadowKey)).toBeNull();
+    hook.unmount();
+    const again = mount(c, walletThatMustNotBeAsked().provider, AFTER);
+    await settle();
+    expect(again.hook.result.current.open).toBe(false);
+    expect(stored()).toBeNull();
+  });
+
+  it('never replaces a record that is there, and restores nothing that is not a readable liquidity hold', async () => {
+    // A swap hold is in the main key; the second copy of an older liquidity hold stays where it is.
+    store(hold('unknown', [], intentOf(SWAP, 'swap')));
+    const swapRecord = localStorage.getItem(key)!;
+    store(hold('awaiting-wallet'));
+    localStorage.setItem(shadowKey, localStorage.getItem(key)!);
+    localStorage.setItem(key, swapRecord);
+    const first = mount(chain(), walletThatMustNotBeAsked().provider, () => 300_000);
+    await waitFor(() => expect(first.hook.result.current.open).toBe(true));
+    expect(first.hook.result.current.tracked?.intent?.kind).toBe('swap');
+    first.hook.unmount();
+    // A second copy that is not a liquidity hold, or cannot be read, restores nothing.
+    for (const junk of [swapRecord, '{"label":1}', 'not json']) {
+      localStorage.clear();
+      localStorage.setItem(shadowKey, junk);
+      const { hook } = mount(chain(), walletThatMustNotBeAsked().provider, () => 300_000);
+      await settle();
+      expect(hook.result.current.open).toBe(false);
+      expect(localStorage.getItem(key)).toBeNull();
+      hook.unmount();
+    }
+  });
+});
+
+describe('R413-13: what the same-nonce review says of an approval of zero today', () => {
+  it('refuses it, for a token and for pool shares: a reset step whose hash is lost has no review control until agent 409’s rule is merged', () => {
+    for (const target of [TOKEN, NATIVE_PAIR.address]) {
+      const reset: TransactionRequest = {
+        from: FROM,
+        to: target,
+        data: encodeFunctionData({
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [deployment.router, 0n],
+        }),
+        value: 0n,
+        gas: 100_000n,
+      };
+      expect(() =>
+        transactionForSameNonceReview(intentOf(reset, 'approval'), 0n, deployment),
+      ).toThrow(/does not match an allowed transaction/);
+    }
   });
 });

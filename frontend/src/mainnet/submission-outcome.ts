@@ -245,9 +245,20 @@ export function savedSwapDeadline(data: Hex): bigint | null {
     const deadline = call.args[call.args.length - 1];
     return typeof deadline === 'bigint' ? deadline : null;
   } catch {
-    // Round 20: the router's deposit and removal calls carry their deadline the same way (last argument).
-    return savedLiquidityDeadline(data);
+    return null;
   }
+}
+
+/**
+ * The deadline inside the saved call of a request that holds until its deadline, read with the decoder of the
+ * record's OWN kind: a swap's with the router's swap calls, a liquidity request's with its deposit and removal
+ * calls. A record whose bytes belong to the other family has no deadline and is unreadable as a whole, as a
+ * swap record with foreign bytes was before the liquidity kind existed (review R413-7). Null for the other kinds.
+ */
+export function savedCallDeadline(kind: SubmissionIntent['kind'], data: Hex): bigint | null {
+  if (kind === 'swap') return savedSwapDeadline(data);
+  if (kind === 'liquidity') return savedLiquidityDeadline(data);
+  return null;
 }
 
 /**
@@ -290,7 +301,7 @@ export async function expiredSwap(
   assertSubmissionContext(intent, context);
   if (!holdsUntilDeadline(intent.kind) || deadline <= 0n) return null;
   // Never on a deadline other than the one in the call a wallet may have signed.
-  if (savedSwapDeadline(intent.data) !== deadline) return null;
+  if (savedCallDeadline(intent.kind, intent.data) !== deadline) return null;
   const read = async () => {
     const raw = object(await rpc('eth_getBlockByNumber', ['finalized', false]));
     return { ...block(raw), timestamp: quantity(raw.timestamp) };

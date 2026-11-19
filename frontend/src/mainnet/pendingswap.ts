@@ -16,7 +16,7 @@ import type { Provider } from '../wallet';
 import {
   assertSubmissionContext,
   expiredSwap,
-  savedSwapDeadline,
+  savedCallDeadline,
   finalizedSubmissionReceipt,
   finalizedReplacementReceipt,
   holdsUntilDeadline,
@@ -88,6 +88,24 @@ export const submissionHashes = (swap: PendingSwap): Hex[] => [
 
 export const pendingSwapKey = (chainId: number, account: Address) =>
   `${STORAGE_PREFIX}.${chainId}.${account.toLowerCase()}`;
+
+/**
+ * A liquidity hold is saved a second time, under a key of its own (review R413-8). A build of this site from
+ * before the `liquidity` kind cannot read such a record: it sends nothing while the record is there, cannot end
+ * it by its deadline, and offers to discard it. If the site is rolled back, the user discards it there and the
+ * site is rolled forward inside the request's deadline, the wallet may still sign the first request while the
+ * page has forgotten it. The older build does not know this second key and cannot remove it: when the main record
+ * is missing and a readable liquidity hold is here, the hold is put back. It then ends as every hold does (its
+ * verified receipt, or its deadline at the strict block). Putting a hold back can only stop the page from sending;
+ * the second copy is removed together with the hold it mirrors.
+ */
+const LIQUIDITY_HOLD_PREFIX = 'postern.mainnet.liquidityHold.v1';
+export const liquidityHoldKey = (chainId: number, account: Address) =>
+  `${LIQUIDITY_HOLD_PREFIX}.${chainId}.${account.toLowerCase()}`;
+const secondKeyOf = (key: string): string | null =>
+  key.startsWith(`${STORAGE_PREFIX}.`)
+    ? `${LIQUIDITY_HOLD_PREFIX}${key.slice(STORAGE_PREFIX.length)}`
+    : null;
 
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const UINT = /^[0-9]{1,78}$/;
@@ -203,7 +221,7 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
       (intent !== null &&
         intent !== undefined &&
         BigInt(v.deadline) !==
-          (holdsUntilDeadline(intent.kind) ? savedSwapDeadline(intent.data) : 0n))
+          (holdsUntilDeadline(intent.kind) ? savedCallDeadline(intent.kind, intent.data) : 0n))
     )
       return null;
     const retry = parseRetry(v.retry);
@@ -224,8 +242,21 @@ export function parsePendingSwap(raw: string | null): PendingSwap | null {
   }
 }
 
+/** The second copy of a liquidity hold whose main record is gone, put back as the main record; else null. */
+function restoredLiquidityHold(key: string): string | null {
+  try {
+    const second = secondKeyOf(key);
+    const raw = second ? localStorage.getItem(second) : null;
+    if (raw === null || parsePendingSwap(raw)?.intent?.kind !== 'liquidity') return null;
+    localStorage.setItem(key, raw);
+    return localStorage.getItem(key) === raw ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 function readStored(key: string): PendingSwap | null {
-  const raw = localStorage.getItem(key);
+  const raw = localStorage.getItem(key) ?? restoredLiquidityHold(key);
   const parsed = parsePendingSwap(raw);
   if (raw !== null && !parsed) throw new Error(UNREADABLE_RECORD);
   return parsed;
@@ -244,7 +275,17 @@ function writeStored(key: string, swap: PendingSwap): boolean {
       ...(retry ? { retry } : {}),
     });
     localStorage.setItem(key, encoded);
-    return localStorage.getItem(key) === encoded;
+    if (localStorage.getItem(key) !== encoded) return false;
+    if (swap.intent?.kind === 'liquidity') {
+      // The second copy (see `liquidityHoldKey`). The hold itself is saved; a refusal here loses only the copy.
+      try {
+        const second = secondKeyOf(key);
+        if (second) localStorage.setItem(second, encoded);
+      } catch {
+        /* the main record stands */
+      }
+    }
+    return true;
   } catch {
     return false;
   }
@@ -258,11 +299,24 @@ const sameIntent = (one: PendingSwap, two: PendingSwap) =>
 
 function removeStored(key: string, swap: PendingSwap): boolean {
   try {
-    const retained = readStored(key);
+    // The main record as it is (nothing is put back here: this is the hold being cleared).
+    const raw = localStorage.getItem(key);
+    const retained = parsePendingSwap(raw);
+    if (raw !== null && !retained) throw new Error(UNREADABLE_RECORD);
     if (retained && (identityOf(retained) !== identityOf(swap) || !sameIntent(retained, swap)))
       return false;
     localStorage.removeItem(key);
-    return localStorage.getItem(key) === null;
+    if (localStorage.getItem(key) !== null) return false;
+    // The second copy of a liquidity hold goes with the hold it mirrors, and only with that one.
+    const second = secondKeyOf(key);
+    if (second && swap.intent?.kind === 'liquidity') {
+      const copy = parsePendingSwap(localStorage.getItem(second));
+      if (copy?.intent?.id === swap.intent.id) {
+        localStorage.removeItem(second);
+        if (localStorage.getItem(second) !== null) return false;
+      }
+    }
+    return true;
   } catch {
     return false;
   }
