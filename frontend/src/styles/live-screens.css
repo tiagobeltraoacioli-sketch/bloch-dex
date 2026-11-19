@@ -137,8 +137,11 @@
 .live-position .position-token > div {
   min-width: 0;
 }
-.live-position .position-token strong {
+.live-position .position-token > div strong {
   overflow-wrap: anywhere;
+}
+.live-position .position-token > strong {
+  white-space: nowrap;
 }
 @media (max-width: 720px) {
   .live-view .summary-grid {
