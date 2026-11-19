@@ -1,0 +1,156 @@
+/* The Trade / Pools / Portfolio screens of a live route and the liquidity dialog (src/live/). Their blocks reuse
+   the preview's and the gate's classes; this file adds only what is new, from the tokens of tokens.css. */
+.live-tabs {
+  display: flex;
+  gap: var(--s-2);
+  margin: 0 0 var(--s-4);
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.live-tabs a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--s-3);
+  border-bottom: 2px solid transparent;
+  color: var(--text-2);
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.live-tabs a:hover {
+  color: var(--text);
+}
+.live-tabs a[aria-current='page'] {
+  border-bottom-color: var(--net);
+  color: var(--text);
+}
+.live-view[hidden] {
+  display: none;
+}
+.live-view > * + * {
+  margin-top: var(--s-4);
+}
+.live-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.live-status > p {
+  margin: 0;
+}
+.live-tracked {
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--net);
+  border-radius: var(--r-2);
+  background: var(--surface);
+}
+.live-tracked > * {
+  margin: 0;
+}
+.live-tracked > * + * {
+  margin-top: var(--s-2);
+}
+.live-tracked-line[data-state='failed'] .state-pill {
+  color: var(--danger);
+}
+.live-tracked .hashline code {
+  overflow-wrap: anywhere;
+}
+.live-market {
+  margin-top: var(--s-5);
+}
+.live-market-pool + .live-market-pool {
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+.live-market-pool h3 {
+  margin: 0;
+}
+.live-market .stat strong {
+  overflow-wrap: anywhere;
+}
+.live-unavailable {
+  color: var(--text-2);
+}
+.liquidity-risks ul {
+  margin: var(--s-2) 0 0;
+  padding-left: var(--s-4);
+}
+.liquidity-risks li + li {
+  margin-top: var(--s-2);
+}
+.liquidity-risks .hashline code {
+  overflow-wrap: anywhere;
+}
+.liquidity-risks-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.liquidity-token-facts {
+  list-style: disc;
+}
+.live-mode {
+  margin: var(--s-3) 0;
+}
+.live-amounts {
+  display: grid;
+  gap: var(--s-3);
+}
+.live-amounts small {
+  color: var(--text-2);
+}
+.live-figures {
+  margin: var(--s-3) 0;
+}
+.live-figures dd {
+  overflow-wrap: anywhere;
+}
+.live-position + .live-position {
+  margin-top: var(--s-4);
+}
+.live-position .position-token span {
+  color: var(--text-2);
+  font-size: var(--text-small);
+}
+.pool-table .hashline code {
+  font-size: var(--text-micro);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .live-tabs a {
+    flex: 1;
+    justify-content: center;
+  }
+}
+.live-position .section-heading,
+.live-position .button-group,
+.live-market .section-heading {
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+.live-position .position-token > div {
+  min-width: 0;
+}
+.live-position .position-token > div strong {
+  overflow-wrap: anywhere;
+}
+.live-position .position-token > strong {
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .live-view .summary-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+  }
+  .live-view .summary-grid > .summary-panel {
+    min-width: 0;
+    width: auto;
+  }
+}

@@ -8,11 +8,17 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  network,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  /**
+   * The lamp key of the network the dialog belongs to (styles/tokens.css). The dialog is rendered at the end of
+   * the document, outside the shell that carries the key, so a dialog of a live route names it itself.
+   */
+  network?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   // Capture before React applies autoFocus to any field inside the portal.
@@ -37,6 +43,7 @@ export function Modal({
     <dialog
       ref={ref}
       className={`modal ${wide ? 'modal-wide' : ''}`}
+      data-network={network}
       aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();

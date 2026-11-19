@@ -132,6 +132,9 @@ import {
   skimTransaction,
   type Balances,
 } from './mainnet/reads';
+import { LiveScreens } from './live/LiveScreens';
+import type { TokenFact } from './multichain/token-facts';
+import { holdsUntilDeadline } from './mainnet/submission-outcome';
 
 type Option = { key: string; label: string; token: LiveToken; native: boolean };
 type Step = {
@@ -236,6 +239,7 @@ export default function MainnetLive({
   snapshotMaxAgeMs,
   ethRpc,
   confirmation,
+  screens,
 }: {
   network: MainnetNetwork;
   load: () => Promise<MainnetState>;
@@ -250,6 +254,11 @@ export default function MainnetLive({
   ethRpc?: Rpc;
   /** A public network's confirmation rule in words and numbers (the multichain site); none on the Bloch L2. */
   confirmation?: ConfirmationView;
+  /**
+   * Round 20: the Trade, Pools and Portfolio screens with the liquidity dialog (live/LiveScreens.tsx), under the
+   * hash `base`. Set by the multichain site; without it the route is this page alone, as before.
+   */
+  screens?: { base: string; tokenFacts?: TokenFact[] };
 }) {
   const [state, setState] = useState<MainnetState | null>(null);
   const [hold, setHold] = useState<BridgeHold | null>(null);
@@ -340,6 +349,9 @@ export default function MainnetLive({
   // (ui/snapshot-renewal.ts `backgroundRenewal`, every pause named there); the card renews on demand before a quote
   // or a swap on a snapshot past the bound, and once after an UNCONFIRMED quote read (`freshness` below).
   const cardBusy = useRef(false);
+  // The liquidity dialog's own flag (review R413-5): the swap card and the dialog each write theirs, so that
+  // neither clears the other's when it mounts, unmounts or is rebuilt for a newer block.
+  const dialogBusy = useRef(false);
   const formMemory = useRef<FormMemory | null>(null);
   const cardActivity = useRef<CardActivity>({ editedAt: -Infinity, quoteOnScreen: false });
   const failed = useRef(false);
@@ -353,7 +365,7 @@ export default function MainnetLive({
         maxAgeMs: snapshotMaxAgeMs,
         sinceEditMs: at - cardActivity.current.editedAt,
         quoteOnScreen: cardActivity.current.quoteOnScreen,
-        walletRequest: cardBusy.current,
+        walletRequest: cardBusy.current || dialogBusy.current,
         holdOpen: holdOpen.current,
         failure: failed.current,
         reading: reading.current,
@@ -443,7 +455,7 @@ export default function MainnetLive({
         headroom(p.reserve0 + (p.excess?.excess0 ?? 0n), p.cap0) === 0n ||
         headroom(p.reserve1 + (p.excess?.excess1 ?? 0n), p.cap1) === 0n,
     );
-  return (
+  const page = (
     <section
       className="page devnet4-page mainnet-page"
       aria-labelledby="mainnet-title"
@@ -576,6 +588,32 @@ export default function MainnetLive({
         {network.bridges.length > 0 && <BridgePanel network={network} />}
       </ReferencePanel>
     </section>
+  );
+  if (!screens) return page;
+  return (
+    <LiveScreens
+      base={screens.base}
+      network={network}
+      live={
+        ready && state.status === 'live' && snapshot
+          ? { deployment: state.deployment, snapshot, multicall3: state.multicall3 }
+          : null
+      }
+      rpc={rpc}
+      wallet={wallet}
+      now={now}
+      pendingSwap={pendingSwap}
+      confirmation={confirmation}
+      receiptPollMs={receiptPollMs}
+      freshness={freshness}
+      busyRef={dialogBusy}
+      plannedPairs={planned.pairs}
+      tokenFacts={screens.tokenFacts}
+      slippage={() => formMemory.current?.slippage}
+      onRefresh={() => setGeneration((g) => g + 1)}
+    >
+      {page}
+    </LiveScreens>
   );
 }
 
@@ -1928,7 +1966,11 @@ function SwapPanel({
                     rule={confirmation.rule}
                     blockSeconds={confirmation.blockSeconds}
                     pollMs={receiptPollMs}
-                    reverted={tracked.intent?.kind === 'swap' ? confirmation.reverted : undefined}
+                    reverted={
+                      tracked.intent && holdsUntilDeadline(tracked.intent.kind)
+                        ? confirmation.reverted
+                        : undefined
+                    }
                     now={now}
                   />
                 )}
