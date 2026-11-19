@@ -4,7 +4,7 @@
 // from the route's snapshot and from reads pinned to the same block. Nothing on these screens is a sample: where
 // the preview showed a figure this page has no truthful source for (price history, 24-hour volume and fees,
 // values in a currency), the place says so or is left out.
-import { useState, type MutableRefObject, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { Info, Minus, Plus, RefreshCw, Wallet } from 'lucide-react';
 import type { Address } from 'viem';
 import { formatAmount } from '../amm';
@@ -21,6 +21,7 @@ import type { TokenFact } from '../multichain/token-facts';
 import { DEFAULT_SLIPPAGE_BPS } from '../slippage';
 import { CopyButton } from '../ui/CopyButton';
 import { LiquidityRisks } from './LiquidityRisks';
+import { poolRatioText } from './ratio';
 import {
   LiveLiquidityDialog,
   poolName,
@@ -71,6 +72,9 @@ export function LiveScreens(props: LiveScreensProps) {
   const [hashView, go] = useLiveView(base);
   const view: LiveView = live ? hashView : 'trade';
   const [dialog, setDialog] = useState<{ mode: LiquidityMode; pool: Address } | null>(null);
+  // The frame that moves focus to the Trade screen's connect step; never left to run after this route is gone.
+  const connectFrame = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(connectFrame.current), []);
   const account = (wallet.account?.address.toLowerCase() as Address | undefined) ?? null;
   const { data, error } = useLiquidity({
     rpc,
@@ -135,10 +139,11 @@ export function LiveScreens(props: LiveScreensProps) {
         disabled={wallet.pending}
         onClick={() => {
           go('trade');
-          requestAnimationFrame(() => {
+          cancelAnimationFrame(connectFrame.current);
+          connectFrame.current = requestAnimationFrame(() => {
             const targets = document.querySelectorAll<HTMLElement>('[data-wallet-connect]');
             const target = targets[targets.length - 1];
-            target?.scrollIntoView({ block: 'center' });
+            target?.scrollIntoView?.({ block: 'center' });
             (target?.querySelector<HTMLElement>('button:not(:disabled)') ?? target)?.focus();
           });
         }}
@@ -397,9 +402,6 @@ function Market({ snapshot, onPools }: { snapshot: Snapshot; onPools: () => void
         </button>
       </div>
       {snapshot.pools.map((pool) => {
-        // The pool's own spot ratio (reserves only; a swap's rate is in its quote, fee and price impact included).
-        const unit = 10n ** BigInt(pool.token1.decimals);
-        const price = pool.reserve1 > 0n ? (pool.reserve0 * unit) / pool.reserve1 : null;
         return (
           <div className="live-market-pool" key={pool.address}>
             <div className="token-title">
@@ -414,11 +416,7 @@ function Market({ snapshot, onPools }: { snapshot: Snapshot; onPools: () => void
             <div className="market-stats">
               <div className="stat">
                 <span className="muted">Pool ratio</span>
-                <strong>
-                  {price === null
-                    ? 'Not available'
-                    : `1 ${pool.token1.symbol} = ${formatAmount(price, pool.token0.decimals, 6)} ${pool.token0.symbol}`}
-                </strong>
+                <strong>{poolRatioText(pool)}</strong>
               </div>
               <div className="stat">
                 <span className="muted">Liquidity</span>
@@ -571,7 +569,10 @@ function Positions({
 /** The liquidity transactions this page sent from this account on this device (the route's own history). */
 function PositionActivity({ chainId, account }: { chainId: number; account: Address }) {
   const items = loadHistory(chainId, account).filter((h) =>
-    /^(Add liquidity|Remove liquidity|Approve|Reset)/.test(h.label),
+    // The labels the liquidity dialog writes, and no other: a swap's approval is not listed here (R413-10).
+    /^(Add liquidity: |Remove liquidity: )|^(Approve|Reset) .* (for liquidity|pool shares)$/.test(
+      h.label,
+    ),
   );
   return (
     <section className="panel activity-panel" aria-labelledby="live-activity-title">

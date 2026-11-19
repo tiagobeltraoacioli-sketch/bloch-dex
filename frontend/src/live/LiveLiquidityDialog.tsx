@@ -5,7 +5,7 @@
 // minimums, the chain's deadline and a comparison with the latest block right before the wallet is asked.
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { AlertTriangle, LoaderCircle } from 'lucide-react';
-import type { Address } from 'viem';
+import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from '../amm';
 import type { LivePool, Rpc, Snapshot } from '../devnet4/chain';
 import type { DevnetDeployment } from '../devnet4/record';
@@ -137,6 +137,14 @@ export function LiveLiquidityDialog({
   currentWallet.current = wallet;
   const currentBlock = useRef(snapshot.finalized.hash);
   currentBlock.current = snapshot.finalized.hash;
+  // False once the dialog is closed or its route is gone: a request still being prepared then ends unsent.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!busyRef) return;
     busyRef.current = busy;
@@ -219,7 +227,8 @@ export function LiveLiquidityDialog({
     !from || !account
       ? []
       : add && add.outcome.ok
-        ? ([0, 1] as const).flatMap((side) => {
+        ? // The side the user fixed first, then the side that follows the ratio.
+          ([typed.side, typed.side === 0 ? 1 : 0] as const).flatMap((side) => {
             const allowance = side === 0 ? account.allowance0 : account.allowance1;
             return allowance === null
               ? []
@@ -240,6 +249,8 @@ export function LiveLiquidityDialog({
               remove.liquidity,
             )
           : [];
+  const sideOfToken = (token: Address): 0 | 1 | null =>
+    token === pool.token0.address ? 0 : token === pool.token1.address ? 1 : null;
   const quoted = (add?.outcome.ok || remove?.outcome.ok) && !settingsProblem;
   const blocked =
     busy ||
@@ -252,11 +263,43 @@ export function LiveLiquidityDialog({
     short.length > 0;
   const stale = () => !!freshness && staleAt(freshness.ageMs(), freshness.maxAgeMs);
 
-  async function send(request: Omit<TrackedRequest, 'build'> & { build: TrackedRequest['build'] }) {
+  /**
+   * What the user confirmed with a press: the form as it stood (its generation) and the block its figures were
+   * read at. A request is built from the figures of that render, so it may be sent only while both are still the
+   * ones on screen and the dialog is still open (review R413-1). Taken at the press, before any read.
+   */
+  type Press = { generation: number; block: string };
+  const pressNow = (): Press => ({
+    generation: formGeneration.current,
+    block: currentBlock.current,
+  });
+  const unchangedSince = (press: Press) =>
+    mounted.current &&
+    press.generation === formGeneration.current &&
+    press.block === currentBlock.current;
+  /** Why a request prepared for `press` is dropped; null while it may go on, or when nobody is there to read it. */
+  const droppedNote = (press: Press): string | null =>
+    !mounted.current
+      ? null
+      : press.block !== currentBlock.current
+        ? `The page read a newer ${wording.settled} block while the request was being prepared, so nothing was sent. Check the figures and press again.`
+        : press.generation !== formGeneration.current
+          ? 'The amounts or settings changed while the request was being prepared, so nothing was sent. Check the figures and press again.'
+          : null;
+  /** True (and said) when the request of `press` must stop here. */
+  const dropped = (press: Press): boolean => {
+    if (unchangedSince(press)) return false;
+    const text = droppedNote(press);
+    if (text) setNote({ tone: 'error', text });
+    return true;
+  };
+
+  async function send(
+    request: Omit<TrackedRequest, 'build'> & { build: TrackedRequest['build'] },
+    press: Press,
+  ) {
     const provider = wallet.provider;
-    if (!provider || !wallet.account) return;
-    const generation = formGeneration.current;
-    const block = currentBlock.current;
+    if (!provider || !wallet.account || dropped(press)) return;
     const result = await submitTracked({
       provider,
       account: wallet.account.address,
@@ -265,24 +308,22 @@ export function LiveLiquidityDialog({
       pendingSwap,
       request,
       now,
-      unchanged: () => generation === formGeneration.current && block === currentBlock.current,
+      unchanged: () => unchangedSince(press),
       currentWallet: () => ({
         provider: currentWallet.current.provider,
         account: currentWallet.current.account?.address ?? null,
       }),
-      onStatus: (text) => setNote({ tone: 'info', text }),
+      onStatus: (text) => mounted.current && setNote({ tone: 'info', text }),
     });
+    if (!mounted.current) return;
     setNote(
       result.state === 'tracked'
         ? null
         : {
             tone: 'error',
-            // The page took a newer block while the request was being prepared (after a transaction settled, or
-            // the timed renewal): the figures the user confirmed are no longer the ones on screen.
-            text:
-              result.state === 'not-sent' && block !== currentBlock.current
-                ? `The page read a newer ${wording.settled} block while the request was being prepared, so nothing was sent. Check the figures and press again.`
-                : result.note,
+            // Dropped because the block, the form or the dialog changed under it: the specific line; else the
+            // tracker's or the wallet's own refusal.
+            text: (result.state === 'not-sent' && droppedNote(press)) || result.note,
           },
     );
   }
@@ -300,27 +341,70 @@ export function LiveLiquidityDialog({
 
   async function approve(step: ApprovalStep) {
     if (blocked || renewIfStale()) return;
+    // Review R413-2: the approved token amount becomes the amount the user fixed. When it was the side computed
+    // from the pool's ratio, the form now holds it as typed, and the other side follows the ratio from here on, so
+    // that the next block's ratio does not ask for another approval. The approval itself is unchanged by this
+    // (the same token, the same exact amount), which is why the press is taken after it.
+    const side = sideOfToken(step.token.address);
+    if (mode === 'add' && side !== null && side !== typed.side && step.kind === 'approve') {
+      formGeneration.current++;
+      setTyped({ side, text: formatAmount(step.amount, decimals[side]) });
+    }
+    const press = pressNow();
     setBusy(true);
     setNote({ tone: 'info', text: 'Confirm in your wallet.' });
     try {
-      await send({ label: stepLabel(step), kind: 'approval', deadline: 0n, build: step.build });
+      await send(
+        {
+          // A token approval of this dialog is tracked under a name of its own (Portfolio lists it; a swap's
+          // approval is not a liquidity transaction: review R413-10).
+          label: side === null ? stepLabel(step) : `${stepLabel(step)} for liquidity`,
+          kind: 'approval',
+          deadline: 0n,
+          build: step.build,
+        },
+        press,
+      );
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
 
   async function act() {
     if (blocked || plan.length > 0 || !from || renewIfStale()) return;
-    const generation = formGeneration.current;
+    // What is on screen at this press is what may be sent, or nothing.
+    const press = pressNow();
     setBusy(true);
     setNote({ tone: 'info', text: 'Comparing with the latest block…' });
     try {
-      // The pool may have moved since the pinned block: the same call is evaluated on the latest state (read
-      // through the route's RPC, which pins it to a block two endpoints agree on). A refusal there stops here.
+      // The head, read once (the RPC layer answers the older of two endpoints' heads). Everything below is read at
+      // THIS block's hash from two agreeing endpoints, and the deadline counts from this header (review R413-4).
+      const head = (await rpc('eth_getBlockByNumber', ['latest', false]).catch(() => null)) as {
+        hash?: unknown;
+        timestamp?: unknown;
+      } | null;
+      if (
+        !head ||
+        typeof head.hash !== 'string' ||
+        !/^0x[0-9a-f]{64}$/i.test(head.hash) ||
+        typeof head.timestamp !== 'string' ||
+        !/^0x[0-9a-f]+$/i.test(head.timestamp)
+      ) {
+        if (mounted.current)
+          setNote({
+            tone: 'error',
+            text: `The latest ${wording.block} could not be read, so nothing was sent.`,
+          });
+        return;
+      }
+      if (dropped(press)) return;
+      // The pool may have moved since the pinned block: the same call is evaluated on the head's state. A refusal
+      // there stops here. A comparison that cannot be read is said; the signed minimums still apply on chain.
       let crossChecked = true;
       try {
-        const latest = await readPoolState(rpc, 'latest', pool, d.wrapped);
-        const latestShares = await readPoolShares(rpc, 'latest', d, pool.address);
+        const at = { blockHash: head.hash as Hex };
+        const latest = await readPoolState(rpc, at, pool, d.wrapped);
+        const latestShares = await readPoolShares(rpc, at, d, pool.address);
         let refused: Refusal | null = null;
         if (add && add.outcome.ok) {
           const outcome = evaluateAdd(
@@ -338,24 +422,18 @@ export function LiveLiquidityDialog({
             ? belowMinimum(latest, outcome, remove.min0, remove.min1)
             : outcome.refusal;
         }
-        if (refused)
-          return setNote({
-            tone: 'error',
-            text: `At the latest block: ${refusalText(refused, names, mode)} Nothing was sent. Refresh the page's figures and review the amounts again.`,
-          });
+        if (refused) {
+          if (!dropped(press))
+            setNote({
+              tone: 'error',
+              text: `At the latest block: ${refusalText(refused, names, mode)} Nothing was sent. Refresh the page's figures and review the amounts again.`,
+            });
+          return;
+        }
       } catch {
         crossChecked = false;
       }
-      if (generation !== formGeneration.current)
-        return setNote({ tone: 'error', text: 'The form changed, so nothing was sent.' });
-      const head = (await rpc('eth_getBlockByNumber', ['latest', false])) as {
-        timestamp?: unknown;
-      } | null;
-      if (!head || typeof head.timestamp !== 'string' || !/^0x[0-9a-f]+$/i.test(head.timestamp))
-        return setNote({
-          tone: 'error',
-          text: `The latest ${wording.block} could not be read, so nothing was sent.`,
-        });
+      if (dropped(press)) return;
       const clock = swapClock(now(), BigInt(head.timestamp), network.idle, deadlineMinutes);
       if (!clock.ok)
         return setNote({ tone: 'error', text: clock.problem.replace('swap deadline', 'deadline') });
@@ -367,30 +445,41 @@ export function LiveLiquidityDialog({
           : 'The latest block could not be read, so these figures were not cross-checked. Your minimums still apply on chain. Confirm in your wallet.',
       });
       if (add && add.outcome.ok)
-        await send({
-          label: `Add liquidity: ${show(add.outcome.amount0, 0)} + ${show(add.outcome.amount1, 1)}`,
-          kind: 'liquidity',
-          deadline: until,
-          build: () => addLiquidityTransaction(d, pair, add, from, until),
-        });
+        await send(
+          {
+            label: `Add liquidity: ${show(add.outcome.amount0, 0)} + ${show(add.outcome.amount1, 1)}`,
+            kind: 'liquidity',
+            deadline: until,
+            build: () => addLiquidityTransaction(d, pair, add, from, until),
+          },
+          press,
+        );
       else if (remove && remove.outcome.ok)
-        await send({
-          label: `Remove liquidity: ${percent}% of ${poolName(pool)} shares`,
-          kind: 'liquidity',
-          deadline: until,
-          build: () => removeLiquidityTransaction(d, pair, remove, from, until),
-        });
+        await send(
+          {
+            label: `Remove liquidity: ${percent}% of ${poolName(pool)} shares`,
+            kind: 'liquidity',
+            deadline: until,
+            build: () => removeLiquidityTransaction(d, pair, remove, from, until),
+          },
+          press,
+        );
     } catch (error) {
-      setNote({
-        tone: 'error',
-        text: error instanceof Error ? error.message : 'No wallet request was sent.',
-      });
+      if (mounted.current)
+        setNote({
+          tone: 'error',
+          text: error instanceof Error ? error.message : 'No wallet request was sent.',
+        });
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
 
   const step = plan[0];
+  // The side an approval is about to fix: a token side that was computed from the ratio, not typed.
+  const stepSide = step && step.kind === 'approve' ? sideOfToken(step.token.address) : null;
+  const fixedByApproval =
+    mode === 'add' && stepSide !== null && stepSide !== typed.side ? stepSide : null;
   const actionLabel = mode === 'add' ? 'Add liquidity' : 'Remove liquidity';
   const next = !wallet.account
     ? 'Next: close this dialog and connect a wallet on the Trade screen.'
@@ -469,6 +558,14 @@ export function LiveLiquidityDialog({
             Type either amount; the other is what the pool&apos;s own ratio asks for it at{' '}
             {wording.settled} block {snapshot.finalized.number.toString()}.
           </p>
+          {fixedByApproval !== null && step && (
+            <p className="microcopy" data-testid="approval-rule">
+              Approving fixes the {names[fixedByApproval]} amount at{' '}
+              {formatAmount(step.amount, decimals[fixedByApproval])}. From then on the{' '}
+              {names[fixedByApproval === 0 ? 1 : 0]} amount follows the pool&apos;s ratio, so a
+              small move of the pool asks for no new approval.
+            </p>
+          )}
         </div>
       ) : (
         <div className="withdrawal-controls">
@@ -595,10 +692,25 @@ export function LiveLiquidityDialog({
               ? 'No shares of this pool'
               : `${formatAmount(position.shares, 18)} shares (${sharePercentText(position.sharePpm, true)}): ${show(position.amount0, 0)} + ${show(position.amount1, 1)}`}
         </dd>
+        {mode === 'add' &&
+          account &&
+          (account.allowance0 !== null || account.allowance1 !== null) && (
+            <>
+              <dt>Approved to the router now</dt>
+              <dd>
+                {([0, 1] as const)
+                  .flatMap((side) => {
+                    const allowance = side === 0 ? account.allowance0 : account.allowance1;
+                    return allowance === null ? [] : [show(allowance, side)];
+                  })
+                  .join(' and ')}
+              </dd>
+            </>
+          )}
         <dt>Read at</dt>
         <dd>
-          {settledCapital()} block {snapshot.finalized.number.toString()}; compared with the latest
-          block before your wallet is asked
+          {settledCapital()} block {snapshot.finalized.number.toString()}; compared with one newer
+          block (the head, read once) before your wallet is asked
         </dd>
         <dt>Deadline</dt>
         <dd>{deadlineValid ? `${deadlineMinutes} minutes after you confirm` : 'Not set'}</dd>
@@ -625,6 +737,8 @@ export function LiveLiquidityDialog({
         pool&apos;s ratio moves by more than your tolerance (BDEX: INSUFFICIENT_A_AMOUNT or
         INSUFFICIENT_B_AMOUNT), its deadline passes (BDEX: EXPIRED), or a token refuses the
         transfer.
+        {mode === 'add' &&
+          " The router takes only what the pool's ratio needs when your deposit runs. What an approval allows beyond that stays approved to the router, which can use it only in a later transaction of your own; \u201cApproved to the router now\u201d shows it."}
         {mode === 'remove' &&
           ' The first 1000 base units of shares of every pool were locked for ever when it opened; they belong to nobody and are not part of any position.'}
       </p>

@@ -347,6 +347,9 @@ export default function MainnetLive({
   // (ui/snapshot-renewal.ts `backgroundRenewal`, every pause named there); the card renews on demand before a quote
   // or a swap on a snapshot past the bound, and once after an UNCONFIRMED quote read (`freshness` below).
   const cardBusy = useRef(false);
+  // The liquidity dialog's own flag (review R413-5): the swap card and the dialog each write theirs, so that
+  // neither clears the other's when it mounts, unmounts or is rebuilt for a newer block.
+  const dialogBusy = useRef(false);
   const formMemory = useRef<FormMemory | null>(null);
   const cardActivity = useRef<CardActivity>({ editedAt: -Infinity, quoteOnScreen: false });
   const failed = useRef(false);
@@ -360,7 +363,7 @@ export default function MainnetLive({
         maxAgeMs: snapshotMaxAgeMs,
         sinceEditMs: at - cardActivity.current.editedAt,
         quoteOnScreen: cardActivity.current.quoteOnScreen,
-        walletRequest: cardBusy.current,
+        walletRequest: cardBusy.current || dialogBusy.current,
         holdOpen: holdOpen.current,
         failure: failed.current,
         reading: reading.current,
@@ -601,7 +604,7 @@ export default function MainnetLive({
       confirmation={confirmation}
       receiptPollMs={receiptPollMs}
       freshness={freshness}
-      busyRef={cardBusy}
+      busyRef={dialogBusy}
       plannedPairs={planned.pairs}
       tokenFacts={screens.tokenFacts}
       slippage={() => formMemory.current?.slippage}

@@ -514,6 +514,13 @@ try {
         approvals[0].gas === 100_000n,
       { approved: approveCall.args[1], figure: want[T] },
     );
+    // After the approval the token amount is the fixed side; the native amount in the form follows the ratio.
+    const nativeInForm = parseUnits(
+      await page.evaluate(
+        `(() => { const l = [...${D}.querySelectorAll('label')].find((x) => x.textContent.trim().startsWith(${JSON.stringify(`Amount of ${N}`)})); return l.querySelector('input').value; })()`,
+      ),
+      18,
+    );
     let before = await state();
     await shots('4-dialog-add-ready', true);
     let tx = await sendAction('Add liquidity');
@@ -541,8 +548,8 @@ try {
       row(`minimum ${T} in the signed call`, mins[T], decoded.args[2]),
       row(`minimum ${N} in the signed call`, mins[N], decoded.args[3]),
       row(
-        `${N} value sent (the typed amount; the ratio's remainder is returned)`,
-        parseUnits('0.5', 18),
+        `${N} value sent (the ${N} amount in the form at the press; what the ratio does not need is returned)`,
+        nativeInForm,
         tx.value,
       ),
     ];
@@ -677,6 +684,41 @@ try {
       (await flat('[data-view="portfolio"]')).slice(0, 400),
     );
     await shots('10-portfolio-empty');
+
+    // ---- another network chosen while the dialog is open: the dialog goes with its route, nothing is sent ----
+    const elsewhere = config.chains.find((c) => c.key !== chain.key);
+    if (elsewhere) {
+      await tab('Pools');
+      await page.click('Add liquidity');
+      await page.waitFor('the dialog', `!!${D}`);
+      await dFill(`Amount of ${N}`, '0.1');
+      const sentBeforeLeaving = wallet.sent.length;
+      await page.evaluate(`void (location.hash = ${JSON.stringify(`#/${elsewhere.key}/pools`)})`);
+      await page.waitText(`/Bloch DEX on ${elsewhere.name}/`, 30_000);
+      await delay(1500);
+      const there = {
+        dialogs: await page.evaluate(`document.querySelectorAll('dialog').length`),
+        scroll: await page.evaluate(`document.body.style.overflow`),
+        title: await page.evaluate(`document.title`),
+      };
+      await page.evaluate(`void (location.hash = ${JSON.stringify(`#/${chain.key}/pools`)})`);
+      await page.waitText(`/Bloch DEX on ${chain.name}/`, 30_000);
+      await page.waitFor(
+        'the pools again',
+        `!!document.querySelector('[data-view="pools"] table')`,
+        60_000,
+      );
+      const back = await page.evaluate(`document.querySelectorAll('dialog').length`);
+      check(
+        `${chain.key}: choosing ${elsewhere.name} with the dialog open closes it with its route (no dialog left, the page scrolls again, nothing sent), and coming back opens none`,
+        there.dialogs === 0 &&
+          there.scroll !== 'hidden' &&
+          there.title.includes(elsewhere.name) &&
+          back === 0 &&
+          wallet.sent.length === sentBeforeLeaving,
+        { there, back },
+      );
+    }
 
     // ---- the pool moves after the page read it: refused at the latest block, nothing sent ----
     await tab('Pools');

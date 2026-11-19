@@ -34,11 +34,24 @@ section 9 of the deployment document):
 | A position | the shares the account holds, their part of that supply, and what a removal of all of them would pay at that block |
 | Deadline | the network file's `swap.deadlineMinutes` (the user can set 10 to 180), from the later of the device clock and the latest block, as for a swap |
 
-Before the wallet is asked for the deposit or the removal, the same call is evaluated on the latest block (a read
-the RPC layer pins to a block two endpoints agree on). A refusal there stops the request and nothing is sent. When
-that read fails the request goes on with a note: the signed minimums still apply on chain. A figure on a snapshot
-older than the page's age bound (four minutes) is never signed: the page reads a newer block and asks the user to
-press again.
+Before the wallet is asked for the deposit or the removal, the same call is evaluated on one newer block: the
+page reads the head once (the RPC layer answers the older of two endpoints' heads), then reads the reserves, the
+pair's two token balances, the share supply, `kLast` and the fee recipient at THAT block's hash from two endpoints
+that must agree, and counts the deadline from the same header (review R413-4; before it these were separate reads
+by the tag `latest`, which could be different blocks). A refusal there stops the request and nothing is sent. A
+head that cannot be read sends nothing. When the reads at the head fail the request goes on with a note: the signed
+minimums still apply on chain. A figure on a snapshot older than the page's age bound (four minutes) is never
+signed: the page reads a newer block and asks the user to press again.
+
+**What is sent is what was on screen at the press** (review R413-1). The press records the form (every edit of an
+amount, the percentage, the tolerance, the deadline or the mode makes a new one) and the pinned block of the
+figures. The request is built from those figures and goes to the wallet only while the form and the block are
+still the same and the dialog is still open; this is checked after the head was read, after the comparison, and,
+last, with no read in between, right before the wallet is asked (`mainnet/submit.ts`). Otherwise nothing is sent
+and nothing is saved, and the dialog says which: "The page read a newer … block while the request was being
+prepared", or "The amounts or settings changed while the request was being prepared". A dialog that was closed
+ends its request silently. A timed renewal of the pinned block waits while a wallet request of the dialog is in
+flight; the swap card and the dialog each hold a flag of their own for that (review R413-5).
 
 ## The wallet steps
 
@@ -46,7 +59,15 @@ One explicit step at a time, each through the route's one tracker (`mainnet/pend
 checks of the swap card (`mainnet/submit.ts`):
 
 1. approve, for the router, of exactly the token amount of the deposit, or of exactly the pool shares of the
-   removal (`mainnet/approval.ts` decides the sequence per token; the pair's `permit` is not used);
+   removal (`mainnet/approval.ts` decides the sequence per token; the pair's `permit` is not used).
+   **The approved amount is the amount the user fixed** (review R413-2): when the token amount was the side
+   computed from the ratio, pressing the approval makes it the typed side, and from then on the other side follows
+   the pool's ratio; the dialog says so in one line before the press. A small move of the pool then asks for no
+   new approval. **An approval can outlast its deposit** (review R413-11): the approval is of the desired amount,
+   and the router pulls only what the ratio needs when the deposit runs, which is less when the pool moved (by at
+   most the tolerance). The difference stays approved to the router, which can pull only inside a later
+   transaction of the same account. The dialog shows it as "Approved to the router now" and says so under the
+   figures; a later deposit that it covers needs no approval step;
 2. the deposit (`addLiquidity`, or the router's native entry point with the native amount as value) or the removal
    (`removeLiquidity`, or the native one), with the minimums, the user's own address as recipient, the deadline
    and an explicit gas limit of 400,000 (measured in the fork rehearsal: 221,643 and 227,997 for a deposit,
@@ -78,13 +99,37 @@ endpoints that may no longer serve that block's state; the page then says it cou
 
 On the Pools screen and in the dialog, next to the action and not behind a click: the position follows the pool's
 price (divergence loss); a removal pays both tokens at the ratio of that moment; tokens sent straight to a pool's
-address are a gift to the pool; the 0.30% fee, the protocol's sixth of its growth and the recipient's address from
+address are lost to the sender (not a deposit, no shares; anyone can take them with `skim`, and until someone
+does they count for whoever adds or removes liquidity next: `UniswapV2Pair.sol` `skim`, `mint`, `burn`; section 6
+of the deployment document); the 0.30% fee, the protocol's sixth of its growth and the recipient's address from
 the record; an issuer's powers, with the token list's own statement per token (the network file's `kind`).
+
+## A liquidity hold and an older build of the site (review R413-8)
+
+A build from before this change does not know the `liquidity` kind. With such a hold saved, that build reads the
+record as unreadable: it shows no hold, sends nothing for that account on that chain, cannot end the record by its
+deadline (it cannot read one), and offers "Discard the unreadable saved record", which removes the record. If the
+site were rolled back, the user discarded the record there against its warning, and the site were rolled forward
+inside the request's deadline (10 to 180 minutes), the wallet could still sign the first request while the page
+no longer held the account.
+
+The new build therefore saves a liquidity hold a second time, under a key the older build does not know
+(`postern.mainnet.liquidityHold.v1.<chain>.<account>`). When the main record is missing and that copy is a
+readable liquidity hold, the hold is put back and ends as every hold does: by its verified receipt, or by its
+deadline at the strict block. The copy is removed with the hold it mirrors. Putting a hold back can only stop the
+page from sending. Limits: the older build itself cannot be helped (while it is the published one, a discarded
+hold stays forgotten there); a browser that refuses the second write keeps only the main record; and a record
+that the older build marked in a way this build cannot read does not occur (the older build either leaves the
+record as it is or removes it). Operationally: do not roll back across this change while liquidity requests may
+be open, or wait 180 minutes after the last one.
 
 ## What the screens do not show
 
 No price history, no 24-hour volume or fees, no value in a currency and no value history: the page reads one block
-and has no reviewed price source. Activity lists only what this page sent from this account on this device.
+and has no reviewed price source. Activity lists only what the liquidity dialog sent from this account on this
+device (a swap's approval is not listed there). The "Pool ratio" line states the ratio per one wrapped native
+token where the pool has one, with six significant digits, cut and never rounded up, and writes "=" only when the
+figure shown is the ratio exactly ("≈" otherwise).
 
 ## Not done / not proven
 

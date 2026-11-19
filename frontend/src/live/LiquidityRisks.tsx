@@ -7,10 +7,13 @@ import type { TokenFact } from '../multichain/token-facts';
 /**
  * What a liquidity provider must know before signing, next to the action and never behind a click. Each line
  * states where it comes from:
- *   1, 2  contracts/UniswapV2Pair.sol `burn` (pro rata of the balances at that time); docs/MULTICHAIN-DEPLOY.md
- *         section 12, item 1 (price risk of a pool's depositor)
- *   3     docs/MULTICHAIN-DEPLOY.md sections 8 and 12 item 10 (tokens at the pair's address are a gift to the pool);
- *         UniswapV2Pair.sol `mint` / `skim`
+ *   1     the constant-product rule itself (UniswapV2Pair.sol `swap`, the `BDEX: K` check, line 388);
+ *         docs/MULTICHAIN-DEPLOY.md section 12, item 1 (a pool's depositor carries price risk)
+ *   2     UniswapV2Pair.sol `burn`, line 322 (pro rata of the pair's balances at that time)
+ *   3     UniswapV2Pair.sol `skim` (anyone may send the pair's balance above its reserves to any address), `mint`
+ *         (that balance counts in the next depositor's shares) and `burn` (it is paid out pro rata);
+ *         docs/MULTICHAIN-DEPLOY.md section 6 ("goes to whoever calls `skim` first"). Review R413-6: on an OPEN
+ *         pool such tokens are not a gift to its providers
  *   4     UniswapV2Pair.sol `_mintFee` (one sixth of the fee growth, as shares, at the next mint or burn);
  *         UniswapV2Factory.sol (`feeTo` is immutable); the recipient is read from the deployment record
  *   5     docs/MULTICHAIN-DEPLOY.md section 4 (an issuer can pause a token and blacklist addresses); the token
@@ -44,18 +47,26 @@ export function LiquidityRisks({
           amounts you put in. You can receive more of one token and less of the other.
         </li>
         <li>
-          <strong>Tokens sent straight to a pool&apos;s address are a gift to the pool.</strong>{' '}
-          They are not a deposit and give you no shares. Deposit only with the steps of this page.
+          <strong>Tokens sent straight to a pool&apos;s address are lost to you.</strong> They are
+          not a deposit and give you no shares; anyone can take them from the pool (skim), and until
+          someone does they count for whoever adds or removes liquidity next. Deposit only with the
+          steps of this page.
         </li>
         <li>
-          <strong>Fees.</strong> Every swap pays {POOL_FEE_TEXT} to the pool. One sixth of what the
-          fees add goes to the protocol fee recipient, as pool shares minted when liquidity is next
-          added or removed; the rest stays with the liquidity providers. The recipient is fixed in
-          the factory and cannot be changed:{' '}
-          <span className="hashline">
-            <code>{feeTo}</code>
-            <CopyButton value={feeTo} what="address" />
-          </span>
+          <strong>Fees.</strong> Every swap pays {POOL_FEE_TEXT} to the pool.{' '}
+          {BigInt(feeTo) === 0n ? (
+            'This factory has no protocol fee recipient: all of it stays with the liquidity providers.'
+          ) : (
+            <>
+              One sixth of what the fees add goes to the protocol fee recipient, as pool shares
+              minted when liquidity is next added or removed; the rest stays with the liquidity
+              providers. The recipient is fixed in the factory and cannot be changed:{' '}
+              <span className="hashline">
+                <code>{feeTo}</code>
+                <CopyButton value={feeTo} what="address" />
+              </span>
+            </>
+          )}
         </li>
         <li>
           <strong>A token&apos;s issuer keeps its powers.</strong> An issuer that can pause its
