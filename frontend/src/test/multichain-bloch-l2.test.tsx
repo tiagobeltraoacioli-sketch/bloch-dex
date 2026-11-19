@@ -34,6 +34,8 @@ import multichainFile from '../../../deployments/multichain.json';
 import l2Network from '../../../deployments/mainnet/frontend.network.json';
 import l2Record from '../../../deployments/mainnet/dex-mainnet.record.json';
 import l2Phase from '../../../deployments/mainnet/l2-phase.json';
+import l2Pins from '../../../deployments/mainnet/700770/pins.json';
+import l2Config from '../../../deployments/mainnet/dex-mainnet.config.json';
 import { L2_RPC_URL, liveL2Files } from './bloch-l2-fixture';
 
 // The mobile-wallet session module and the WalletConnect client: counted when first imported, as in
@@ -75,6 +77,9 @@ const go = (hash: string) =>
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   });
 const PUBLIC_KEYS = ['ethereum', 'base', 'arbitrum-one', 'op-mainnet', 'linea', 'bnb-smart-chain'];
+const UNPINNED_REASON = 'The reviewed L2 genesis hash is not pinned yet.';
+/** Block 0 of the Bloch L2 mainnet: deployments/mainnet/700770/pins.json `l2.genesisHash`. */
+const PINNED_GENESIS = '0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468';
 
 describe('the Bloch L2 entry of the multichain site', () => {
   it('is built from the Bloch L2 site’s own files and parsers: one network file, one record, the planned caps', async () => {
@@ -132,14 +137,20 @@ describe('why the Bloch L2 route is not live', () => {
   it('says it from data: the phase file, the record and the network file', async () => {
     expect(l2Phase.userTransactions).toBe('not-enabled');
     const state = await blochL2Entry().load();
+    // The committed files since 2026-11-19 (agent 440): the L2 is live in its deposit-only release, the record is
+    // the placeholder, `rpc.status` is `placeholder`, and the genesis IS pinned, so its reason is not said.
     expect(state).toEqual({
       status: 'not-live',
       reasons: [
         'Bloch L2 runs its deposit-only launch release: it does not accept user transactions yet, so the exchange cannot be deployed on it and no swap can be sent there.',
         'No verified mainnet deployment record has been published.',
         'The public L2 RPC is not published yet.',
-        'The reviewed L2 genesis hash is not pinned yet.',
       ],
+    });
+    // With a network file that pins no genesis (the committed state until then) the fourth reason is said.
+    expect(await blochL2Entry({ network: { ...l2Network, genesisHash: null } }).load()).toEqual({
+      status: 'not-live',
+      reasons: [...(state as { reasons: string[] }).reasons, UNPINNED_REASON],
     });
     expect(DEPOSIT_ONLY_REASON).toBe((state as { reasons: string[] }).reasons[0]);
     // No date and no clock in it: the same files give the same reasons at any time.
@@ -159,7 +170,16 @@ describe('why the Bloch L2 route is not live', () => {
       reasons: [
         'No verified mainnet deployment record has been published.',
         'The public L2 RPC is not published yet.',
-        'The reviewed L2 genesis hash is not pinned yet.',
+      ],
+    });
+    expect(
+      await blochL2Entry({ network: { ...l2Network, genesisHash: null }, phase: enabled }).load(),
+    ).toEqual({
+      status: 'not-live',
+      reasons: [
+        'No verified mainnet deployment record has been published.',
+        'The public L2 RPC is not published yet.',
+        UNPINNED_REASON,
       ],
     });
     // A published RPC and a pinned genesis with the committed record: one reason left, from the record.
@@ -224,6 +244,45 @@ describe('why the Bloch L2 route is not live', () => {
     expect(section6).toContain('deployments/mainnet/l2-phase.json');
     expect(section6).toContain('frontend/scripts/check-production-bundle.mjs --multichain');
     expect(l2Phase.note).toContain('frontend/scripts/check-production-bundle.mjs --multichain');
+  });
+});
+
+describe('the facts of the live L2 recorded in its network file (2026-11-19)', () => {
+  it('the genesis hash is the one the repository pinned before the launch, in every file that names it', () => {
+    expect(l2Network.genesisHash).toBe(PINNED_GENESIS);
+    expect(l2Pins.l2.genesisHash).toBe(PINNED_GENESIS);
+    expect(l2Pins.l2.chainId).toBe(700770);
+    expect(l2Config.network.genesisHash).toBe(PINNED_GENESIS);
+    expect(blochL2Entry().network.genesisHash).toBe(PINNED_GENESIS);
+    // A record on this genesis is the mainnet's: the route's chain-kind rule keys on the same pin.
+    expect(bundledNetwork().genesisHash).toBe(l2Pins.l2.genesisHash);
+  });
+
+  it('the explorer is the public L2 explorer, in the form the route builds its links from, and the RPC stays a placeholder', () => {
+    expect(l2Network.explorer).toEqual({ url: 'https://blochl1.com/l2' });
+    const { explorerUrl } = bundledNetwork();
+    // The route appends `/tx/<hash>` and `/address/<address>` (MainnetLive, shell/WalletStatus): no trailing
+    // slash, https, no query.
+    expect(explorerUrl).toBe('https://blochl1.com/l2');
+    expect(new URL(explorerUrl!).search).toBe('');
+    expect(`${explorerUrl!.replace(/\/$/, '')}/tx/0x00`).toBe('https://blochl1.com/l2/tx/0x00');
+    // Not set on purpose: `rpc.status: "live"` makes the page offer "Add or switch to Bloch L2" and names the
+    // network "Guarded launch" in the L2 site's switcher, which belong to a deployed exchange.
+    expect(l2Network.rpc).toEqual({ url: L2_RPC_URL, status: 'placeholder' });
+    expect(bundledNetwork().rpcLive).toBe(false);
+  });
+
+  it('none of it makes the route live or changes the published policy: the record is still the placeholder', async () => {
+    expect(l2Record.status).toBe('not-deployed');
+    expect((await blochL2Entry().load()).status).toBe('not-live');
+    expect(blochL2PolicyUrls(l2Network, l2Record)).toEqual([]);
+    // Even with the RPC marked live as well, the committed record keeps the route not live and the policy as is.
+    const published = { ...l2Network, rpc: { url: L2_RPC_URL, status: 'live' } };
+    expect(await blochL2Entry({ network: published }).load()).toEqual({
+      status: 'not-live',
+      reasons: [DEPOSIT_ONLY_REASON, 'No verified mainnet deployment record has been published.'],
+    });
+    expect(blochL2PolicyUrls(published, l2Record)).toEqual([]);
   });
 });
 
@@ -531,8 +590,8 @@ describe('the Bloch L2 route of the multichain site, not live', () => {
       DEPOSIT_ONLY_REASON,
       'No verified mainnet deployment record has been published.',
       'The public L2 RPC is not published yet.',
-      'The reviewed L2 genesis hash is not pinned yet.',
     ]);
+    expect(panel.textContent).not.toContain(UNPINNED_REASON);
     // The L2's planned caps, from the L2's reviewed config (a public chain has none).
     expect([...panel.querySelectorAll('tbody tr')].map((tr) => tr.textContent)).toEqual([
       'WBLCH10 WBLCH',
@@ -545,6 +604,20 @@ describe('the Bloch L2 route of the multichain site, not live', () => {
       'Bloch L2, chain ID 700770 (0xab162), native currency BLCH',
     );
     expect(network.textContent).toContain(`${L2_RPC_URL} (placeholder, not published yet)`);
+    // The facts recorded on 2026-11-19: the public explorer (a link that opens in a new tab and sends no
+    // referrer by the page's policy; nothing is fetched from it) and the pinned L2 genesis hash.
+    const explorer = within(network).getByRole('link', { name: 'https://blochl1.com/l2' });
+    expect(explorer.getAttribute('href')).toBe('https://blochl1.com/l2');
+    expect(explorer.getAttribute('target')).toBe('_blank');
+    expect(explorer.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(network.textContent).toContain(`L2 genesis${PINNED_GENESIS}`);
+    expect(network.textContent).not.toContain('Not pinned yet');
+    expect(network.textContent).not.toContain('Not published yet');
+    // While `rpc.status` is `placeholder` the page offers no way to add the network to a wallet.
+    expect(network.textContent).toContain(
+      'Adding the network to a wallet is available once the public RPC is published.',
+    );
+    expect(screen.queryByRole('button', { name: /Add or switch/ })).toBeNull();
     expect(screen.getByLabelText('Bridges').textContent).toContain('bUSDC');
     // Nothing of a public chain's rules: no confirmation note, no token note, no screens of the public routes.
     expect(screen.queryByTestId('confirmation-rule')).toBeNull();

@@ -563,8 +563,15 @@ requests from any origin (a host could instead proxy it same-origin and set
 node scripts/staging/frontend-record.mjs --config deployments/mainnet/dex-mainnet.config.json --plan deployments/mainnet/dex-mainnet.plan.json --infra-plan deployments/mainnet/700770/infra.plan.json --gate-report deployments/mainnet/dex-mainnet.gate-report.json --write deployments/mainnet/dex-mainnet.record.json
 ```
 
-Then set `genesisHash`, `rpc.status: "live"` and the explorer and bridge URLs in
-`frontend.network.json`, and review both files in the same change.
+Then set `rpc.status: "live"` and the bridge URLs in `frontend.network.json` (the
+opening form writes them from its `site` block), and review both files in the same
+change. `genesisHash` and `explorer.url` are recorded there since 2026-11-19, when the
+L2 mainnet went live in its deposit-only launch release: the genesis is the value of
+`deployments/mainnet/700770/pins.json` and the explorer is `https://blochl1.com/l2`.
+They change nothing in what the route does while the record is `not-deployed`.
+`rpc.status` was left at `placeholder` on purpose: with `live` the page offers "Add or
+switch to Bloch L2" to a connected wallet and the network switcher says "Guarded
+launch", both of which belong to a deployed exchange.
 
 **bUSDC exit status** (agent 144). A `bridges[]` entry may carry `"status": {"ethRpcUrl": "https://…", "vault": "0x…", "token": "0x…", "vaultCodeHash": "0x…" | null}` (lowercase addresses; `token` must be a token of the deployment). The page then reads the BridgedStablecoinV3 mint chain at the finalized and latest L2 blocks against the ProvenanceSourceVault deposit chain at the finalized and latest Ethereum blocks, and the vault's pause and `releasesEnabled`. Held or paused: a page alert, a notice on pools that pay out bUSDC, and a checkbox the user must tick before a swap into bUSDC is sendable. Unreadable: a "could not be checked" status line, nothing blocked. The CSP `connect-src` admits the Ethereum RPC origin (`headers.ts`); `VITE_BRIDGE_ETH_RPC_URL` overrides the URL for a local check. Browser rehearsal against the V3 bridge: `scripts/staging/render/hold-token.sh`.
 

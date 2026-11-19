@@ -231,13 +231,15 @@ describe('the live Bloch L2 route in the multichain shell', () => {
       'eth_chainId',
     ]);
     expect(requests[1].params).toEqual([{ chainId: '0xab162' }]);
-    // One RPC URL (the L2's), BLCH, no explorer while none is published: never a public chain's endpoint list.
+    // One RPC URL (the L2's), BLCH, and the one explorer the L2 network file publishes (since 2026-11-19; none
+    // was given while the file had none): never a public chain's endpoint list.
     expect(requests[2].params).toEqual([
       {
         chainId: '0xab162',
         chainName: 'Bloch L2',
         nativeCurrency: { name: 'Bloch', symbol: 'BLCH', decimals: 18 },
         rpcUrls: [L2_RPC_URL],
+        blockExplorerUrls: ['https://blochl1.com/l2'],
       },
     ]);
   });

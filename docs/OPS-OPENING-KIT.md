@@ -133,9 +133,9 @@ Website, in `frontend.network.json` and `_headers` (items 22-25), and the bridge
 
 | # | Input | Note |
 |---|---|---|
-| 22 | `genesisHash` | Null until reviewed. The pinned value is in `pins.json` |
-| 23 | `rpc.url` and `rpc.status` | Placeholder until the public RPC is live. The CSP `connect-src` must name the same origin |
-| 24 | `explorer.url` | |
+| 22 | `genesisHash` | Null until reviewed. The pinned value is in `pins.json`. Recorded on 2026-11-19 (`0x632e45ae…f468`: the value of `pins.json`, equal to block 0 served by the public L2 RPC that day); the form does not carry it and `apply` keeps it |
+| 23 | `rpc.url` and `rpc.status` | Placeholder until the public RPC is live. The CSP `connect-src` must name the same origin. On 2026-11-19 the RPC answers (deposit-only launch release) and the status is still `placeholder`: on the page `live` also offers "Add or switch to Bloch L2" and labels the network "Guarded launch" on the Bloch L2 site, so it is set at the opening, with the record (`site.rpcStatus` in the form) |
+| 24 | `explorer.url` | Recorded on 2026-11-19: `https://blochl1.com/l2` (the page appends `/tx/<hash>` and `/address/<address>`). The form's `site.explorerUrl` carries the same value, because `apply` writes the form's value over the file's |
 | 25 | bUSDC `depositUrl`, `withdrawUrl`, `docsUrl` | |
 | 26 | `frontend.bridge.json`: `ethereum.rpc.url` and `rpc.status`, `ethereum.vault`, `route`, `vaultCodeHash`, `signers`, `guardians`, `l2.token`, `tokenCodeHash`, `signers`, `proposed.*`, then `status: "live"` last | From the bridge deployment (`vault_pontes.py verify`). The Ethereum RPC origin also goes in `_headers` `connect-src`; `npm test` prints the expected file |
 

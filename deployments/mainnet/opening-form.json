@@ -28,7 +28,7 @@
   "site": {
     "rpcUrl": "https://l2rpc.blochl1.com",
     "rpcStatus": "placeholder",
-    "explorerUrl": null,
+    "explorerUrl": "https://blochl1.com/l2",
     "depositUrl": null,
     "withdrawUrl": null,
     "docsUrl": null

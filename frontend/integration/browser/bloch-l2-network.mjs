@@ -144,13 +144,18 @@ async function notLive() {
       check(`#/${key}: no console error`, !page.console.some((l) => /^(error|pageerror)/.test(l)), page.console.filter((l) => /^(error|pageerror)/.test(l)));
       const main = await page.evaluate(`document.querySelector('main').innerText.replace(/\\s+/g, ' ')`);
       if (chainId === 700770) {
-        check('#/bloch-l2: says why it is not live: the deposit-only launch release, no record, no public RPC, no pinned genesis', [
+        // Restated on 2026-11-19 (agent 440): the committed network file pins the L2 genesis and names the public
+        // explorer, so "The reviewed L2 genesis hash is not pinned yet." is no longer among the reasons (it was the
+        // fourth), and the two facts are checked below.
+        check('#/bloch-l2: says why it is not live: the deposit-only launch release, no record, the RPC not marked published', [
           'Bloch L2 runs its deposit-only launch release: it does not accept user transactions yet, so the exchange cannot be deployed on it and no swap can be sent there.',
           'No verified mainnet deployment record has been published.',
           'The public L2 RPC is not published yet.',
-          'The reviewed L2 genesis hash is not pinned yet.',
           'The DEX is not deployed on the Bloch L2 mainnet yet. This page sends no RPC request and no transaction until a verified deployment record is published with this site.',
         ].every((line) => main.includes(line)), main.slice(0, 900));
+        check('#/bloch-l2: the reasons are exactly those three', (await page.evaluate(`document.querySelectorAll('[aria-label="Not yet live"] li').length`)) === 3 && !main.includes('The reviewed L2 genesis hash is not pinned yet.'), main.slice(0, 900));
+        check('#/bloch-l2: the network block shows the pinned L2 genesis hash and the public explorer as a link that asks nothing by itself', main.includes('L2 genesis 0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468') && !main.includes('Not pinned yet') && await page.evaluate(`(() => { const a = [...document.querySelectorAll('[aria-label="Network"] a')]; return a.length === 1 && a[0].getAttribute('href') === 'https://blochl1.com/l2' && a[0].textContent === 'https://blochl1.com/l2' && a[0].target === '_blank' && a[0].rel === 'noopener noreferrer'; })()`), main.slice(0, 1600));
+        check('#/bloch-l2: no control adds the network to a wallet while the route is not live', main.includes('Adding the network to a wallet is available once the public RPC is published.') && await page.evaluate(`![...document.querySelectorAll('main button')].some((b) => /Add or switch/.test(b.textContent))`));
         check('#/bloch-l2: the planned caps and the placeholder RPC are shown as on the Bloch L2 site', /WBLCH 10 WBLCH/.test(main) && /bUSDC 1000 bUSDC/.test(main) && main.includes('https://l2rpc.blochl1.com (placeholder, not published yet)'), main.slice(0, 1600));
         check('#/bloch-l2: no rule of a public chain is on the page', !/two endpoints|Settlement rule of this network|confirmed block/.test(await page.text()));
       } else {

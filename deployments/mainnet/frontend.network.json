@@ -5,9 +5,9 @@
   "chainId": 700770,
   "chainName": "Bloch L2",
   "nativeCurrency": { "name": "Bloch", "symbol": "BLCH", "decimals": 18 },
-  "genesisHash": null,
+  "genesisHash": "0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468",
   "rpc": { "url": "https://l2rpc.blochl1.com", "status": "placeholder" },
-  "explorer": { "url": null },
+  "explorer": { "url": "https://blochl1.com/l2" },
   "newSlotFee": { "enabled": true, "freshSlotPriceWei": "200000000000000", "marginBps": 1000 },
   "l2Idle": { "skipIdleBlocks": true, "heartbeatSeconds": 86400, "blockIntervalSeconds": 1800 },
   "bridges": [

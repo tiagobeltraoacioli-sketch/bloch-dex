@@ -357,16 +357,24 @@ function fakeWallet(chain?: ChainState, connected = true) {
 }
 
 describe('mainnet network file', () => {
-  it('parses the committed placeholder: chain 700770 (0xab162), RPC not live, nothing pinned', () => {
+  // Restated on 2026-11-19 (agent 440, round 20), when the L2 mainnet went live in its deposit-only release: the
+  // committed file now carries the L2's genesis hash (the value of deployments/mainnet/700770/pins.json, read
+  // again from block 0 of the public RPC) and the public explorer. Until then both were null and this test said
+  // "nothing pinned". `rpc.status` stays `placeholder`: in this file it switches the page's own use of the RPC.
+  it('parses the committed file: chain 700770 (0xab162), RPC not live, the reviewed genesis pinned, the explorer published', () => {
     const n = parseNetwork(networkJson);
     expect(n).toMatchObject({
       chainId: 700770,
       chainHex: '0xab162',
       rpcUrl: 'https://l2rpc.blochl1.com',
       rpcLive: false,
-      genesisHash: null,
-      explorerUrl: null,
+      genesisHash: '0x632e45ae778da371a88dc1ae430193aa77eabb67a11de18e84fea7d20d11f468',
+      explorerUrl: 'https://blochl1.com/l2',
     });
+    // The earlier state of the file still parses: nothing pinned, no explorer.
+    expect(
+      parseNetwork({ ...structuredClone(networkJson), genesisHash: null, explorer: { url: null } }),
+    ).toMatchObject({ rpcLive: false, genesisHash: null, explorerUrl: null });
     expect(n.bridges.map((b) => [b.symbol, b.depositUrl])).toEqual([['bUSDC', null]]);
   });
 
@@ -388,12 +396,21 @@ describe('mainnet network file', () => {
 
   it('builds EIP-3085 parameters with the explorer only when one is published', () => {
     const n = parseNetwork(networkJson);
-    expect(addChainParameters(n)).toEqual({
+    // No explorer in the file (the committed state until 2026-11-19): none is given to the wallet.
+    expect(addChainParameters({ ...n, explorerUrl: null })).toEqual({
       chainId: 700770,
       chainName: 'Bloch L2',
       nativeCurrency: { name: 'Bloch', symbol: 'BLCH', decimals: 18 },
       rpcUrls: ['https://l2rpc.blochl1.com'],
       blockExplorerUrls: undefined,
+    });
+    // The committed file publishes one: the wallet is given exactly it.
+    expect(addChainParameters(n)).toEqual({
+      chainId: 700770,
+      chainName: 'Bloch L2',
+      nativeCurrency: { name: 'Bloch', symbol: 'BLCH', decimals: 18 },
+      rpcUrls: ['https://l2rpc.blochl1.com'],
+      blockExplorerUrls: ['https://blochl1.com/l2'],
     });
   });
 
@@ -420,8 +437,19 @@ describe('mainnet network file', () => {
 
 describe('mainnet deployment record', () => {
   it('keeps the committed placeholder "not yet live" without verifying anything', async () => {
+    // Restated on 2026-11-19 (agent 440): the committed network file pins the genesis, so that reason is gone
+    // from the committed state; with the file as it was until then, the three reasons stand as before.
     const state = await loadMainnetState(bundledRecord, bundledNetwork());
     expect(state).toEqual({
+      status: 'not-live',
+      reasons: [
+        'No verified mainnet deployment record has been published.',
+        'The public L2 RPC is not published yet.',
+      ],
+    });
+    expect(
+      await loadMainnetState(bundledRecord, { ...bundledNetwork(), genesisHash: null }),
+    ).toEqual({
       status: 'not-live',
       reasons: [
         'No verified mainnet deployment record has been published.',
