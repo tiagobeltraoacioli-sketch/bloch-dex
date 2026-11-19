@@ -841,14 +841,23 @@ procedure and files (`docs/MAINNET-700770-PACKAGE.md`, `docs/MAINNET-READINESS.m
 
 These are the same files, parsers and route component as the Bloch L2 site's `#/mainnet`
 (`frontend/src/multichain/bloch-l2.ts`, `BlochL2Route.tsx`); `src/test/multichain-bloch-l2-seam.test.tsx` compares
-what the two sites pass to the route, prop by prop. So the L2 deployment procedure needs no step for this site:
+what the two sites pass to the route, prop by prop. The L2 site's mount names a sixth prop, `ethRpc` (the reader
+of the bridge-hold status), `undefined` with the committed network file; this site's mount does not name it and the
+route makes the same reader from the same field of the network file, so the two are equal in effect (review
+R416-6). So the L2 deployment procedure writes no second set of files for this site:
 the commit that carries the L2 record and the network file with `rpc.status: "live"` and the pinned genesis makes
-the route live on both sites at their next build.
+the route live in the code of both sites at their next build. Publishing it on this site takes one more reviewed
+line (review R416-2): the release gate, `scripts/check-production-bundle.mjs --multichain`, refuses a build whose
+Bloch L2 route would be live while `deployments/mainnet/l2-phase.json` still says `userTransactions:
+"not-enabled"`. A rebuild of this site for another reason (a public network going live) therefore cannot publish
+swaps on the L2 by itself, and the sentence "does not accept user transactions yet" cannot stay in the tree next to
+a live L2 route.
 
 While the route is not live it shows "Not yet live", sends no request and loads nothing. Its first reason is read
 from `deployments/mainnet/l2-phase.json` (`userTransactions`: `not-enabled` while the L2 runs its deposit-only
 launch release; set `enabled` in a reviewed change when an L2 release that accepts user transactions is the one in
-production). That file configures nothing: the route goes live by the record and the network file alone.
+production). On the page that file configures nothing: the route goes live by the record and the network file
+alone. The release gate reads it as stated above.
 
 Three decisions of round 20, each stated on the route while it is live:
 
@@ -866,6 +875,9 @@ Three decisions of round 20, each stated on the route while it is live:
   published policy changes with the build that makes the L2 route live**: it then gains exactly those origins.
   `scripts/check-production-bundle.mjs --multichain` refuses the L2 RPC in the policy while the route cannot be
   live, refuses its absence once it can, and refuses any `_headers` that is not the one the committed files give.
+  A record counts as deployed for the policy only in the route's own words (domain
+  `postern.dex.frontend-record.v1`, schema version 1, status `liquidity-enabled`): a record with no status, a
+  misspelt one or one of another domain, which the route refuses, names no origin (review R416-3).
 
 Rehearsal (loopback only, throwaway keys): `frontend/integration/browser/bloch-l2-network-hook.sh` as the
 `RENDER_HOOK` of `scripts/staging/rehearse-mainnet-package.sh anvil` builds both sites from the one record and

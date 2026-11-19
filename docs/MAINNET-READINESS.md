@@ -253,7 +253,13 @@ reviewed change.
 
 1. The L2 mainnet (chain 700770) is activated and accepts user transactions;
    its genesis hash is published, and the operator's **own** L2 node, replaying
-   from that genesis, reports the same genesis hash.
+   from that genesis, reports the same genesis hash. When the L2 release in
+   production accepts user transactions, set `userTransactions: "enabled"` in
+   `deployments/mainnet/l2-phase.json` in a reviewed change: the Bloch DEX
+   site states that field while its Bloch L2 route is not live, and its release
+   gate (`frontend/scripts/check-production-bundle.mjs --multichain`) refuses
+   a build whose Bloch L2 route would be live while the file says
+   `not-enabled`.
 2. That node's RPC returns Ethereum-shaped blocks (no shim), receipts with
    `from`, the `finalized` block tag and `bloch_finality`.
 3. The timestamp decision (F3) is made and, if not wall-clock seconds, the

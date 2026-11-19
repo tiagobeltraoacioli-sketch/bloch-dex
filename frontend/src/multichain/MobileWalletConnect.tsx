@@ -41,6 +41,12 @@ export function onHandheld(): boolean {
 
 export const MOBILE_SESSION_NOTE =
   'Connected to a mobile wallet through WalletConnect. After you press Approve or Swap here, open the wallet app to confirm there.';
+/**
+ * The first sentence of `MOBILE_SESSION_NOTE` alone, for a page whose network the session cannot serve (the Bloch
+ * L2 route, review R416-1): there the instruction to confirm in the wallet app would be false, because nothing is
+ * sent to the mobile wallet from that page. The control that ends the session stays with it.
+ */
+export const MOBILE_SESSION_CONNECTED = 'Connected to a mobile wallet through WalletConnect.';
 
 /**
  * `chains`: the networks of this site whose bundled record is live (the session is asked for these and no other);
@@ -61,7 +67,14 @@ export function useMobileWalletConnect({
   };
   chains: MobileConnectChain[];
   route: MobileConnectChain;
-}): { button: ReactNode; dialog: ReactNode; session: ReactNode; open(): void } {
+}): {
+  button: ReactNode;
+  dialog: ReactNode;
+  session: ReactNode;
+  /** `session` without the instruction to confirm in the wallet app: for a page the session cannot serve. */
+  sessionElsewhere: ReactNode;
+  open(): void;
+} {
   const [stage, setStage] = useState<Stage | null>(null);
   // The provider of the session opened here, to tell it from an injected wallet.
   const [opened, setOpened] = useState<Provider | null>(null);
@@ -225,15 +238,22 @@ export function useMobileWalletConnect({
       </div>
     </Modal>
   ) : null;
-  const session =
+  const sessionLine = (note: string) =>
     opened !== null && wallet.provider === opened && wallet.disconnect ? (
       <p className="muted mobile-session" data-testid="mobile-session">
-        {MOBILE_SESSION_NOTE}{' '}
+        {note}{' '}
         <button type="button" className="text-link" onClick={() => wallet.disconnect?.()}>
           Disconnect the mobile wallet
         </button>
       </p>
     ) : null;
+  const session = sessionLine(MOBILE_SESSION_NOTE);
   // `open`: the same start as the button's, for another control of the site; it has the button's guards.
-  return { button, dialog, session, open: () => void start() };
+  return {
+    button,
+    dialog,
+    session,
+    sessionElsewhere: sessionLine(MOBILE_SESSION_CONNECTED),
+    open: () => void start(),
+  };
 }

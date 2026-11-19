@@ -208,10 +208,12 @@ export function MultichainApplication({
               transactions
             </span>
           ) : (
+            // "public network": the list above also holds the Bloch L2, whose deployment has other constructor
+            // rules (reserve caps, the k ceiling, another kind of fee recipient); review R416-5.
             <span className="muted">
               Reviewed deployment record · Reads pinned to one block, from two endpoints that agree
-              · Explicit wallet transactions · The same contracts on every listed network; each
-              network has its own pools and liquidity
+              · Explicit wallet transactions · The same contracts on every public network listed;
+              each network has its own pools and liquidity
             </span>
           )}
         </>
@@ -228,7 +230,10 @@ export function MultichainApplication({
           {note}
         </p>
       ))}
-      {mobile.session}
+      {/* On the Bloch L2 route the session cannot be used (it never covers chain 700770): the line says that a
+          mobile wallet is connected and keeps the control that ends the session, without the instruction to
+          confirm in the wallet app; the route's own notice says the rest (review R416-1). */}
+      {isBlochL2(chain) ? mobile.sessionElsewhere : mobile.session}
       <ConnectSlotContext.Provider value={mobile.button}>
         {isBlochL2(chain) ? (
           <BlochL2Route

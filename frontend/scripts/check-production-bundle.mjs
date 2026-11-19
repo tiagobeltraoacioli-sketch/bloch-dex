@@ -4,7 +4,8 @@
 // network files of deployments/multichain.json instead of the Bloch L2's (review R309-UI-6), and, since the Bloch
 // L2 is that site's seventh network (round 20), against the Bloch L2's two files as well: its endpoints must be in
 // the policy when they make its route live and must not be while they do not, and the whole _headers file must be
-// the one the committed files give.
+// the one the committed files give. A build whose Bloch L2 route would be live is refused while
+// deployments/mainnet/l2-phase.json says the L2 takes no user transaction (review R416-2).
 // (ported from the bridge frontend line, e3c9d31, by frontends-sec r10; the DEX tree has no bridge-only build)
 // Fails on dev RPCs, loopback endpoints, test keys, source maps, or a CSP that
 // does not allow the RPCs the committed config publishes.
@@ -127,6 +128,19 @@ if (multichain) {
     if (!allowed.includes(new URL(url).origin))
       hits.push(['_headers', 'Bloch L2 endpoint missing from connect-src', url]);
   }
+  // The reviewed switch of the L2 route on this site (review R416-2). The route goes live by the L2's record and
+  // network file, which the L2 deployment procedure writes for the L2 site; deployments/mainnet/l2-phase.json is
+  // this site's own statement of whether the L2 takes user transactions. A build in which those two files make
+  // the route live while the phase file still says it takes none is refused: publishing swaps on the L2 from
+  // this site takes the reviewed line that sets `userTransactions: "enabled"`. Anything but that exact word
+  // keeps the gate shut. The other direction ("enabled" with a record that is not deployed) is not a hit: the
+  // route is not live and only drops its first reason.
+  if (l2Urls.length > 0 && committed('l2-phase.json').userTransactions !== 'enabled')
+    hits.push([
+      'l2-phase.json',
+      'the Bloch L2 route would be live on this site while deployments/mainnet/l2-phase.json says the L2 takes no user transaction',
+      `set userTransactions to "enabled" in a reviewed change, once an L2 release that accepts user transactions is the one in production (docs/MAINNET-READINESS.md, section 6)`,
+    ]);
   // Nothing broader: the file is exactly the one these committed files give (the same call as
   // scripts/multichain-finish.mjs makes).
   const publicUrls = deployments('multichain.json').chains.flatMap(

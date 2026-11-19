@@ -154,11 +154,19 @@ const L2_WORDS = /Bloch|BLCH|bUSDC|\bL2\b|new storage slot|heartbeat|Safe\b/;
 const SITE = 'Bloch DEX';
 // Restated in round 20 (agent 415): the Bloch L2 is the seventh network of the site, so every page has the controls
 // that lead to its route: one link in the header's list and, while the switcher is open, one row. They are checked
-// to be exactly that (a link to #/bloch-l2 whose text begins with the network's name) and only they are taken out
-// of the text for the moment of the read; every other word of the page is held to the guard as before.
+// to be exactly that and only they are taken out of the text for the moment of the read; every other word of the
+// page is held to the guard as before.
+// Exactly, since review R416-4 (the texts and positions of the unit guard, `publicRouteWords` of
+// src/test/multichain.test.tsx; before it a link whose text merely began with the name was set aside): the first
+// is the link inside the "Networks" navigation whose whole text is the network's name; the second, if there is
+// one, is the switcher's row, whose whole text is the name, the chain id and one of the two statuses. Anything
+// else gives null and the check fails. src/test/multichain-bloch-l2.test.tsx runs this expression on the page.
 const TEXT_WITHOUT_L2_LINK = `(() => {
   const named = [...document.querySelectorAll('a[href="#/bloch-l2"]')];
-  if (named.length < 1 || named.length > 2 || !named.every((a) => /^\s*Bloch L2/.test(a.textContent))) return null;
+  if (named.length < 1 || named.length > 2) return null;
+  const nav = named[0].closest('nav');
+  if (!nav || nav.getAttribute('aria-label') !== 'Networks' || named[0].textContent !== 'Bloch L2') return null;
+  if (named[1] && (named[1].className !== 'network-row' || !/^Bloch L2Chain 700770 · (Not yet live|Live)$/.test(named[1].textContent))) return null;
   const kept = named.map((a) => [a, a.style.getPropertyValue('display'), a.style.getPropertyPriority('display')]);
   for (const [a] of kept) a.style.setProperty('display', 'none', 'important');
   try {

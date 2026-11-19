@@ -1,8 +1,14 @@
 // The Bloch L2 route of the multichain site: the route component of the Bloch L2 site (MainnetLive), mounted with
-// exactly what that site's #/mainnet passes it (App.tsx `MainnetApplication`): the L2 network file, its record, its
+// what that site's #/mainnet passes it (App.tsx `MainnetApplication`): the L2 network file, its record, its
 // one-endpoint reader, the planned caps, and none of the public chains' props (no confirmation rule, no snapshot
 // renewal, no faster receipt poll, no Trade / Pools / Portfolio screens). src/test/multichain-bloch-l2-seam.test.tsx
 // compares the two mounts prop by prop.
+// Exactly (review R416-6): the L2 site's mount names SIX props, this one five. The sixth is `ethRpc`, the reader of
+// the bridge-hold status. With the committed network file (no bridge status block) the L2 site passes `undefined`
+// for it; with a status block it passes `httpRpc(status.ethRpcUrl)` of the first block. This mount passes none, and
+// MainnetLive then makes that same reader itself from the same field (`ethRpc ?? httpRpc(holdSource.ethRpcUrl)`),
+// so a production build of either site reads the hold at the same endpoint. The one difference is a local render
+// build: the L2 site may route it through VITE_BRIDGE_ETH_RPC_URL, and the multichain build has no such override.
 import MainnetLive from '../MainnetLive';
 import type { Devnet4Wallet } from '../Devnet4Live';
 import type { BlochL2Entry } from './bloch-l2';

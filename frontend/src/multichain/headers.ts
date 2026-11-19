@@ -37,11 +37,15 @@ type AnyRecord = Record<string, any>;
  * from the L2 site's own two files (deployments/mainnet/frontend.network.json and dex-mainnet.record.json).
  *
  * An origin is named only if the built site can contact it. The route reads the chain only in the state
- * mainnet/config.ts `loadMainnetState` calls live, which takes all three of: a record that is not the
- * `not-deployed` placeholder, `rpc.status: "live"`, and a pinned genesis hash. Until then this returns nothing and
- * the published policy is the one of the six public chains, byte for byte. (A record that claims a deployment and
- * then fails verification is an error page that reads nothing; the origin is named for it all the same, because
- * verifying a record needs the route's code, which this file must not import.)
+ * mainnet/config.ts `loadMainnetState` calls live, which takes all three of: a record of the route's own domain
+ * (`postern.dex.frontend-record.v1`, schema version 1) with the one status that function lets through to verification
+ * (`liquidity-enabled`), `rpc.status: "live"`, and a pinned genesis hash. Until then this returns nothing and
+ * the published policy is the one of the six public chains, byte for byte. A record with no status, a misspelt
+ * one or one of another domain is refused by the route, which then reads nothing, and names no origin here
+ * (review R416-3; before it, anything but the literal `not-deployed` counted as deployed). (A record that claims
+ * a deployment in those exact words and then fails verification is an error page that reads nothing; the origin
+ * is named for it all the same, because verifying a record needs the route's code, which this file must not
+ * import.)
  *
  * When the route is live, two kinds of origin, each one the route itself reads and no other:
  *  - `rpc.url`: the L2's public RPC. Every read of the route (the finalized block, pools, caps, balances, quotes,
@@ -50,8 +54,12 @@ type AnyRecord = Record<string, any>;
  *    the bridge vault at, to tell whether exits of the bridged token are held (mainnet/bridgehold.ts).
  * Nothing is added to script-src, frame-src, img-src or any other directive.
  *
- * src/test/multichain-bloch-l2.test.tsx walks the eight states against `loadMainnetState`.
+ * src/test/multichain-bloch-l2.test.tsx walks the eight states, and the malformed records, against
+ * `loadMainnetState`.
  */
+/** mainnet/config.ts `RECORD_DOMAIN`, restated (no value import here); the test compares the two. */
+export const L2_RECORD_DOMAIN = 'postern.dex.frontend-record.v1';
+
 export function blochL2PolicyUrls(network: unknown, record: unknown): string[] {
   const n = network as AnyRecord;
   const r = record as AnyRecord;
@@ -60,7 +68,9 @@ export function blochL2PolicyUrls(network: unknown, record: unknown): string[] {
   if (!r || typeof r !== 'object' || Array.isArray(r))
     throw new Error('the Bloch L2 record is not an object');
   if (typeof n.rpc?.url !== 'string') throw new Error('the Bloch L2 network file has no rpc.url');
-  const live = r.status !== 'not-deployed' && n.rpc.status === 'live' && Boolean(n.genesisHash);
+  const deployed =
+    r.domain === L2_RECORD_DOMAIN && r.schemaVersion === 1 && r.status === 'liquidity-enabled';
+  const live = deployed && n.rpc.status === 'live' && Boolean(n.genesisHash);
   if (!live) return [];
   const holds = (Array.isArray(n.bridges) ? n.bridges : [])
     .map((b: AnyRecord) => b?.status?.ethRpcUrl)

@@ -4,7 +4,7 @@
 // The live route is in multichain-bloch-l2-live.test.tsx; the comparison of the two sites' mounts in
 // multichain-bloch-l2-seam.test.tsx.
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { act, render, screen, within } from '@testing-library/react';
@@ -17,6 +17,7 @@ import {
   loadMainnetState,
   plannedCaps,
   plannedPairs,
+  RECORD_DOMAIN,
 } from '../mainnet/config';
 import { renderHeadersFile } from '../mainnet/headers';
 import { BLOCH_L2_WORDING, setWording } from '../mainnet/wording';
@@ -28,7 +29,7 @@ import {
   parsePhase,
 } from '../multichain/bloch-l2';
 import { bundledChains } from '../multichain/config';
-import { blochL2PolicyUrls, multichainHeadersFile } from '../multichain/headers';
+import { blochL2PolicyUrls, L2_RECORD_DOMAIN, multichainHeadersFile } from '../multichain/headers';
 import multichainFile from '../../../deployments/multichain.json';
 import l2Network from '../../../deployments/mainnet/frontend.network.json';
 import l2Record from '../../../deployments/mainnet/dex-mainnet.record.json';
@@ -215,6 +216,14 @@ describe('why the Bloch L2 route is not live', () => {
     expect(DEPOSIT_ONLY_REASON).toContain('does not accept user transactions yet');
     expect(l2Phase.note).toContain('docs/MAINNET-700770-PACKAGE.md');
     expect(l2Phase.note).toContain('docs/MAINNET-READINESS.md');
+    // Review R416-2: the runbook's section 6 names the file and says who reads it, and the file names the gate.
+    const section6 = readiness.slice(
+      readiness.indexOf('## 6. Runbook'),
+      readiness.indexOf('### Step 0'),
+    );
+    expect(section6).toContain('deployments/mainnet/l2-phase.json');
+    expect(section6).toContain('frontend/scripts/check-production-bundle.mjs --multichain');
+    expect(l2Phase.note).toContain('frontend/scripts/check-production-bundle.mjs --multichain');
   });
 });
 
@@ -245,6 +254,37 @@ describe('the multichain policy and the Bloch L2 endpoints', () => {
           expect(urls).toEqual(deployed && rpcLive && pinned ? [L2_RPC_URL] : []);
         }
     expect(blochL2PolicyUrls(l2Network, l2Record)).toEqual([]);
+    // Review R416-3: the states outside the eight. A record the route refuses (no status, a misspelt status, a
+    // status of another vocabulary, another domain) reads nothing, so it names no origin either: the policy is
+    // never broader than the route, also for a half-written record next to a live network file.
+    const malformed: [string, unknown, RegExp][] = [
+      ['no status and no domain', {}, /unsupported record file/],
+      ['no status', { ...files.record, status: undefined }, /record status/],
+      ['a misspelt status', { ...files.record, status: 'deployed' }, /record status/],
+      [
+        'a status with a trailing space',
+        { ...files.record, status: 'not-deployed ' },
+        /record status/,
+      ],
+      [
+        'another domain',
+        { ...files.record, domain: 'postern.dex.frontend-network.v1' },
+        /unsupported record file/,
+      ],
+      ['no domain', { ...files.record, domain: undefined }, /unsupported record file/],
+      ['another schema version', { ...files.record, schemaVersion: 2 }, /unsupported record file/],
+    ];
+    for (const [what, record, refusal] of malformed) {
+      await expect(blochL2Entry({ network: files.network, record }).load(), what).rejects.toThrow(
+        refusal,
+      );
+      expect(blochL2PolicyUrls(files.network, record), what).toEqual([]);
+    }
+    // And the one status the route lets through, in its own domain, is what names the origin.
+    expect(L2_RECORD_DOMAIN).toBe(RECORD_DOMAIN);
+    expect(files.record.domain).toBe(RECORD_DOMAIN);
+    expect(files.record.status).toBe('liquidity-enabled');
+    expect(blochL2PolicyUrls(files.network, files.record)).toEqual([L2_RPC_URL]);
   });
 
   it('for a live L2 adds its RPC origin and the bridge-hold status origin to connect-src, and nothing else changes', () => {
@@ -368,6 +408,90 @@ describe('the build scripts and the Bloch L2 endpoints', () => {
     writeFileSync(file, headers);
     expect(run('check-production-bundle.mjs', [dir, '--multichain']).status).toBe(0);
   });
+
+  // Review R416-2. The gate reads the committed files of the tree it stands in and takes no override, so the two
+  // directions are run on a copy of that tree: the two scripts, the two policy modules they import and
+  // deployments/, with the Bloch L2's files changed. No file of the copy differs otherwise.
+  const tree = (l2: { network?: unknown; record?: unknown; phase?: unknown }) => {
+    const root = mkdtempSync(join(tmpdir(), 'postern-multichain-tree-'));
+    made.push(root);
+    for (const path of [
+      'frontend/scripts/check-production-bundle.mjs',
+      'frontend/scripts/multichain-finish.mjs',
+      'frontend/src/mainnet/headers.ts',
+      'frontend/src/multichain/headers.ts',
+      'frontend/multichain-public',
+      'deployments',
+    ])
+      cpSync(join(REPOSITORY, path), join(root, path), { recursive: true });
+    const write = (file: string, value: unknown) =>
+      value === undefined ||
+      writeFileSync(join(root, 'deployments/mainnet', file), JSON.stringify(value, null, 2));
+    write('frontend.network.json', l2.network);
+    write('dex-mainnet.record.json', l2.record);
+    write('l2-phase.json', l2.phase);
+    const at = (script: string, args: string[]) =>
+      spawnSync(process.execPath, [join(root, 'frontend/scripts', script), ...args], {
+        cwd: join(root, 'frontend'),
+        encoding: 'utf8',
+        // No rehearsal override reaches the copies: they read their own tree, as a release build does.
+        env: Object.fromEntries(
+          Object.entries(process.env).filter(([name]) => !name.startsWith('POSTERN_')),
+        ),
+      });
+    return { root, at, write };
+  };
+  const PHASE_HIT =
+    'the Bloch L2 route would be live on this site while deployments/mainnet/l2-phase.json says the L2 takes no user transaction';
+
+  it('check-production-bundle.mjs --multichain refuses a build whose Bloch L2 route would be live while the phase file says "not-enabled", and passes the same build once the phase file says "enabled"', () => {
+    const files = liveL2Files();
+    const copy = tree({ network: files.network, record: files.record });
+    const dir = built();
+    const finished = copy.at('multichain-finish.mjs', [dir]);
+    expect(finished.stderr).toBe('');
+    expect(finished.status).toBe(0);
+    expect(finished.stdout).toContain('Bloch L2: live, 1 origin');
+    const headers = readFileSync(join(dir, '_headers'), 'utf8');
+    expect(headers).toMatch(/connect-src [^;]* https:\/\/l2rpc\.blochl1\.com /);
+    // The committed phase file (not-enabled) next to a record and a network file that make the route live.
+    expect(l2Phase.userTransactions).toBe('not-enabled');
+    const refused = copy.at('check-production-bundle.mjs', [dir, '--multichain']);
+    expect(refused.status).toBe(1);
+    expect(refused.stdout).toContain(`HIT l2-phase.json: ${PHASE_HIT}`);
+    // The one hit: the policy itself is what these files give, and nothing else in the build is wrong.
+    expect(refused.stdout).toContain('1 hit(s)');
+    expect(refused.stdout).toContain('(Bloch L2: 1)');
+    // The reviewed line: the same build, the same _headers, the phase file set to "enabled".
+    copy.write('l2-phase.json', { ...l2Phase, userTransactions: 'enabled' });
+    const passed = copy.at('check-production-bundle.mjs', [dir, '--multichain']);
+    expect(passed.stdout).toContain('0 hit(s)');
+    expect(passed.stdout).toContain('(Bloch L2: 1)');
+    expect(passed.status).toBe(0);
+    // A phase file that says neither word does not open the gate (fail closed).
+    for (const value of [undefined, 'Enabled', true, 'deposit-only']) {
+      copy.write('l2-phase.json', { ...l2Phase, userTransactions: value });
+      const other = copy.at('check-production-bundle.mjs', [dir, '--multichain']);
+      expect(other.status, String(value)).toBe(1);
+      expect(other.stdout, String(value)).toContain(PHASE_HIT);
+    }
+  }, 60_000);
+
+  it('the other direction is not a hit: "enabled" in the phase file while the record is not deployed leaves the route not live and the policy without the L2', () => {
+    const copy = tree({ phase: { ...l2Phase, userTransactions: 'enabled' } });
+    const dir = built();
+    const finished = copy.at('multichain-finish.mjs', [dir]);
+    expect(finished.stderr).toBe('');
+    expect(finished.status).toBe(0);
+    expect(finished.stdout).toContain('Bloch L2: not live, no origin');
+    expect(readFileSync(join(dir, '_headers'), 'utf8')).toBe(pinned());
+    const passed = copy.at('check-production-bundle.mjs', [dir, '--multichain']);
+    expect(passed.stdout).toContain('0 hit(s)');
+    expect(passed.stdout).toContain('(Bloch L2: 0)');
+    expect(passed.stdout).not.toContain('l2-phase.json');
+    expect(passed.status).toBe(0);
+    // The copy is the committed tree but for the files named: the committed tree itself passes too (above).
+  }, 60_000);
 });
 
 describe('the Bloch L2 route of the multichain site, not live', () => {
@@ -519,10 +643,110 @@ describe('the Bloch-words guard, route by route', () => {
         if (open) await user.keyboard('{Escape}');
       }
       expect(document.title).toBe(`Bloch DEX — ${chain.network.chainName}`);
+      // Review R416-5: the footer of a public route speaks of the public networks. The list above it now holds
+      // the Bloch L2 too, whose deployment has other constructor rules (reserve caps, the k ceiling, another
+      // kind of fee recipient), so "every listed network" would no longer be true.
+      const footer = document.querySelector('.footer')!.textContent!;
+      expect(footer).toContain(
+        'The same contracts on every public network listed; each network has its own pools and liquidity',
+      );
+      expect(footer).not.toContain('every listed network');
     }
     await go('#/bloch-l2');
     await screen.findByLabelText('Not yet live');
     const l2 = document.querySelector('main')!.textContent!;
     for (const word of ['Bloch L2', 'BLCH', 'bUSDC']) expect(l2).toContain(word);
+    // The L2 route's footer is its own line and makes no statement about "the same contracts".
+    expect(document.querySelector('.footer')!.textContent).not.toMatch(/same contracts/);
+  });
+
+  // Review R416-4. The page driver (integration/browser/multichain.mjs) restates this guard for a real browser,
+  // with a wider word list. Its expression is taken from the driver's source and run here against the page, so
+  // that what it sets aside is held to the unit guard's exact texts and positions (`publicRouteWords` of
+  // multichain.test.tsx): the first control is the link "Bloch L2" inside the "Networks" navigation, the second
+  // the switcher's row `Bloch L2Chain 700770 · Not yet live|Live`, and nothing else is ever set aside.
+  it('the page driver sets aside exactly those two controls: any other link to the L2 route, or other words in one of them, leaves the guard unusable', async () => {
+    const user = userEvent.setup();
+    const source = readFileSync(join(FRONTEND, 'integration/browser/multichain.mjs'), 'utf8');
+    const expression = /const TEXT_WITHOUT_L2_LINK = `([^`]+)`;/.exec(source)?.[1];
+    if (!expression) throw new Error('the driver no longer defines TEXT_WITHOUT_L2_LINK');
+    // jsdom has no layout, so no innerText: the text of everything not hidden by an inline `display: none`,
+    // which is how the driver takes the links out for the moment of the read.
+    const visibleText = (node: Node): string =>
+      node.nodeType === Node.TEXT_NODE
+        ? node.textContent!
+        : node instanceof HTMLElement && node.style.display === 'none'
+          ? ''
+          : [...node.childNodes].map(visibleText).join('');
+    Object.defineProperty(HTMLElement.prototype, 'innerText', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return visibleText(this);
+      },
+    });
+    try {
+      const read = () => (0, eval)(expression) as string | null;
+      const WORDS = /Bloch|BLCH|bUSDC|\bL2\b|new storage slot|heartbeat|Safe\b/;
+      history.replaceState(null, '', '/#/base');
+      render(<MultichainApplication />);
+      await screen.findByLabelText('Not yet live');
+      // The page as it is: the read succeeds, with the switcher closed (one control) and open (two), and what
+      // is left holds to the driver's word list once the site's name is taken out.
+      const closed = read();
+      expect(closed).not.toBeNull();
+      expect(closed!.replaceAll('Bloch DEX', '')).not.toMatch(WORDS);
+      await user.click(screen.getByRole('button', { name: /Base · Chain 8453/ }));
+      const open = read();
+      expect(open).not.toBeNull();
+      expect(open!.replaceAll('Bloch DEX', '')).not.toMatch(WORDS);
+      // The links are back on the page after the read.
+      expect(
+        [...document.querySelectorAll<HTMLElement>('a[href="#/bloch-l2"]')].map(
+          (a) => a.style.display,
+        ),
+      ).toEqual(['', '']);
+      const [link, row] = [...document.querySelectorAll<HTMLElement>('a[href="#/bloch-l2"]')];
+      const changed = (element: HTMLElement, text: string) => {
+        const node = [...element.childNodes].find((n) => n.nodeType === Node.TEXT_NODE)!;
+        const before = node.textContent;
+        node.textContent = text;
+        const result = read();
+        node.textContent = before;
+        return result;
+      };
+      // The reviewer's case: words of the L2 inside the header link, which merely BEGINS with the name.
+      expect(
+        changed(link, 'Bloch L2: swap BLCH and bUSDC, new storage slot, heartbeat, Safe'),
+      ).toBeNull();
+      expect(changed(link, 'Bloch L2 ')).toBeNull();
+      // The same inside the switcher's row: its text is the name, the chain id and one of two statuses.
+      const status = row.querySelector('small') ?? row;
+      const statusText = status.textContent;
+      status.textContent = `${statusText} · BLCH and bUSDC pools, Safe`;
+      expect(read()).toBeNull();
+      status.textContent = statusText;
+      expect(read()).not.toBeNull();
+      // Position: a link to the L2 route with the exact name, but inside the route and not in the navigation.
+      const stray = document.createElement('a');
+      stray.setAttribute('href', '#/bloch-l2');
+      stray.textContent = 'Bloch L2';
+      await user.keyboard('{Escape}');
+      document.querySelector('main')!.append(stray);
+      // Two links with the switcher closed: the second is not the switcher's row.
+      expect(read()).toBeNull();
+      stray.remove();
+      document.querySelector('header')!.prepend(stray);
+      // First in the page but outside the "Networks" navigation.
+      expect(read()).toBeNull();
+      stray.remove();
+      expect(read()).not.toBeNull();
+      // A third link is never set aside.
+      await user.click(screen.getByRole('button', { name: /Base · Chain 8453/ }));
+      document.querySelector('main')!.append(stray);
+      expect(read()).toBeNull();
+      stray.remove();
+    } finally {
+      delete (HTMLElement.prototype as { innerText?: unknown }).innerText;
+    }
   });
 });

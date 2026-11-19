@@ -63,9 +63,25 @@ describe('the Bloch L2 route on the two sites', () => {
     const here = mounts.at(-1) as Props;
     expect(document.title).toBe('Bloch DEX — Bloch L2');
 
-    // The same props, by name: the route's five, and no other.
+    // The same props, by name: the route's five that carry a value, and no other.
     expect(defined(own)).toEqual(['load', 'network', 'planned', 'rpc', 'wallet']);
     expect(defined(here)).toEqual(defined(own));
+    // Exactly (review R416-6): the L2 site's mount NAMES a sixth prop, `ethRpc` (the bridge-hold reader), and
+    // passes `undefined` for it because the committed network file has no bridge status block; this site's mount
+    // does not name it. With a status block the route builds that reader itself from the same field when none is
+    // passed (MainnetLive), so the two are equal in effect: multichain-bloch-l2-live.test.tsx reads a hold through
+    // this site's shell at the status block's endpoint.
+    expect(Object.keys(own).sort()).toEqual([
+      'ethRpc',
+      'load',
+      'network',
+      'planned',
+      'rpc',
+      'wallet',
+    ]);
+    expect(own.ethRpc).toBeUndefined();
+    expect(Object.keys(here).sort()).toEqual(['load', 'network', 'planned', 'rpc', 'wallet']);
+    expect(own.network.bridges.map((b) => b.status)).toEqual([null]);
     for (const publicOnly of [
       'confirmation',
       'receiptPollMs',
