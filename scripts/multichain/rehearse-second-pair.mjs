@@ -82,10 +82,19 @@ const ABI = parseAbi([
 const hex = (n) => `0x${BigInt(n).toString(16)}`;
 let rpcId = 0;
 async function rpc(method, params = []) {
-  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }) });
-  const body = await response.json();
-  if (body.error) throw Object.assign(new Error(`${method}: ${body.error.message}`), { rpcError: body.error });
-  return body.result;
+  // The fork reads state it has not seen yet from the public fork source, which answers some requests with a
+  // timeout or a rate limit ("Fork Error … 408", seen on Ethereum's source). Such an answer says nothing about the
+  // fork: the same request is asked again, up to five times, a few seconds apart. Anything else is returned at once.
+  for (let attempt = 1; ; attempt++) {
+    const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params }) });
+    const body = await response.json();
+    if (!body.error) return body.result;
+    if (attempt < 5 && /Fork Error/.test(body.error.message) && /408|429|timeout|rate limit|Too Many/i.test(body.error.message)) {
+      await delay(3000 * attempt);
+      continue;
+    }
+    throw Object.assign(new Error(`${method}: ${body.error.message}`), { rpcError: body.error });
+  }
 }
 const data = (functionName, args = []) => encodeFunctionData({ abi: ABI, functionName, args });
 const read = async (to, functionName, args = []) => decodeFunctionResult({ abi: ABI, functionName, data: await rpc("eth_call", [{ to, data: data(functionName, args) }, "latest"]) });
