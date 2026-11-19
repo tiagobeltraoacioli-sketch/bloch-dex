@@ -63,6 +63,20 @@ export const PAIR_INIT_CODE_HASH = "0x16bd5cad7515499aa8c3f9b0f0e894a3ddeb41f541
 export const TERMINAL_ENV = ["HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "LANG"];
 export const TOOL_NAMES = ["forge", "cast", "anvil", "node", "npm"];
 
+// Section 8B of the document (a second pool on a chain, round 20): its blocks are marked `second-pool:`.
+export const SECOND_ONCE_STEPS = ["cd", "fetch", "origin-main", "rebase", "own-commits", "forge-build", "kit-tests"];
+export const SECOND_CHAIN_STEPS = ["verify-chain", "post-gate-two-pairs", "market", "depositor-native", "depositor-token", "prepare", "verify", "post-gate-open", "frontend-record", "record-add", "record-commit"];
+/** The marked blocks of section 8B: { "<chain>|once <step>": command }, each one line without a comment or an angle bracket. */
+export function secondBlocksOf(text) {
+  const blocks = {};
+  for (const m of text.matchAll(/<!-- second-pool: (\S+) (\S+) -->\n```\n([\s\S]*?)\n```/g)) {
+    refuse(!blocks[`${m[1]} ${m[2]}`], `${DOC}: the block second-pool ${m[1]} ${m[2]} appears twice`);
+    refuse(!m[3].includes("\n") && !/(^|\s)#/.test(m[3]) && !/[<>]/.test(m[3]), `${DOC}: the block second-pool ${m[1]} ${m[2]} must be one line without a comment or an angle bracket`);
+    blocks[`${m[1]} ${m[2]}`] = m[3];
+  }
+  return blocks;
+}
+
 /** The pinned SHA-256 of each program of a platform (scripts/multichain/owner-toolchain.pins): { "foundry/forge": hex, … }. */
 export function pinnedFiles(platform, text = readFileSync(join(ROOT, "scripts/multichain/owner-toolchain.pins"), "utf8")) {
   const pins = {};
@@ -367,7 +381,7 @@ async function main() {
       .replaceAll(DEPOSITOR_KEYSTORE, "--unlocked")
       .replace(/--rpc-url https:\/\/\S+/g, `--rpc-url ${url}`);
     for (const [k, v] of Object.entries(values)) c = c.replaceAll(k, v);
-    if (/^node scripts\/multichain\/(gate|market|first-deposit|frontend-files)\.mjs /.test(c)) c += ` --rpc ${url} --rehearsal`;
+    if (/^node scripts\/multichain\/(gate|market|first-deposit|frontend-files|verify-chain)\.mjs /.test(c)) c += ` --rpc ${url} --rehearsal`;
     if (/^node scripts\/multichain\/frontend-files\.mjs /.test(c)) c += ` --out ${join(out, "files")}`;
     if (/^scripts\/multichain\/deploy\.sh /.test(c)) c = c.replace(" -- ", ` --rehearsal-rpc ${url} -- `) + ` --password-file ${pwFile}`;
     return c;
@@ -431,6 +445,26 @@ async function main() {
     const HISTORY = "0x0000F90827F1C53a10cb7A02335B175320002935";
     const slots = Array.from({ length: 1200 }, (_, i) => (BigInt(forkBlock.number) + BigInt(i)) % 8191n);
     for (let i = 0; i < slots.length; i += 100) await Promise.all(slots.slice(i, i + 100).map((s) => rpc("anvil_setStorageAt", [HISTORY, `0x${s.toString(16).padStart(64, "0")}`, `0x${"0".repeat(64)}`])));
+
+    // Round 20 (finding F409-3): the owner has deployed on five chains, so a fork of today holds the factory, the
+    // router and the lens, and the document's deployment blocks would send nothing. As rehearse-fork.mjs: the three
+    // addresses must hold exactly the planned code; they are then cleared on the fork (code and nonce) so that the
+    // blocks deploy the same bytes to the same addresses again.
+    {
+      const present = [];
+      for (const c of Object.values(plan.contracts)) if ((await rpc("eth_getCode", [c.address, "latest"])) !== "0x") present.push(c);
+      if (present.length) {
+        const same = [];
+        for (const c of present) same.push(keccak256(await rpc("eth_getCode", [c.address, "latest"])) === c.runtimeCodeHash);
+        check(`${key}-0 the ${present.map((c) => c.name).join(", ")} already on the chain (the owner's deployment) hold exactly the planned code; cleared on the fork so that the document's blocks deploy them again`, same.every(Boolean), same.join());
+        for (const p of plan.pairs) refuse((await rpc("eth_getCode", [p.address, "latest"])) === "0x", `the planned pair ${p.tokenA}/${p.tokenB} already exists on the forked chain: this dry run needs a fork from before its creation`);
+        for (const c of present) {
+          await rpc("anvil_setCode", [c.address, "0x"]);
+          await rpc("anvil_setNonce", [c.address, "0x0"]);
+        }
+        evidence.ownerDeploymentCleared = present.map((c) => c.name);
+      }
+    }
 
     // The deploying key: the owner's commands of section 2.4 (cast wallet new), with a throwaway password.
     mkdirSync(keyDir, { recursive: true });
@@ -600,7 +634,7 @@ async function main() {
     await mine();
     r = run("post-gate-open");
     const openReport = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, "utf8")) : null;
-    check(`${key}-9 post gate with the opening: PASS, the pair open and proven`, r.status === 0 && /post: PASS/.test(r.output) && openReport?.pairs?.every((x) => x.state === "open" && x.opening?.proven === true), r.output.split("\n").filter((l) => /^(FAIL|WAIT)/.test(l)).join(" | "));
+    check(`${key}-9 post gate with the opening: PASS, the pair open and proven`, r.status === 0 && /post: PASS/.test(r.output) && openReport?.pairs?.every((x, i) => (i === 0 ? x.state === "open" && x.opening?.proven === true : x.state === "absent")), r.output.split("\n").filter((l) => /^(FAIL|WAIT)/.test(l)).join(" | "));
     r = run("frontend-record");
     const record = existsSync(join(out, "files", key, "frontend.record.json")) ? JSON.parse(readFileSync(join(out, "files", key, "frontend.record.json"), "utf8")) : null;
     check(`${key}-10 the page's record is written from the report`, r.status === 0 && record && record.status !== "not-deployed", r.output.slice(-400));
@@ -622,6 +656,140 @@ async function main() {
     check(`the deploying account's stated ${funding.deployer} ${symbol} covers today's deployment cost`, evidence.cost && BigInt(evidence.cost.deploymentWei) < deployerFund, evidence.cost?.deployment);
     evidence.deployerCoversGwei = evidence.cost ? Number(formatUnits((deployerFund - BigInt(evidence.cost.deploymentDataFeeWei)) / BigInt(evidence.cost.deploymentGas), 9)) : null;
     evidence.allowanceCoversGwei = evidence.cost ? Number(formatUnits((parseUnits(funding.allowance, 18) - BigInt(evidence.cost.depositDataFeeWei)) / BigInt(evidence.cost.depositGas), 9)) : null;
+    // ------------------------------------------------------------ section 8B: the chain's second pool (round 20)
+    if (chain.initialPairs.length > 1) {
+      const second = secondBlocksOf(text);
+      const expectedSecond = [...SECOND_ONCE_STEPS.map((x) => `once ${x}`), ...SECOND_CHAIN_STEPS.map((x) => `${key} ${x}`)];
+      refuse(expectedSecond.every((k) => second[k]), `${DOC}: missing second-pool blocks: ${expectedSecond.filter((k) => !second[k]).join(", ")}`);
+      const base = "ba1455b5a5580c2226c767e625759654dd63cbc0";
+      const G = (args, cwd) => {
+        const g = spawnSync("/usr/bin/git", args, { cwd, encoding: "utf8" });
+        refuse(g.status === 0, `git ${args.join(" ")}: ${g.stderr}`);
+        return g.stdout;
+      };
+      // ---- 8B.0 on a throwaway copy of the owner's state: a clone of the published main as it was when he
+      // started (ba1455b), with his own commits (a stand-in for the fee-address proof; this chain's record and gate
+      // report, as steps 10 and 11 leave them) and an untracked report of another chain; then the published main
+      // moves to the commit under test.
+      const originDir = join(out, "owner-origin.git");
+      const copy = join(out, "owner-copy");
+      const dirty = join(out, "owner-copy-changed");
+      for (const d of [originDir, copy, dirty]) rmSync(d, { recursive: true, force: true });
+      G(["init", "-q", "--bare", originDir], out);
+      G(["push", "-q", originDir, `${base}:refs/heads/main`], ROOT);
+      G(["clone", "-q", "--branch", "main", originDir, copy], out);
+      G(["config", "user.name", "Owner dry run"], copy);
+      G(["config", "user.email", "owner-dry-run@example.invalid"], copy);
+      writeFileSync(join(copy, "deployments/fee-address-proof.json"), `${JSON.stringify({ note: "stand-in written by the dry run: the owner's proof is his own file and is not read here" }, null, 2)}\n`);
+      G(["add", "deployments/fee-address-proof.json"], copy);
+      G(["commit", "-q", "-m", "stand-in: fee address proof (owner run)"], copy);
+      writeFileSync(join(copy, `deployments/${key}/gate-report.json`), readFileSync(reportFile));
+      writeFileSync(join(copy, `deployments/${key}/frontend.record.json`), readFileSync(join(out, "files", key, "frontend.record.json")));
+      G(["add", `deployments/${key}`], copy);
+      G(["commit", "-q", "-m", `${chain.chain.name}: deployed and pool opened (owner run)`], copy);
+      const other = ORDER.find((k) => k !== key);
+      writeFileSync(join(copy, `deployments/${other}/gate-report.json`), "{}\n");
+      const ownHead = G(["rev-parse", "HEAD"], copy).trim();
+      G(["push", "-q", originDir, `${head}:refs/heads/main`], ROOT);
+      spawnSync("/bin/cp", ["-R", copy, dirty]);
+      const at = (dir, cmd) => cmd.replaceAll(OWNER_CLONE, dir);
+      const once = (step, dir = copy, name = `8B0-${step}`) => shell(name, second[`once ${step}`], `${envPrefix}${at(dir, second[`once ${step}`])}`, { cwd: dir });
+      // The copy with a tracked tool file changed and not committed (what section 2.1's commit comparison exists for).
+      const tool = "scripts/multichain/first-deposit.mjs";
+      appendFileSync(join(dirty, tool), "\n// one line added after the reviewed commit\n");
+      once("fetch", dirty, "8B0-changed-fetch");
+      let r = once("rebase", dirty, "8B0-changed-rebase");
+      check("8B.0 with a tracked tool file changed and not committed: the rebase block REFUSES (unstaged changes) and the copy stays at the owner's own commit", r.status !== 0 && /cannot rebase: You have unstaged changes/.test(r.output) && G(["rev-parse", "HEAD"], dirty).trim() === ownHead, r.output.slice(-300));
+      // What the guide forbids (drill only): with autostash the rebase goes through; the document's comparison
+      // block must then show the changed tool. The earlier form of the block (two commits compared) did not.
+      r = shell("8B0-changed-autostash-drill", "(drill, forbidden by the guide) git -c rebase.autoStash=true rebase origin/main", "/usr/bin/git -c rebase.autoStash=true rebase origin/main", { cwd: dirty });
+      const listed = (output) => output.split("\n").map((l) => l.match(/^ (\S+)\s+\|/)?.[1]).filter(Boolean);
+      const shown = once("own-commits", dirty, "8B0-changed-own-commits");
+      const earlier = shell("8B0-changed-earlier-form", "(the block before review R414-2) git diff --stat origin/main HEAD", "/usr/bin/git diff --stat origin/main HEAD", { cwd: dirty });
+      check("8B.0 (R414-2) had the rebase gone through with that change, the document's comparison block lists the changed tool file; the block's earlier form (two commits) did not", r.status === 0 && listed(shown.output).includes(tool) && !listed(earlier.output).includes(tool), `${shown.output} / ${earlier.output}`);
+      // The clean copy, block by block.
+      r = shell("8B0-cd", second["once cd"], `${at(copy, second["once cd"])} && pwd -P`, { cwd: out });
+      check("8B.0 the copy is entered", r.status === 0, r.output);
+      r = once("fetch");
+      check("8B.0 git fetch origin: the published main moved", r.status === 0, r.output.slice(-200));
+      r = once("origin-main");
+      check("8B.0 git rev-parse origin/main prints the 40 digits of the commit under test", r.status === 0 && r.output.trim() === head, r.output);
+      r = once("rebase");
+      check("8B.0 git rebase origin/main: Successfully rebased; the owner's two commits are on top of the reviewed commit", r.status === 0 && /Successfully rebased/.test(r.output) && G(["rev-parse", "HEAD~2"], copy).trim() === head, r.output.slice(-300));
+      r = once("own-commits");
+      const files = listed(r.output);
+      check("8B.0 the comparison block lists only the owner's own files under deployments/ (the proof, this chain's report and record); the untracked report of another chain is untouched", r.status === 0 && files.length === 3 && files.every((f) => f.startsWith("deployments/")) && files.includes("deployments/fee-address-proof.json") && existsSync(join(copy, `deployments/${other}/gate-report.json`)), r.output);
+      {
+        // What replaces section 2.1's check: that script now says FAIL for the id received and PASS for the owner's own id.
+        const script = `/bin/bash scripts/multichain/reviewed-commit.sh`;
+        const a = shell("8B0-reviewed-commit-received-id", "(not a block of 8B) reviewed-commit.sh with the id received", `${envPrefix}${script} ${head}`, { cwd: copy });
+        const b = shell("8B0-reviewed-commit-own-id", "(not a block of 8B) reviewed-commit.sh with the owner's own new id", `${envPrefix}${script} ${G(["rev-parse", "HEAD"], copy).trim()}`, { cwd: copy });
+        check("8B.0 as the document says, reviewed-commit.sh no longer applies: FAIL with the id received, an empty PASS with the owner's own id", a.status === 1 && /reviewed commit: FAIL/.test(a.output) && b.status === 0 && /reviewed commit: PASS/.test(b.output), `${a.output.slice(-120)} / ${b.output.slice(-120)}`);
+      }
+      // The copy's packages are the owner's own from section 2.1 (the lockfile did not change); here the fresh clone's.
+      check("8B.0 the lockfile of the packages is the one of ba1455b (no new install is needed)", spawnSync("/usr/bin/git", ["diff", "--quiet", base, head, "--", "frontend/package-lock.json"], { cwd: ROOT }).status === 0);
+      spawnSync("/bin/ln", ["-s", join(REPO, "frontend/node_modules"), join(copy, "frontend/node_modules")]);
+      r = once("forge-build");
+      check("8B.0 forge build in the copy: Compiler run successful", r.status === 0 && /Compiler run successful|No files changed, compilation skipped/.test(r.output), r.output.slice(0, 400));
+      r = once("kit-tests");
+      check("8B.0 the kit test of this section in the copy (which holds a chain recorded as deployed): fail 0", r.status === 0 && /ℹ fail 0/.test(r.output), r.output.slice(-400));
+
+      // ---- 8B.<chain>: the second pool, on the same fork, after the first.
+      const token2 = chain.tokens[1];
+      const pairName = `${chain.wrappedNative.symbol}/${token2.symbol}`;
+      const run2 = (step, name = `U-${step}`) => sh(name, second[`${key} ${step}`], t(second[`${key} ${step}`]));
+      r = run2("verify-chain");
+      check(`${key}-U1 verify-chain on the fork: PASS`, r.status === 0 && new RegExp(`multichain verify-chain ${key}: PASS`).test(r.output), r.output.split("\n").filter((l) => l.startsWith("FAIL")).join(" | "));
+      r = run2("post-gate-two-pairs");
+      let two = JSON.parse(readFileSync(reportFile, "utf8"));
+      check(`${key}-U2 post gate with the plan of two pairs: PASS, the first pool open and proven from the report it replaces, ${pairName} absent`, r.status === 0 && /post: PASS/.test(r.output) && two.pairs.length === 2 && two.pairs[0].opening?.proven === true && two.pairs[0].opening.transaction === depositHash && two.pairs[1].state === "absent", r.output.split("\n").filter((l) => /^(FAIL|WAIT|NOT WRITTEN)/.test(l)).join(" | "));
+      r = run2("market");
+      const at2 = r.output.match(new RegExp(`at that price: ([0-9.]+) ${symbol} \\+ ([0-9.]+) ${token2.symbol}`));
+      check(`${key}-U3 market.mjs --pair ${pairName} prints the token amount and who answered`, r.status === 0 && at2 && /^endpoints: every one of the \d+ reads was answered by at least/m.test(r.output), r.output.slice(-400));
+      const native2 = parseUnits(at2[1], 18) + parseUnits(funding.allowance, 18);
+      const amount2 = (parseUnits(at2[2], token2.decimals) * 101n) / 100n;
+      await rpc("anvil_setBalance", [depositor, hex(native2)]);
+      {
+        // The token comes from a holder of the fork by an ordinary transfer (the pair's own reference pool).
+        const holder = chain.initialPairs[1].openingPrice.references[1].pool;
+        await rpc("anvil_impersonateAccount", [holder]);
+        await rpc("anvil_setBalance", [holder, hex(10n ** 18n)]);
+        const had = await read(token2.address, "balanceOf", [depositor]);
+        const sent = await rpc("eth_sendTransaction", [{ from: holder, to: token2.address, data: encodeFunctionData({ abi: parseAbi(["function transfer(address,uint256)"]), functionName: "transfer", args: [depositor, amount2 - had] }), gas: hex(300_000n) }]);
+        for (let i = 0; i < 100 && !(await rpc("eth_getTransactionReceipt", [sent])); i++) await delay(100);
+      }
+      r = run2("depositor-native");
+      check(`${key}-U3 the depositing account's native balance reads as funded`, r.status === 0 && Number(r.output.trim()) === Number(formatUnits(native2, 18)), r.output);
+      r = run2("depositor-token");
+      check(`${key}-U3 the depositing account's ${token2.label ?? token2.symbol} balance reads as funded (base units, ${token2.decimals} decimals)`, r.status === 0 && r.output.trim().split(" ")[0] === amount2.toString(), r.output);
+      const nonce2 = await nonceOf(depositor);
+      const p2 = run2("prepare");
+      const lines2 = prepareLines(p2.output);
+      const verify2 = p2.output.match(new RegExp(`node scripts/multichain/first-deposit\\.mjs ${key} verify [^\\n]*`))?.[0];
+      check(`${key}-U4 prepare --pair ${pairName}: PASS with two cast send lines from the depositing account, the token's state and the endpoints line printed`, p2.status === 0 && lines2.length === 2 && /approve\(address,uint256\)/.test(lines2[0]) && /addLiquidityBLCH/.test(lines2[1]) && lines2.every((l) => l.includes(`--from ${depositor} --chain ${chain.chain.chainId}`)) && new RegExp(`ok   ${token2.symbol} takes no fee on transfer`).test(p2.output) && /endpoints: every one of the/.test(p2.output), p2.output.slice(-600));
+      values.TOKEN_AMOUNT = verify2?.match(/--token ([0-9.]+)/)?.[1] ?? "TOKEN_AMOUNT";
+      const approve2 = sh("U-send-approve", `${lines2[0]} + ${blocks[`${key} send-suffix`]}`, sendLine(lines2[0]));
+      const deposit2 = sh("U-send-deposit", `${lines2[1]} + ${blocks[`${key} send-suffix`]}`, sendLine(lines2[1]));
+      const hash2 = hashOf(deposit2.output);
+      check(`${key}-U4 the approve and the deposit are mined with status 1; the depositing account sent exactly two transactions`, statusOf(approve2.output) === "1" && statusOf(deposit2.output) === "1" && Boolean(hash2) && (await nonceOf(depositor)) - nonce2 === 2, `${approve2.output.slice(-150)} ${deposit2.output.slice(-150)}`);
+      values.DEPOSIT_HASH = hash2;
+      r = run2("verify");
+      check(`${key}-U5 verify --pair ${pairName}: PASS`, r.status === 0 && /verify .*: PASS/.test(r.output), r.output.slice(-500));
+      await mine();
+      r = run2("post-gate-open");
+      two = JSON.parse(readFileSync(reportFile, "utf8"));
+      check(`${key}-U6 post gate with the second opening: PASS, both pools open and proven (the first from the report, the second from the option)`, r.status === 0 && /post: PASS/.test(r.output) && two.pairs.map((x) => x.opening?.proven === true && x.state === "open").join() === "true,true" && two.pairs[0].opening.transaction === depositHash && two.pairs[1].opening.transaction === hash2, r.output.split("\n").filter((l) => /^(FAIL|WAIT|NOT WRITTEN)/.test(l)).join(" | "));
+      r = run2("frontend-record");
+      const record2 = JSON.parse(readFileSync(join(out, "files", key, "frontend.record.json"), "utf8"));
+      check(`${key}-U7 the page's record lists both pools and names none as not open`, r.status === 0 && record2.status === "deployed" && record2.pairs.length === 2 && !("notOpen" in record2), r.output.slice(-300));
+      // U8 in the throwaway copy of the owner's state: the report and the record of this run, added and committed.
+      writeFileSync(join(copy, `deployments/${key}/gate-report.json`), readFileSync(reportFile));
+      writeFileSync(join(copy, `deployments/${key}/frontend.record.json`), readFileSync(join(out, "files", key, "frontend.record.json")));
+      const add = shell("U-record-add", second[`${key} record-add`], second[`${key} record-add`], { cwd: copy });
+      const commit = shell("U-record-commit", second[`${key} record-commit`], second[`${key} record-commit`], { cwd: copy });
+      check(`${key}-U8 the record is added and committed in the owner's copy`, add.status === 0 && commit.status === 0 && G(["status", "--porcelain", "--untracked-files=no"], copy).trim() === "", `${add.output} ${commit.output}`.slice(-300));
+      evidence.secondPool = { pair: pairName, token: token2.address, deposit: hash2, tokenAmount: values.TOKEN_AMOUNT };
+    }
   } catch (error) {
     check("the dry run completed", false, error.stack ?? error.message);
   } finally {

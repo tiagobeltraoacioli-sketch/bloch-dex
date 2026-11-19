@@ -139,3 +139,16 @@ test("the pins the dry run compares a stand-in with are the committed ones, for 
   }
   assert.deepEqual(pinnedFiles("darwin-x64", "darwin-x64 file aa foundry/forge\ndarwin-arm64 file bb foundry/forge\ndarwin-x64 tree cc .\n"), { "foundry/forge": "aa" });
 });
+
+// Round 20 (follow-up): section 8B, the second pool. Its blocks are marked `second-pool:` and the dry run of a
+// chain with a second planned pair executes them after the first pool's.
+test("section 8B: the dry run's expected blocks exist for the once part and for each chain with a second planned pair, and for no other chain", async () => {
+  const { SECOND_CHAIN_STEPS, SECOND_ONCE_STEPS, secondBlocksOf } = await import("./owner-dry-run.mjs");
+  const second = secondBlocksOf(text);
+  const withSecond = ORDER.filter((k) => loadChain(k).initialPairs.length > 1);
+  assert.deepEqual(withSecond, ["op-mainnet", "arbitrum-one", "bnb-smart-chain", "ethereum"]);
+  assert.deepEqual(Object.keys(second), [...SECOND_ONCE_STEPS.map((s) => `once ${s}`), ...withSecond.flatMap((k) => SECOND_CHAIN_STEPS.map((s) => `${k} ${s}`))]);
+  // The blocks of sections 2, 4 and 5 are not touched by section 8B: the same 116 as before.
+  assert.equal(Object.keys(blocks).length, 116);
+  assert.throws(() => secondBlocksOf("<!-- second-pool: once fetch -->\n```\ngit fetch origin > out.txt\n```"), /one line without a comment or an angle bracket/);
+});
