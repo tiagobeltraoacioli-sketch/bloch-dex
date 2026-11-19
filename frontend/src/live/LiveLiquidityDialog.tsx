@@ -272,7 +272,19 @@ export function LiveLiquidityDialog({
       }),
       onStatus: (text) => setNote({ tone: 'info', text }),
     });
-    setNote(result.state === 'tracked' ? null : { tone: 'error', text: result.note });
+    setNote(
+      result.state === 'tracked'
+        ? null
+        : {
+            tone: 'error',
+            // The page took a newer block while the request was being prepared (after a transaction settled, or
+            // the timed renewal): the figures the user confirmed are no longer the ones on screen.
+            text:
+              result.state === 'not-sent' && block !== currentBlock.current
+                ? `The page read a newer ${wording.settled} block while the request was being prepared, so nothing was sent. Check the figures and press again.`
+                : result.note,
+          },
+    );
   }
 
   /** A figure on a snapshot past the age bound is never signed: the page reads a newer block first. */

@@ -23,6 +23,7 @@ import { BLOCH_L2_WORDING, setWording } from '../mainnet/wording';
 import bundle from '../multichain/bundle';
 import { parseChain, type Chain } from '../multichain/config';
 import { tokenFacts } from '../multichain/token-facts';
+import { renewalClock } from '../ui/snapshot-renewal';
 import type { Provider } from '../wallet';
 import { browserLocksForTest } from './browser-locks';
 
@@ -117,6 +118,8 @@ type Fake = {
   usdcAllowance: bigint;
   shares: bigint;
   sharesAllowance: bigint;
+  /** The hash of the block the chain answers for `finalized` and `latest`; BLOCK's when absent. */
+  blockHash?: Hex;
   calls: { method: string; params: unknown[] }[];
 };
 function fakeChain(over: Partial<Fake> = {}): { rpc: Rpc; state: Fake } {
@@ -137,7 +140,9 @@ function fakeChain(over: Partial<Fake> = {}): { rpc: Rpc; state: Fake } {
       case 'eth_chainId':
         return '0x1';
       case 'eth_getBlockByNumber':
-        return params[0] === '0x0' ? { number: '0x0', hash: deployment.genesisHash } : BLOCK;
+        return params[0] === '0x0'
+          ? { number: '0x0', hash: deployment.genesisHash }
+          : { ...BLOCK, hash: state.blockHash ?? BLOCK.hash };
       case 'eth_getCode':
         return fakeCode.get(String(params[0])) ?? '0x';
       case 'eth_getBalance':
@@ -585,6 +590,108 @@ describe('the liquidity dialog: a deposit', () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(false);
+  });
+});
+
+describe('the liquidity dialog and the age of the snapshot', () => {
+  const realClock = { ...renewalClock };
+  afterEach(() => Object.assign(renewalClock, realClock));
+
+  it('never signs figures of a snapshot past the age bound: it reads a newer block first and asks again', async () => {
+    let clock = 1_000_000;
+    renewalClock.now = () => clock;
+    renewalClock.wall = () => clock;
+    const { rpc, state } = fakeChain({ usdcAllowance: 10n ** 12n });
+    const { sent, wallet } = fakeWallet();
+    render(
+      <MainnetLive
+        network={chain.network}
+        load={() => Promise.resolve({ status: 'live', deployment })}
+        rpc={rpc}
+        wallet={wallet}
+        planned={{ caps: [], pairs: [['WETH', 'USDC']] }}
+        now={() => NOW_MS}
+        snapshotMaxAgeMs={240_000}
+        screens={{ base: '#/ethereum' }}
+      />,
+    );
+    await goTo('Pools');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Add liquidity to USDC/WETH' }));
+    await within(await screen.findByRole('dialog')).findByLabelText(/^Amount of ETH/);
+    await type(/^Amount of ETH/, '1');
+    const snapshotReads = () =>
+      state.calls.filter((c) => c.method === 'eth_getBlockByNumber' && c.params[0] === 'finalized')
+        .length;
+    const before = snapshotReads();
+    clock += 240_001;
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Add liquidity' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('liquidity-note').textContent).toBe(
+        'These figures were older than this page allows before a transaction. They are being read again at a newer confirmed block; check them and press again.',
+      ),
+    );
+    expect(sends(sent)).toBe(0);
+    await waitFor(() => expect(snapshotReads()).toBeGreaterThan(before));
+    // Fresh again: the same press now goes to the wallet.
+    await waitFor(() =>
+      expect(
+        (
+          within(screen.getByRole('dialog')).getByRole('button', {
+            name: 'Add liquidity',
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(false),
+    );
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Add liquidity' }),
+    );
+    await waitFor(() => expect(sends(sent)).toBe(1));
+  });
+});
+
+describe('the liquidity dialog and a block that changes under a request', () => {
+  it('sends nothing when the page takes a newer block while the request is being prepared, and says so', async () => {
+    const { rpc, state } = fakeChain({ usdcAllowance: 10n ** 12n });
+    const { sent, wallet, request } = fakeWallet();
+    let moved = false;
+    request.mockImplementation(
+      async ({ method, params }: { method: string; params?: unknown[] }) => {
+        if (method === 'eth_chainId') {
+          if (!moved) {
+            // While the wallet is asked which chain it is on, the page reads a newer block (its Refresh).
+            moved = true;
+            state.blockHash = h(0xb10d);
+            (document.querySelector('.live-status .page-refresh') as HTMLButtonElement).click();
+            await new Promise((r) => setTimeout(r, 300));
+          }
+          return '0x1';
+        }
+        if (method === 'eth_sendTransaction') {
+          sent.push((params as Record<string, string>[])[0]);
+          return h(0xabc1);
+        }
+        throw new Error(`the wallet was asked for ${method}`);
+      },
+    );
+    mount(rpc, wallet);
+    await goTo('Pools');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Add liquidity to USDC/WETH' }));
+    await within(await screen.findByRole('dialog')).findByLabelText(/^Amount of ETH/);
+    await type(/^Amount of ETH/, '1');
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Add liquidity' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('liquidity-note').textContent).toBe(
+        'The page read a newer confirmed block while the request was being prepared, so nothing was sent. Check the figures and press again.',
+      ),
+    );
+    expect(sends(sent)).toBe(0);
+    expect(screen.queryByRole('status', { name: 'Tracked transaction' })).toBeNull();
   });
 });
 

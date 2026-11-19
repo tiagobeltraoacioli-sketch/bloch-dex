@@ -2158,10 +2158,10 @@ function SwapPanel({
           kept.amount === amount &&
           kept.slippage === slippage &&
           kept.deadline === deadline && (
-            <p className="microcopy renewal-note" role="status" data-testid="renewal-note">
-              {renewalText(renewedBy, freshness.maxAgeMs)}
-            </p>
-          )}
+          <p className="microcopy renewal-note" role="status" data-testid="renewal-note">
+            {renewalText(renewedBy, freshness.maxAgeMs)}
+          </p>
+        )}
       </div>
       {balances && (
         <p className="microcopy balances-line" aria-label={`${settledCapital()} balances`}>

@@ -185,6 +185,7 @@ const VARIANTS = [
 
 const browser = await launch(config.chrome, config.debugPort);
 let unexpected = null;
+const restore = [];
 try {
   for (const chain of config.chains) {
     say(`== ${chain.key}`);
@@ -205,7 +206,7 @@ try {
     const units = { [N]: 18, [T]: chain.token.decimals };
     const far = BigInt(Math.floor(Date.now() / 1000) + 86_400);
     // The fork is put back as it was found at the end of this chain's scenarios (the last one moves its clock).
-    const forkSnapshot = await rpc(chain, 'evm_snapshot');
+    restore.push([chain, await rpc(chain, 'evm_snapshot')]);
     await rpc(chain, 'evm_setAutomine', [false]);
     for (const who of [wallet.address, other.address])
       await rpc(chain, 'anvil_setBalance', [who, hex(50n * 10n ** 18n)]);
@@ -366,6 +367,25 @@ try {
       );
     const noteText = () => flat('dialog[open] [data-testid="liquidity-note"]');
     /** Approvals until the dialog's main action is the next step; returns the approvals the wallet sent. */
+    /** Presses a dialog button until the wallet is asked. The page refuses, and says so, when it read a newer block while the request was being prepared (nothing is sent); the press is then repeated, and counted. */
+    const pressUntilSent = async (name) => {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const before = wallet.sent.length;
+        await dClick(name);
+        for (let w = 0; w < 300 && wallet.sent.length === before; w++) {
+          await delay(100);
+          if (w > 5 && /nothing was sent/i.test(await noteText())) break;
+        }
+        if (wallet.sent.length > before) return wallet.sent.at(-1);
+        const note = await noteText();
+        if (!/read a newer .* block while the request was being prepared/.test(note))
+          throw new Error(`the wallet received no "${name}": ${note}`);
+        record.repeatedPresses = (record.repeatedPresses ?? 0) + 1;
+        await delay(2500);
+      }
+      throw new Error(`the wallet received no "${name}" after four presses`);
+    };
+    /** Approvals until the dialog's main action is the next step; returns the approvals the wallet sent. */
     const approveUntil = async (action) => {
       const made = [];
       for (let i = 0; i < 4; i++) {
@@ -375,27 +395,16 @@ try {
           90_000,
         );
         if (!(await page.evaluate(`!!${dialogButton('Approve')}`))) return made;
-        const before = wallet.sent.length;
         const label = await page.evaluate(`${dialogButton('Approve')}.textContent.trim()`);
-        await dClick('Approve');
-        for (let w = 0; w < 200 && wallet.sent.length === before; w++) await delay(100);
-        if (wallet.sent.length === before)
-          throw new Error(`the wallet received no approval: ${await noteText()}`);
+        const sent = await pressUntilSent('Approve');
         await settle(chain);
         await waitTracked('/: mined/');
-        made.push({ label, ...wallet.sent.at(-1) });
+        made.push({ label, ...sent });
         await delay(1500);
       }
       throw new Error('approvals did not end');
     };
-    const sendAction = async (action) => {
-      const before = wallet.sent.length;
-      await dClick(action);
-      for (let w = 0; w < 300 && wallet.sent.length === before; w++) await delay(100);
-      if (wallet.sent.length === before)
-        throw new Error(`the wallet received no ${action}: ${await noteText()}`);
-      return wallet.sent.at(-1);
-    };
+    const sendAction = (action) => pressUntilSent(action);
     const closeDialog = () =>
       page.evaluate(`${D}?.querySelector('button[aria-label="Close dialog"]')?.click()`);
 
@@ -432,8 +441,9 @@ try {
     let said = await alerts();
     check(
       `${chain.key}: one base unit of ${N} is refused before anything is sent (the pool would ask zero ${T}, or a minimum would round to zero)`,
-      said.some((a) => /BDEX: INSUFFICIENT_AMOUNT|is so small that the minimum of .* rounds to zero/.test(a)) &&
-        (await page.evaluate(`${dialogButton('Add liquidity')}?.disabled === true`)),
+      said.some((a) =>
+        /BDEX: INSUFFICIENT_AMOUNT|is so small that the minimum of .* rounds to zero/.test(a),
+      ) && (await page.evaluate(`${dialogButton('Add liquidity')}?.disabled === true`)),
       said,
     );
     record.refusals.push({
@@ -795,14 +805,16 @@ try {
       consoleErrors.slice(0, 5),
     );
     await page.close();
-    await rpc(chain, 'evm_revert', [forkSnapshot]);
-    await rpc(chain, 'evm_setAutomine', [true]);
   }
 } catch (error) {
   unexpected = error;
   console.error(error);
 } finally {
   await browser.close();
+  for (const [chain, id] of restore) {
+    await rpc(chain, 'evm_revert', [id]).catch(() => {});
+    await rpc(chain, 'evm_setAutomine', [true]).catch(() => {});
+  }
 }
 const failed = evidence.assertions.filter((a) => !a.ok).length + (unexpected ? 1 : 0);
 evidence.result = failed === 0 ? 'PASS' : 'FAIL';
