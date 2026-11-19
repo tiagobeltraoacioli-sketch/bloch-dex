@@ -46,6 +46,27 @@
         "url": "https://developers.circle.com/stablecoins/usdc-contract-addresses",
         "fetched": "2026-11-16",
         "found": "the issuer's address table, row \"Linea\""
+      },
+      "behaviour": {
+        "returnsNoValue": false,
+        "approveZeroFirst": false,
+        "transferFee": null,
+        "switches": [
+          "paused"
+        ],
+        "blocklist": "isBlacklisted",
+        "issuerPowers": "Circle can pause every transfer, blacklist an address (a blacklisted pool can neither send nor receive USDC), mint and burn through its minters, and replace the implementation behind the proxy (recorded under `proxy`; the gate refuses when it changes). None of this changes the proxy's pinned code hash.",
+        "checked": {
+          "at": "2026-11-19",
+          "how": "the functions the implementation dispatches on (PUSH4 scan of the code behind the proxy's ZeppelinOS slot, read from the reviewed endpoints: paused, pause, isBlacklisted, blacklist, mint, burn; no fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
+        }
+      },
+      "proxy": {
+        "slot": "zeppelinos",
+        "implementation": "0xab838fe7d492C621a5B1b23952Af99Cc37a2E0d3",
+        "implementationCodeHash": "0x19eb6091deb13c10e3b2ef54f19471ae3e6757e350bfe4e423b5e5208c6459e1",
+        "admin": "0xf85314627E157EC7F95D51DC6F1D48726Bb6c8bb",
+        "checked": "2026-11-19"
       }
     }
   ],

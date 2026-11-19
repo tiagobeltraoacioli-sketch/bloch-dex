@@ -48,6 +48,7 @@ function gateWorld(local, chain, plan, over = {}) {
     }
     if (method === "eth_getCode") return codes.get(lower(params[0])) ?? "0x";
     if (method === "eth_getTransactionCount") return over.depositorNonce ?? "0x0";
+    if (method === "eth_getStorageAt") return `0x${"0".repeat(64)}`; // no proxy slot holds anything
     if (method === "eth_call") {
       const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
       const fn = names[params[0].data.slice(0, 10)];
@@ -70,6 +71,10 @@ function pinnedSetup() {
   local.create2.deployerCodeHash = probe.pins.deployer;
   chain.wrappedNative.codeHash = probe.pins.wrapped;
   chain.tokens[0].codeHash = probe.pins.token;
+  // The token of this test is plain code, as USDC was configured until the follow-up of round 20; the proxy record
+  // and the pause and blocklist reads that USDC now carries have their own tests (r414.test.mjs).
+  delete chain.tokens[0].proxy;
+  delete chain.tokens[0].behaviour;
   chain.multicall3.codeHash = probe.pins.multicall;
   return { local, chain, plan: planChain(local, chain, artifacts, { reference: true }) };
 }

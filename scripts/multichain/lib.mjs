@@ -79,12 +79,23 @@ export function checksummed(value, field) {
 /**
  * A public endpoint that fails once (a dropped connection, a rate limit) is asked again, twice, with a pause: a
  * refused request is not the chain's answer. An execution error (a revert) is, and is returned at once.
- * Round 20 (finding F409-1): an endpoint that refuses a METHOD by policy (HTTP 401 or 403: BNB Smart Chain's second
- * reviewed endpoint stopped serving eth_call to anonymous callers) refused it on all three tries of one call; the
- * next calls of that method are then asked ONCE each, without the pauses, until one is answered. Every call still
- * asks the endpoint (a recovered endpoint is used again at once); what is saved is 4.5 s of waiting per read, which
- * on such a chain made `prepare` run for minutes of its 20-minute deposit window.
+ * Round 20 (finding F409-1, review R414-4): an endpoint that refuses a METHOD by policy refused it on all three
+ * tries of one call; the next calls of that method are then asked ONCE each, without the pauses, until one is
+ * answered. A refusal counts as "of the method" only when the answer is an HTTP 401 or 403 WHOSE BODY NAMES THE
+ * METHOD (BNB Smart Chain's second reviewed endpoint: `Method "eth_call" is not available for unregistered
+ * accounts`). A 401 or 403 with any other body is a refusal of that one request (the first endpoint of the same
+ * chain answers block 0 with a 403 "Archive requests require a personal token"; the next eth_getBlockByNumber
+ * is an ordinary request) and is retried in full, like every other failure. Every call still asks the endpoint (a
+ * recovered endpoint is used again at once); what is saved is 4.5 s of waiting per read, which on such a chain
+ * made `prepare` run for minutes of its 20-minute deposit window.
  */
+export function refusesMethod(error, method) {
+  const status = error?.httpStatus;
+  const body = typeof error?.httpBody === "string" ? error.httpBody : "";
+  if (!(status === 401 || status === 403) || typeof method !== "string" || !/^[a-z0-9]+_[A-Za-z0-9]+$/.test(method)) return false;
+  // The method's own name, as a whole word, in the body of the refusal.
+  return new RegExp(`(^|[^A-Za-z0-9_])${method}([^A-Za-z0-9_]|$)`).test(body);
+}
 export function retrying(request, { tries = 3, delayMs = 1500 } = {}) {
   const refusedByPolicy = new Set();
   return async (method, params) => {
@@ -98,7 +109,8 @@ export function retrying(request, { tries = 3, delayMs = 1500 } = {}) {
         const text = String(error?.message ?? error);
         if (/execution reverted|revert/i.test(text)) throw error;
         if (attempt >= limit) {
-          if (/\bHTTP 40[13]\b/.test(text)) refusedByPolicy.add(method);
+          if (refusesMethod(error, method)) refusedByPolicy.add(method);
+          else refusedByPolicy.delete(method);
           throw error;
         }
         await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
@@ -119,8 +131,18 @@ const isRevert = (error) => /execution reverted|revert/i.test(String(error?.mess
  * and every endpoint that answered gave the same bytes. A revert counts as an answer (the chain's answer); it is
  * rethrown when the endpoints agree on it. An endpoint that fails (pruned state, rate limit, timeout) is not a
  * disagreement, but it is not counted; an endpoint that answers differently is: `DISAGREEMENT`, and nothing is
- * decided. `onRead` (optional) receives { method, answered, failed } for the report.
+ * decided. `onRead` (optional) receives { method, answered, failed, silent } for the report (`silent`: the
+ * positions, in `requests`, of the endpoints that did not answer this read, each with its error's first words).
  */
+/**
+ * Review R414-1: how many of a chain's N reviewed endpoints must answer a MARKET read (market.mjs). All but one,
+ * and never fewer than two: two of two, two of three, three of four. With "any two of four" (commit 9352629 as it
+ * first stood) two endpoints decided a price whenever the two others were silent, and on BNB Smart Chain those two
+ * run the same client build. Every endpoint that answers must still give the same bytes. When fewer answer there is
+ * no price: the tool says "try again" and prints nothing to send.
+ */
+export const marketQuorum = (n) => Math.min(n, Math.max(2, n - 1));
+
 export function pinnedStateReader(requests, blockHash, { min = Math.min(2, requests.length), onRead = null } = {}) {
   refuse(Array.isArray(requests) && requests.length > 0 && /^0x[0-9a-f]{64}$/.test(String(blockHash)), "pinnedStateReader needs endpoints and a block hash");
   refuse(min >= 1 && min <= requests.length, `pinnedStateReader: ${min} agreeing endpoints asked of ${requests.length}`);
@@ -132,14 +154,18 @@ export function pinnedStateReader(requests, blockHash, { min = Math.min(2, reque
     const answers = [];
     let revert = null;
     let failed = 0;
-    for (const s of settled) {
+    const silent = [];
+    for (const [index, s] of settled.entries()) {
       if (s.status === "fulfilled") answers.push(JSON.stringify(s.value ?? null));
       else if (isRevert(s.reason)) {
         answers.push("REVERT");
         revert ??= s.reason;
-      } else failed++;
+      } else {
+        failed++;
+        silent.push({ index, why: String(s.reason?.message ?? s.reason).replace(/^multichain: /, "").slice(0, 80) });
+      }
     }
-    onRead?.({ method, answered: answers.length, failed });
+    onRead?.({ method, answered: answers.length, failed, silent });
     if (answers.length && answers.some((a) => a !== answers[0])) throw new MultichainError(`DISAGREEMENT: the endpoints give different answers to ${method} at block ${blockHash}; nothing is decided on it`);
     if (answers.length < min) throw new MultichainError(`${method} at block ${blockHash}: ${answers.length} endpoint${answers.length === 1 ? "" : "s"} answered, ${min} must agree (${failed} failed: try again later)`);
     if (answers[0] === "REVERT") throw revert;
@@ -362,6 +388,31 @@ function validateBehaviour(b, field) {
   refuse(b.checked && /^20\d\d-\d\d-\d\d$/.test(b.checked.at ?? "") && typeof b.checked.how === "string" && b.checked.how.length >= 40, `${field}.checked: at (a date) and how (what was read and run)`);
 }
 
+/**
+ * The storage slots in which a proxy keeps the address of its implementation: EIP-1967, and the older ZeppelinOS
+ * slot that Circle's FiatTokenProxy uses (keccak256("org.zeppelinos.proxy.implementation")).
+ */
+export const PROXY_SLOTS = Object.freeze({
+  eip1967: "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc",
+  zeppelinos: "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3",
+});
+/**
+ * Review R414-5 and R414-7: a listed token that is a proxy records what stands behind it, so that an upgrade by
+ * the issuer is SEEN: `proxy: { slot, implementation, implementationCodeHash, checked }`. The pinned `codeHash`
+ * is the proxy's and does not change when the issuer replaces the implementation. The gates, first-deposit.mjs
+ * and verify-chain.mjs read the slot and the implementation's code and refuse when either differs; they also
+ * read both slots of every token WITHOUT the record, and refuse one that turns out to be a proxy.
+ */
+function validateProxy(proxy, field) {
+  refuse(proxy && typeof proxy === "object" && Object.keys(proxy).every((k) => ["slot", "implementation", "implementationCodeHash", "admin", "checked"].includes(k)), `${field}: slot, implementation, implementationCodeHash, checked (and optionally admin)`);
+  refuse(Object.hasOwn(PROXY_SLOTS, proxy.slot), `${field}.slot is one of ${Object.keys(PROXY_SLOTS).join(", ")}`);
+  checksummed(proxy.implementation, `${field}.implementation`);
+  refuse(lower(proxy.implementation) !== ZERO_ADDRESS, `${field}.implementation is the zero address`);
+  refuse(HASH.test(proxy.implementationCodeHash ?? "") && proxy.implementationCodeHash !== EMPTY_CODE_HASH, `${field}.implementationCodeHash`);
+  if (proxy.admin !== undefined) checksummed(proxy.admin, `${field}.admin`);
+  refuse(/^20\d\d-\d\d-\d\d$/.test(proxy.checked ?? ""), `${field}.checked: the date the implementation was read`);
+}
+
 function validateToken(token, field) {
   checksummed(token?.address, `${field}.address`);
   refuse(typeof token.symbol === "string" && /^[A-Za-z0-9.]{2,12}$/.test(token.symbol), `${field}.symbol`);
@@ -382,6 +433,7 @@ function validateToken(token, field) {
   refuse(token.note === undefined || (typeof token.note === "string" && token.note.length >= 10 && token.note.length <= 160 && !/[<>\n]/.test(token.note)), `${field}.note: one line of 10 to 160 characters`);
   refuse((token.label === undefined) === (token.note === undefined), `${field}: label and note go together`);
   if (token.behaviour !== undefined) validateBehaviour(token.behaviour, `${field}.behaviour`);
+  if (token.proxy !== undefined) validateProxy(token.proxy, `${field}.proxy`);
 }
 /** The symbol a token's contract answers: `chainSymbol` where the configuration gives one, else `symbol`. */
 export const chainSymbolOf = (token) => token.chainSymbol ?? token.symbol;

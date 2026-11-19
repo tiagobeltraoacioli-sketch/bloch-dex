@@ -32,6 +32,13 @@
       "url": "https://docs.arbitrum.io/build-decentralized-apps/reference/contract-addresses",
       "fetched": "2026-11-16",
       "found": "token bridge table, \"L2 Weth\", Arbitrum One column"
+    },
+    "proxy": {
+      "slot": "eip1967",
+      "implementation": "0x8b194bEae1d3e0788A1a35173978001ACDFba668",
+      "implementationCodeHash": "0x0d1c20f9ed551efe8f402bc9aa1a9b5058f925ec615284c5b4a7a4623c3b2dcd",
+      "admin": "0xd570aCE65C43af47101fC6250FD6fC63D1c22a86",
+      "checked": "2026-11-19"
     }
   },
   "tokens": [
@@ -47,6 +54,27 @@
         "url": "https://developers.circle.com/stablecoins/usdc-contract-addresses",
         "fetched": "2026-11-16",
         "found": "the issuer's address table, row \"Arbitrum\""
+      },
+      "behaviour": {
+        "returnsNoValue": false,
+        "approveZeroFirst": false,
+        "transferFee": null,
+        "switches": [
+          "paused"
+        ],
+        "blocklist": "isBlacklisted",
+        "issuerPowers": "Circle can pause every transfer, blacklist an address (a blacklisted pool can neither send nor receive USDC), mint and burn through its minters, and replace the implementation behind the proxy (recorded under `proxy`; the gate refuses when it changes). None of this changes the proxy's pinned code hash.",
+        "checked": {
+          "at": "2026-11-19",
+          "how": "the functions the implementation dispatches on (PUSH4 scan of the code behind the proxy's ZeppelinOS slot, read from the reviewed endpoints: paused, pause, isBlacklisted, blacklist, mint, burn; no fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
+        }
+      },
+      "proxy": {
+        "slot": "zeppelinos",
+        "implementation": "0x86E721b43d4ECFa71119Dd38c0f938A75Fdb57B3",
+        "implementationCodeHash": "0xda0578bf7fe0d04e320e166ab8f98061328fda8ae0a299882aeb38f1543c6a9d",
+        "admin": "0x2E0A67588cfBCAD40f9e4DD76052436190A77a68",
+        "checked": "2026-11-19"
       }
     },
     {
@@ -76,6 +104,13 @@
           "at": "2026-11-18",
           "how": "the functions the implementation (0x3263CD783823d04a6B9819517E0E6840d37cA3F4, code 0x1d4c20a1a19a0e182c0d2bffbe433a96bd70a1dbb383b7a2d293976df4042279) dispatches on (PUSH4 scan: isBlocked, addToBlockedList, destroyBlockedFunds, mint, burn, oftContract; no pause and no fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
         }
+      },
+      "proxy": {
+        "slot": "eip1967",
+        "implementation": "0x3263CD783823d04a6B9819517E0E6840d37cA3F4",
+        "implementationCodeHash": "0x1d4c20a1a19a0e182c0d2bffbe433a96bd70a1dbb383b7a2d293976df4042279",
+        "admin": "0x553ec478A66BE27Ba25A6bc5dB20AEc2eD6A1B4A",
+        "checked": "2026-11-19"
       }
     }
   ],

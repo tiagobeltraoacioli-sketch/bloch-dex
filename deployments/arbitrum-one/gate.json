@@ -15,14 +15,33 @@
     "wrappedNative": {
       "address": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
       "symbol": "WETH",
-      "codeHash": "0x2d240bb4510ed1acfeaba905eb4bcc4524d63c8ae66e48fcccac55ea714db7a7"
+      "codeHash": "0x2d240bb4510ed1acfeaba905eb4bcc4524d63c8ae66e48fcccac55ea714db7a7",
+      "proxy": {
+        "slot": "eip1967",
+        "implementation": "0x8b194bEae1d3e0788A1a35173978001ACDFba668",
+        "implementationCodeHash": "0x0d1c20f9ed551efe8f402bc9aa1a9b5058f925ec615284c5b4a7a4623c3b2dcd"
+      }
     },
     "tokens": [
       {
         "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
         "symbol": "USDC",
         "decimals": 6,
-        "codeHash": "0xad30d819dbc47814b7e6cb837fd7cc57fcb591479a38596ee93de4fc52e8c435"
+        "codeHash": "0xad30d819dbc47814b7e6cb837fd7cc57fcb591479a38596ee93de4fc52e8c435",
+        "behaviour": {
+          "returnsNoValue": false,
+          "approveZeroFirst": false,
+          "transferFee": null,
+          "switches": [
+            "paused"
+          ],
+          "blocklist": "isBlacklisted"
+        },
+        "proxy": {
+          "slot": "zeppelinos",
+          "implementation": "0x86E721b43d4ECFa71119Dd38c0f938A75Fdb57B3",
+          "implementationCodeHash": "0xda0578bf7fe0d04e320e166ab8f98061328fda8ae0a299882aeb38f1543c6a9d"
+        }
       },
       {
         "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
@@ -36,6 +55,11 @@
           "transferFee": null,
           "switches": [],
           "blocklist": "isBlocked"
+        },
+        "proxy": {
+          "slot": "eip1967",
+          "implementation": "0x3263CD783823d04a6B9819517E0E6840d37cA3F4",
+          "implementationCodeHash": "0x1d4c20a1a19a0e182c0d2bffbe433a96bd70a1dbb383b7a2d293976df4042279"
         }
       }
     ],

@@ -49,7 +49,26 @@
         "found": "Binance's public network list, coin USDC, network BSC: the Binance-Peg token; Circle's table has no BNB Smart Chain row"
       },
       "label": "USDC (Binance-Peg)",
-      "note": "USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals."
+      "note": "USDC (Binance-Peg) is issued by Binance on BNB Smart Chain, not by Circle, and has 18 decimals.",
+      "behaviour": {
+        "returnsNoValue": false,
+        "approveZeroFirst": false,
+        "transferFee": null,
+        "switches": [],
+        "blocklist": null,
+        "issuerPowers": "Binance's owner key can mint any amount, and the proxy's admin can replace the implementation (recorded under `proxy`; the gate refuses when it changes). The implementation has no pause, blocklist or fee function. Its value rests on Binance holding the USDC behind it.",
+        "checked": {
+          "at": "2026-11-19",
+          "how": "the functions the implementation dispatches on (PUSH4 scan of the code behind the proxy's EIP-1967 slot, read from the reviewed endpoints: mint(uint256), burn(uint256); no pause, blocklist or fee function); on a loopback fork: transfer, approve and transferFrom return true, approve from 5 to 7 succeeds, transferFrom of 3 received as 3"
+        }
+      },
+      "proxy": {
+        "slot": "eip1967",
+        "implementation": "0xBA5Fe23f8a3a24BEd3236F05F2FcF35fd0BF0B5C",
+        "implementationCodeHash": "0xd2d7cf7504e1cb572af28476d45907fc30bee1297917bed153e6fbba125821a3",
+        "admin": "0xD2f93484f2D319194cBa95C5171B18C1d8cfD6C4",
+        "checked": "2026-11-19"
+      }
     },
     {
       "address": "0x55d398326f99059fF775485246999027B3197955",

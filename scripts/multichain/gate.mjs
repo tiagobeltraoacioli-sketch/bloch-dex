@@ -37,19 +37,21 @@
 //       Round 20: pairs open one at a time. A planned pair that is not open yet does not fail the gate (it never
 //       did); the frontend record lists exactly the pairs this gate reports open with their opening proven, and
 //       names the others as not open. A token with a declared issuer blocklist is asked for the pair and the router.
+//       Review R414-3: the report at --out is replaced only by a report that proves every opening it proved (the
+//       new report is written beside it first); a run that could not read an open pool leaves the file as it is.
 //
 // The Bloch-L2-only rules (bridge token pin, Safe pin, new-slot fee, credit rule, idle-chain rule) are off for these
 // chains by configuration: deployments/multichain.json `l2Only` and deployments/<chain>/gate.json `l2Only`. The
 // Bloch L2 gate (scripts/staging/finality-gate.mjs, check-finality-gate-mainnet.mjs) is separate and unchanged.
 // Exit status: 0 pass, 1 a check failed, 2 usage or configuration.
 import { createRequire } from "node:module";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
 import {
   EIP7702_PREFIX, EMPTY_CODE_HASH, FEE_PROOF_FILE, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, chainSymbolOf, feeDelegationOn, loadArtifacts, loadChain, loadShared, lower, pinnedStateReader, planChain, planSummary, refuse, retrying,
 } from "./lib.mjs";
-import { blocklistState, tokenBehaviourState } from "./token-behaviour.mjs";
+import { blocklistState, proxyState, tokenBehaviourState } from "./token-behaviour.mjs";
 import { loadFeeProof } from "./fee-proof.mjs";
 import { openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
@@ -91,10 +93,10 @@ export function gateConfig(shared, chain) {
     readAt: "finalized",
     pins: {
       create2Deployer: { address: shared.create2.deployer, codeHash: shared.create2.deployerCodeHash },
-      wrappedNative: { address: chain.wrappedNative.address, symbol: chain.wrappedNative.symbol, codeHash: chain.wrappedNative.codeHash },
+      wrappedNative: { address: chain.wrappedNative.address, symbol: chain.wrappedNative.symbol, codeHash: chain.wrappedNative.codeHash, ...(chain.wrappedNative.proxy ? { proxy: { slot: chain.wrappedNative.proxy.slot, implementation: chain.wrappedNative.proxy.implementation, implementationCodeHash: chain.wrappedNative.proxy.implementationCodeHash } } : {}) },
       // `chainSymbol` and `behaviour` only where the token has them (round 20), so a chain without such a token
       // keeps the file it had.
-      tokens: chain.tokens.map((t) => ({ address: t.address, symbol: t.symbol, ...(t.chainSymbol ? { chainSymbol: t.chainSymbol } : {}), decimals: t.decimals, codeHash: t.codeHash, ...(t.behaviour ? { behaviour: { returnsNoValue: t.behaviour.returnsNoValue, approveZeroFirst: t.behaviour.approveZeroFirst, transferFee: t.behaviour.transferFee, switches: t.behaviour.switches, blocklist: t.behaviour.blocklist } } : {}) })),
+      tokens: chain.tokens.map((t) => ({ address: t.address, symbol: t.symbol, ...(t.chainSymbol ? { chainSymbol: t.chainSymbol } : {}), decimals: t.decimals, codeHash: t.codeHash, ...(t.behaviour ? { behaviour: { returnsNoValue: t.behaviour.returnsNoValue, approveZeroFirst: t.behaviour.approveZeroFirst, transferFee: t.behaviour.transferFee, switches: t.behaviour.switches, blocklist: t.behaviour.blocklist } } : {}), ...(t.proxy ? { proxy: { slot: t.proxy.slot, implementation: t.proxy.implementation, implementationCodeHash: t.proxy.implementationCodeHash } } : {}) })),
       multicall3: chain.multicall3,
       feeTo: {
         address: shared.feeTo.address,
@@ -203,6 +205,11 @@ export async function evaluateGate({ shared, chain, plan, phase, request, others
     const behaviour = await tokenBehaviourState(ethCall, token);
     tokenStates[token.symbol] = behaviour.read;
     check(`${token.symbol} takes no fee on transfer: it has no fee parameter, or its declared ones are zero; none of its declared switches is on`, behaviour.ok, behaviour.problems);
+    // Reviews R414-5, R414-7: an upgrade by the issuer does not change the proxy's pinned code hash. The slot and
+    // the implementation's code are read; a token without the record must not be a proxy.
+    const proxy = await proxyState({ storage: (address, slot) => state("eth_getStorageAt", [address, slot, "pinned"]), code: (address) => state("eth_getCode", [address, "pinned"]) }, token);
+    tokenStates[token.symbol] = { ...behaviour.read, ...(token.proxy ? { implementation: proxy.read[token.proxy.slot], implementationCodeHash: proxy.implementationCodeHash } : {}) };
+    check(`${token.symbol} is the code that was reviewed: ${token.proxy ? "its proxy points at the recorded implementation, which holds its recorded code" : "not a proxy"}`, proxy.ok, proxy.problems);
   }
   check("Multicall3 holds the pinned code", (await codeAt(chain.multicall3.address)) === chain.multicall3.codeHash);
   const multicallChain = await soft(() => call(chain.multicall3.address, "getChainId"));
@@ -398,7 +405,7 @@ export async function main(argv) {
   const openings = { ...previousOpenings(options, chain, plan), ...options.openings };
   const feeProof = await loadFeeProof(shared);
   const report = await evaluateGate({ shared, chain, plan, phase: options.phase, request, others, identityOnly, rehearsal: options.rehearsal, openings, feeProof });
-  if (options.out) writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
+  const written = options.out ? writeGateReport(options.out, report, { chain, plan }) : null;
   for (const c of report.checks) console.log(`${c.ok ? "ok  " : "FAIL"} ${c.name}${c.ok || c.detail === undefined ? "" : ` (${JSON.stringify(c.detail)})`}`);
   for (const p of report.pairs) {
     console.log(`pair ${p.tokenA}/${p.tokenB} ${p.address}: ${p.state}${p.state === "open" ? `, reserves ${p.reserves.join(" / ")}, shares ${p.totalSupply}` : p.state === "donated" ? `, tokens sit in it without shares (${p.balances.join(" / ")}): anyone may call skim(to)` : ""}`);
@@ -407,8 +414,56 @@ export async function main(argv) {
   }
   for (const w of report.warnings) console.log(`WARNING: ${w}`);
   if (report.waiting.length) console.log(`WAIT: ${report.waiting.join(", ")} ${report.waiting.length === 1 ? "has" : "have"} the planned code at the latest block but not at the finalized block yet. Nothing is wrong; run this gate again later (docs/MULTICHAIN-DEPLOY.md gives the wait per chain).`);
+  if (written && !written.replaced)
+    console.log(`NOT WRITTEN: the report at ${options.out} was left as it is. It holds the proven opening of ${written.dropped.map((d) => `${d.pair} (${d.transaction})`).join(", ")}, and this run did not prove ${written.dropped.length === 1 ? "it" : "them"} again (an endpoint did not answer, or the chain has not finalized). Nothing is lost: run this command again. This run's report is in ${written.kept} for reading.`);
   console.log(`multichain gate ${options.key} ${options.phase}: ${report.decision.toUpperCase()}${report.finalized ? ` at finalized block ${report.finalized.number}` : ""}${plan.reference ? " (reference plan)" : ""}${report.feeTo?.delegate ? `; fee address has an EIP-7702 delegation to ${report.feeTo.delegate}${report.feeTo.delegateName ? ` (${report.feeTo.delegateName})` : " (NOT IDENTIFIED)"}` : ""}; fee address proof of control: ${report.feeTo?.proofOfControl ?? "not read"}`);
   return report.decision === "pass" ? 0 : 1;
+}
+
+/**
+ * Review R414-3: the openings a report file proves. A later run of the post gate carries a pool's opening hash from
+ * the report it replaces (`previousOpenings`), so the report at --out is the only place the hash of the FIRST pool
+ * lives while the owner opens the second. A run that cannot read that pool (too few endpoints answered) used to
+ * write its failing report over the file, and the next run found no hash to carry.
+ * `provenOpenings`: [{ pair, address, transaction }] of a report of this chain and factory; [] for any other file.
+ */
+export function provenOpenings(report, chain, plan) {
+  if (!report || report.domain !== GATE_DOMAIN || report.chain?.chainId !== chain.chain.chainId || lower(report.plan?.contracts?.factory?.address ?? "") !== lower(plan.contracts.factory.address)) return [];
+  return (report.pairs ?? []).filter((p) => p.opening?.proven === true && /^0x[0-9a-f]{64}$/.test(p.opening.transaction ?? "")).map((p) => ({ pair: `${p.tokenA}/${p.tokenB}`, address: lower(p.address ?? ""), transaction: p.opening.transaction }));
+}
+/** The proven openings of `previous` that `next` does not prove with the same transaction. Pure. */
+export function droppedOpenings(previous, next, chain, plan) {
+  const kept = new Set(provenOpenings(next, chain, plan).map((o) => `${o.address} ${o.transaction}`));
+  return provenOpenings(previous, chain, plan).filter((o) => !kept.has(`${o.address} ${o.transaction}`));
+}
+/**
+ * Write a gate report to `path` without ever losing a proven opening the file holds: the new report goes to a
+ * new file first and replaces `path` (one rename) only when it proves every opening the old one proved. Otherwise
+ * `path` is left untouched and the new report stays beside it (`path` + ".not-written.json") for reading.
+ * Returns { replaced, dropped, kept }.
+ */
+export function writeGateReport(path, report, { chain, plan }) {
+  let previous = null;
+  if (existsSync(path)) {
+    try {
+      previous = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      previous = null;
+    }
+  }
+  const dropped = droppedOpenings(previous, report, chain, plan);
+  const text = `${JSON.stringify(report, null, 2)}\n`;
+  if (dropped.length) {
+    const kept = `${path}.not-written.json`;
+    writeFileSync(kept, text);
+    return { replaced: false, dropped, kept };
+  }
+  const fresh = `${path}.new`;
+  writeFileSync(fresh, text);
+  renameSync(fresh, path);
+  // A report an earlier run could not write is of no use once this one replaced the file.
+  rmSync(`${path}.not-written.json`, { force: true });
+  return { replaced: true, dropped: [], kept: null };
 }
 
 function previousOpenings(options, chain, plan) {

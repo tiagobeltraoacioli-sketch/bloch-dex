@@ -13,6 +13,36 @@ function requireResponse(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/** How much of the body of an HTTP error answer is kept on the error (`httpBody`), for callers that classify it. */
+export const MAX_HTTP_ERROR_BODY_BYTES = 1024;
+/**
+ * The first bytes of an HTTP error answer's body, as text; "" when it cannot be read. Never throws and never
+ * reads more than MAX_HTTP_ERROR_BODY_BYTES (review R414-4: a caller must be able to tell an endpoint that refuses
+ * a METHOD from one that refuses one request, and only the body says which).
+ */
+async function errorBodyExcerpt(response, signal) {
+  try {
+    const reader = response.body?.getReader?.();
+    if (!reader) return "";
+    const chunks = [];
+    let length = 0;
+    try {
+      while (length < MAX_HTTP_ERROR_BODY_BYTES) {
+        signal.throwIfAborted();
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        length += value.byteLength;
+      }
+    } finally {
+      void reader.cancel().catch(() => {});
+    }
+    return new TextDecoder("utf-8").decode(Buffer.concat(chunks, length).subarray(0, MAX_HTTP_ERROR_BODY_BYTES));
+  } catch {
+    return "";
+  }
+}
+
 async function readBody(response, method, signal) {
   requireResponse(response.body?.getReader, `${method} response body is unavailable`);
   const reader = response.body.getReader();
@@ -64,8 +94,14 @@ export function createRpcTransport(url, { fetchImpl = globalThis.fetch, timeoutM
         signal: controller.signal,
       });
       controller.signal.throwIfAborted();
+      if (!response.ok) {
+        // The message is what it always was; the status and the first bytes of the body are added as properties.
+        const error = new Error(`${method} returned HTTP ${response.status}`);
+        error.httpStatus = response.status;
+        error.httpBody = await errorBodyExcerpt(response, controller.signal);
+        throw error;
+      }
       try {
-        requireResponse(response.ok, `${method} returned HTTP ${response.status}`);
         requireResponse(/^application\/json(?:\s*;|$)/i.test(response.headers.get("content-type") ?? ""), `${method} returned a non-JSON content type`);
         const size = response.headers.get("content-length");
         requireResponse(size === null || (/^[0-9]+$/.test(size) && Number(size) <= MAX_RPC_RESPONSE_BYTES), `${method} response has invalid or excessive content-length`);

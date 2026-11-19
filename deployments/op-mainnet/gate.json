@@ -22,7 +22,21 @@
         "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
         "symbol": "USDC",
         "decimals": 6,
-        "codeHash": "0xaad43333d28e146557f1c682e8a4226743fb231fdd00a577512233bd9e920008"
+        "codeHash": "0xaad43333d28e146557f1c682e8a4226743fb231fdd00a577512233bd9e920008",
+        "behaviour": {
+          "returnsNoValue": false,
+          "approveZeroFirst": false,
+          "transferFee": null,
+          "switches": [
+            "paused"
+          ],
+          "blocklist": "isBlacklisted"
+        },
+        "proxy": {
+          "slot": "zeppelinos",
+          "implementation": "0xdEd3b9a8DBeDC2F9CB725B55d0E686A81E6d06dC",
+          "implementationCodeHash": "0x24c6e8b8e0aaea31861e014c15e9da1564402d3512eb474d46def8e8bb2b2259"
+        }
       },
       {
         "address": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",

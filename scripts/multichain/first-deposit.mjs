@@ -60,8 +60,8 @@ import {
   EMPTY_CODE_HASH, GATE_DOMAIN, MultichainError, ZERO_ADDRESS, checksummed, loadArtifacts, loadChain, loadShared, lower, openingPriceFor, pinnedStateReader, planChain, refuse, retrying,
   ownerToolsCheck,
 } from "./lib.mjs";
-import { approvalSteps, blocklistState, tokenBehaviourState } from "./token-behaviour.mjs";
-import { deviationBps, marketRecord, nativeFor, priceOf, readMarket, tokenFor } from "./market.mjs";
+import { approvalSteps, blocklistState, proxyState, tokenBehaviourState } from "./token-behaviour.mjs";
+import { TRY_AGAIN, answeredLine, deviationBps, marketRecord, nativeFor, priceOf, readMarket, tokenFor } from "./market.mjs";
 import { decodeDeposit, openingRecord, priceShiftBps, readOpening } from "./opening.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
@@ -324,11 +324,14 @@ export async function main(argv, print = console.log, toolsCheck = null) {
     // The opening price is the chain's market price, read here and now, at the same block as everything else and
     // from the reviewed endpoints, by the rule of every other state read.
     const rule = openingPriceFor(chain, token);
-    // Every reviewed endpoint: two must answer each read and all that answer must agree (finding F409-1).
-    const market = await readMarket({ chain, token, requests: [request, ...others], at: head });
+    // Every reviewed endpoint is asked; all but one must answer each read, at least two, and all that answer must
+    // agree (finding F409-1, review R414-1). Who answered is printed and recorded.
+    const market = await readMarket({ chain, token, requests: [request, ...others], at: head, names: urls.map((u) => new URL(u).host) });
     result.market = marketRecord(market);
     for (const r of market.references) print(`     ${r.name}: ${r.problem ?? `1 ${chain.nativeCurrency.symbol} = ${formatUnits(r.price, token.decimals)} ${token.symbol}`}`);
+    print(`     ${answeredLine(market)}`);
     check(`the chain's market price is established: two independent on-chain references agree within ${rule.referencesAgreeBps / 100}%`, market.ok, market.problems.join("; "));
+    if (market.tryAgain) print(TRY_AGAIN);
     let amounts = null;
     if (market.ok) {
       print(`     market: 1 ${chain.nativeCurrency.symbol} = ${formatUnits(market.market, token.decimals)} ${token.symbol} at block ${market.block.number} (references ${(market.spreadBps / 100).toFixed(2)}% apart)`);
@@ -428,6 +431,12 @@ export async function main(argv, print = console.log, toolsCheck = null) {
     const ethCall = (target, data) => pinned("eth_call", [{ to: target, data }, "pinned"]);
     const behaviour = await tokenBehaviourState(ethCall, token);
     check(`${token.symbol} takes no fee on transfer and none of its declared switches is on${Object.keys(behaviour.read).length ? ` (${Object.entries(behaviour.read).map(([k, v]) => `${k} ${v}`).join(", ")})` : ""}`, behaviour.ok, behaviour.problems.join("; "));
+    // Reviews R414-5, R414-7: the token and the wrapped native token are still the reviewed code (an upgrade of a
+    // proxy does not change its pinned code hash).
+    for (const t of [wrapped, token]) {
+      const proxy = await proxyState({ storage: (address, slot) => pinned("eth_getStorageAt", [address, slot, "pinned"]), code: (address) => pinned("eth_getCode", [address, "pinned"]) }, t);
+      check(`${t.symbol} is the code that was reviewed: ${t.proxy ? "its proxy points at the recorded implementation, which holds its recorded code" : "not a proxy"}`, proxy.ok, proxy.problems.join("; "));
+    }
     const blocked = await blocklistState(ethCall, token, { "the pair": planned.address, "the router": router.address, "the depositing account": depositor });
     if (token.behaviour?.blocklist) check(`the issuer's blocklist of ${token.symbol} names neither the pair, the router nor the depositing account`, blocked.ok, blocked.problems.join("; "));
     const deposit = transactions.find((t) => t.step === "deposit");

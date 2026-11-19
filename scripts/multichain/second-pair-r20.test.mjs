@@ -13,16 +13,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { ROOT, ZERO_ADDRESS, chainSymbolOf, linkImmutables, loadArtifacts, loadChain, loadShared, lower, openingPriceFor, planChain, retrying, validateChain } from "./lib.mjs";
+import { PROXY_SLOTS, ROOT, ZERO_ADDRESS, chainSymbolOf, linkImmutables, loadArtifacts, loadChain, loadShared, lower, marketQuorum, openingPriceFor, pinnedStateReader, planChain, refusesMethod, retrying, validateChain } from "./lib.mjs";
 import { openingTransactions, addTransactions, withApprovals } from "./first-deposit.mjs";
-import { evaluateGate, gateConfig } from "./gate.mjs";
+import { droppedOpenings, evaluateGate, gateConfig, provenOpenings, writeGateReport } from "./gate.mjs";
 import { frontendNetwork, frontendRecord } from "./frontend-files.mjs";
-import { readMarket } from "./market.mjs";
+import { TRY_AGAIN, answeredLine, marketRecord, readMarket } from "./market.mjs";
 import { MINT_TOPIC, TRANSFER_TOPIC, ROUTER_DEPOSIT_ABI } from "./opening.mjs";
-import { approvalSteps, blocklistState, readGetter, tokenBehaviourState } from "./token-behaviour.mjs";
+import { approvalSteps, blocklistState, proxyState, readGetter, tokenBehaviourState } from "./token-behaviour.mjs";
 import { behaviourMismatch, functionsIn, pushedSelectors, verifyChain } from "./verify-chain.mjs";
 
 const viem = createRequire(new URL("../../frontend/package.json", import.meta.url))("viem");
@@ -80,27 +81,43 @@ test("A: the planned factory, router, lens and first pair of every chain are tho
   }
 });
 
-// sha256 of each file at ba1455b (`git show ba1455b:<path> | shasum -a 256`), so that the test holds in any checkout.
-const BYTES_AT_BA1455B = {
-  "deployments/base/chain.json": "dc148e8a0264fb0e4caeb3e302805377d7baa4cfa21b53957f92d95457639b15",
-  "deployments/base/gate.json": "48f077cc7afd63e8eec9b07366b666528d8cf45b7126d958b9fb5e62e53dd623",
+// Restated in the follow-up of round 20 (reviews R414-5, R414-7; coordinator's decision): USDC now records its
+// proxy's implementation and its pause and blacklist getters on every chain, so base's and linea's chain.json and
+// gate.json are no longer byte-equal to ba1455b. The property kept, as strictly as it can be stated: the page's
+// network file IS byte-equal, and the chain file and the gate file equal those of ba1455b once exactly the two new
+// fields of the one token (`behaviour`, `proxy`) are taken out (sha256 of the canonical JSON of the rest).
+const NETWORK_BYTES_AT_BA1455B = {
   "deployments/base/frontend.network.json": "e1e3bd544c0c74312c1a7a666667dc072413b5d7022c3d621fee2c5c6aa5eeee",
-  "deployments/linea/chain.json": "c41ad09b669d39c77923b8c91831ac9b3ee6362ad983b019a73d5242fbf71ef7",
-  "deployments/linea/gate.json": "f07bca0cf41e87de6da6fb4add1988d930681dc00a4dedf79d5158044c473a22",
   "deployments/linea/frontend.network.json": "3a949292f1d282fca27f7e0d34407f1cfd527a303d8fa13c0409fad271fb8b59",
 };
+// sha256 of JSON with sorted keys and no spaces, of each file at ba1455b.
+const CANONICAL_AT_BA1455B = {
+  "deployments/base/chain.json": "356160213b6d3ebdd91bd6bf34964a1f1224c48fd031dd9bf8dd05ad9c4b9b83",
+  "deployments/base/gate.json": "83df44e14083f71433db7647c71010bbab7bc77bdd553e9e64fab731be4c09b8",
+  "deployments/linea/chain.json": "4fa435d2ed710d7f91f7fb6f2458c4d0174d4b12b04121f27c2cc29d21d21c2d",
+  "deployments/linea/gate.json": "19c06c2663a538ed48a820d4c5cfbcb60796bcf00d6102a34b3a04781b2d5ea7",
+};
+const canonical = (value) => (Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : value && typeof value === "object" ? `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${canonical(value[k])}`).join(",")}}` : JSON.stringify(value));
 
-test("A: a chain without a second token keeps the generated files it had, byte for byte", () => {
+test("A: a chain without a second token keeps what it had: the network file byte for byte, the chain and gate files but for USDC's two new fields", () => {
   for (const key of NO_SECOND) {
     const chain = chainOf(key);
     assert.equal(chain.tokens.length, 1);
     assert.equal(chain.initialPairs.length, 1);
     const gate = JSON.parse(readFileSync(join(ROOT, "deployments", key, "gate.json"), "utf8"));
     assert.equal(gate.ownerChoices.openingPrices, undefined, `${key}: no later pair, no new key`);
-    assert.deepEqual(Object.keys(gate.pins.tokens[0]), ["address", "symbol", "decimals", "codeHash"]);
+    assert.deepEqual(Object.keys(gate.pins.tokens[0]), ["address", "symbol", "decimals", "codeHash", "behaviour", "proxy"]);
     assert.deepEqual(Object.keys(gate.ownerChoices), ["firstDepositor", "reserveCaps", "openingPrice"]);
   }
-  for (const [path, expected] of Object.entries(BYTES_AT_BA1455B)) assert.equal(sha256(path), expected, path);
+  for (const [path, expected] of Object.entries(NETWORK_BYTES_AT_BA1455B)) assert.equal(sha256(path), expected, path);
+  for (const [path, expected] of Object.entries(CANONICAL_AT_BA1455B)) {
+    const file = JSON.parse(readFileSync(join(ROOT, path), "utf8"));
+    const token = path.endsWith("chain.json") ? file.tokens[0] : file.pins.tokens[0];
+    assert.ok(token.behaviour && token.proxy, `${path}: USDC carries the two new fields`);
+    delete token.behaviour;
+    delete token.proxy;
+    assert.equal(createHash("sha256").update(canonical(file)).digest("hex"), expected, `${path}: nothing else changed since ba1455b`);
+  }
 });
 // ---------------------------------------------------------------------------------------------------------------
 // B. One opening price rule per planned pair.
@@ -288,36 +305,7 @@ test("F409-1: a market price needs two endpoints that answer and agree; an endpo
   assert.equal((await read(good)).ok, true);
 });
 
-test("F409-1: an endpoint that refuses a method by policy is still asked every time, without the pauses; anything else is retried as before", async () => {
-  let calls = 0;
-  let refuse = true;
-  const endpoint = retrying(async (method) => {
-    calls++;
-    if (refuse) throw new Error(`${method} returned HTTP 403`);
-    return "0x1";
-  }, { delayMs: 1 });
-  await assert.rejects(() => endpoint("eth_call", []), /HTTP 403/);
-  assert.equal(calls, 3, "the first refusal is tried three times");
-  await assert.rejects(() => endpoint("eth_call", []), /HTTP 403/);
-  await assert.rejects(() => endpoint("eth_call", []), /HTTP 403/);
-  assert.equal(calls, 5, "each later call asks once");
-  // Another method of the same endpoint is not prejudged.
-  await assert.rejects(() => endpoint("eth_getCode", []), /HTTP 403/);
-  assert.equal(calls, 8);
-  // The endpoint serves the method again: its answer is used at once, and a later failure is retried in full.
-  refuse = false;
-  assert.equal(await endpoint("eth_call", []), "0x1");
-  refuse = true;
-  calls = 0;
-  await assert.rejects(() => endpoint("eth_call", []), /HTTP 403/);
-  assert.equal(calls, 3);
-  // A rate limit or a dropped connection never shortens the tries.
-  calls = 0;
-  const limited = retrying(async () => { calls++; throw new Error("eth_call returned HTTP 429"); }, { delayMs: 1 });
-  await assert.rejects(() => limited("eth_call", []), /429/);
-  await assert.rejects(() => limited("eth_call", []), /429/);
-  assert.equal(calls, 6);
-});
+// (The test of `retrying` that stood here is restated with the refusals' bodies under "R414-4" below.)
 
 // ---------------------------------------------------------------------------------------------------------------
 // C. What the code hash does not show.
@@ -337,8 +325,13 @@ const getterCall = (getters) => async (_to, data) => {
 };
 
 test("C: the committed tokens state their behaviour from their code: only Tether's contract on Ethereum returns no value, needs zero first and has fee parameters", () => {
+  // Restated in the follow-up (review R414-7): USDC carried no behaviour block; it now states the pause and the
+  // blacklist Circle's contract has (read like USDT's), and nothing else differs from a plain token. Binance's
+  // token on BNB Smart Chain has neither.
   for (const chain of committedChains) {
-    assert.equal(chain.tokens[0].behaviour, undefined, `${chain.chain.key}: USDC is listed as it was`);
+    const usdc = chain.tokens[0].behaviour;
+    const circle = chain.chain.key !== "bnb-smart-chain";
+    assert.deepEqual([usdc.returnsNoValue, usdc.approveZeroFirst, usdc.transferFee, usdc.switches, usdc.blocklist], [false, false, null, circle ? ["paused"] : [], circle ? "isBlacklisted" : null], chain.chain.key);
     assert.equal(chain.wrappedNative.behaviour, undefined);
   }
   const eth = chainOf("ethereum").tokens[1];
@@ -444,13 +437,13 @@ test("C: a fee parameter that is not zero, an undeclared or missing one, a switc
 });
 
 /** A stand-in node for the gate with every planned pair of `chain`; `pairStates` and `getters` by token symbol. */
-function gateWorld({ chain, local, plan, pairStates = {}, openings = {}, getters = {}, blocked = false, finalizedHasCode = true }) {
+function gateWorld({ chain, local, plan, pairStates = {}, openings = {}, getters = {}, blocked = false, finalizedHasCode = true, upgraded = {}, extraSlots = {}, failing = () => false }) {
   const abi = parseAbi([
     "function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)", "function getChainId() view returns (uint256)",
     "function feeTo() view returns (address)", "function firstDepositor() view returns (address)", "function reserveCap(address) view returns (uint256)", "function INIT_CODE_PAIR_HASH() view returns (bytes32)",
     "function getPair(address,address) view returns (address)", "function factory() view returns (address)", "function WBLCH() view returns (address)", "function token0() view returns (address)",
     "function token1() view returns (address)", "function reserveCaps() view returns (uint112,uint112)", "function totalSupply() view returns (uint256)", "function getReserves() view returns (uint112,uint112,uint32)",
-    "function balanceOf(address) view returns (uint256)", "function isBlackListed(address) view returns (bool)", "function isBlocked(address) view returns (bool)",
+    "function balanceOf(address) view returns (uint256)", "function isBlackListed(address) view returns (bool)", "function isBlocked(address) view returns (bool)", "function isBlacklisted(address) view returns (bool)",
   ]);
   const code = (label) => toHex(`code:${label}`);
   const padded = (address) => `0x${address.slice(2).toLowerCase().padStart(64, "0")}`;
@@ -462,11 +455,24 @@ function gateWorld({ chain, local, plan, pairStates = {}, openings = {}, getters
   const tokens = [chain.wrappedNative, ...chain.tokens];
   const codes = new Map([[lower(local.create2.deployer), code("deployer")], [lower(chain.multicall3.address), code("multicall")], ...tokens.map((t) => [lower(t.address), code(`token:${t.symbol}`)])]);
   const pairs = new Map(plan.pairs.map((p) => [lower(p.address), { ...p, name: `${p.tokenA}/${p.tokenB}`, state: pairStates[`${p.tokenA}/${p.tokenB}`] ?? "absent" }]));
+  // A proxy's implementation: the address its recorded slot holds, with a stand-in code (`upgraded`: symbol ->
+  // { implementation?, code? } replaces what the node answers, as after an upgrade by the issuer).
+  const proxied = new Map(tokens.filter((t) => t.proxy).map((t) => [lower(t.address), { token: t, implementation: upgraded[t.symbol]?.implementation ?? t.proxy.implementation, code: upgraded[t.symbol]?.code ?? code(`impl:${t.symbol}`) }]));
+  for (const p of proxied.values()) codes.set(lower(p.implementation), p.code);
+  for (const [symbol, slot] of Object.entries(extraSlots)) proxied.set(`extra:${symbol}`, { extra: true, token: tokens.find((t) => t.symbol === symbol), slot });
   const receipts = new Map(Object.values(openings).map((o) => [o.hash, o]));
   return async (method, params) => {
     if (method === "eth_chainId") return `0x${chain.chain.chainId.toString(16)}`;
     if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: chain.chain.genesisHash } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
+    // `failing(method, params)`: an endpoint that does not answer this read (pruned state, a refusal).
+    if (failing(method, params)) throw new Error("missing trie node");
     if (method === "eth_getTransactionCount") return "0x2";
+    if (method === "eth_getStorageAt") {
+      const p = proxied.get(lower(params[0]));
+      const extra = [...proxied.values()].find((x) => x.extra && lower(x.token.address) === lower(params[0]) && PROXY_SLOTS[x.slot] === params[1]);
+      if (extra) return `0x${"0".repeat(24)}${"ee".repeat(20)}`;
+      return p && PROXY_SLOTS[p.token.proxy.slot] === params[1] ? `0x${"0".repeat(24)}${lower(p.implementation).slice(2)}` : `0x${"0".repeat(64)}`;
+    }
     if (method === "eth_getTransactionByHash") return receipts.get(params[0])?.tx ?? null;
     if (method === "eth_getTransactionReceipt") return receipts.get(params[0])?.receipt ?? null;
     if (method === "eth_getCode") {
@@ -481,7 +487,8 @@ function gateWorld({ chain, local, plan, pairStates = {}, openings = {}, getters
       const selector = params[0].data.slice(0, 10);
       // The token's own getters first (fee parameters, switches), then the functions every contract here has.
       if (token) {
-        const own = getters[token.symbol] ?? {};
+        // Every declared switch reads false and every declared fee parameter zero unless the test says otherwise.
+        const own = { ...Object.fromEntries([...(token.behaviour?.switches ?? []), ...(token.behaviour?.transferFee?.parameters ?? [])].map((g) => [g, 0n])), ...(getters[token.symbol] ?? {}) };
         const name = Object.keys(own).find((g) => toFunctionSelector(`${g}()`) === selector);
         if (name) return own[name] === "revert" ? revert() : word(own[name]);
       }
@@ -489,7 +496,7 @@ function gateWorld({ chain, local, plan, pairStates = {}, openings = {}, getters
       const { functionName: fn, args } = decodeFunctionData({ abi, data: params[0].data });
       const out = (result) => encodeFunctionResult({ abi, functionName: fn, result });
       const pair = pairs.get(to);
-      if (fn === "isBlackListed" || fn === "isBlocked") return token?.behaviour?.blocklist === fn ? out(blocked) : revert();
+      if (fn === "isBlackListed" || fn === "isBlocked" || fn === "isBlacklisted") return token?.behaviour?.blocklist === fn ? out(typeof blocked === "function" ? blocked(token, args[0]) : blocked) : revert();
       if (fn === "balanceOf") {
         const holder = pairs.get(lower(args[0]));
         return out(holder?.state === "donated" ? 5n : holder?.state === "open" ? 1000n : 0n);
@@ -522,7 +529,10 @@ function pinnedLocal(key) {
   const code = (label) => toHex(`code:${label}`);
   local.create2.deployerCodeHash = keccak256(code("deployer"));
   chain.multicall3.codeHash = keccak256(code("multicall"));
-  for (const t of [chain.wrappedNative, ...chain.tokens]) t.codeHash = keccak256(code(`token:${t.symbol}`));
+  for (const t of [chain.wrappedNative, ...chain.tokens]) {
+    t.codeHash = keccak256(code(`token:${t.symbol}`));
+    if (t.proxy) t.proxy.implementationCodeHash = keccak256(code(`impl:${t.symbol}`));
+  }
   return { chain, local, plan: planChain(local, chain, artifacts) };
 }
 const TETHER_OFF = { USDT: { basisPointsRate: 0n, maximumFee: 0n, paused: 0n, deprecated: 0n } };
@@ -547,7 +557,7 @@ test("C: the gate fails while a listed token's fee is switched on, its pause or 
   const gate = (getters, phase = "pre") => evaluateGate({ shared: local, chain, plan, phase, request: gateWorld({ chain, local, plan, getters }), rehearsal: true });
   const pass = await gate(TETHER_OFF);
   assert.equal(pass.decision, "pass", JSON.stringify(pass.failed));
-  assert.deepEqual(pass.tokenStates, { WETH: { basisPointsRate: "absent", maximumFee: "absent" }, USDC: { basisPointsRate: "absent", maximumFee: "absent" }, USDT: { basisPointsRate: "0", maximumFee: "0", paused: "0", deprecated: "0" } });
+  assert.deepEqual(pass.tokenStates, { WETH: { basisPointsRate: "absent", maximumFee: "absent" }, USDC: { basisPointsRate: "absent", maximumFee: "absent", paused: "0", implementation: chain.tokens[0].proxy.implementation, implementationCodeHash: chain.tokens[0].proxy.implementationCodeHash }, USDT: { basisPointsRate: "0", maximumFee: "0", paused: "0", deprecated: "0" } });
   const NAME = /USDT takes no fee on transfer: it has no fee parameter, or its declared ones are zero; none of its declared switches is on/;
   for (const [over, why] of [
     [{ basisPointsRate: 10n }, /basisPointsRate\(\) is 10, not zero/],
@@ -723,7 +733,12 @@ test("verify-chain: the functions a runtime dispatches on are found by walking i
   assert.match(behaviourMismatch({ ...silent, behaviour: { ...eth.tokens[1].behaviour, blocklist: "isBlocked" } }, found).join(), /blocklist getter is isBlackListed and the configuration says isBlocked/);
   // A token without a behaviour block (USDC) whose code has a fee getter is a mismatch too.
   assert.match(behaviourMismatch(eth.tokens[0], found).join(), /the code has basisPointsRate\(\)/);
-  assert.deepEqual(behaviourMismatch(eth.tokens[0], functionsIn("0x00")), []);
+  // A token without a behaviour block (the wrapped native token) against code without any of these functions.
+  assert.deepEqual(behaviourMismatch(eth.wrappedNative, functionsIn("0x00")), []);
+  // USDC's declaration (pause, isBlacklisted) against the functions Circle's implementation dispatches on.
+  const circle = codeOf(push4("paused()"), push4("pause()"), push4("isBlacklisted(address)"), push4("blacklist(address)"));
+  assert.deepEqual(behaviourMismatch(eth.tokens[0], functionsIn(circle)), []);
+  assert.match(behaviourMismatch(eth.tokens[0], functionsIn("0x00")).join(), /does not have paused\(\) and the configuration declares it.*blocklist getter is none and the configuration says isBlacklisted/);
 
   // Against a stand-in chain: every listed fact holds, and a token whose fee is on fails the verification.
   const { chain, local, plan } = pinnedLocal("ethereum");
@@ -734,9 +749,8 @@ test("verify-chain: the functions a runtime dispatches on are found by walking i
     const tokenCode = new Map(chain.tokens.map((t) => [lower(t.address), toHex(`code:token:${t.symbol}`)]));
     return async (method, params) => {
       if (method === "eth_getBlockByNumber" && params[0] !== "0x0") return market.at;
-      if (method === "eth_getStorageAt") return word(0);
       const to = lower(params[0]?.to ?? params[0] ?? "");
-      const known = [chain.wrappedNative, ...chain.tokens].some((t) => lower(t.address) === to) || to === lower(chain.multicall3.address);
+      const known = [chain.wrappedNative, ...chain.tokens].some((t) => lower(t.address) === to || lower(t.proxy?.implementation ?? "") === to) || to === lower(chain.multicall3.address);
       // The market's balanceOf of the wrapped token is the pool's depth, a price read.
       if (method === "eth_call" && to === lower(chain.wrappedNative.address) && params[0].data.startsWith("0x70a08231")) return prices(method, params);
       if (method === "eth_getCode" && tokenCode.has(to)) return tokenCode.get(to);
@@ -746,7 +760,8 @@ test("verify-chain: the functions a runtime dispatches on are found by walking i
   const good = await verifyChain({ chain, requests: [node(TETHER_OFF), node(TETHER_OFF)] });
   // The stand-in token code has no dispatch at all, so the declaration check is the one expected failure; every
   // read fact holds, for both pairs.
-  assert.deepEqual(good.failed, ["USDT: its configuration describes the fee parameters, switches and blocklist its code has"]);
+  assert.deepEqual(good.failed, ["USDC: its configuration describes the fee parameters, switches and blocklist its code has", "USDT: its configuration describes the fee parameters, switches and blocklist its code has"]);
+  assert.deepEqual(good.tokens[1].proxy, { kind: "zeppelinos", implementation: chain.tokens[0].proxy.implementation, implementationCodeHash: chain.tokens[0].proxy.implementationCodeHash, implementationBytes: 14, admin: null });
   assert.deepEqual(good.markets.map((m) => [m.pair, m.ok]), [["WETH/USDC", true], ["WETH/USDT", true]]);
   assert.deepEqual(good.tokens.map((t) => [t.key, t.symbol, t.decimals]), [["WETH", "WETH", 18], ["USDC", "USDC", 6], ["USDT", "USDT", 6]]);
   const feeOn = await verifyChain({ chain, requests: [node({ USDT: { ...TETHER_OFF.USDT, basisPointsRate: 5n } }), node({ USDT: { ...TETHER_OFF.USDT, basisPointsRate: 5n } })] });
@@ -784,6 +799,19 @@ test("the owner's steps for a second pool: one command per block, no comment, no
   // No block of a section before 8B was touched by this round: the dry-run driver's blocks are counted by its own test.
   assert.equal(blocks["once kit-tests"], "node --test scripts/multichain/second-pair-r20.test.mjs");
   assert.equal(blocks["once rebase"], "git rebase origin/main");
+  // Review R414-2: after the rebase the copy is compared with the reviewed commit AS IT IS ON DISK (a tracked file
+  // changed and not committed is in that list; `origin/main HEAD` compared two commits and missed it), no block
+  // hides such a change, and the guide says what replaces section 2.1's check and what to do when the rebase refuses.
+  assert.equal(blocks["once own-commits"], "git diff --stat origin/main");
+  for (const command of Object.values(blocks)) assert.ok(!/autostash|git stash|git checkout|git restore|git reset|git clean/.test(command), command);
+  const once = guide.slice(guide.indexOf("### 8B.0"), guide.indexOf("### 8B.1"));
+  assert.match(once, /your copy as it is on disk\*\*: your own commits and anything changed and not committed/);
+  assert.match(once, /`scripts\/multichain\/reviewed-commit\.sh` no longer applies to this copy/);
+  assert.match(once, /prints `PASS`, which proves nothing/);
+  assert.match(once, /cannot rebase: You have unstaged changes.*stop here\.\*\* Do not add `--autostash`, do not `git stash`/s);
+  assert.match(guide, /\*\*If a tool says `TRY AGAIN`\.\*\* This is not a fault\./);
+  assert.match(guide, /\*\*If the post gate says `NOT WRITTEN`\.\*\*/);
+  assert.match(guide, /A line that starts `THE ISSUER UPGRADED`/);
   for (const key of ORDER) {
     const chain = chainOf(key);
     const token = chain.tokens[1];
@@ -816,4 +844,283 @@ test("the owner's steps for a second pool: one command per block, no comment, no
   // The recovery text that was wrong for Tether's contract is gone, and its correction is there.
   assert.match(doc, /do not send another `approve` yourself/);
   assert.match(doc, /Tokens with a transfer fee or a rebasing balance are not supported and must not be\s+listed/);
+});
+
+// ===============================================================================================================
+// Follow-up of round 20: the findings of review 414 (agents/414-dex-usdt-review-r20.md).
+// ===============================================================================================================
+
+test("R414-1: a market read needs all but one of the reviewed endpoints (never fewer than two); the reviewer's two cases are refused, three of four pass", async () => {
+  assert.deepEqual([1, 2, 3, 4, 5].map(marketQuorum), [1, 2, 2, 3, 4]);
+  const chain = clone(chainOf("bnb-smart-chain"));
+  const world = marketWorld(chain);
+  const token = chain.tokens[1];
+  const names = chain.rpc.map((u) => new URL(u).host);
+  const read = (...endpoints) => readMarket({ chain, token, requests: endpoints, at: world.at, names });
+  const honest = world.endpoint();
+  const liar = world.endpoint({ usd: 90_000_000n });
+  const refusing = world.endpoint({ refuse: true });
+  const pruned = async () => { throw new Error("missing trie node"); };
+  // The reviewer's demonstration (probes/r414-1-demo.mjs): two endpoints wrong alike, the two others silent. With
+  // "any two" these were accepted; now nothing is decided, and the answer is "try again", not a price.
+  for (const set of [[liar, refusing, liar, pruned], [refusing, pruned, liar, liar]]) {
+    const r = await read(...set);
+    assert.equal(r.ok, false);
+    assert.equal(r.market, undefined);
+    assert.equal(r.tryAgain, true);
+    assert.deepEqual([r.answered.reviewed, r.answered.mustAnswer, r.answered.fewestAnswered], [4, 3, 2]);
+    assert.match(r.problems.join(), /2 endpoints answered, 3 must agree/);
+  }
+  // BNB Smart Chain as it is: one of four refuses eth_call for ever. Three answer and agree: a price.
+  const today = await read(honest, refusing, honest, honest);
+  assert.equal(today.ok, true, today.problems.join());
+  assert.equal(today.tryAgain, false);
+  assert.deepEqual([today.answered.mustAnswer, today.answered.fewestAnswered, today.answered.reads], [3, 3, 16]);
+  // The read says who did not answer, by name, on how many reads and why; and so does the record of it.
+  assert.deepEqual(today.answered.notAnswering, [{ endpoint: "api.zan.top", reads: 16, why: "eth_call returned HTTP 403" }]);
+  assert.equal(answeredLine(today), "endpoints: every one of the 16 reads was answered by at least 3 of the 4 reviewed endpoints (3 must answer, and all that answer must agree); not answering: api.zan.top (16 of 16 reads: eth_call returned HTTP 403)");
+  assert.deepEqual(marketRecord(today).answered, today.answered);
+  // As measured on the chain: its fourth endpoint drops a read ("missing trie node") while the second refuses.
+  let calls = 0;
+  const flaky = async (method, params) => {
+    if (method === "eth_call" && ++calls === 5) throw new Error("missing trie node");
+    return honest(method, params);
+  };
+  const dropped = await read(honest, refusing, honest, flaky);
+  assert.deepEqual([dropped.ok, dropped.tryAgain, dropped.answered.fewestAnswered], [false, true, 2]);
+  assert.deepEqual(dropped.answered.notAnswering.map((s) => [s.endpoint, s.reads]), [["api.zan.top", dropped.answered.reads], ["bsc-dataseed.bnbchain.org", 1]]);
+  // What the rule does not do, stated: three endpoints wrong alike with the fourth silent are three agreeing
+  // answers. Every read is then decided by them (no DISAGREEMENT, no "try again"); here the lie is in one feed
+  // only, so the two references part and there is still no price.
+  const three = await read(liar, refusing, liar, liar);
+  assert.deepEqual([three.tryAgain, three.answered.fewestAnswered, /DISAGREEMENT/.test(three.problems.join())], [false, 3, false]);
+  assert.match(three.problems.join(), /more than the 1% within which they must agree/);
+  // Any answer that differs is a disagreement, whoever is silent: that is not "try again", it is a stop.
+  const split = await read(honest, refusing, honest, liar);
+  assert.deepEqual([split.ok, split.tryAgain], [false, false]);
+  assert.match(split.problems.join(), /DISAGREEMENT/);
+  // Linea's three: two must answer. Two of three give a price; one of three says try again.
+  const linea = clone(chainOf("linea"));
+  const lw = marketWorld(linea);
+  const lineaRead = (...endpoints) => readMarket({ chain: linea, token: linea.tokens[0], requests: endpoints, at: lw.at });
+  const two = await lineaRead(lw.endpoint(), lw.endpoint({ refuse: true }), lw.endpoint());
+  assert.deepEqual([two.ok, two.answered.mustAnswer, two.answered.fewestAnswered, two.answered.notAnswering[0].endpoint], [true, 2, 2, "endpoint 2"]);
+  assert.deepEqual((({ ok, tryAgain }) => [ok, tryAgain])(await lineaRead(lw.endpoint(), lw.endpoint({ refuse: true }), lw.endpoint({ refuse: true }))), [false, true]);
+  // Two endpoints (OP Mainnet, Base, Ethereum): both, as at ba1455b. One endpoint: a loopback rehearsal.
+  const eth = clone(chainOf("ethereum"));
+  const ew = marketWorld(eth);
+  assert.equal((await readMarket({ chain: eth, token: eth.tokens[0], requests: [ew.endpoint(), ew.endpoint({ refuse: true })], at: ew.at })).tryAgain, true);
+  assert.equal((await readMarket({ chain: eth, token: eth.tokens[0], requests: [ew.endpoint()], at: ew.at })).ok, true);
+  // The words the owner reads, in the tools and in both documents.
+  assert.match(TRY_AGAIN, /^TRY AGAIN in a minute: .*not a fault.*Nothing was printed to send\.$/);
+  for (const file of ["scripts/multichain/market.mjs", "scripts/multichain/first-deposit.mjs"]) assert.match(readFileSync(join(ROOT, file), "utf8"), /if \(market\.tryAgain\) print\(TRY_AGAIN\)/, file);
+  for (const doc of ["docs/OWNER-DEPLOY-NOW.md", "docs/MULTICHAIN-DEPLOY.md"]) assert.match(readFileSync(join(ROOT, doc), "utf8"), /TRY AGAIN/, doc);
+});
+
+test("R414-4: a 403 is a refusal of the METHOD only when its body names the method; any other 403 is retried in full", async () => {
+  const http = (method, status, body) => Object.assign(new Error(`${method} returned HTTP ${status}`), { httpStatus: status, httpBody: body });
+  // The two bodies seen on BNB Smart Chain's first two endpoints (2026-11-19).
+  const ZAN = '{"error":{"code":-32012,"message":"Method \\"eth_call\\" is not available for unregistered accounts. Please visit https://zan.top/ and register to unlock more."},"id":1,"jsonrpc":"2.0"}';
+  const ARCHIVE = '{"jsonrpc":"2.0","error":{"code":-32602,"message":"Archive requests require a personal token. Get one at: https://www.allnodes.com/publicnode"},"id":1}';
+  assert.equal(refusesMethod(http("eth_call", 403, ZAN), "eth_call"), true);
+  assert.equal(refusesMethod(http("eth_getBlockByNumber", 403, ARCHIVE), "eth_getBlockByNumber"), false, "the reviewer's case: a refusal of block 0, not of the method");
+  assert.equal(refusesMethod(http("eth_getCode", 403, ZAN), "eth_getCode"), false, "a body that names another method");
+  assert.equal(refusesMethod(http("eth_call", 429, ZAN), "eth_call"), false);
+  assert.equal(refusesMethod(new Error("eth_call returned HTTP 403"), "eth_call"), false, "without the body nothing is concluded");
+  assert.equal(refusesMethod(http("eth_call", 403, 'Method "eth_callMany" is not available'), "eth_call"), false, "the name as a whole word");
+  const counter = (errorFor) => {
+    const state = { calls: 0, refuse: true };
+    const endpoint = retrying(async (method) => {
+      state.calls++;
+      if (state.refuse) throw errorFor(method);
+      return "0x1";
+    }, { delayMs: 1 });
+    return { state, endpoint };
+  };
+  // A method refused by policy: three tries once, then one ask per call; another method is not prejudged; an
+  // answer ends the shortcut.
+  const zan = counter((m) => http(m, 403, ZAN.replace("eth_call", m)));
+  await assert.rejects(() => zan.endpoint("eth_call", []), /HTTP 403/);
+  assert.equal(zan.state.calls, 3);
+  await assert.rejects(() => zan.endpoint("eth_call", []), /HTTP 403/);
+  await assert.rejects(() => zan.endpoint("eth_call", []), /HTTP 403/);
+  assert.equal(zan.state.calls, 5, "each later call asks once");
+  await assert.rejects(() => zan.endpoint("eth_getCode", []), /HTTP 403/);
+  assert.equal(zan.state.calls, 8);
+  zan.state.refuse = false;
+  assert.equal(await zan.endpoint("eth_call", []), "0x1");
+  zan.state.refuse = true;
+  zan.state.calls = 0;
+  await assert.rejects(() => zan.endpoint("eth_call", []), /HTTP 403/);
+  assert.equal(zan.state.calls, 3);
+  // The archive refusal: every later eth_getBlockByNumber keeps its three tries (before the fix: one).
+  const archive = counter((m) => http(m, 403, ARCHIVE));
+  await assert.rejects(() => archive.endpoint("eth_getBlockByNumber", ["0x0", false]), /HTTP 403/);
+  await assert.rejects(() => archive.endpoint("eth_getBlockByNumber", ["finalized", false]), /HTTP 403/);
+  assert.equal(archive.state.calls, 6);
+  // A 403 without a readable body, a rate limit, a dropped connection: never shortened.
+  for (const error of [() => new Error("eth_call returned HTTP 403"), (m) => http(m, 429, ZAN), () => new Error("fetch failed")]) {
+    const plain = counter(error);
+    await assert.rejects(() => plain.endpoint("eth_call", []));
+    await assert.rejects(() => plain.endpoint("eth_call", []));
+    assert.equal(plain.state.calls, 6);
+  }
+  // The transport hands the status and the first bytes of the body on, and its message is what it was.
+  const { createRpcTransport, MAX_HTTP_ERROR_BODY_BYTES } = await import("../staging/rpc-transport.mjs");
+  const transport = createRpcTransport("https://endpoint.invalid", { fetchImpl: async () => new Response(ZAN + " ".repeat(5000), { status: 403, headers: { "content-type": "application/json" } }) });
+  const refused = await transport("eth_call", []).then(() => null, (e) => e);
+  assert.deepEqual([refused.message, refused.httpStatus, refused.httpBody.startsWith(ZAN), refused.httpBody.length <= MAX_HTTP_ERROR_BODY_BYTES], ["eth_call returned HTTP 403", 403, true, true]);
+  assert.equal(refusesMethod(refused, "eth_call"), true);
+  const empty = await createRpcTransport("https://endpoint.invalid", { fetchImpl: async () => new Response(null, { status: 502 }) })("eth_call", []).then(() => null, (e) => e);
+  assert.deepEqual([empty.message, empty.httpStatus, empty.httpBody], ["eth_call returned HTTP 502", 502, ""]);
+});
+
+test("R414-3: a post gate run never loses the first pool's opening hash: the failed-read path, demonstrated, then refused", async () => {
+  const { chain, local, plan } = pinnedLocal("bnb-smart-chain");
+  const [first, second] = plan.pairs;
+  const names = [`${first.tokenA}/${first.tokenB}`, `${second.tokenA}/${second.tokenB}`];
+  const opened = { [names[0]]: openingOf({ plan, chain, pair: first, digit: "1" }), [names[1]]: openingOf({ plan, chain, pair: second, digit: "2" }) };
+  const gate = ({ states, hashes, failing }) => evaluateGate({ shared: local, chain, plan, phase: "post", request: gateWorld({ chain, local, plan, pairStates: states, openings: opened, failing }), rehearsal: true, openings: Object.fromEntries(hashes.map((n) => [n, opened[n].hash])) });
+  // The owner's report after section 5: the first pool open and proven.
+  const good = await gate({ states: { [names[0]]: "open" }, hashes: [names[0]] });
+  assert.equal(good.decision, "pass", JSON.stringify(good.failed));
+  assert.deepEqual(provenOpenings(good, chain, plan), [{ pair: names[0], address: lower(first.address), transaction: opened[names[0]].hash }]);
+  // The path the reviewer argued: step U2, and the endpoint does not answer getPair of the FIRST pair (pruned
+  // state). The pair is reported as not created (its tokens are seen at the address, its shares are not), with no
+  // opening at all: the report has lost the hash.
+  const getPair = toFunctionSelector("getPair(address,address)");
+  const unread = await gate({ states: { [names[0]]: "open" }, hashes: [names[0]], failing: (method, params) => method === "eth_call" && params[0].data.startsWith(getPair) && params[0].data.includes(lower(first.token0).slice(2)) });
+  assert.equal(unread.decision, "fail");
+  assert.deepEqual([unread.pairs[0].created, unread.pairs[0].state, unread.pairs[0].opening], [false, "donated", undefined]);
+  assert.deepEqual(provenOpenings(unread, chain, plan), []);
+  assert.deepEqual(droppedOpenings(good, unread, chain, plan), [{ pair: names[0], address: lower(first.address), transaction: opened[names[0]].hash }]);
+  // Before the fix that report was written over the file. Now the file stays, and the run's report lies beside it.
+  const dir = mkdtempSync(join(tmpdir(), "r414-3-"));
+  const path = join(dir, "gate-report.json");
+  assert.deepEqual(writeGateReport(path, good, { chain, plan }), { replaced: true, dropped: [], kept: null });
+  const before = readFileSync(path, "utf8");
+  const refused = writeGateReport(path, unread, { chain, plan });
+  assert.deepEqual([refused.replaced, refused.dropped.map((d) => d.pair), refused.kept], [false, [names[0]], `${path}.not-written.json`]);
+  assert.equal(readFileSync(path, "utf8"), before, "the report with the proven opening is untouched");
+  assert.equal(JSON.parse(readFileSync(refused.kept, "utf8")).decision, "fail");
+  // The next run reads the pool again, carries the hash from the untouched file, and replaces it; the leftover goes.
+  const again = await gate({ states: { [names[0]]: "open" }, hashes: [names[0]] });
+  assert.equal(writeGateReport(path, again, { chain, plan }).replaced, true);
+  assert.equal(existsSync(refused.kept), false);
+  // The second pool's opening is added; from then on neither may be dropped.
+  const both = await gate({ states: { [names[0]]: "open", [names[1]]: "open" }, hashes: names });
+  assert.equal(writeGateReport(path, both, { chain, plan }).replaced, true);
+  assert.deepEqual(droppedOpenings(both, again, chain, plan).map((d) => d.pair), [names[1]]);
+  assert.equal(writeGateReport(path, again, { chain, plan }).replaced, false);
+  // The reviewer's demonstrated case: a report whose opening hash this run does not prove (another transaction).
+  const other = clone(both);
+  other.pairs[0].opening.transaction = `0x${"9".repeat(64)}`;
+  assert.equal(writeGateReport(path, other, { chain, plan }).replaced, false);
+  // Reports of another chain or another factory, a file that is not a report, and no file: written as before.
+  for (const [name, content] of [["other-chain.json", JSON.stringify({ ...both, chain: { ...both.chain, chainId: 1 } })], ["not-json.json", "{"], ["absent.json", null]]) {
+    const p = join(dir, name);
+    if (content !== null) writeFileSync(p, content);
+    assert.equal(writeGateReport(p, unread, { chain, plan }).replaced, true, name);
+  }
+  // The tool tells the owner so, and that nothing is lost.
+  assert.match(readFileSync(join(ROOT, "scripts/multichain/gate.mjs"), "utf8"), /NOT WRITTEN: the report at .* was left as it is\./);
+});
+
+test("R414-5, R414-7: an upgrade behind a listed proxy is seen and refused; a token recorded as plain code must not be a proxy", async () => {
+  // What is recorded, per chain: Circle's USDC behind its ZeppelinOS slot on five chains, Binance's USDC and
+  // Arbitrum One's USD₮0 and WETH behind EIP-1967; everything else is plain code.
+  const recorded = Object.fromEntries(committedChains.map((c) => [c.chain.key, [c.wrappedNative, ...c.tokens].filter((t) => t.proxy).map((t) => `${t.symbol}:${t.proxy.slot}`)]));
+  assert.deepEqual(recorded, { "op-mainnet": ["USDC:zeppelinos"], base: ["USDC:zeppelinos"], "arbitrum-one": ["WETH:eip1967", "USDC:zeppelinos", "USDT0:eip1967"], linea: ["USDC:zeppelinos"], "bnb-smart-chain": ["USDC:eip1967"], ethereum: ["USDC:zeppelinos"] });
+  const usdt0 = chainOf("arbitrum-one").tokens[1];
+  assert.deepEqual([usdt0.proxy.implementation, usdt0.proxy.implementationCodeHash], ["0x3263CD783823d04a6B9819517E0E6840d37cA3F4", "0x1d4c20a1a19a0e182c0d2bffbe433a96bd70a1dbb383b7a2d293976df4042279"]);
+  // The pure reader.
+  const implCode = toHex("code:impl");
+  const token = { address: usdt0.address, symbol: "USDT0", proxy: { slot: "eip1967", implementation: usdt0.proxy.implementation, implementationCodeHash: keccak256(implCode), checked: "2026-11-19" } };
+  const padded = (address) => `0x${"0".repeat(24)}${address.slice(2).toLowerCase()}`;
+  const ZERO_WORD = `0x${"0".repeat(64)}`;
+  const reader = ({ eip1967 = token.proxy.implementation, zeppelinos = null, code = implCode, down = false } = {}) => ({
+    storage: async (_address, slot) => {
+      if (down) throw new Error("multichain: eth_getStorageAt at block 0xab: 1 endpoint answered, 2 must agree");
+      const value = slot === PROXY_SLOTS.eip1967 ? eip1967 : zeppelinos;
+      return value ? padded(value) : ZERO_WORD;
+    },
+    code: async () => code,
+  });
+  assert.deepEqual(await proxyState(reader(), token), { ok: true, problems: [], read: { eip1967: token.proxy.implementation, zeppelinos: null }, implementationCodeHash: keccak256(implCode) });
+  const NEW = viem.getAddress(`0x${"ab".repeat(20)}`);
+  const moved = await proxyState(reader({ eip1967: NEW }), token);
+  assert.equal(moved.ok, false);
+  assert.match(moved.problems[0], new RegExp(`^THE ISSUER UPGRADED USDT0: its proxy now points at ${NEW}; the reviewed implementation is ${token.proxy.implementation}\\. Deposit nothing into this token's pools and write no new page record\\.`));
+  assert.match((await proxyState(reader({ code: toHex("code:other") }), token)).problems[0], /^THE CODE BEHIND USDT0 CHANGED/);
+  assert.match((await proxyState(reader({ eip1967: null }), token)).problems[0], /its proxy now points at nothing/);
+  assert.match((await proxyState(reader({ zeppelinos: NEW }), token)).problems.join(), /is a proxy \(zeppelinos slot: implementation .*\) and its configuration records another slot \(eip1967\)/);
+  assert.match((await proxyState(reader({ down: true }), token)).problems.join(), /implementation slot of USDT0 could not be read/);
+  // A token recorded as plain code: both slots empty, or it is refused.
+  const plain = { address: usdt0.address, symbol: "USDT" };
+  assert.equal((await proxyState(reader({ eip1967: null }), plain)).ok, true);
+  assert.match((await proxyState(reader(), plain)).problems[0], /USDT is a proxy \(eip1967 slot: implementation .*\) and its configuration records no implementation: what stands behind it was not reviewed/);
+  // Through the gate, pre and post, on Arbitrum One (WETH, USDC and USD₮0 are all proxies there).
+  const arb = pinnedLocal("arbitrum-one");
+  const NAME = (symbol) => new RegExp(`^${symbol} is the code that was reviewed: its proxy points at the recorded implementation, which holds its recorded code$`);
+  for (const phase of ["pre", "post"]) {
+    const gate = (world) => evaluateGate({ shared: arb.local, chain: arb.chain, plan: arb.plan, phase, request: gateWorld({ ...arb, ...world }), rehearsal: true });
+    const pass = await gate({});
+    assert.equal(pass.decision, "pass", JSON.stringify(pass.failed));
+    assert.equal(pass.tokenStates.USDT0.implementation, usdt0.proxy.implementation);
+    for (const [symbol, change] of [["USDT0", { implementation: NEW }], ["USDC", { implementation: NEW }], ["WETH", { code: toHex("code:replaced") }], ["USDT0", { code: toHex("code:with-a-fee") }]]) {
+      const report = await gate({ upgraded: { [symbol]: change } });
+      assert.equal(report.decision, "fail", `${phase} ${symbol}`);
+      assert.deepEqual(report.failed.filter((f) => /is the code that was reviewed/.test(f)).length, 1);
+      assert.ok(report.failed.some((f) => NAME(symbol).test(f)), JSON.stringify(report.failed));
+      assert.match(JSON.stringify(report.checks.find((c) => NAME(symbol).test(c.name)).detail), change.implementation ? /THE ISSUER UPGRADED/ : /THE CODE BEHIND .* CHANGED/);
+    }
+  }
+  // A token listed as plain code that is a proxy after all (Tether's contract with something in a proxy slot).
+  const eth = pinnedLocal("ethereum");
+  const sneaky = await evaluateGate({ shared: eth.local, chain: eth.chain, plan: eth.plan, phase: "pre", request: gateWorld({ ...eth, extraSlots: { USDT: "eip1967" } }), rehearsal: true });
+  assert.ok(sneaky.failed.includes("USDT is the code that was reviewed: not a proxy"), JSON.stringify(sneaky.failed));
+  // The configuration is validated: a known slot, a checksummed implementation, a code hash, a date.
+  const edit = (change) => {
+    const c = clone(chainOf("arbitrum-one"));
+    change(c.tokens[1].proxy);
+    return () => validateChain(c, "arbitrum-one");
+  };
+  assert.throws(edit((p) => (p.slot = "transparent")), /proxy\.slot is one of eip1967, zeppelinos/);
+  assert.throws(edit((p) => (p.implementation = p.implementation.toLowerCase())), /EIP-55/);
+  assert.throws(edit((p) => delete p.implementationCodeHash), /implementationCodeHash/);
+  assert.throws(edit((p) => delete p.checked), /checked/);
+  assert.throws(edit((p) => (p.beacon = "x")), /proxy: slot, implementation/);
+  // The gate's committed pins carry the record.
+  assert.deepEqual(gateConfig(committed, chainOf("arbitrum-one")).pins.tokens[1].proxy, { slot: "eip1967", implementation: usdt0.proxy.implementation, implementationCodeHash: usdt0.proxy.implementationCodeHash });
+  assert.equal(gateConfig(committed, chainOf("arbitrum-one")).pins.wrappedNative.proxy.slot, "eip1967");
+});
+
+test("R414-7: USDC's pause and blacklist are read like USDT's: a paused USDC, or a blacklisted pair or router, fails the gate", async () => {
+  const { chain, local, plan } = pinnedLocal("base");
+  const pair = plan.pairs[0];
+  const gate = (world, phase = "post") => evaluateGate({ shared: local, chain, plan, phase, request: gateWorld({ chain, local, plan, ...world }), rehearsal: true });
+  const pass = await gate({});
+  assert.equal(pass.decision, "pass", JSON.stringify(pass.failed));
+  assert.deepEqual(pass.tokenStates.USDC, { basisPointsRate: "absent", maximumFee: "absent", paused: "0", implementation: chain.tokens[0].proxy.implementation, implementationCodeHash: chain.tokens[0].proxy.implementationCodeHash });
+  for (const phase of ["pre", "post"]) {
+    const paused = await gate({ getters: { USDC: { paused: 1n } } }, phase);
+    assert.equal(paused.decision, "fail");
+    assert.match(JSON.stringify(paused.checks.find((c) => /^USDC takes no fee on transfer/.test(c.name)).detail), /paused\(\) is true: the issuer has stopped every transfer/);
+    // The reviewed USDC answers paused(); a contract that does not is not that token.
+    assert.match(JSON.stringify((await gate({ getters: { USDC: { paused: "revert" } } }, phase)).checks.find((c) => /^USDC takes no fee on transfer/.test(c.name)).detail), /declares the switch paused\(\) and the contract does not answer it/);
+  }
+  const NAME = "the issuer's blocklist of USDC names neither the pair WETH/USDC nor the router";
+  assert.ok(pass.checks.some((c) => c.name === NAME && c.ok));
+  for (const blockedAddress of [pair.address, plan.contracts.router.address]) {
+    const report = await gate({ blocked: (_token, address) => lower(address) === lower(blockedAddress) });
+    assert.equal(report.decision, "fail");
+    assert.deepEqual(report.failed, [NAME]);
+    assert.match(JSON.stringify(report.checks.find((c) => c.name === NAME).detail), /is on the issuer's blocklist of USDC \(isBlacklisted\)/);
+  }
+  // Binance's USDC on BNB Smart Chain has neither function: nothing of the kind is asked of it.
+  const bnb = pinnedLocal("bnb-smart-chain");
+  const bnbGate = await evaluateGate({ shared: bnb.local, chain: bnb.chain, plan: bnb.plan, phase: "post", request: gateWorld(bnb), rehearsal: true });
+  assert.equal(bnbGate.decision, "pass", JSON.stringify(bnbGate.failed));
+  assert.equal(bnbGate.checks.some((c) => /blocklist of USDC/.test(c.name)), false);
+  assert.deepEqual(Object.keys(bnbGate.tokenStates.USDC), ["basisPointsRate", "maximumFee", "implementation", "implementationCodeHash"]);
 });

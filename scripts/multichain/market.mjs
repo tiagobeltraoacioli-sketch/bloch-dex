@@ -20,12 +20,15 @@
 //              or one block, cannot set. The pool must be the one its publisher's factory names for the two tokens
 //              and the fee tier, and must hold liquidity.
 // Every read is pinned to ONE block hash and asked of every endpoint given (the chain's reviewed endpoints); an
-// answer counts only when at least two endpoints answered and every endpoint that answered gave the same bytes
-// (lib.mjs `pinnedStateReader`, the rule of review R369-1 that the gate and the deposit tool already use for every
-// state read; round 20, finding F409-1: before, the FIRST TWO endpoints were asked and both had to answer, so a
-// chain whose second endpoint stopped serving eth_call to anonymous callers, as BNB Smart Chain's did, had no
-// market price at all, although two other reviewed endpoints agreed). One endpoint's word is never a price; an
-// endpoint that answers differently is a disagreement and there is no price. The two references must agree with each other within
+// answer counts only when ALL BUT ONE of the chain's reviewed endpoints answered (never fewer than two: two of
+// two, two of three, three of four; lib.mjs `marketQuorum`, review R414-1) and every endpoint that answered gave
+// the same bytes. (Round 20, finding F409-1: before, the FIRST TWO endpoints were asked and both had to answer, so
+// a chain whose second endpoint stopped serving eth_call to anonymous callers, as BNB Smart Chain's did, had no
+// market price at all. "Any two" would have let two endpoints decide whenever the others were silent: R414-1.)
+// One endpoint's word is never a price; an endpoint that answers differently is a disagreement and there is no
+// price; when fewer than the quorum answer a read the result says TRY AGAIN, which is not a fault of the chain or
+// of the tool: public endpoints refuse and prune by the minute. The result states how many endpoints answered
+// the worst-served read and names those that did not answer. The two references must agree with each other within
 // `referencesAgreeBps`; when they do not (a feed that lags a fast move, a pool being pushed, a token that left its
 // peg), there is no market price and the caller refuses. The market price is the mean of the two.
 //
@@ -33,7 +36,7 @@
 import { createRequire } from "node:module";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
-import { EMPTY_CODE_HASH, MultichainError, loadChain, loadShared, lower, openingPriceFor, pinnedStateReader, refuse, retrying } from "./lib.mjs";
+import { EMPTY_CODE_HASH, MultichainError, loadChain, loadShared, lower, marketQuorum, openingPriceFor, pinnedStateReader, refuse, retrying } from "./lib.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, encodeFunctionData, decodeFunctionResult, parseAbi, parseUnits, formatUnits } = requireFromFrontend("viem");
@@ -104,15 +107,29 @@ export const priceOf = (nativeWei, tokenUnits) => (tokenUnits * E18) / nativeWei
  * every read); `at`: { number, hash, timestamp } of the pinned block (hex strings as the endpoint gave them).
  * Returns { ok, problems, references: [{ kind, name, price, ... }], market, spreadBps, block }. Never throws for
  * a reference that cannot be read: it is a problem, and `ok` is false.
+ * `answered` (review R414-1): { reviewed, mustAnswer, fewestAnswered, reads, notAnswering: [{ endpoint, reads,
+ * why }] }; `tryAgain` is true when a read was answered by fewer endpoints than must answer. `names` (optional):
+ * the endpoints' host names, in the order of `requests`, for that list.
  */
-export async function readMarket({ chain, token, requests, at }) {
+export async function readMarket({ chain, token, requests, at, names = null }) {
   // The rule of the planned pair of THIS token (round 20): never another pair's references.
   const config = openingPriceFor(chain, token);
   const problems = [];
   const pin = { blockHash: at.hash, requireCanonical: true };
   const now = BigInt(at.timestamp);
-  // Two endpoints must answer (one in a loopback rehearsal, where one is given) and all that answer must agree.
-  const agreed = pinnedStateReader(requests, at.hash);
+  // All but one of the reviewed endpoints must answer each read, at least two (one in a loopback rehearsal, where
+  // one is given), and all that answer must agree (review R414-1).
+  const mustAnswer = marketQuorum(requests.length);
+  const answered = { reviewed: requests.length, mustAnswer, fewestAnswered: requests.length, reads: 0, notAnswering: [] };
+  const silentReads = new Map();
+  const agreed = pinnedStateReader(requests, at.hash, {
+    min: mustAnswer,
+    onRead: ({ answered: count, silent }) => {
+      answered.reads++;
+      answered.fewestAnswered = Math.min(answered.fewestAnswered, count);
+      for (const { index, why } of silent) silentReads.set(index, { reads: (silentReads.get(index)?.reads ?? 0) + 1, why });
+    },
+  });
   const call = async (to, functionName, args = []) => decodeFunctionResult({ abi: ABI, functionName, data: await agreed("eth_call", [{ to, data: encodeFunctionData({ abi: ABI, functionName, args }) }, pin]) });
   const codeHash = async (address) => {
     const code = await agreed("eth_getCode", [address, pin]);
@@ -160,7 +177,8 @@ export async function readMarket({ chain, token, requests, at }) {
     }
     references.push(entry);
   }
-  const out = { ok: false, problems, references, block: { number: Number(BigInt(at.number)), hash: at.hash, timestamp: Number(now) }, maxDeviationBps: config.maxDeviationBps, referencesAgreeBps: config.referencesAgreeBps };
+  answered.notAnswering = [...silentReads.entries()].sort((a, b) => a[0] - b[0]).map(([index, v]) => ({ endpoint: names?.[index] ?? `endpoint ${index + 1}`, reads: v.reads, why: v.why }));
+  const out = { ok: false, tryAgain: answered.fewestAnswered < mustAnswer, answered, problems, references, block: { number: Number(BigInt(at.number)), hash: at.hash, timestamp: Number(now) }, maxDeviationBps: config.maxDeviationBps, referencesAgreeBps: config.referencesAgreeBps };
   if (problems.length === 0) {
     const combined = combine(references.map((r) => r.price), config.referencesAgreeBps);
     out.spreadBps = combined.spreadBps;
@@ -172,6 +190,15 @@ export async function readMarket({ chain, token, requests, at }) {
   }
   return out;
 }
+
+/** One line on who answered a market read, for every tool that prints a market price (review R414-1). Pure. */
+export function answeredLine(market) {
+  const a = market.answered;
+  const silent = a.notAnswering.length ? `; not answering: ${a.notAnswering.map((s) => `${s.endpoint} (${s.reads} of ${a.reads} reads: ${s.why})`).join(", ")}` : "";
+  return `endpoints: every one of the ${a.reads} reads was answered by at least ${a.fewestAnswered} of the ${a.reviewed} reviewed endpoint${a.reviewed === 1 ? "" : "s"} (${a.mustAnswer} must answer, and all that answer must agree)${silent}`;
+}
+/** What "try again" means, said wherever a market read had too few answers. */
+export const TRY_AGAIN = "TRY AGAIN in a minute: too few of the reviewed endpoints answered a read. This is not a fault of the chain, of the pool or of this tool, and nothing is wrong with your funds: public endpoints refuse and drop requests by the minute. Nothing was printed to send.";
 
 /** A market as it is written into a file: bigints as decimal strings. */
 export const marketRecord = (m) => JSON.parse(JSON.stringify(m, (_, v) => (typeof v === "bigint" ? v.toString() : v)));
@@ -225,7 +252,8 @@ export async function main(argv, print = console.log) {
   // Smart Chain): two must answer each read and all that answer must agree (finding F409-1).
   const requests = (o.rehearsal ? [o.rpc] : chain.rpc).map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
   const at = await pinnedBlock(requests);
-  const market = await readMarket({ chain, token, requests, at });
+  const hosts = (o.rehearsal ? [o.rpc] : chain.rpc).map((url) => new URL(url).host);
+  const market = await readMarket({ chain, token, requests, at, names: hosts });
   const coin = chain.nativeCurrency.symbol;
   const text = (p) => `${formatUnits(p, token.decimals)} ${token.symbol}`;
   const result = { schema: "postern.dex.multichain-market.v1", chain: key, pair: pairName, endpoints: requests.length, ...marketRecord(market) };
@@ -236,12 +264,14 @@ export async function main(argv, print = console.log) {
   }
   if (o.json) print(JSON.stringify(result, null, 2));
   else {
-    print(`${chain.chain.name}, block ${market.block.number} (${at.hash}), read from ${requests.length} endpoint${requests.length === 1 ? "" : `s: an answer counts when two answered and all that answered agree`}`);
+    print(`${chain.chain.name}, block ${market.block.number} (${at.hash}), read from ${requests.length} endpoint${requests.length === 1 ? "" : `s: an answer counts when ${market.answered.mustAnswer} answered and all that answered agree`}`);
+    print(answeredLine(market));
     for (const r of market.references) print(`${r.problem ? "FAIL" : "ok  "} ${r.name}: ${r.problem ?? `1 ${coin} = ${text(r.price)}  ${JSON.stringify(r.detail)}`}`);
     if (market.ok) {
       print(`market: 1 ${coin} = ${text(market.market)} (the two references are ${(market.spreadBps / 100).toFixed(2)}% apart; they must agree within ${market.referencesAgreeBps / 100}%)`);
       if (result.amounts) print(`at that price: ${result.amounts.nativeText} ${coin} + ${result.amounts.tokenText} ${token.symbol}`);
     } else print(`NO MARKET PRICE: ${market.problems.join("; ")}`);
+    if (market.tryAgain) print(TRY_AGAIN);
   }
   return market.ok ? 0 : 1;
 }

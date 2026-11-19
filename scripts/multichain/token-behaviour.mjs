@@ -13,10 +13,10 @@
 // A getter the contract does not have reverts (or, at a contract with a fallback such as WETH9, returns nothing):
 // that is "absent". An answer that cannot be read (too few endpoints answered) is not "absent": the check fails.
 import { createRequire } from "node:module";
-import { FEE_PARAMETER_GETTERS } from "./lib.mjs";
+import { EMPTY_CODE_HASH, FEE_PARAMETER_GETTERS, PROXY_SLOTS } from "./lib.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
-const { toFunctionSelector, encodeFunctionData, parseAbi } = requireFromFrontend("viem");
+const { toFunctionSelector, encodeFunctionData, parseAbi, keccak256, getAddress } = requireFromFrontend("viem");
 
 const WORD = /^0x[0-9a-f]{64}$/i;
 const isRevert = (error) => /execution reverted|revert/i.test(String(error?.message ?? error));
@@ -88,6 +88,57 @@ export async function blocklistState(ethCall, token, addresses) {
     }
   }
   return { ok: problems.length === 0, problems, read };
+}
+
+/** What the owner is told when a listed proxy no longer points at the reviewed code. */
+export const UPGRADED_ADVICE = "Deposit nothing into this token's pools and write no new page record. A pool that is already open keeps working as far as the new code lets it; the developer reads the new implementation (verify-chain.mjs prints it), repeats the token's behaviour checks and records the new address and code hash in a reviewed commit (docs/MULTICHAIN-DEPLOY.md section 2.6, \"When the issuer upgrades a token\")";
+
+/**
+ * Review R414-5, R414-7: is this token still the code that was reviewed? `read`: { storage(address, slot),
+ * code(address) }, both at the pinned block from the endpoints that must agree. For a token with a `proxy` record
+ * the recorded slot must hold the recorded implementation and that address must hold the recorded code. Every
+ * token is also asked for BOTH known slots: one that holds an address the configuration does not record (a token
+ * listed as plain code that is a proxy after all, or a proxy that keeps a second implementation) fails.
+ * Returns { ok, problems, read: { slot: address | null }, implementationCodeHash }. Never throws.
+ */
+export async function proxyState(read, token) {
+  const problems = [];
+  const seen = {};
+  let implementationCodeHash = null;
+  for (const [name, slot] of Object.entries(PROXY_SLOTS)) {
+    let word;
+    try {
+      word = await read.storage(token.address, slot);
+    } catch (error) {
+      problems.push(`the ${name} implementation slot of ${token.symbol} could not be read: ${String(error?.message ?? error).replace(/^multichain: /, "").slice(0, 160)}`);
+      seen[name] = "unreadable";
+      continue;
+    }
+    if (!WORD.test(String(word))) {
+      problems.push(`the ${name} implementation slot of ${token.symbol} did not answer one word`);
+      seen[name] = "unreadable";
+      continue;
+    }
+    const address = /^0x0{64}$/.test(word) ? null : getAddress(`0x${word.slice(-40)}`);
+    seen[name] = address;
+    const recorded = token.proxy?.slot === name ? token.proxy : null;
+    if (!recorded) {
+      if (address) problems.push(`${token.symbol} is a proxy (${name} slot: implementation ${address}) and its configuration records ${token.proxy ? `another slot (${token.proxy.slot})` : "no implementation"}: what stands behind it was not reviewed`);
+      continue;
+    }
+    if (!address || address.toLowerCase() !== recorded.implementation.toLowerCase()) {
+      problems.push(`THE ISSUER UPGRADED ${token.symbol}: its proxy now points at ${address ?? "nothing"}; the reviewed implementation is ${recorded.implementation}. ${UPGRADED_ADVICE}`);
+      continue;
+    }
+    try {
+      const code = await read.code(address);
+      implementationCodeHash = code === "0x" ? EMPTY_CODE_HASH : keccak256(code);
+      if (implementationCodeHash !== recorded.implementationCodeHash) problems.push(`THE CODE BEHIND ${token.symbol} CHANGED: the implementation ${address} holds code ${implementationCodeHash}; the reviewed code is ${recorded.implementationCodeHash}. ${UPGRADED_ADVICE}`);
+    } catch (error) {
+      problems.push(`the code of ${token.symbol}'s implementation ${address} could not be read: ${String(error?.message ?? error).replace(/^multichain: /, "").slice(0, 160)}`);
+    }
+  }
+  return { ok: problems.length === 0, problems, read: seen, implementationCodeHash };
 }
 
 /**

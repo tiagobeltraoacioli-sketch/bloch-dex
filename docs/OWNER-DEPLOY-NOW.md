@@ -1199,14 +1199,14 @@ It must print exactly the 40 digits you received. If it prints anything else, st
 git rebase origin/main
 ```
 
-It replays your own commits on top of the reviewed commit. It must end with `Successfully rebased`; if it reports a conflict, type `git rebase --abort`, change nothing else and ask the coordinator.
+It replays your own commits on top of the reviewed commit. It must end with `Successfully rebased`. **If it refuses with `cannot rebase: You have unstaged changes` (or `uncommitted changes`), a file of your copy was changed since you last committed: stop here.** Do not add `--autostash`, do not `git stash`, do not `git checkout` or `git restore` anything and do not delete the file: a changed tool file is exactly what this section must find, and those commands would hide it. Run nothing else from this copy and send the coordinator what `git status` prints. If it stops on a conflict instead, type `git rebase --abort`, change nothing else and ask the coordinator.
 
 <!-- second-pool: once own-commits -->
 ```
-git diff --stat origin/main HEAD
+git diff --stat origin/main
 ```
 
-It lists what differs between the reviewed commit and your copy: only files under `deployments/` that you committed yourself (`fee-address-proof.json`, and per finished chain `gate-report.json` and `frontend.record.json`). Any other file in that list: stop.
+It compares the reviewed commit with **your copy as it is on disk**: your own commits and anything changed and not committed. It must list only files under `deployments/` that you committed yourself (`fee-address-proof.json`, and per finished chain `gate-report.json` and `frontend.record.json`). **Any other file in that list, above all anything under `scripts/`, `contracts/` or `frontend/`: stop and report it.** This block replaces the commit comparison of section 2.1. `scripts/multichain/reviewed-commit.sh` no longer applies to this copy: after the rebase the newest commit is one of yours, so with the 40 digits you received it prints `reviewed commit: FAIL` (do not be alarmed by it, and do not run it), and with the id of your own newest commit it prints `PASS`, which proves nothing, because that id was made on this Mac from whatever the copy held.
 
 <!-- second-pool: once forge-build -->
 ```
@@ -1221,6 +1221,8 @@ node --test scripts/multichain/second-pair-r20.test.mjs
 ```
 
 It must end with `fail 0`. Among other things it checks that the factory, the routers, the lens and every first pool are still the addresses you deployed.
+
+**What this update changes in the steps you already know (section 5, USDC), for a chain whose first pool you have not opened yet.** The commands are the same. `prepare` and the gates print a few more `ok` lines, because USDC is now checked like USDT: that Circle has not paused it, that the pool, the router and the depositing account are not on Circle's blacklist, and that the code behind USDC's address is still the code that was reviewed (the same for Arbitrum One's WETH and USD₮0, which also stand behind a replaceable address). A line that starts `THE ISSUER UPGRADED` or `THE CODE BEHIND … CHANGED` means the issuer replaced the token's code after the review: deposit nothing on that chain, write no page record, and tell the coordinator; nothing is wrong with your funds or with the DEX. The market line now also says how many of the chain's endpoints answered.
 
 ### 8B.1 OP Mainnet (`op-mainnet`, chain id 10): the second pool
 
@@ -1523,6 +1525,10 @@ git add deployments/ethereum
 ```
 git commit -m "Ethereum: second pool opened, WETH/USDT (owner run)"
 ```
+
+**If a tool says `TRY AGAIN`.** This is not a fault. The market price is read from several public endpoints of the chain, and a price counts only when all but one of them answered (both of two; two of three on Linea; three of four on Arbitrum One and BNB Smart Chain) and every answer was the same. Public endpoints refuse and drop requests by the minute; when too few answered, the tool prints `TRY AGAIN`, names the endpoints that did not answer, and prints nothing to send. Wait a minute and run the same command again; on BNB Smart Chain expect this now and then (one of its four endpoints never answers these reads, so the other three must all answer). If it still says `TRY AGAIN` after about ten tries over half an hour, stop for the day and tell the coordinator: do not look for another endpoint yourself.
+
+**If the post gate says `NOT WRITTEN`.** It could not read a pool that your report already proves, so it left `gate-report.json` exactly as it was (it holds the first pool's opening). Nothing is lost: run the same gate command again.
 
 **If a step of this section fails.** Nothing here can lose what is already deployed or open. A `prepare` that fails prints nothing to send. A check that names the token (`basisPointsRate`, `maximumFee`, `paused`, `deprecated`, a blocklist) means the issuer changed the token, not that anything is wrong with the DEX: deposit nothing into that pool and tell the coordinator. "No market price" means the pair's two references are apart or a feed is old: wait and run the command again. Everything else is as in section 7.
 

@@ -25,15 +25,15 @@
 import { createRequire } from "node:module";
 import { isMain } from "../staging/is-main.mjs";
 import { createRpcTransport } from "../staging/rpc-transport.mjs";
-import { BLOCKLIST_GETTERS, EMPTY_CODE_HASH, FEE_PARAMETER_GETTERS, MultichainError, SWITCH_GETTERS, chainSymbolOf, checksummed, loadChain, loadShared, pinnedStateReader, refuse, retrying } from "./lib.mjs";
-import { marketRecord, pinnedBlock, readMarket } from "./market.mjs";
-import { tokenBehaviourState } from "./token-behaviour.mjs";
+import { BLOCKLIST_GETTERS, EMPTY_CODE_HASH, FEE_PARAMETER_GETTERS, MultichainError, PROXY_SLOTS, SWITCH_GETTERS, chainSymbolOf, checksummed, loadChain, loadShared, pinnedStateReader, refuse, retrying } from "./lib.mjs";
+import { answeredLine, marketRecord, pinnedBlock, readMarket } from "./market.mjs";
+import { proxyState, tokenBehaviourState } from "./token-behaviour.mjs";
 
 const requireFromFrontend = createRequire(new URL("../../frontend/package.json", import.meta.url));
 const { keccak256, encodeFunctionData, decodeFunctionResult, getAddress, parseAbi, toFunctionSelector } = requireFromFrontend("viem");
 
 const ABI = parseAbi(["function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)", "function getChainId() view returns (uint256)"]);
-const EIP1967 = { implementation: "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc", admin: "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103" };
+const ADMIN_SLOTS = { eip1967: "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103", zeppelinos: "0x10d6a54a4754c8869d6886b5f5d7fbfa5b4522237ea5c60d11bc4e7a1ff9390b" };
 /** Functions whose presence says what an issuer can do. Reported per token; the first groups are compared with `behaviour`. */
 export const FUNCTIONS_OF_INTEREST = Object.freeze({
   transferFee: FEE_PARAMETER_GETTERS.map((g) => `${g}()`).concat("setParams(uint256,uint256)"),
@@ -72,7 +72,7 @@ export function behaviourMismatch(token, functions) {
   return problems;
 }
 
-export async function verifyChain({ chain, requests, candidates = [], rehearsal = false }) {
+export async function verifyChain({ chain, requests, candidates = [], rehearsal = false, names = null }) {
   const checks = [];
   const check = (name, ok, detail) => {
     checks.push({ name, ok: Boolean(ok), ...(detail === undefined || ok ? {} : { detail }) });
@@ -98,13 +98,15 @@ export async function verifyChain({ chain, requests, candidates = [], rehearsal 
       const v = await soft(() => call(address, fn));
       out[fn] = v?.failed ? null : fn === "decimals" ? Number(v) : v;
     }
-    const slot = await soft(() => state("eth_getStorageAt", [address, EIP1967.implementation, "pinned"]));
-    const implementation = typeof slot === "string" && !/^0x0{64}$/.test(slot) ? checksummedAddress(slot) : null;
     out.functions = functionsIn(code);
-    if (implementation) {
+    // The implementation behind a proxy, in either known slot (EIP-1967, or the ZeppelinOS slot of Circle's proxy).
+    for (const [kind, slotKey] of Object.entries(PROXY_SLOTS)) {
+      const slot = await soft(() => state("eth_getStorageAt", [address, slotKey, "pinned"]));
+      const implementation = typeof slot === "string" && !/^0x0{64}$/.test(slot) ? checksummedAddress(slot) : null;
+      if (!implementation || out.proxy) continue;
       const inner = await codeOf(implementation);
-      const admin = await soft(() => state("eth_getStorageAt", [address, EIP1967.admin, "pinned"]));
-      out.proxy = { kind: "EIP-1967", implementation, implementationCodeHash: hashOf(inner), admin: typeof admin === "string" && !/^0x0{64}$/.test(admin) ? checksummedAddress(admin) : null };
+      const admin = await soft(() => state("eth_getStorageAt", [address, ADMIN_SLOTS[kind], "pinned"]));
+      out.proxy = { kind, implementation, implementationCodeHash: hashOf(inner), implementationBytes: (inner.length - 2) / 2, admin: typeof admin === "string" && !/^0x0{64}$/.test(admin) ? checksummedAddress(admin) : null };
       out.functions = functionsIn(inner);
     }
     return out;
@@ -118,6 +120,8 @@ export async function verifyChain({ chain, requests, candidates = [], rehearsal 
     check(`${token.symbol} takes no fee on transfer and none of its declared switches is on`, behaviour.ok, behaviour.problems);
     const mismatch = behaviourMismatch(token, f.functions);
     check(`${token.symbol}: its configuration describes the fee parameters, switches and blocklist its code has`, mismatch.length === 0, mismatch);
+    const proxy = await proxyState({ storage: (address, slot) => state("eth_getStorageAt", [address, slot, "pinned"]), code: codeOf }, token);
+    check(`${token.symbol} is the code that was reviewed: ${token.proxy ? "its proxy points at the recorded implementation, which holds its recorded code" : "not a proxy"}`, proxy.ok, proxy.problems);
     tokens.push({ key: token.symbol, ...f, state: behaviour.read });
   }
   const multicall = hashOf(await codeOf(chain.multicall3.address));
@@ -127,9 +131,9 @@ export async function verifyChain({ chain, requests, candidates = [], rehearsal 
   for (const pair of chain.initialPairs) {
     const name = `${pair.tokenA}/${pair.tokenB}`;
     const token = chain.tokens.find((t) => t.symbol === (pair.tokenA === chain.wrappedNative.symbol ? pair.tokenB : pair.tokenA));
-    const market = await readMarket({ chain, token, requests, at });
+    const market = await readMarket({ chain, token, requests, at, names });
     check(`${name}: its two price references hold their pinned code, are the publisher's, and agree`, market.ok, market.problems);
-    markets.push({ pair: name, ...marketRecord(market) });
+    markets.push({ pair: name, answeredLine: answeredLine(market), ...marketRecord(market) });
   }
   const others = [];
   for (const address of candidates) {
@@ -166,17 +170,18 @@ export async function main(argv, print = console.log) {
   for (const key of keys) {
     const chain = loadChain(key);
     const requests = (o.rehearsal ? [o.rpc] : chain.rpc).map((url) => retrying(createRpcTransport(url, { timeoutMs: 30_000 })));
-    const report = await verifyChain({ chain, requests, candidates: o.candidates, rehearsal: o.rehearsal });
+    const report = await verifyChain({ chain, requests, candidates: o.candidates, rehearsal: o.rehearsal, names: (o.rehearsal ? [o.rpc] : chain.rpc).map((url) => new URL(url).host) });
     reports.push(report);
     if (o.json) continue;
     print(`${chain.chain.name} (chain id ${report.chainId}), block ${report.block.number} (${report.block.hash}), ${report.endpoints} endpoint${report.endpoints === 1 ? "" : "s"}`);
     for (const c of report.checks) print(`${c.ok ? "ok  " : "FAIL"} ${c.name}${c.ok || c.detail === undefined ? "" : ` (${JSON.stringify(c.detail)})`}`);
     const line = (title, t, read) => {
-      print(`     ${title}: code ${t.codeHash} (${t.codeBytes} bytes), name ${JSON.stringify(t.name)}, symbol ${JSON.stringify(t.symbol)}, decimals ${t.decimals}${t.proxy ? `; ${t.proxy.kind} proxy, implementation ${t.proxy.implementation} (code ${t.proxy.implementationCodeHash}), admin ${t.proxy.admin ?? "none in the standard slot"}` : "; not an EIP-1967 proxy"}`);
+      print(`     ${title}: code ${t.codeHash} (${t.codeBytes} bytes), name ${JSON.stringify(t.name)}, symbol ${JSON.stringify(t.symbol)}, decimals ${t.decimals}${t.proxy ? `; ${t.proxy.kind} proxy, implementation ${t.proxy.implementation} (code ${t.proxy.implementationCodeHash}, ${t.proxy.implementationBytes} bytes), admin ${t.proxy.admin ?? "none in the standard slot"}` : "; not a proxy (no implementation in the EIP-1967 or ZeppelinOS slot)"}`);
       print(`       read: ${Object.entries(read).map(([k, v]) => `${k} ${v}`).join(", ") || "no getter declared"}; functions found: ${Object.entries(t.functions).map(([g, list]) => `${g} [${list.join(", ")}]`).join("; ")}`);
     };
     for (const t of report.tokens) line(t.key, t, t.state);
     for (const c of report.candidates) line(`candidate ${c.address}`, c, c.feeParameters);
+    for (const m of report.markets) print(`     ${m.pair}: ${m.answeredLine}${m.tryAgain ? " -> TRY AGAIN in a minute (too few endpoints answered; not a fault)" : ""}`);
     for (const m of report.markets) print(`     ${m.pair}: ${m.ok ? `market ${m.market} token base units per whole native coin (references ${(m.spreadBps / 100).toFixed(2)}% apart)` : `NO MARKET PRICE: ${m.problems.join("; ")}`}`);
     print(`multichain verify-chain ${key}: ${report.decision.toUpperCase()}${report.failed.length ? ` (${report.failed.length} check${report.failed.length === 1 ? "" : "s"} failed)` : ""}`);
   }

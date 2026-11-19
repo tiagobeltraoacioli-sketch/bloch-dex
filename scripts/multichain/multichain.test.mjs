@@ -439,6 +439,10 @@ test("the gate passes a correct chain, reports an EIP-7702 fee address, and fail
   local.create2.deployerCodeHash = keccak256(code("deployer"));
   chain.wrappedNative.codeHash = keccak256(code("wrapped"));
   chain.tokens[0].codeHash = keccak256(code("token"));
+  // The token of this test is plain code, as USDC was configured until the follow-up of round 20; the proxy record
+  // and the pause and blocklist reads that USDC now carries have their own tests (r414.test.mjs).
+  delete chain.tokens[0].proxy;
+  delete chain.tokens[0].behaviour;
   chain.multicall3.codeHash = keccak256(code("multicall"));
   const plan = planChain(local, chain, artifacts, { reference: true });
   const abi = parseAbi(["function name() view returns (string)", "function symbol() view returns (string)", "function decimals() view returns (uint8)", "function getChainId() view returns (uint256)"]);
@@ -452,6 +456,7 @@ test("the gate passes a correct chain, reports an EIP-7702 fee address, and fail
       if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: o.genesis } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
       if (method === "eth_getCode") return codes.get(lower(params[0])) ?? "0x";
       if (method === "eth_getTransactionCount") return o.depositorNonce ?? "0x0";
+      if (method === "eth_getStorageAt") return `0x${"0".repeat(64)}`; // no proxy slot holds anything
       if (method === "eth_call") {
         const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
         const fn = names[params[0].data.slice(0, 10)];
@@ -519,6 +524,10 @@ test("the post gate reports each pair's state; the record needs every pair open;
   local.create2.deployerCodeHash = keccak256(code("deployer"));
   chain.wrappedNative.codeHash = keccak256(code("wrapped"));
   chain.tokens[0].codeHash = keccak256(code("token"));
+  // The token of this test is plain code, as USDC was configured until the follow-up of round 20; the proxy record
+  // and the pause and blocklist reads that USDC now carries have their own tests (r414.test.mjs).
+  delete chain.tokens[0].proxy;
+  delete chain.tokens[0].behaviour;
   chain.multicall3.codeHash = keccak256(code("multicall"));
   const plan = planChain(local, chain, artifacts, { reference: true });
   const pair = plan.pairs[0];
@@ -549,6 +558,7 @@ test("the post gate reports each pair's state; the record needs every pair open;
       if (method === "eth_chainId") return "0x2105";
       if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: chain.chain.genesisHash } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
       if (method === "eth_getTransactionCount") return "0x2";
+      if (method === "eth_getStorageAt") return `0x${"0".repeat(64)}`; // no proxy slot holds anything
       if (method === "eth_getTransactionByHash") return params[0] === opening.hash ? opening.tx : null;
       if (method === "eth_getTransactionReceipt") return params[0] === opening.hash ? opening.receipt : null;
       if (method === "eth_getCode") {
@@ -826,6 +836,10 @@ test("EIP-7702 at the fee address: accepted only to the identified delegate with
   local.create2.deployerCodeHash = keccak256(code("deployer"));
   chain.wrappedNative.codeHash = keccak256(code("wrapped"));
   chain.tokens[0].codeHash = keccak256(code("token"));
+  // The token of this test is plain code, as USDC was configured until the follow-up of round 20; the proxy record
+  // and the pause and blocklist reads that USDC now carries have their own tests (r414.test.mjs).
+  delete chain.tokens[0].proxy;
+  delete chain.tokens[0].behaviour;
   chain.multicall3.codeHash = keccak256(code("multicall"));
   local.feeTo.delegation.accepted[0].codeHash.base = keccak256(code("delegator"));
   const plan = planChain(local, chain, artifacts);
@@ -837,6 +851,7 @@ test("EIP-7702 at the fee address: accepted only to the identified delegate with
     if (method === "eth_getBlockByNumber") return params[0] === "0x0" ? { hash: chain.chain.genesisHash } : { number: "0x64", hash: `0x${"ab".repeat(32)}`, timestamp: "0x1" };
     if (method === "eth_getCode") return codes.get(lower(params[0])) ?? "0x";
     if (method === "eth_getTransactionCount") return "0x0";
+    if (method === "eth_getStorageAt") return `0x${"0".repeat(64)}`; // no proxy slot holds anything
     if (method === "eth_call") {
       const token = [chain.wrappedNative, ...chain.tokens].find((t) => lower(t.address) === lower(params[0].to));
       const fn = names[params[0].data.slice(0, 10)];
