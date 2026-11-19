@@ -21,7 +21,7 @@ type Stage =
 
 export const MOBILE_CONNECT_LABEL = 'Connect a mobile wallet';
 export const MOBILE_CONNECT_UNSUPPORTED =
-  'The wallet approved something other than what this page asked for (other networks, more than one account, or other permissions). Nothing was connected. Try again and approve the request as it is shown, or use another wallet.';
+  'The wallet approved something this page cannot use (networks that were not asked for, not this page’s network, more than one account, or without the permission to send transactions). Nothing was connected. Try again with one account and this page’s network selected, or use another wallet.';
 export const MOBILE_CONNECT_FAILED =
   'The connection was closed or could not be made. Nothing was connected. Check the wallet app and try again.';
 
@@ -61,7 +61,7 @@ export function useMobileWalletConnect({
   };
   chains: MobileConnectChain[];
   route: MobileConnectChain;
-}): { button: ReactNode; dialog: ReactNode; session: ReactNode } {
+}): { button: ReactNode; dialog: ReactNode; session: ReactNode; open(): void } {
   const [stage, setStage] = useState<Stage | null>(null);
   // The provider of the session opened here, to tell it from an injected wallet.
   const [opened, setOpened] = useState<Provider | null>(null);
@@ -215,8 +215,9 @@ export function useMobileWalletConnect({
         <p className="microcopy mobile-connect-scope">
           The wallet is asked for one thing: to show you this page&rsquo;s transactions for
           confirmation, on {chains.map((c) => c.name).join(', ')}. It is not asked to sign messages,
-          and nothing is sent without your confirmation in the wallet. This page keeps reading the
-          network from its own endpoints, not from the wallet.
+          and nothing is sent without your confirmation in the wallet. A wallet may list more
+          permissions than that when it connects; this page uses none of them. This page keeps
+          reading the network from its own endpoints, not from the wallet.
         </p>
         <button type="button" className="button secondary full-width" onClick={close}>
           Cancel
@@ -233,5 +234,6 @@ export function useMobileWalletConnect({
         </button>
       </p>
     ) : null;
-  return { button, dialog, session };
+  // `open`: the same start as the button's, for another control of the site; it has the button's guards.
+  return { button, dialog, session, open: () => void start() };
 }

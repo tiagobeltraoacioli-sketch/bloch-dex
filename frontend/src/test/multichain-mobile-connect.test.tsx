@@ -52,6 +52,9 @@ function Harness({
   return (
     <>
       {mobile.session}
+      <button type="button" onClick={mobile.open}>
+        open from elsewhere
+      </button>
       <ConnectSlotContext.Provider value={mobile.button}>
         <div data-wallet-connect>
           <ConnectSlot />
@@ -114,7 +117,7 @@ describe('mobile-wallet connect step', () => {
       'Waiting for the wallet to approve…',
     );
     expect(dialog.textContent).toContain(
-      'The wallet is asked for one thing: to show you this page’s transactions for confirmation, on Ethereum, Base. It is not asked to sign messages, and nothing is sent without your confirmation in the wallet. This page keeps reading the network from its own endpoints, not from the wallet.',
+      'The wallet is asked for one thing: to show you this page’s transactions for confirmation, on Ethereum, Base. It is not asked to sign messages, and nothing is sent without your confirmation in the wallet. A wallet may list more permissions than that when it connects; this page uses none of them. This page keeps reading the network from its own endpoints, not from the wallet.',
     );
     // A desktop browser: the code, no app links.
     expect(within(dialog).queryByRole('link')).toBeNull();
@@ -132,7 +135,7 @@ describe('mobile-wallet connect step', () => {
     expect(OPTION.provider.disconnect).not.toHaveBeenCalled();
   });
 
-  it('on a phone the wallet app links come first: the wc: link, then three fixed wallet hosts in a new tab', async () => {
+  it('on a phone the wallet app links come first: the wc: link, then two verified wallet hosts in a new tab', async () => {
     agent(IPHONE);
     const user = userEvent.setup();
     pairing();
@@ -143,7 +146,6 @@ describe('mobile-wallet connect step', () => {
     expect(links.map((l) => l.textContent)).toEqual([
       'Open in a wallet app',
       'MetaMask',
-      'Trust Wallet',
       'Rainbow',
     ]);
     expect(links[0].getAttribute('href')).toBe(URI);
@@ -151,7 +153,6 @@ describe('mobile-wallet connect step', () => {
     const encoded = encodeURIComponent(URI);
     expect(links.slice(1).map((l) => l.getAttribute('href'))).toEqual([
       `https://metamask.app.link/wc?uri=${encoded}`,
-      `https://link.trustwallet.com/wc?uri=${encoded}`,
       `https://rnbwapp.com/wc?uri=${encoded}`,
     ]);
     for (const link of links) {
@@ -161,7 +162,7 @@ describe('mobile-wallet connect step', () => {
     for (const link of links.slice(1)) expect(link.getAttribute('target')).toBe('_blank');
     // The code is still there, for a wallet on another device, after the links.
     const code = within(dialog).getByRole('img');
-    expect(links[3].compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(links[2].compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(dialog.textContent).toContain('Or scan this code with a wallet on another device:');
   });
 
@@ -261,6 +262,27 @@ describe('mobile-wallet connect step', () => {
         .disabled,
     ).toBe(true);
     expect(connectMobileWallet).not.toHaveBeenCalled();
+  });
+
+  // R412-5 (f): the start itself is guarded, not only the button that is not drawn.
+  it('`open` from another control starts nothing on a network that is not live or while a connection is pending, and starts one pairing otherwise', async () => {
+    const user = userEvent.setup();
+    pairing();
+    const view = render(<Harness connect={vi.fn()} chains={[{ chainId: 1, name: 'Ethereum' }]} />);
+    await user.click(screen.getByRole('button', { name: 'open from elsewhere' }));
+    view.rerender(<Harness connect={vi.fn()} chains={[]} />);
+    await user.click(screen.getByRole('button', { name: 'open from elsewhere' }));
+    view.rerender(<Harness connect={vi.fn()} pending />);
+    await user.click(screen.getByRole('button', { name: 'open from elsewhere' }));
+    expect(connectMobileWallet).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    view.rerender(<Harness connect={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'open from elsewhere' }));
+    await screen.findByRole('dialog');
+    await waitFor(() => expect(connectMobileWallet).toHaveBeenCalledOnce());
+    // A second press while the first pairing is open starts no second one.
+    await user.click(screen.getByRole('button', { name: 'open from elsewhere', hidden: true }));
+    expect(connectMobileWallet).toHaveBeenCalledOnce();
   });
 });
 

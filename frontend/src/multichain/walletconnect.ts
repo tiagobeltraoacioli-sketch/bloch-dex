@@ -11,20 +11,24 @@
 //    sent to the wallet. A chain outside the session cannot be added to it: the user connects again.
 //  - A transaction is sent only when it names its chain, that chain is the selected one, and its sender is the
 //    session's account. The hash the wallet returns is only a claim: the page verifies it on its own endpoints.
-//  - The namespace the wallet approves is compared exactly: only eip155, only chains that were asked for, one and
-//    the same account on each, exactly the methods and events asked for. Anything else is refused and the remote
-//    session is closed. The same holds for every later update or event of the session.
+//  - The namespace the wallet approves must be eip155 alone, hold only chains that were asked for and one and
+//    the same account on each. The method and the two events asked for must be in it. A wallet may list more
+//    methods and events than asked (MetaMask Mobile approves its whole list whatever is asked: decision of the
+//    coordinator after review R412-1): the extra ones are ignored, because this module never sends another method
+//    and follows no other event, whatever the session would allow. Anything else is refused and the remote session
+//    is closed. The same rules hold for every later update of the session.
+//  - The account is the namespace's: an accountsChanged event for any other address ends the session (R412-3).
+//    A chainChanged event for a chain outside the session is ignored: which chain a request is for is this page's
+//    choice, named in the request, not the wallet's selected network.
+//  - A refusal raised here before the relay is called is marked (wallet-unsent.ts), so the route releases the
+//    intent it saved instead of holding "outcome unknown" for a request that never left the page (R412-6).
 //  - Nothing of the session is written to browser storage: it lives in this page's memory and ends with it.
 //
 // The account-only session of the Bloch L2 preview is another module (qr-wallet.ts) with its own, narrower rules.
 import type SignClientType from '@walletconnect/sign-client';
 import { validAddress, walletDisplayName, type Provider, type WalletOption } from '../wallet';
-import {
-  REOWN_PROJECT_ID,
-  exactPermissionList,
-  isRecord,
-  isSessionTopic,
-} from '../walletconnect-shared';
+import { notSent } from '../wallet-unsent';
+import { REOWN_PROJECT_ID, isRecord, isSessionTopic } from '../walletconnect-shared';
 
 /** The name the wallet shows for this site (the multichain site is "Bloch DEX"; MultichainApp.tsx). */
 export const WALLETCONNECT_SITE_NAME = 'Bloch DEX';
@@ -35,7 +39,9 @@ export const WALLETCONNECT_EVENTS = ['accountsChanged', 'chainChanged'] as const
 export const WALLETCONNECT_WALLET_ID = 'postern-walletconnect';
 const MAX_CHAINS = 16;
 const MAX_SESSION_SECONDS = 604_800;
-const MAX_CALLDATA_CHARS = 2 + 2 * 65_536;
+export const MAX_CALLDATA_CHARS = 2 + 2 * 65_536;
+/** A wallet's own list of methods or events: bounded, so an approval cannot be made arbitrarily large. */
+const MAX_PERMISSION_ENTRIES = 256;
 
 const QUANTITY = /^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/i;
 const DATA = /^0x(?:[0-9a-f]{2})*$/i;
@@ -59,6 +65,18 @@ function validChainIds(value: readonly number[]): boolean {
     new Set(value).size === value.length &&
     value.every((id) => Number.isSafeInteger(id) && id > 0)
   );
+}
+
+/**
+ * The wallet's list holds every asked item. It may hold more (the wallet's own full list): those are ignored by
+ * this module. It is a bounded list of strings without repeats.
+ */
+function permissionListWith(value: unknown, asked: readonly string[]): boolean {
+  if (!Array.isArray(value) || value.length < asked.length || value.length > MAX_PERMISSION_ENTRIES)
+    return false;
+  for (let index = 0; index < value.length; index++)
+    if (typeof value[index] !== 'string' || (value[index] as string).length > 64) return false;
+  return new Set(value).size === value.length && asked.every((item) => value.includes(item));
 }
 
 type Namespace = { accounts?: unknown; chains?: unknown; methods?: unknown; events?: unknown };
@@ -105,8 +123,8 @@ export function normalizeMobileNamespace(
     }
   }
   if (
-    !exactPermissionList(value.methods, WALLETCONNECT_METHODS) ||
-    !exactPermissionList(value.events, WALLETCONNECT_EVENTS)
+    !permissionListWith(value.methods, WALLETCONNECT_METHODS) ||
+    !permissionListWith(value.events, WALLETCONNECT_EVENTS)
   )
     return null;
   return { address, chainIds };
@@ -180,35 +198,46 @@ type SessionEvent = {
 type SessionUpdate = { topic?: unknown; params?: { namespaces?: unknown } };
 export type SessionChange =
   | { disconnect: true }
-  | { disconnect: false; address: string }
   | { disconnect: false; chainId: number }
   | { disconnect: false; address: string; chainIds: number[] };
 
 /**
- * An event of the session. Null: not for this session, or an event this page did not ask for (ignored). A chain
- * or an account outside the approved session ends the session.
+ * An event of the session. Null: nothing to do (another session, an event this page did not ask for, an
+ * accountsChanged that names the session's own account, a chainChanged for a chain outside the session).
+ *  - accountsChanged: the account of a session is the one in its namespace (`address`; a session_update can
+ *    change it, under the approval's rules). An event that names exactly that address changes nothing; any other
+ *    content, or a scope chain outside the session, ends the session (R412-3).
+ *  - chainChanged: a wallet reports the network selected in the wallet. Inside the session it becomes the selected
+ *    chain of the session, as an injected wallet's would. Outside the session (in its data or in its scope), or
+ *    unreadable, it is ignored: the session and its selected chain stay, and every request goes on naming this
+ *    page's chain (decision of the coordinator after R412-1).
  */
 export function normalizeMobileSessionEvent(
   message: SessionEvent,
   topic: string,
   chainIds: readonly number[],
+  address: string,
 ): SessionChange | null {
   if (!isRecord(message) || message.topic !== topic) return null;
   const params = isRecord(message.params) ? message.params : null;
   const scope = typeof params?.chainId === 'string' ? CAIP_CHAIN.exec(params.chainId) : null;
-  if (!scope || !chainIds.includes(Number(scope[1]))) return { disconnect: true };
+  const scoped = scope !== null && chainIds.includes(Number(scope[1]));
   const event = isRecord(params?.event) ? params.event : null;
   if (event?.name === 'accountsChanged') {
     const accounts = event.data;
-    if (!Array.isArray(accounts) || accounts.length !== 1 || !validAddress(accounts[0]))
-      return { disconnect: true };
-    return { disconnect: false, address: accounts[0] };
+    return scoped &&
+      Array.isArray(accounts) &&
+      accounts.length === 1 &&
+      validAddress(accounts[0]) &&
+      accounts[0].toLowerCase() === address.toLowerCase()
+      ? null
+      : { disconnect: true };
   }
   if (event?.name === 'chainChanged') {
     const chainId = chainIdOf(event.data);
-    return chainId !== null && chainIds.includes(chainId)
+    return scoped && chainId !== null && chainIds.includes(chainId)
       ? { disconnect: false, chainId }
-      : { disconnect: true };
+      : null;
   }
   return null;
 }
@@ -279,6 +308,27 @@ export function reviewedTransaction(
   return reviewed;
 }
 
+/**
+ * The sentences by which a wallet says, under WalletConnect's code 5000, that the USER rejected the request. The
+ * code alone does not say so: MetaMask Mobile answers every failure of eth_sendTransaction with 5000 and the
+ * failure's own text, a publish error after the user confirmed and a failure to deliver the result included
+ * (metamask-mobile app/core/WalletConnect/WalletConnect2Session.ts: `USER_REJECT_CODE: 5000` line 78,
+ * `rejectRequest` lines 377-411, the single `try` of `handleSendTransaction` lines 882-948; review R412-2). Each
+ * sentence below was read in the named public source on 2026-11-19; a sentence that is not here keeps the page's
+ * "outcome unknown" hold, as any unknown error of an injected wallet does.
+ */
+export const USER_REJECTION_SENTENCES: readonly string[] = Object.freeze([
+  // WalletConnect's own `getSdkError('USER_REJECTED')`, which wallets built on its kit answer with:
+  // WalletConnect/walletconnect-monorepo packages/utils/src/errors.ts lines 50-53.
+  'User rejected.',
+  // MetaMask: the transaction controller's rejection, which MetaMask Mobile forwards as the message:
+  // MetaMask/core packages/transaction-controller/src/lifecycle/error.ts lines 170-173.
+  'MetaMask Tx Signature: User denied transaction signature.',
+  // MetaMask's default text of EIP-1193 error 4001 (`providerErrors.userRejectedRequest()` without a message):
+  // MetaMask/rpc-errors src/error-constants.ts lines 71-74.
+  'User rejected the request.',
+]);
+
 /** What the wallet answered to a request, as an error the page's code reads the same way as an injected wallet's. */
 function peerFailure(error: unknown): Error & { code?: number } {
   let code: unknown;
@@ -291,9 +341,12 @@ function peerFailure(error: unknown): Error & { code?: number } {
   } catch {
     // A rejection value is untrusted, accessor-backed objects included.
   }
-  // 4001 is EIP-1193's "user rejected the request"; 5000 is WalletConnect's "user rejected", which wallets send
-  // for the same act. Both come from the same peer with the same authority, so the page reads both as 4001.
-  if (code === 4001 || code === 5000)
+  // 4001 is EIP-1193's "user rejected the request", as from an injected wallet. 5000 is WalletConnect's code for
+  // the same act, but only with one of the sentences above; any other 5000 is an unknown outcome.
+  if (
+    code === 4001 ||
+    (code === 5000 && typeof text === 'string' && USER_REJECTION_SENTENCES.includes(text.trim()))
+  )
     return failure('The request was rejected in the wallet.', 4001);
   const message = walletDisplayName(text, 'The wallet did not complete the request.');
   return Number.isSafeInteger(code) ? failure(message, code as number) : new Error(message);
@@ -372,7 +425,7 @@ export function mobileSessionProvider(
     }
   };
   const changed = (message: unknown) =>
-    apply(normalizeMobileSessionEvent(message as SessionEvent, topic, chainIds));
+    apply(normalizeMobileSessionEvent(message as SessionEvent, topic, chainIds, address));
   const updated = (message: unknown) =>
     apply(normalizeMobileSessionUpdate(message as SessionUpdate, topic, requested));
   c.on('session_delete', deleted);
@@ -397,31 +450,49 @@ export function mobileSessionProvider(
     return null;
   };
 
+  /** The local part of a request. Synchronous; throws a refusal, returns an answer or the transaction to send. */
+  const decide = (
+    method: string,
+    params: unknown[] | undefined,
+  ): { answer: unknown } | { transaction: Record<string, string> } => {
+    if (!active || expiry * 1000 <= Date.now()) {
+      expire();
+      throw failure('The wallet session has ended. Connect the wallet again.', 4900);
+    }
+    if (method === 'eth_requestAccounts' || method === 'eth_accounts') return { answer: [address] };
+    if (method === 'eth_chainId') return { answer: hexChain(current) };
+    if (method === 'wallet_switchEthereumChain') return { answer: select(params) };
+    if (method === 'wallet_addEthereumChain') {
+      const wanted = chainIdOf(isRecord(params?.[0]) ? params[0].chainId : undefined);
+      if (wanted !== null && chainIds.includes(wanted)) return { answer: select(params) };
+      throw failure(
+        `This wallet session does not include chain ${wanted ?? 'unknown'}, and a network cannot be added to an open session. Disconnect and connect the wallet again on that network's page.`,
+        4901,
+      );
+    }
+    // Whatever the wallet's namespace lists (it may list every method the wallet knows), one method is sent.
+    if (method !== 'eth_sendTransaction')
+      throw failure(
+        `This wallet session only sends transactions; ${walletDisplayName(method, 'this method')} is not asked of the wallet.`,
+        4200,
+      );
+    if (!Array.isArray(params) || params.length !== 1)
+      throw failure('The transaction request is not a single transaction.', -32602);
+    return { transaction: reviewedTransaction(params[0], address, current) };
+  };
+
   return {
     async request({ method, params }) {
-      if (!active || expiry * 1000 <= Date.now()) {
-        expire();
-        throw failure('The wallet session has ended. Connect the wallet again.', 4900);
+      // Everything decided here, before the relay is called: an answer, or a transaction to send. A refusal raised
+      // in this step left nothing behind, and says so (wallet-unsent.ts). There is no await in it.
+      let step: { answer: unknown } | { transaction: Record<string, string> };
+      try {
+        step = decide(method, params);
+      } catch (error) {
+        throw typeof error === 'object' && error !== null ? notSent(error) : error;
       }
-      if (method === 'eth_requestAccounts' || method === 'eth_accounts') return [address];
-      if (method === 'eth_chainId') return hexChain(current);
-      if (method === 'wallet_switchEthereumChain') return select(params);
-      if (method === 'wallet_addEthereumChain') {
-        const wanted = chainIdOf(isRecord(params?.[0]) ? params[0].chainId : undefined);
-        if (wanted !== null && chainIds.includes(wanted)) return select(params);
-        throw failure(
-          `This wallet session does not include chain ${wanted ?? 'unknown'}, and a network cannot be added to an open session. Disconnect and connect the wallet again on that network's page.`,
-          4901,
-        );
-      }
-      if (method !== 'eth_sendTransaction')
-        throw failure(
-          `This wallet session only sends transactions; ${walletDisplayName(method, 'this method')} is not asked of the wallet.`,
-          4200,
-        );
-      if (!Array.isArray(params) || params.length !== 1)
-        throw failure('The transaction request is not a single transaction.', -32602);
-      const transaction = reviewedTransaction(params[0], address, current);
+      if ('answer' in step) return step.answer;
+      const { transaction } = step;
       let hash: unknown;
       try {
         hash = await new Promise<unknown>((resolve, reject) => {
@@ -481,8 +552,21 @@ export function validPairingUri(value: unknown): value is string {
 }
 
 /**
- * Links that hand the pairing URI to a wallet app on the same phone. `wc:` is the scheme wallets register; the
- * three named links are those wallets' own universal-link hosts, fixed here, carrying nothing but the URI.
+ * Links that hand the pairing URI to a wallet app on the same phone. The URI holds the pairing key: whoever
+ * receives it within its five minutes can answer the proposal, so it is given to the `wc:` scheme (the system
+ * hands it to an installed wallet) and to link hosts that the wallet's own published code names, and to nobody
+ * else (review R412-8). Read on 2026-11-19:
+ *  - MetaMask: `https://metamask.app.link/` is the app's own universal link (metamask-mobile
+ *    app/core/AppConstants.ts line 186, `redirect.universal`), and its link handler takes the action `wc` with
+ *    the pairing URI in `uri` (app/core/DeeplinkManager/handlers/handleUniversalLink.ts lines 855-862). MetaMask's
+ *    documentation page for deep links does not list this action; the source is the app's code.
+ *  - Rainbow: `https://rnbwapp.com/wc?uri=` is what Rainbow's own connector library builds
+ *    (rainbow-me/rainbowkit packages/rainbowkit/src/wallets/walletConnectors/rainbowWallet/rainbowWallet.ts
+ *    lines 19-26), and the app's link handler takes `wc` with `uri` (rainbow-me/rainbow src/handlers/deeplinks.ts
+ *    lines 87-95).
+ * Trust Wallet's link (`link.trustwallet.com/wc?uri=`) was offered before and is removed: its form could not be
+ * read in anything Trust Wallet publishes that was reachable from here. A Trust Wallet user uses the first link
+ * or the QR code.
  */
 export function mobileWalletLinks(uri: string): { name: string; href: string; app: boolean }[] {
   if (!validPairingUri(uri)) return [];
@@ -490,7 +574,6 @@ export function mobileWalletLinks(uri: string): { name: string; href: string; ap
   return [
     { name: 'Open in a wallet app', href: uri, app: true },
     { name: 'MetaMask', href: `https://metamask.app.link/wc?uri=${encoded}`, app: false },
-    { name: 'Trust Wallet', href: `https://link.trustwallet.com/wc?uri=${encoded}`, app: false },
     { name: 'Rainbow', href: `https://rnbwapp.com/wc?uri=${encoded}`, app: false },
   ];
 }

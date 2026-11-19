@@ -5,7 +5,10 @@ import { ensureChain, sendTransaction } from '../devnet4/swap';
 import { connectAccount } from '../wallet';
 import { MULTICHAIN_SITE_NAME } from '../MultichainApp';
 import { bundledChains } from '../multichain/config';
+import { wasNotSent } from '../wallet-unsent';
 import {
+  MAX_CALLDATA_CHARS,
+  USER_REJECTION_SENTENCES,
   WALLETCONNECT_EVENTS,
   WALLETCONNECT_METHODS,
   WALLETCONNECT_SITE_NAME,
@@ -24,6 +27,41 @@ const SIX = bundledChains().map((c) => c.network.chainId);
 const A = '0x' + '12'.repeat(20);
 const B = '0x' + '34'.repeat(20);
 const TOPIC = 'ab'.repeat(32);
+// MetaMask Mobile's approved methods, whatever is asked: metamask-mobile app/core/WalletConnect/wc-config.ts
+// `EVM_APPROVED_METHODS` (read by reviewer 412, copy `scratchpad/a412/ext/mm-wc-config.ts`, SHA-256 5b422979…).
+const METAMASK_METHODS = [
+  'eth_sendTransaction',
+  'eth_sign',
+  'eth_signTransaction',
+  'eth_signTypedData',
+  'eth_signTypedData_v3',
+  'eth_signTypedData_v4',
+  'personal_sign',
+  'eth_sendRawTransaction',
+  'eth_accounts',
+  'eth_getBalance',
+  'eth_call',
+  'eth_estimateGas',
+  'eth_blockNumber',
+  'eth_getCode',
+  'eth_getTransactionCount',
+  'eth_getTransactionReceipt',
+  'eth_getTransactionByHash',
+  'eth_getBlockByHash',
+  'eth_getBlockByNumber',
+  'net_version',
+  'eth_chainId',
+  'eth_requestAccounts',
+  'wallet_addEthereumChain',
+  'wallet_switchEthereumChain',
+  'wallet_getPermissions',
+  'wallet_requestPermissions',
+  'wallet_watchAsset',
+  'wallet_scanQRCode',
+  'wallet_sendCalls',
+  'wallet_getCallsStatus',
+  'wallet_getCapabilities',
+];
 const URI = `wc:${'cd'.repeat(32)}@2?relay-protocol=irn&symKey=${'ef'.repeat(32)}&expiryTimestamp=1790000000`;
 const namespace = (chains: number[], address = A, over: Record<string, unknown> = {}) => ({
   accounts: chains.map((id) => `eip155:${id}:${address}`),
@@ -89,24 +127,86 @@ describe('the namespace a wallet approves', () => {
     ['a chain id with a leading zero', { ...namespace([1]), accounts: [`eip155:01:${A}`] }],
     ['chains that differ from the accounts', { ...namespace([1]), chains: ['eip155:10'] }],
     ['more chains than accounts', { ...namespace([1]), chains: ['eip155:1', 'eip155:10'] }],
-    [
-      'a message-signing method added',
-      namespace([1], A, { methods: ['eth_sendTransaction', 'personal_sign'] }),
-    ],
     ['typed-data signing instead', namespace([1], A, { methods: ['eth_signTypedData_v4'] })],
+    [
+      'a long list without the asked method',
+      namespace([1], A, { methods: METAMASK_METHODS.filter((m) => m !== 'eth_sendTransaction') }),
+    ],
+    ['methods that are not a list', namespace([1], A, { methods: 'eth_sendTransaction' })],
+    ['a method that is not text', namespace([1], A, { methods: ['eth_sendTransaction', 7] })],
+    [
+      'a method list beyond any wallet’s',
+      namespace([1], A, {
+        methods: ['eth_sendTransaction', ...Array.from({ length: 256 }, (_, i) => `m${i}`)],
+      }),
+    ],
+    [
+      'a method name beyond any method’s',
+      namespace([1], A, { methods: ['eth_sendTransaction', 'x'.repeat(65)] }),
+    ],
     ['no method', namespace([1], A, { methods: [] })],
     [
       'a method repeated',
       namespace([1], A, { methods: ['eth_sendTransaction', 'eth_sendTransaction'] }),
     ],
     ['an event missing', namespace([1], A, { events: ['accountsChanged'] })],
+    ['the other event missing', namespace([1], A, { events: ['chainChanged', 'message'] })],
     [
-      'an event added',
-      namespace([1], A, { events: ['accountsChanged', 'chainChanged', 'message'] }),
+      'an event repeated',
+      namespace([1], A, { events: ['accountsChanged', 'chainChanged', 'chainChanged'] }),
     ],
     ['accounts that are not a list', { ...namespace([1]), accounts: `eip155:1:${A}` }],
   ])('refuses %s', (_, value) => {
     expect(normalizeMobileNamespace(value, SIX)).toBeNull();
+  });
+  // Restated after review R412-1 (decision of the coordinator, 2026-11-19): the two cases "a message-signing
+  // method added" and "an event added" were refusals here. A wallet may list more than was asked (MetaMask Mobile
+  // approves its whole list); the list is accepted when it holds what was asked, and what the extra entries could
+  // do is pinned below: nothing ("an approved-but-unasked method never leaves the page").
+  it('accepts a wallet that lists more methods and events than asked, as MetaMask Mobile does, in any order', () => {
+    expect(METAMASK_METHODS).toContain('personal_sign');
+    expect(METAMASK_METHODS).toHaveLength(31);
+    expect(
+      normalizeMobileNamespace(
+        namespace([8453, 10], A, {
+          methods: METAMASK_METHODS,
+          events: ['chainChanged', 'accountsChanged'],
+        }),
+        SIX,
+      ),
+    ).toEqual({ address: A, chainIds: [8453, 10] });
+    expect(
+      normalizeMobileNamespace(
+        namespace([1], A, {
+          methods: ['personal_sign', 'eth_sendTransaction'],
+          events: ['message', 'chainChanged', 'accountsChanged'],
+        }),
+        SIX,
+      ),
+    ).toEqual({ address: A, chainIds: [1] });
+    // The bound is the wallet's own list, generously: 256 entries of at most 64 characters.
+    expect(
+      normalizeMobileNamespace(
+        namespace([1], A, {
+          methods: ['eth_sendTransaction', ...Array.from({ length: 255 }, (_, i) => `m${i}`)],
+        }),
+        SIX,
+      ),
+    ).not.toBeNull();
+  });
+  // R412-5 (c): the `chains` list, when present, is exactly the chains of the accounts.
+  it('refuses a `chains` list shorter than the accounts’ chains, or that is not a list', () => {
+    expect(
+      normalizeMobileNamespace({ ...namespace([1, 10]), chains: ['eip155:1'] }, SIX),
+    ).toBeNull();
+    expect(normalizeMobileNamespace({ ...namespace([1, 10]), chains: [] }, SIX)).toBeNull();
+    expect(normalizeMobileNamespace({ ...namespace([1]), chains: 'eip155:1' }, SIX)).toBeNull();
+    expect(
+      normalizeMobileNamespace({ ...namespace([1, 10]), chains: ['eip155:10', 'eip155:1'] }, SIX),
+    ).toEqual({
+      address: A,
+      chainIds: [1, 10],
+    });
   });
   it('refuses a hole in the account list', () => {
     const accounts = [`eip155:1:${A}`];
@@ -145,50 +245,81 @@ describe('session events and updates', () => {
     topic,
     params: { chainId, event: { name, data } },
   });
-  it('ignores another session and events this page did not ask for', () => {
+  it('ignores another session and events this page did not ask for, whatever their scope', () => {
     expect(
       normalizeMobileSessionEvent(
         event('eip155:1', 'accountsChanged', [B], 'other'),
         TOPIC,
         chains,
+        A,
       ),
     ).toBeNull();
     expect(
-      normalizeMobileSessionEvent(event('eip155:1', 'message', 'hello'), TOPIC, chains),
+      normalizeMobileSessionEvent(event('eip155:1', 'message', 'hello'), TOPIC, chains, A),
+    ).toBeNull();
+    expect(
+      normalizeMobileSessionEvent(event('eip155:137', 'message', 'hello'), TOPIC, chains, A),
     ).toBeNull();
   });
-  it('takes one new account, and a chain of the session in any spelling', () => {
+  // Restated after R412-3: an accountsChanged event used to set the session's account to any one valid address.
+  // The account is the namespace's; the event may only repeat it.
+  it('an accountsChanged that names the session’s own account changes nothing; a chain of the session is followed in any spelling', () => {
     expect(
-      normalizeMobileSessionEvent(event('eip155:1', 'accountsChanged', [B]), TOPIC, chains),
-    ).toEqual({
-      disconnect: false,
-      address: B,
-    });
+      normalizeMobileSessionEvent(event('eip155:1', 'accountsChanged', [A]), TOPIC, chains, A),
+    ).toBeNull();
+    expect(
+      normalizeMobileSessionEvent(
+        event('eip155:1', 'accountsChanged', [A.toUpperCase().replace('0X', '0x')]),
+        TOPIC,
+        chains,
+        A,
+      ),
+    ).toBeNull();
     for (const data of ['0x2105', '8453', 8453])
       expect(
-        normalizeMobileSessionEvent(event('eip155:1', 'chainChanged', data), TOPIC, chains),
+        normalizeMobileSessionEvent(event('eip155:1', 'chainChanged', data), TOPIC, chains, A),
       ).toEqual({
         disconnect: false,
         chainId: 8453,
       });
   });
   it.each([
-    ['an event scoped to a chain outside the session', event('eip155:137', 'accountsChanged', [B])],
+    ['an account the session never approved (R412-3)', event('eip155:1', 'accountsChanged', [B])],
     [
-      'an event without a chain',
-      { topic: TOPIC, params: { event: { name: 'accountsChanged', data: [B] } } },
+      'its own account under a scope outside the session',
+      event('eip155:137', 'accountsChanged', [A]),
+    ],
+    [
+      'an account event without a chain',
+      { topic: TOPIC, params: { event: { name: 'accountsChanged', data: [A] } } },
     ],
     ['no account', event('eip155:1', 'accountsChanged', [])],
-    ['two accounts', event('eip155:1', 'accountsChanged', [A, B])],
-    ['an account in another form', event('eip155:1', 'accountsChanged', [`eip155:1:${B}`])],
-    ['a change to a chain outside the session', event('eip155:1', 'chainChanged', '0x89')],
-    [
-      'a change to a chain that was asked for but not approved',
-      event('eip155:1', 'chainChanged', '0xa'),
-    ],
-    ['a chain that is not a number', event('eip155:1', 'chainChanged', 'base')],
+    ['two accounts, its own among them', event('eip155:1', 'accountsChanged', [A, B])],
+    ['its account in another form', event('eip155:1', 'accountsChanged', [`eip155:1:${A}`])],
+    ['accounts that are not a list', event('eip155:1', 'accountsChanged', A)],
   ])('ends the session on %s', (_, message) => {
-    expect(normalizeMobileSessionEvent(message, TOPIC, chains)).toEqual({ disconnect: true });
+    expect(normalizeMobileSessionEvent(message, TOPIC, chains, A)).toEqual({ disconnect: true });
+  });
+  // Restated after R412-1 (decision): these three ended the session. A wallet reports the network selected in
+  // the wallet; when that is not a chain of the session the report is ignored and nothing moves.
+  it.each([
+    ['a chain outside the session', event('eip155:1', 'chainChanged', '0x89')],
+    ['a chain that was asked for but not approved', event('eip155:1', 'chainChanged', '0xa')],
+    ['a chain that is not a number', event('eip155:1', 'chainChanged', 'base')],
+    [
+      'a chain of the session reported under a scope outside it',
+      event('eip155:137', 'chainChanged', '0x2105'),
+    ],
+    [
+      'a chain outside the session under a scope outside it',
+      event('eip155:137', 'chainChanged', '0x89'),
+    ],
+    [
+      'a chain event without a scope',
+      { topic: TOPIC, params: { event: { name: 'chainChanged', data: '0x2105' } } },
+    ],
+  ])('ignores a chainChanged to %s: the session and its selected chain stay', (_, message) => {
+    expect(normalizeMobileSessionEvent(message, TOPIC, chains, A)).toBeNull();
   });
   it('holds an update to the rules of the approval', () => {
     const update = (namespaces: unknown, topic = TOPIC) => ({ topic, params: { namespaces } });
@@ -202,10 +333,20 @@ describe('session events and updates', () => {
       address: B,
       chainIds: [1, 10],
     });
+    // Restated after R412-1: an update that lists more methods is held to the approval's rule (accepted).
+    expect(
+      normalizeMobileSessionUpdate(
+        update({ eip155: namespace([1], A, { methods: METAMASK_METHODS }) }),
+        TOPIC,
+        SIX,
+      ),
+    ).toEqual({ disconnect: false, address: A, chainIds: [1] });
     for (const namespaces of [
       { eip155: namespace([1, 137]) },
       { eip155: namespace([1]), solana: {} },
-      { eip155: namespace([1], A, { methods: ['eth_sendTransaction', 'personal_sign'] }) },
+      { eip155: namespace([1], A, { methods: ['personal_sign'] }) },
+      { eip155: namespace([1], A, { events: ['chainChanged'] }) },
+      { eip155: { ...namespace([1, 10]), accounts: [`eip155:1:${A}`, `eip155:10:${B}`] } },
       {},
       undefined,
     ])
@@ -242,6 +383,17 @@ describe('the transaction sent to the wallet', () => {
   ])('refuses a request %s', (_, value, message) => {
     expect(() => reviewedTransaction(value, A, 8453)).toThrow(message);
   });
+  // R412-5 (b): the call data bound (64 KiB of data; the page's own calls are a few hundred bytes).
+  it('accepts call data up to the bound and refuses one byte more', () => {
+    expect(MAX_CALLDATA_CHARS).toBe(2 + 2 * 65_536);
+    const atBound = `0x${'ab'.repeat(65_536)}`;
+    expect(atBound).toHaveLength(MAX_CALLDATA_CHARS);
+    expect(reviewedTransaction(tx(8453, { data: atBound }), A, 8453).data).toBe(atBound);
+    expect(() => reviewedTransaction(tx(8453, { data: `${atBound}ab` }), A, 8453)).toThrow(
+      /call data/,
+    );
+    expect(reviewedTransaction(tx(8453, { data: '0x' }), A, 8453).data).toBe('0x');
+  });
 });
 
 function fakeClient() {
@@ -258,9 +410,13 @@ function fakeClient() {
   };
   return { client, handlers, request, disconnect };
 }
-function provided(chains = [1, 8453], route = 8453) {
+function provided(chains = [1, 8453], route = 8453, over: Record<string, unknown> = {}) {
   const fake = fakeClient();
-  const approved = normalizeApprovedMobileSession(session(chains), SIX, route)!;
+  const approved = normalizeApprovedMobileSession(
+    session(chains, { namespaces: { eip155: namespace(chains, A, over) } }),
+    SIX,
+    route,
+  )!;
   const provider = mobileSessionProvider(fake.client as never, approved, SIX, route);
   return { ...fake, provider };
 }
@@ -396,14 +552,28 @@ describe('the session as the page’s wallet', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it('reads a rejection in the wallet as 4001, keeps other answers apart, and refuses a hash that is not one', async () => {
+  // Restated after R412-2: code 5000 used to be read as a user rejection whatever its text. It is one only with a
+  // sentence of the sourced list; MetaMask Mobile answers every failure of eth_sendTransaction with 5000.
+  it('reads 4001, and 5000 with a known rejection sentence, as a rejection; keeps other answers apart; refuses a hash that is not one', async () => {
     const { provider, request } = provided();
     const send = () => provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] });
-    request.mockRejectedValueOnce({ code: 4001, message: 'User rejected the request.' });
+    request.mockRejectedValueOnce({ code: 4001, message: 'anything at all' });
     expect(await code(send())).toBe(4001);
-    request.mockRejectedValueOnce({ code: 5000, message: 'User rejected.' });
-    expect(await code(send())).toBe(4001);
-    request.mockRejectedValueOnce({ code: -32000, message: 'insufficient funds‮' });
+    expect([...USER_REJECTION_SENTENCES]).toEqual([
+      'User rejected.',
+      'MetaMask Tx Signature: User denied transaction signature.',
+      'User rejected the request.',
+    ]);
+    for (const sentence of USER_REJECTION_SENTENCES) {
+      request.mockRejectedValueOnce({ code: 5000, message: sentence });
+      await expect(send()).rejects.toMatchObject({
+        code: 4001,
+        message: 'The request was rejected in the wallet.',
+      });
+      request.mockRejectedValueOnce({ code: 5000, message: `  ${sentence}\n` });
+      expect(await code(send())).toBe(4001);
+    }
+    request.mockRejectedValueOnce({ code: -32000, message: 'insufficient funds\u202e' });
     await expect(send()).rejects.toMatchObject({ code: -32000, message: 'insufficient funds' });
     request.mockRejectedValueOnce(new Error('Request expired. Please try again.'));
     await expect(send()).rejects.not.toHaveProperty('code');
@@ -422,6 +592,172 @@ describe('the session as the page’s wallet', () => {
       request.mockResolvedValueOnce(answer);
       await expect(send()).rejects.toThrow('The wallet did not return a transaction hash.');
     }
+  });
+
+  it.each([
+    // MetaMask Mobile, WalletConnect2Session.ts handleSendTransaction: one `try` around adding the transaction,
+    // `await trx.result` and the delivery of the result; its `catch` answers 5000 with the error's own text.
+    ['a publish error after the user confirmed', 'Failed to publish message: relay timeout'],
+    [
+      'a failure to deliver the result after the transaction was published',
+      "No matching key. session topic doesn't exist",
+    ],
+    ['a validation error', 'Invalid transaction params: from is not a valid address'],
+    ['an RPC failure after signing', 'nonce too low'],
+    [
+      'a sentence that only contains a rejection sentence',
+      'Error: User rejected. Then the node failed',
+    ],
+    ['a rejection sentence in another case', 'user rejected.'],
+    ['no text', undefined],
+    ['text that is not text', { toString: (): string => 'User rejected.' }],
+  ])(
+    '5000 with %s is NOT a rejection: the page keeps its "outcome unknown" hold (R412-2)',
+    async (_, message) => {
+      const { provider, request } = provided();
+      request.mockRejectedValueOnce({ code: 5000, message });
+      const error = (await provider
+        .request({ method: 'eth_sendTransaction', params: [tx(8453)] })
+        .catch((e: unknown) => e)) as { code?: unknown };
+      expect(error.code).toBe(5000);
+      expect(error.code).not.toBe(4001);
+      // And it is not marked as "nothing was sent": it came back from the wallet.
+      expect(wasNotSent(error)).toBe(false);
+    },
+  );
+
+  it('a method the wallet approved but the page did not ask for never leaves the page (R412-1)', async () => {
+    // The session as MetaMask Mobile approves it: every method the wallet knows.
+    const { provider, request } = provided([1, 8453], 8453, {
+      methods: METAMASK_METHODS,
+      events: ['chainChanged', 'accountsChanged'],
+    });
+    const local = [
+      'eth_sendTransaction',
+      'eth_accounts',
+      'eth_requestAccounts',
+      'eth_chainId',
+      'wallet_switchEthereumChain',
+      'wallet_addEthereumChain',
+    ];
+    const refused = METAMASK_METHODS.filter((m) => !local.includes(m));
+    expect(refused).toHaveLength(25);
+    for (const method of refused) {
+      const error = (await provider
+        .request({ method, params: [A, '0x68656c6c6f'] })
+        .catch((e: unknown) => e)) as { code?: unknown };
+      expect([method, error.code]).toEqual([method, 4200]);
+    }
+    expect(request).not.toHaveBeenCalled();
+    // The one method that is sent is still sent, and only that one.
+    request.mockResolvedValue('0x' + '9a'.repeat(32));
+    await provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] });
+    expect(
+      request.mock.calls.map(([call]) => (call as { request: { method: string } }).request.method),
+    ).toEqual(['eth_sendTransaction']);
+  });
+
+  // R412-5 (a): the relay request is scoped to the chain SELECTED in the session, not the one it was opened on.
+  it('after the selected chain moved, the request scope and the transaction field are both the new chain', async () => {
+    const { provider, request, handlers } = provided([1, 8453, 10], 8453);
+    request.mockResolvedValue('0x' + '9a'.repeat(32));
+    await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0xa' }] });
+    await provider.request({ method: 'eth_sendTransaction', params: [tx(10)] });
+    expect(request).toHaveBeenLastCalledWith({
+      topic: TOPIC,
+      chainId: 'eip155:10',
+      request: { method: 'eth_sendTransaction', params: [tx(10)] },
+    });
+    // The chain it was opened on is now "another chain".
+    expect(
+      await code(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] })),
+    ).toBe(4901);
+    // The same when the wallet moved it (a chain of the session).
+    handlers.get('session_event')?.({
+      topic: TOPIC,
+      params: { chainId: 'eip155:10', event: { name: 'chainChanged', data: '0x1' } },
+    });
+    await provider.request({ method: 'eth_sendTransaction', params: [tx(1)] });
+    expect(request).toHaveBeenLastCalledWith({
+      topic: TOPIC,
+      chainId: 'eip155:1',
+      request: { method: 'eth_sendTransaction', params: [tx(1)] },
+    });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  // R412-6: a refusal raised here before the relay is called is marked, and nothing else is.
+  it('marks its own refusals as "nothing was sent", and no answer of the wallet', async () => {
+    const { provider, request, handlers } = provided();
+    const caught = (promise: Promise<unknown>) =>
+      promise.then(
+        () => null,
+        (e: unknown) => e,
+      );
+    for (const params of [
+      [tx(1)],
+      [tx(8453, { from: B })],
+      [tx(8453, { chainId: undefined })],
+      [tx(8453, { accessList: [] })],
+      [tx(8453), tx(8453)],
+    ])
+      expect(
+        wasNotSent(await caught(provider.request({ method: 'eth_sendTransaction', params }))),
+      ).toBe(true);
+    expect(
+      wasNotSent(await caught(provider.request({ method: 'personal_sign', params: [] }))),
+    ).toBe(true);
+    expect(
+      wasNotSent(
+        await caught(
+          provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: '0x89' }] }),
+        ),
+      ),
+    ).toBe(true);
+    expect(request).not.toHaveBeenCalled();
+    // From here on the relay was called: whatever comes back is not "nothing was sent".
+    request.mockRejectedValueOnce({ code: 4001, message: 'User rejected the request.' });
+    expect(
+      wasNotSent(
+        await caught(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] })),
+      ),
+    ).toBe(false);
+    request.mockRejectedValueOnce(new Error('Request expired. Please try again.'));
+    expect(
+      wasNotSent(
+        await caught(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] })),
+      ),
+    ).toBe(false);
+    request.mockImplementationOnce(() => {
+      throw new Error('the client refused to publish');
+    });
+    expect(
+      wasNotSent(
+        await caught(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] })),
+      ),
+    ).toBe(false);
+    request.mockResolvedValueOnce('not a hash');
+    expect(
+      wasNotSent(
+        await caught(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] })),
+      ),
+    ).toBe(false);
+    // A request that was waiting when the session ended may have been signed: unknown, not unsent.
+    request.mockReturnValueOnce(new Promise(() => {}));
+    const open = caught(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] }));
+    handlers.get('session_delete')?.({ topic: TOPIC });
+    expect(wasNotSent(await open)).toBe(false);
+    // After the end nothing is sent any more, and that is known.
+    const after = await caught(
+      provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] }),
+    );
+    expect((after as { code: number }).code).toBe(4900);
+    expect(wasNotSent(after)).toBe(true);
+    expect(request).toHaveBeenCalledTimes(5);
+    // The mark cannot be put on an error from outside this page's code by setting a property.
+    expect(
+      wasNotSent(Object.assign(new Error('x'), { unsent: true, notSent: true, code: 4901 })),
+    ).toBe(false);
   });
 
   it('a session deleted by the wallet tells the page, and an unanswered request ends as unknown, not rejected', async () => {
@@ -445,7 +781,10 @@ describe('the session as the page’s wallet', () => {
     expect(request).toHaveBeenCalledOnce();
   });
 
-  it('follows the account and the chain inside the session, and closes on anything outside it', async () => {
+  // Restated after R412-1 and R412-3. Before: an accountsChanged event moved the account to any address, and a
+  // chainChanged to a chain outside the session ended it. Now the account moves only with the namespace (a
+  // session_update), an event for another account ends the session, and a chain outside the session is ignored.
+  it('follows a chain of the session, ignores a chain outside it, and keeps sending on the page’s chain', async () => {
     const { provider, handlers, disconnect, request } = provided([1, 8453]);
     const accounts = vi.fn(),
       chains = vi.fn(),
@@ -455,29 +794,128 @@ describe('the session as the page’s wallet', () => {
     provider.on?.('disconnect', gone);
     const event = (chainId: string, name: string, data: unknown) =>
       handlers.get('session_event')?.({ topic: TOPIC, params: { chainId, event: { name, data } } });
-    event('eip155:8453', 'accountsChanged', [B]);
-    expect(accounts).toHaveBeenCalledExactlyOnceWith([B]);
-    expect(await provider.request({ method: 'eth_accounts' })).toEqual([B]);
-    // The transaction path now binds to the new account: the old one is refused.
-    expect(
-      await code(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] })),
-    ).toBe(4100);
     event('eip155:8453', 'chainChanged', '0x1');
     expect(chains).toHaveBeenCalledExactlyOnceWith('0x1');
     expect(await provider.request({ method: 'eth_chainId' })).toBe('0x1');
-    expect(gone).not.toHaveBeenCalled();
+    // The wallet reports networks the session does not hold (MetaMask Mobile reports the one selected in the app).
     event('eip155:1', 'chainChanged', '0x89');
+    event('eip155:1', 'chainChanged', '0xa');
+    event('eip155:137', 'chainChanged', '0x89');
+    event('eip155:1', 'chainChanged', 'somewhere');
+    event('eip155:1', 'accountsChanged', [A]);
+    expect(chains).toHaveBeenCalledOnce();
+    expect(accounts).not.toHaveBeenCalled();
+    expect(gone).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(handlers.size).toBe(4);
+    expect(await provider.request({ method: 'eth_chainId' })).toBe('0x1');
+    expect(await provider.request({ method: 'eth_accounts' })).toEqual([A]);
+    // The next transaction still names the session's selected chain, twice, whatever the wallet has selected.
+    request.mockResolvedValue('0x' + '9a'.repeat(32));
+    await provider.request({ method: 'eth_sendTransaction', params: [tx(1)] });
+    expect(request).toHaveBeenCalledExactlyOnceWith({
+      topic: TOPIC,
+      chainId: 'eip155:1',
+      request: { method: 'eth_sendTransaction', params: [tx(1)] },
+    });
+    expect(await code(provider.request({ method: 'eth_sendTransaction', params: [tx(137)] }))).toBe(
+      4901,
+    );
+  });
+
+  it('an accountsChanged event for an account the session never approved ends the session (R412-3)', async () => {
+    const { provider, handlers, disconnect, request } = provided([1, 8453]);
+    const accounts = vi.fn(),
+      gone = vi.fn();
+    provider.on?.('accountsChanged', accounts);
+    provider.on?.('disconnect', gone);
+    handlers.get('session_event')?.({
+      topic: TOPIC,
+      params: { chainId: 'eip155:8453', event: { name: 'accountsChanged', data: [B] } },
+    });
+    // The page is never shown the other account: it is told the wallet is gone.
+    expect(accounts).not.toHaveBeenCalled();
     expect(gone).toHaveBeenCalledOnce();
     expect(disconnect).toHaveBeenCalledExactlyOnceWith({
       topic: TOPIC,
       reason: { code: 6000, message: 'Unsupported session update' },
     });
     expect(handlers.size).toBe(0);
-    expect(await code(provider.request({ method: 'eth_chainId' }))).toBe(4900);
+    expect(await code(provider.request({ method: 'eth_accounts' }))).toBe(4900);
+    expect(
+      await code(
+        provider.request({ method: 'eth_sendTransaction', params: [tx(8453, { from: B })] }),
+      ),
+    ).toBe(4900);
     expect(request).not.toHaveBeenCalled();
   });
 
-  it('accepts an update that keeps the selected chain and closes on one that drops it or adds a permission', async () => {
+  it('the account moves with the namespace: after a session_update names another account, that one is the session’s', async () => {
+    const { provider, handlers, disconnect, request } = provided([1, 8453]);
+    const accounts = vi.fn();
+    provider.on?.('accountsChanged', accounts);
+    handlers.get('session_update')?.({
+      topic: TOPIC,
+      params: { namespaces: { eip155: namespace([1, 8453], B, { methods: METAMASK_METHODS }) } },
+    });
+    expect(accounts).toHaveBeenCalledExactlyOnceWith([B]);
+    expect(await provider.request({ method: 'eth_accounts' })).toEqual([B]);
+    // An event that repeats the new account changes nothing; the old account is now the foreign one.
+    const event = (data: unknown) =>
+      handlers.get('session_event')?.({
+        topic: TOPIC,
+        params: { chainId: 'eip155:8453', event: { name: 'accountsChanged', data } },
+      });
+    event([B]);
+    expect(accounts).toHaveBeenCalledOnce();
+    expect(disconnect).not.toHaveBeenCalled();
+    // The transaction path binds to the new account: the old one is refused, in the page.
+    expect(
+      await code(provider.request({ method: 'eth_sendTransaction', params: [tx(8453)] })),
+    ).toBe(4100);
+    expect(request).not.toHaveBeenCalled();
+    event([A]);
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
+  // R412-5 (d): a change that arrives for a session that has ended does nothing, even through a handler that
+  // was taken before the end.
+  it('nothing is applied after the session ended', async () => {
+    const { provider, handlers, disconnect } = provided([1, 8453]);
+    const stale = {
+      event: handlers.get('session_event')!,
+      update: handlers.get('session_update')!,
+    };
+    const accounts = vi.fn(),
+      chains = vi.fn(),
+      gone = vi.fn();
+    provider.disconnect?.();
+    expect(disconnect).toHaveBeenCalledOnce();
+    // Listeners registered after the end are not kept, and a stale change reaches nobody and closes nothing.
+    provider.on?.('accountsChanged', accounts);
+    provider.on?.('chainChanged', chains);
+    provider.on?.('disconnect', gone);
+    stale.event({
+      topic: TOPIC,
+      params: { chainId: 'eip155:8453', event: { name: 'chainChanged', data: '0x1' } },
+    });
+    stale.event({
+      topic: TOPIC,
+      params: { chainId: 'eip155:8453', event: { name: 'accountsChanged', data: [B] } },
+    });
+    stale.update({ topic: TOPIC, params: { namespaces: { eip155: namespace([1], B) } } });
+    stale.update({ topic: TOPIC, params: { namespaces: {} } });
+    expect(accounts).not.toHaveBeenCalled();
+    expect(chains).not.toHaveBeenCalled();
+    expect(gone).not.toHaveBeenCalled();
+    // In particular no second remote close "Unsupported session update" for a session already closed.
+    expect(disconnect).toHaveBeenCalledExactlyOnceWith({
+      topic: TOPIC,
+      reason: { code: 6000, message: 'User disconnected' },
+    });
+  });
+
+  it('accepts an update that keeps the selected chain or lists more methods, and closes on one that drops the chain, the asked method, or adds a chain', async () => {
     const update = (handlers: Map<string, (value: unknown) => void>, eip155: unknown) =>
       handlers.get('session_update')?.({ topic: TOPIC, params: { namespaces: { eip155 } } });
     const kept = provided([1, 8453]);
@@ -497,11 +935,21 @@ describe('the session as the page’s wallet', () => {
         }),
       ),
     ).toBe(4902);
+    // Restated after R412-1: an update that adds personal_sign used to end the session. It is accepted, and the
+    // method still cannot be sent ("a method the wallet approved but the page did not ask for…", above).
+    update(
+      kept.handlers,
+      namespace([8453, 10], B, { methods: ['eth_sendTransaction', 'personal_sign'] }),
+    );
+    update(kept.handlers, namespace([8453, 10], B, { methods: METAMASK_METHODS }));
     expect(kept.disconnect).not.toHaveBeenCalled();
+    expect(await code(kept.provider.request({ method: 'personal_sign', params: [] }))).toBe(4200);
+    expect(kept.request).not.toHaveBeenCalled();
 
     for (const eip155 of [
       namespace([1]),
-      namespace([1, 8453], A, { methods: ['eth_sendTransaction', 'personal_sign'] }),
+      namespace([1, 8453], A, { methods: ['personal_sign'] }),
+      namespace([1, 8453], A, { events: ['chainChanged'] }),
       namespace([1, 8453, 137]),
     ]) {
       const dropped = provided([1, 8453]);
@@ -585,18 +1033,16 @@ describe('pairing code and links', () => {
     ])
       expect(validPairingUri(value)).toBe(false);
   });
-  it('links carry the URI and nothing else, to the scheme and to three fixed wallet hosts', () => {
+  it('links carry the URI and nothing else, to the scheme and to two wallet hosts read in those wallets’ own code (R412-8)', () => {
     const links = mobileWalletLinks(URI);
     expect(links.map((l) => [l.name, l.app])).toEqual([
       ['Open in a wallet app', true],
       ['MetaMask', false],
-      ['Trust Wallet', false],
       ['Rainbow', false],
     ]);
     expect(links[0].href).toBe(URI);
     expect(links.slice(1).map((l) => l.href)).toEqual([
       `https://metamask.app.link/wc?uri=${encodeURIComponent(URI)}`,
-      `https://link.trustwallet.com/wc?uri=${encodeURIComponent(URI)}`,
       `https://rnbwapp.com/wc?uri=${encodeURIComponent(URI)}`,
     ]);
     for (const link of links.slice(1)) {
@@ -604,6 +1050,12 @@ describe('pairing code and links', () => {
       expect([...url.searchParams.keys()]).toEqual(['uri']);
       expect(url.searchParams.get('uri')).toBe(URI);
     }
+    // No host that was not verified: the pairing key goes nowhere else.
+    expect(links.map((l) => (l.app ? 'wc:' : new URL(l.href).host))).toEqual([
+      'wc:',
+      'metamask.app.link',
+      'rnbwapp.com',
+    ]);
     expect(mobileWalletLinks('https://evil.example/?wc')).toEqual([]);
   });
 });
@@ -688,11 +1140,13 @@ describe('connecting', () => {
   it.each([
     ['a chain that was not offered', () => session([8453, 137])],
     [
-      'message signing added',
+      'every method but the one asked',
       () =>
         session([8453], {
           namespaces: {
-            eip155: namespace([8453], A, { methods: ['eth_sendTransaction', 'personal_sign'] }),
+            eip155: namespace([8453], A, {
+              methods: METAMASK_METHODS.filter((m) => m !== 'eth_sendTransaction'),
+            }),
           },
         }),
     ],
@@ -777,6 +1231,72 @@ describe('connecting', () => {
         reason: { code: 6000, message: 'Connection cancelled' },
       }),
     );
+  });
+
+  // R412-5 (e): cancelled while the proposal was being sent, before any code was shown.
+  it('a pairing cancelled right after the proposal went out is still observed: a late approval is closed', async () => {
+    let approve!: (value: unknown) => void;
+    const approval = vi.fn(() => new Promise((resolve) => (approve = resolve)));
+    const fake = fakeClient();
+    const controller = new AbortController();
+    const connect = vi.fn(async () => {
+      controller.abort();
+      return { uri: URI, approval };
+    });
+    vi.doMock('@walletconnect/sign-client', () => ({
+      default: { init: vi.fn().mockResolvedValue({ ...fake.client, connect }) },
+    }));
+    const connectMobileWallet = await load();
+    const onUri = vi.fn();
+    await expect(
+      connectMobileWallet({
+        signal: controller.signal,
+        chainIds: [8453],
+        routeChainId: 8453,
+        onUri,
+      }),
+    ).rejects.toThrow('Connection cancelled');
+    expect(onUri).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(approval).toHaveBeenCalledOnce());
+    expect(fake.disconnect).not.toHaveBeenCalled();
+    approve(session([8453]));
+    await vi.waitFor(() =>
+      expect(fake.disconnect).toHaveBeenCalledExactlyOnceWith({
+        topic: TOPIC,
+        reason: { code: 6000, message: 'Connection cancelled' },
+      }),
+    );
+    expect(fake.client.on).not.toHaveBeenCalled();
+  });
+
+  it('connects a wallet that approves its whole method list (MetaMask Mobile), and still asks it for one method', async () => {
+    const { request, disconnect } = mocked(async () =>
+      session([8453, 10], {
+        namespaces: {
+          eip155: namespace([8453, 10], A, {
+            methods: METAMASK_METHODS,
+            events: ['chainChanged', 'accountsChanged'],
+          }),
+        },
+        peer: { metadata: { name: 'MetaMask Wallet' } },
+      }),
+    );
+    const connectMobileWallet = await load();
+    const wallet = await connectMobileWallet({
+      signal: new AbortController().signal,
+      chainIds: [8453, 10],
+      routeChainId: 8453,
+      onUri: () => {},
+    });
+    expect(wallet.name).toBe('MetaMask Wallet');
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(
+      await code(wallet.provider.request({ method: 'personal_sign', params: ['0x00', A] })),
+    ).toBe(4200);
+    expect(
+      await code(wallet.provider.request({ method: 'eth_signTypedData_v4', params: [A, '{}'] })),
+    ).toBe(4200);
+    expect(request).not.toHaveBeenCalled();
   });
 
   it('a cancelled pairing leaves no session behind when the wallet approves late', async () => {

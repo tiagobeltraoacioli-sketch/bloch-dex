@@ -85,6 +85,7 @@ import {
 import type { DevnetDeployment } from './devnet4/record';
 import type { Devnet4Wallet } from './Devnet4Live';
 import { ConnectSlot } from './shell/connect-slot';
+import { wasNotSent } from './wallet-unsent';
 import {
   addChainParameters,
   DEFAULT_DEADLINE_MINUTES,
@@ -991,6 +992,11 @@ function PendingExcess({
           if (intentId && !hash && (error as { code?: unknown })?.code === 4001) {
             await pendingSwap.rejected(intentId);
             setNote('The wallet request was rejected by you. Nothing was sent.');
+          } else if (intentId && !hash && wasNotSent(error)) {
+            await pendingSwap.rejected(intentId);
+            setNote(
+              `${message(error, 'The request was refused before it was sent.')} Nothing was sent to the wallet.`,
+            );
           } else if (intentId) {
             await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));
             setNote('Skim submission outcome unknown. Check wallet activity; do not repeat it.');
@@ -1623,6 +1629,14 @@ function SwapPanel({
               label,
               state: 'failed',
               detail: 'The wallet request was rejected by you. Nothing was sent.',
+            });
+          } else if (intentId && !hash && wasNotSent(error)) {
+            // Refused in this page before anything was handed to a wallet (wallet-unsent.ts): nothing to hold.
+            await pendingSwap.rejected(intentId);
+            update({
+              label,
+              state: 'failed',
+              detail: `${message(error, 'The request was refused before it was sent.')} Nothing was sent to the wallet.`,
             });
           } else if (intentId) {
             await pendingSwap.updateSubmission(intentId, hash, submissionFeeNote(error));

@@ -2,6 +2,7 @@ import { act, cleanup, render, renderHook, screen, waitFor, within } from '@test
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectSlotContext } from '../shell/connect-slot';
+import { notSent } from '../wallet-unsent';
 import {
   decodeFunctionData,
   encodeFunctionResult,
@@ -1819,6 +1820,73 @@ describe('swap panel safety fixes', () => {
       await waitFor(() => expect(steps()).toContain('rejected by you'));
       expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
       expect(swapButton().disabled).toBe(false);
+    });
+
+    // Agent 410, review R412-6: a provider implemented in this page that refuses a request itself, before
+    // anything is handed to a wallet, marks the error (wallet-unsent.ts); the intent saved for it is released.
+    it('releases the intent when the page’s own provider refused before anything was sent, and says so', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction')
+                  throw notSent(
+                    Object.assign(new Error('The wallet session has ended. Connect the wallet again.'), {
+                      code: 4900,
+                    }),
+                  );
+                return request(args);
+              },
+            },
+          };
+        },
+      );
+      await quoted(mounted.user);
+      await mounted.user.click(swapButton());
+      await waitFor(() =>
+        expect(steps()).toContain(
+          'The wallet session has ended. Connect the wallet again. Nothing was sent to the wallet.',
+        ),
+      );
+      expect(steps()).not.toContain('rejected by you');
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).toBeNull();
+      expect(swapButton().disabled).toBe(false);
+    });
+
+    it('the same error without the page’s own mark keeps the hold: a wallet cannot claim "nothing was sent"', async () => {
+      const { rpc, state } = fakeChain({ allowance: 10n ** 12n });
+      const mounted = await mount(
+        withReceipts(rpc, () => null),
+        state,
+        (wallet) => {
+          const request = wallet.provider!.request.bind(wallet.provider);
+          return {
+            ...wallet,
+            provider: {
+              request: async (args) => {
+                if (args.method === 'eth_sendTransaction')
+                  throw Object.assign(new Error('The wallet session has ended. Connect the wallet again.'), {
+                    code: 4900,
+                    unsent: true,
+                    notSent: true,
+                  });
+                return request(args);
+              },
+            },
+          };
+        },
+      );
+      await quoted(mounted.user);
+      await mounted.user.click(swapButton());
+      await screen.findByText(/no transaction hash was returned/);
+      expect(localStorage.getItem(pendingSwapKey(network.chainId, ACCOUNT))).not.toBeNull();
+      expect(steps()).not.toContain('Nothing was sent to the wallet');
     });
 
     it('a rejected-looking message without code 4001 cannot clear the hold', async () => {
