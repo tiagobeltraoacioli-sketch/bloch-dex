@@ -9,6 +9,7 @@
 // First-party code is held to the full list. The lazily loaded wallet SDK chunks
 // are held to it too, except for the exact library literals in VENDOR_LITERALS,
 // which are origin checks inside that SDK and not endpoints this site contacts.
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
@@ -103,6 +104,27 @@ if (multichain) {
   if (allowed.includes(new URL(network.rpc.url).origin))
     hits.push(['_headers', 'the Bloch L2 RPC is in the multichain connect-src', network.rpc.url]);
   console.log(`multichain: ${wanted.size} endpoint origin(s) required in connect-src`);
+  // The files this site shares with the Bloch L2 site's public/ and that name the site: the multichain site is
+  // "Bloch DEX" (scripts/multichain-finish.mjs puts the three right; review R412-7).
+  const title =
+    /<title>([^<]*)<\/title>/.exec(readFileSync(join(dist, '404.html'), 'utf8'))?.[1] ?? '';
+  if (title !== 'Bloch DEX: no gate here') hits.push(['404.html', 'title of another site', title]);
+  const notices = readFileSync(join(dist, 'THIRD-PARTY-NOTICES.txt'), 'utf8')
+    .split('\n')
+    .slice(0, 6)
+    .join(' ');
+  if (!notices.includes("This page is built from Bloch DEX's own code") || /Postern/.test(notices))
+    hits.push([
+      'THIRD-PARTY-NOTICES.txt',
+      'first sentence names another site',
+      notices.slice(0, 120),
+    ]);
+  const preview = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+  const rendered = JSON.parse(
+    readFileSync(new URL('../multichain-public/social-preview.json', import.meta.url), 'utf8'),
+  );
+  if (preview(join(dist, 'social-preview.png')) !== rendered.image.sha256)
+    hits.push(['social-preview.png', 'not the multichain image', '']);
 } else
   for (const url of [network.rpc.url, ...network.bridges.map((b) => b.status?.ethRpcUrl)]) {
     if (url && !allowed.includes(new URL(url).origin))

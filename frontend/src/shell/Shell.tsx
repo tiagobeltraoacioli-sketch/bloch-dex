@@ -15,6 +15,7 @@ export function Shell({
   brandLabel,
   homeHref = '#/trade',
   wordmark = 'Postern',
+  site,
   navLabel,
   nav,
   actions,
@@ -29,6 +30,8 @@ export function Shell({
   homeHref?: string;
   /** The name beside the mark. The multichain site is "Bloch DEX" (owner, 2026-11-18); the others keep "Postern". */
   wordmark?: string;
+  /** Marks the shell for rules that belong to one site only (`data-site`); the Bloch L2 site sets none. */
+  site?: 'multichain';
   navLabel: string;
   nav: ReactNode;
   actions: ReactNode;
@@ -39,7 +42,7 @@ export function Shell({
   mainRef?: Ref<HTMLElement>;
 }) {
   return (
-    <div className="app-shell" data-network={network}>
+    <div className="app-shell" data-network={network} data-site={site}>
       <a
         href="#main-content"
         className="skip-link"

@@ -123,6 +123,7 @@ export function MultichainApplication({ chains = CHAINS }: { chains?: Chain[] })
       network={chain.key}
       brandLabel={`${MULTICHAIN_SITE_NAME} home`}
       wordmark={MULTICHAIN_SITE_NAME}
+      site="multichain"
       homeHref={`#/${chains[0].key}`}
       navLabel="Networks"
       nav={chains.map((c) => (

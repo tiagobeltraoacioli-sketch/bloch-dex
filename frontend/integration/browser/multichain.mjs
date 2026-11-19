@@ -149,6 +149,9 @@ const endpointRequests = async (chain) => {
 };
 const requestDelta = (before, after) => Object.fromEntries(Object.entries(after).map(([name, n]) => [name, n - (before[name] ?? 0)]).filter(([, n]) => n > 0));
 const L2_WORDS = /Bloch|BLCH|bUSDC|\bL2\b|new storage slot|heartbeat|Safe\b/;
+// The site's name since 2026-11-18 (owner): "Bloch DEX". It is the one place where the word may appear on a
+// public-chain route; the guard is applied to the text with the name taken out, as in src/test/multichain.test.tsx.
+const SITE = 'Bloch DEX';
 
 const browser = await launch(config.chrome, config.debugPort);
 let unexpected = null;
@@ -192,7 +195,7 @@ try {
   };
   const select = async (chain) => {
     await page.evaluate(`(() => { const a = [...document.querySelectorAll('nav[aria-label="Networks"] a')].find((x) => x.textContent.trim() === ${JSON.stringify(chain.name)}); if (!a) throw new Error('no network link'); a.click(); })()`);
-    await page.waitText(`/PosternDEX on ${chain.name} · Chain ${chain.chainId}/`);
+    await page.waitText(`/${SITE} on ${chain.name} · Chain ${chain.chainId}/`);
     // On screen: the line that names the block every figure is read at ("Confirmed block N is 0 min old.").
     await page.waitVisibleText(`/${Word(chain)} block \\d+ is /`, 60_000);
   };
@@ -240,7 +243,7 @@ try {
     }
     const text = await flat();
     const onScreen = await page.visibleText();
-    check(`${chain.key}: the page shows this network's words and none of the Bloch L2's`, new RegExp(`PosternDEX on ${chain.name}`).test(text) && !L2_WORDS.test(text), L2_WORDS.exec(text)?.[0]);
+    check(`${chain.key}: the page shows this network's words and none of the Bloch L2's`, new RegExp(`${SITE} on ${chain.name}`).test(text) && !L2_WORDS.test(text.replaceAll(SITE, '')), L2_WORDS.exec(text.replaceAll(SITE, ''))?.[0]);
     // Merge (agent 366): the redesign's on-screen check (visible text, the pay chip reachable) with 360's label rule
     // (review R344-UI-16): a token with a label is printed under its label, with its note on screen.
     const shown = chain.token.shown ?? chain.token.symbol;

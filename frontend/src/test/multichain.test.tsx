@@ -361,6 +361,8 @@ describe('multichain application', () => {
       'Bloch DEX is not active yet. No pool is open on any network: nothing can be traded here, and this site sends no transaction.',
     );
     expect(document.querySelector('.brand .wordmark')!.textContent).toBe('Bloch DEX');
+    // The shell is marked as the multichain site's: its header rule for many links applies here only (R412-4).
+    expect(document.querySelector('.app-shell')!.getAttribute('data-site')).toBe('multichain');
     expect(panel.textContent).toContain(
       'No verified deployment record for Base has been published with this site.',
     );

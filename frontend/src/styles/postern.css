@@ -269,6 +269,16 @@ td,
 .popover-start {
   left: 0;
 }
+@keyframes postern-sheet-rise {
+  from {
+    opacity: 0;
+    transform: translateY(calc(-100% + 8px));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-100%);
+  }
+}
 @keyframes postern-rise {
   from {
     opacity: 0;
@@ -1780,19 +1790,34 @@ details dl dd {
   .detail-list dt:first-of-type + dd {
     padding-top: 2px;
   }
+  /* The sheet and its scrim are fixed, but not always to the screen: the top bar has a backdrop filter, which
+     makes it the containing block of fixed descendants, so "bottom: 0" was the bottom of the HEADER and the sheet
+     grew upward out of the screen (at 390 px the network list lay from -290 to 112 px; agent 410, R410-O3). Both
+     are now placed from the top edge, which is the same line for the screen and for the top bar (it is sticky at
+     top: 0): the scrim is one screen tall from there, the sheet starts one screen down and is moved up by its own
+     height. The result is the same bottom sheet whether the containing block is the screen (a popover in the
+     page) or the top bar. 100vh is the fallback of 100dvh. */
   .popover-scrim {
     display: block;
     position: fixed;
-    inset: 0;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: auto;
+    height: 100vh;
+    height: 100dvh;
     z-index: 59;
     background: var(--scrim);
   }
   .popover-panel {
     position: fixed;
-    top: auto;
+    top: 100vh;
+    top: 100dvh;
     left: 0;
     right: 0;
-    bottom: 0;
+    bottom: auto;
+    transform: translateY(-100%);
+    animation-name: postern-sheet-rise;
     max-width: none;
     max-height: 86svh;
     overflow-y: auto;
@@ -2769,6 +2794,8 @@ li[data-state='failed'] .state-pill {
     position: absolute;
     top: calc(100% + 8px);
     bottom: auto;
+    transform: none;
+    animation-name: postern-rise;
     left: var(--s-4);
     right: var(--s-4);
     width: auto;

@@ -3,6 +3,7 @@
 // wallet:
 //
 //   node frontend/integration/browser/walletconnect-rehearsal.mjs --port BASE --out DIR [--chains key,key]
+//        [--shots DIR] [--stage 1] [--also-page 1]
 //
 // The same stage as scripts/multichain/rehearse-page.mjs (its steps 1 to 3, with the same tools): one held anvil
 // fork per chain with the DEX deployed and a pool opened (scripts/multichain/rehearse-fork.mjs --hold), two
@@ -181,9 +182,16 @@ try {
         address: lower(chain.tokens[0].address),
         symbol: chain.tokens[0].symbol,
         shown: chain.tokens[0].label ?? chain.tokens[0].symbol,
+        note: chain.tokens[0].note ?? null,
       },
       router: lower(report.plan.contracts.router.address),
-      confirmation: { settle: chain.confirmation.settle },
+      // What the page rehearsal's own driver (multichain.mjs) reads as well: the chain's rule and block time.
+      confirmation: {
+        settle: chain.confirmation.settle,
+        strict: chain.confirmation.strict,
+        blockSeconds: chain.confirmation.measured.blockSeconds,
+      },
+      deadlineMinutes: chain.swap.deadlineMinutes,
     });
   }
   const files = join(out, 'files');
@@ -287,6 +295,28 @@ try {
       2,
     )}\n`,
   );
+  // --also-page: the page rehearsal's own driver (an injected, simulated wallet) on the same stage, first. Its
+  // own orchestrator (scripts/multichain/rehearse-page.mjs) cannot bring up a chain that already holds the
+  // deployment; this one can.
+  let pageStatus = 0;
+  if (opt['also-page'] && !opt.stage) {
+    say('== page scenarios of the injected-wallet driver (multichain.mjs) on this stage');
+    const pageHarness = join(out, 'harness-page.json');
+    writeFileSync(
+      pageHarness,
+      `${JSON.stringify({ ...JSON.parse(readFileSync(harness, 'utf8')), debugPort: base + 13 }, null, 2)}\n`,
+    );
+    const run = spawnSync('node', ['frontend/integration/browser/multichain.mjs', pageHarness], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    process.stdout.write(run.stdout);
+    if (run.status !== 0) process.stderr.write(run.stderr);
+    writeFileSync(join(out, 'browser-page.log'), `${run.stdout}\n${run.stderr}`);
+    pageStatus = run.status === 0 ? 0 : 1;
+  }
   if (opt.stage) {
     say(`== stage only: ${harness}; remove ${hold} to stop`);
     while (existsSync(hold)) await delay(1000);
@@ -302,7 +332,7 @@ try {
     process.stdout.write(run.stdout);
     if (run.status !== 0) process.stderr.write(run.stderr);
     writeFileSync(join(out, 'browser.log'), `${run.stdout}\n${run.stderr}`);
-    status = run.status === 0 ? 0 : 1;
+    status = run.status === 0 && pageStatus === 0 ? 0 : 1;
   }
 } catch (error) {
   console.error(String(error.message ?? error));

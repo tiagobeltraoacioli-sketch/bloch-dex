@@ -1,0 +1,14 @@
+{
+  "note": "Written by scripts/render-social-preview.mjs. The image is the rendering of the source with these hashes.",
+  "source": {
+    "file": "social-preview.svg",
+    "sha256": "80eee3aea284692d8e61efa22e8b97d44ab739cc81a8d263a3970c54851224eb"
+  },
+  "image": {
+    "file": "social-preview.png",
+    "sha256": "183e7c6fedc3b9857dd03aca141588efbfe98be3608651d674e565a0f1f82346",
+    "width": 1200,
+    "height": 630
+  },
+  "renderer": "Chrome/138.0.7204.184"
+}

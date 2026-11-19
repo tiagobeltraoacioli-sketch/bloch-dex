@@ -41,7 +41,10 @@ const PROJECT_ID = 'e263eead656b6d61ecdee75a71e100bb';
 const METHODS = ['eth_sendTransaction'];
 const EVENTS = ['accountsChanged', 'chainChanged'];
 const UNSUPPORTED =
-  'The wallet approved something other than what this page asked for (other networks, more than one account, or other permissions). Nothing was connected.';
+  'The wallet approved something this page cannot use (networks that were not asked for, not this page’s network, more than one account, or without the permission to send transactions). Nothing was connected.';
+// What MetaMask Mobile approves whatever is asked (metamask-mobile app/core/WalletConnect/wc-config.ts
+// EVM_APPROVED_METHODS; review R412-1): the scripted wallet answers the first proposal this way.
+const METAMASK_METHODS = ['eth_sendTransaction', 'eth_sign', 'eth_signTransaction', 'eth_signTypedData', 'eth_signTypedData_v3', 'eth_signTypedData_v4', 'personal_sign', 'eth_sendRawTransaction', 'eth_accounts', 'eth_getBalance', 'eth_call', 'eth_estimateGas', 'eth_blockNumber', 'eth_getCode', 'eth_getTransactionCount', 'eth_getTransactionReceipt', 'eth_getTransactionByHash', 'eth_getBlockByHash', 'eth_getBlockByNumber', 'net_version', 'eth_chainId', 'eth_requestAccounts', 'wallet_addEthereumChain', 'wallet_switchEthereumChain', 'wallet_getPermissions', 'wallet_requestPermissions', 'wallet_watchAsset', 'wallet_scanQRCode', 'wallet_sendCalls', 'wallet_getCallsStatus', 'wallet_getCapabilities'];
 const FAILED = 'The connection was closed or could not be made. Nothing was connected.';
 const IPHONE =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1';
@@ -131,7 +134,10 @@ const namespaceFor = (mode, asked) => {
     events: EVENTS,
   });
   if (mode === 'exact') return ns(ids);
+  if (mode === 'metamask') return { ...ns(ids, METAMASK_METHODS), events: ['chainChanged', 'accountsChanged'] };
+  if (mode === 'other-account') return ns(ids, METAMASK_METHODS, ids.map((id) => `eip155:${id}:${second}`));
   if (mode === 'extra-method') return ns(ids, [...METHODS, 'personal_sign']);
+  if (mode === 'no-send') return ns(ids, METAMASK_METHODS.filter((m) => m !== 'eth_sendTransaction'));
   if (mode === 'unasked-chain') return ns([...ids, 137]);
   if (mode === 'first-chain-only') return ns([ids[0]]);
   if (mode === 'two-accounts')
@@ -169,6 +175,10 @@ client.on('session_request', async ({ id, topic, params }) => {
     if (params.request.method !== 'eth_sendTransaction')
       return respond({ error: { code: 4200, message: 'the scripted wallet only signs transactions' } });
     if (mode === 'reject') return respond({ error: { code: 5000, message: 'User rejected.' } });
+    // MetaMask Mobile's own sentence for a rejection, under the code it uses for everything (5000).
+    if (mode === 'reject-metamask') return respond({ error: { code: 5000, message: 'MetaMask Tx Signature: User denied transaction signature.' } });
+    // The same code for a failure after the user confirmed: not a rejection (review R412-2).
+    if (mode === 'fail-5000') return respond({ error: { code: 5000, message: 'Failed to publish message: relay timeout' } });
     if (mode === 'invent') {
       entry.invented = keccak256(hex(Date.now()));
       return respond({ result: entry.invented });
@@ -369,6 +379,22 @@ try {
     await page.close();
   }
 
+  for (const width of [390, 360]) {
+    const page = await newPage({ phone: true });
+    await page.cdp('Emulation.setDeviceMetricsOverride', { width, height: 780, deviceScaleFactor: 2, mobile: true });
+    await page.goto(`${config.notLivePage}#/base`);
+    await page.waitText('/Bloch DEX is not active yet/');
+    await page.evaluate(`document.querySelector('.header-actions .popover button').click()`);
+    await delay(600);
+    const sheet = await page.evaluate(`(() => { const el = document.querySelector('.header-actions .popover-panel'); const b = el.getBoundingClientRect(); const s = document.querySelector('.header-actions .popover-scrim').getBoundingClientRect(); const rows = [...el.querySelectorAll('a')]; return { top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), right: Math.round(b.right), viewport: [innerWidth, innerHeight], rows: rows.length, onScreen: rows.filter((a) => { const r = a.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; }).length, scrim: [Math.round(s.top), Math.round(s.bottom)] }; })()`);
+    check(`phone width ${width}: the header's network list is a sheet at the bottom of the screen with all six networks on screen, over a scrim that covers the screen`, sheet.top >= 0 && Math.abs(sheet.bottom - sheet.viewport[1]) <= 1 && sheet.left === 0 && sheet.right === sheet.viewport[0] && sheet.rows === 6 && sheet.onScreen === 6 && sheet.scrim[0] === 0 && sheet.scrim[1] >= sheet.viewport[1], sheet);
+    // Choosing a network from the sheet works: it is reachable, not only drawn.
+    await page.evaluate(`[...document.querySelectorAll('.header-actions .popover-panel a')].find((a) => a.textContent.includes('Linea')).click()`);
+    await page.waitText('/Bloch DEX on Linea/');
+    check(`phone width ${width}: a network chosen from the sheet opens its page`, true);
+    await page.close();
+  }
+
   // ---- B. the live rehearsal build, desktop, no injected wallet ----
   say(`== ${first.key}: connect by QR code`);
   const page = await newPage();
@@ -381,7 +407,7 @@ try {
   await page.evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Connect wallet').click()`);
   check('the header "Connect wallet" goes to the connect step: focus is on the mobile-wallet button, and no note is shown', await page.evaluate(`document.activeElement?.hasAttribute('data-mobile-wallet') === true && document.querySelector('[data-testid="wallet-unavailable"]').innerText.trim() === ''`));
 
-  const uri = await pair(page, 'exact');
+  const uri = await pair(page, 'metamask');
   await page.shot('desktop-qr-dialog--1440.png');
   const shownDialog = await dialogText(page);
   check('the code on screen decodes to a WalletConnect v2 pairing URI', /^wc:[0-9a-f]{64}@2\?/.test(uri) && uri.includes('symKey='), uri.replace(/symKey=[0-9a-f]+/, 'symKey=…'));
@@ -399,6 +425,7 @@ try {
   );
   // The page passes no icon; the client library fills in the page's own favicon. Nothing from another origin.
   check('the wallet is told the site is "Bloch DEX" at the page’s own origin, with no icon from elsewhere', proposal.proposer.name === 'Bloch DEX' && proposal.proposer.url === new URL(config.page).origin && proposal.proposer.icons.every((icon) => new URL(icon).origin === new URL(config.page).origin), proposal.proposer);
+  check('a wallet that approves its whole method list, as MetaMask Mobile does (31 methods, personal_sign among them), is connected', wallet.proposals.at(-1).mode === 'metamask' && !wallet.proposals.at(-1).walletError);
   check('connected: the dialog is closed, the page shows the wallet’s account on this chain, and the header shows it', !(await page.evaluate(`!!document.querySelector('dialog[open]')`)) && (await page.evaluate(`document.querySelector('.wallet-button')?.innerText ?? ''`)).toLowerCase().includes(address.slice(0, 6)));
   const remote = page.remote();
   evidence.remoteOrigins = remote;
@@ -449,38 +476,55 @@ try {
   check(`${secondChain.key}: the session is kept across pages, and the page says the wallet will be asked to switch`, other.toLowerCase().includes(`wallet ${address} on chain ${first.chainId}`) && other.includes(`(it will be asked to switch to chain ${secondChain.chainId})`), /Wallet 0x.{0,120}/.exec(other)?.[0]);
   await trade(secondChain);
   check(`${secondChain.key}: after the route's own switch the page shows the wallet on chain ${secondChain.chainId}`, (await page.flat()).toLowerCase().includes(`wallet ${address} on chain ${secondChain.chainId}`));
-  check('in the whole flow the wallet received nothing but eth_sendTransaction: no chain switch, no read, no message to sign', wallet.requests.length === 6 && wallet.requests.every((r) => r.method === 'eth_sendTransaction'), wallet.requests.map((r) => r.method));
+  check('in the whole flow the wallet, which had approved 31 methods, received nothing but eth_sendTransaction: no chain switch, no read, no message to sign', wallet.requests.length === 6 && wallet.requests.every((r) => r.method === 'eth_sendTransaction'), wallet.requests.map((r) => r.method));
   check('every transaction named its chain twice, the same: the request scope and the transaction field', wallet.sent.length === 6 && wallet.sent.every((s) => s.caip === `eip155:${Number(BigInt(s.requestedChainId))}`), wallet.sent.map((s) => [s.caip, s.requestedChainId]));
 
   // ---- C. refusals with a session open ----
   say('== a rejection in the wallet');
-  {
-    wallet.answer = 'reject';
+  for (const [mode, words] of [['reject', 'WalletConnect’s "User rejected."'], ['reject-metamask', 'MetaMask’s "User denied transaction signature."']]) {
+    wallet.answer = mode;
     const requests = wallet.requests.length;
     await quote(page, secondChain, secondChain.native, secondChain.token.shown, '0.01');
     await page.click('Swap');
     await waitRequest(requests + 1);
-    await page.waitText('/The wallet request was rejected by you\\. Nothing was sent\\./', 60_000);
+    await page.waitFor('the rejection', `(() => { const t = document.body.innerText.replace(/\\s+/g, ' '); return t.split('The wallet request was rejected by you. Nothing was sent.').length - 1 >= 1 && !window.__h.button('Swap')?.disabled; })()`, 60_000);
     await quote(page, secondChain, secondChain.native, secondChain.token.shown, '0.01');
-    check('a request rejected in the wallet (WalletConnect code 5000) is read as a rejection: nothing was sent and Swap is not held', (await page.button('Swap'))?.disabled === false && wallet.sent.length === 6);
+    check(`a request rejected in the wallet with code 5000 and ${words} is read as a rejection: nothing was sent and Swap is not held`, (await page.button('Swap'))?.disabled === false && wallet.sent.length === 6);
     wallet.answer = 'sign';
   }
-  say('== events of the session');
+  say('== events and updates of the session');
   {
-    await client.emit({ topic: wallet.topic, event: { name: 'accountsChanged', data: [second] }, chainId: `eip155:${secondChain.chainId}` });
-    await connected(page, secondChain, second);
-    check('an account change announced by the wallet is followed: the page shows the new account', true);
-    await client.emit({ topic: wallet.topic, event: { name: 'accountsChanged', data: [address] }, chainId: `eip155:${secondChain.chainId}` });
-    await connected(page, secondChain, address);
+    // The wallet reports networks the session does not hold (MetaMask Mobile reports the one selected in the app).
     const deleted = wallet.deleted.length;
     await client.emit({ topic: wallet.topic, event: { name: 'chainChanged', data: '0x89' }, chainId: `eip155:${secondChain.chainId}` });
+    await client.emit({ topic: wallet.topic, event: { name: 'chainChanged', data: 'somewhere' }, chainId: `eip155:${secondChain.chainId}` });
+    await delay(4000);
+    const still = await page.flat();
+    check('a chainChanged to a chain outside the session is ignored: the session stays, the page still shows the wallet on its chain, and nothing was closed', still.toLowerCase().includes(`wallet ${address} on chain ${secondChain.chainId}`) && wallet.deleted.length === deleted && !(await page.evaluate(`!!window.__h.button('Connect a mobile wallet')`)));
+    // The next transaction still names the page's chain, twice, and is signed there.
+    const sentBefore = wallet.sent.length;
+    await quote(page, secondChain, secondChain.native, secondChain.token.shown, '0.01');
+    await page.click('Swap');
+    const after = await waitSent(sentBefore + 1);
+    await settle(secondChain);
+    await page.waitFor('the swap after the ignored report', `[...document.querySelectorAll('li[data-state="mined"]')].some((li) => li.textContent.includes(${JSON.stringify(after.hash)}))`, 120_000);
+    check('after that report the next swap is still scoped to the page’s chain and mined there', after.caip === `eip155:${secondChain.chainId}` && BigInt(after.requestedChainId) === BigInt(secondChain.chainId), after);
+    // The account moves only with the namespace.
+    await client.update({ topic: wallet.topic, namespaces: { eip155: namespaceFor('other-account', asked) } }).then(({ acknowledged }) => acknowledged().catch(() => {}));
+    await connected(page, secondChain, second);
+    check('a session update that names another account (under the approval’s rules) is followed: the page shows the new account', wallet.deleted.length === deleted);
+    await client.update({ topic: wallet.topic, namespaces: { eip155: namespaceFor('metamask', asked) } }).then(({ acknowledged }) => acknowledged().catch(() => {}));
+    await connected(page, secondChain, address);
+    // An accountsChanged event for an account the namespace does not hold ends the session (R412-3).
+    await client.emit({ topic: wallet.topic, event: { name: 'accountsChanged', data: [second] }, chainId: `eip155:${secondChain.chainId}` });
     await disconnectedStep(page);
     const end = Date.now() + 30_000;
     while (wallet.deleted.length === deleted && Date.now() < end) await delay(200);
-    check('a change to a chain outside the session ends it: the page is back at the connect step and the wallet’s session was closed by the page', wallet.deleted.length === deleted + 1 && !(await page.flat()).toLowerCase().includes(`wallet ${address}`));
+    const gone = await page.flat();
+    check('an accountsChanged event for an account the session never approved ends the session: the page is back at the connect step, never showed that account, and closed the wallet’s session', wallet.deleted.length === deleted + 1 && !gone.toLowerCase().includes(`wallet ${second}`) && !gone.toLowerCase().includes(`wallet ${address}`));
   }
   say('== sessions the page must not accept');
-  await refusedPairing(page, 'extra-method', 'a wallet that adds personal_sign to the session');
+  await refusedPairing(page, 'no-send', 'a wallet that approves thirty methods but not eth_sendTransaction');
   await refusedPairing(page, 'unasked-chain', 'a wallet that adds a chain that was not offered (137)');
   await refusedPairing(page, 'two-accounts', 'a wallet that approves a different account per chain');
   await refusedPairing(page, 'first-chain-only', `a wallet that approves only ${first.key} on the page of ${secondChain.key}`);
@@ -489,13 +533,16 @@ try {
   {
     await pair(page, 'exact');
     await connected(page, secondChain);
+    check('a wallet that approves exactly what was asked (one method, two events) is connected as well', wallet.proposals.at(-1).mode === 'exact' && !wallet.proposals.at(-1).walletError);
     let deleted = wallet.deleted.length;
-    const wider = namespaceFor('extra-method', asked);
-    await client.update({ topic: wallet.topic, namespaces: { eip155: wider } }).then(({ acknowledged }) => acknowledged().catch(() => {}), (error) => say(`  (the wallet library refused to send the update: ${error.message})`));
+    await client.update({ topic: wallet.topic, namespaces: { eip155: namespaceFor('extra-method', asked) } }).then(({ acknowledged }) => acknowledged().catch(() => {}), (error) => say(`  (the wallet library refused to send the update: ${error.message})`));
+    await delay(4000);
+    check('a session update that adds personal_sign is accepted and changes nothing: the session stays (the method cannot be sent: unit test)', wallet.deleted.length === deleted && (await page.flat()).toLowerCase().includes(`wallet ${address} on chain ${secondChain.chainId}`));
+    await client.update({ topic: wallet.topic, namespaces: { eip155: namespaceFor('unasked-chain', asked) } }).then(({ acknowledged }) => acknowledged().catch(() => {}), (error) => say(`  (the wallet library refused to send the update: ${error.message})`));
     await disconnectedStep(page);
     const end = Date.now() + 30_000;
     while (wallet.deleted.length === deleted && Date.now() < end) await delay(200);
-    check('a session update that adds personal_sign ends the session, closed by the page', wallet.deleted.length === deleted + 1);
+    check('a session update that adds a chain that was not asked for (137) ends the session, closed by the page', wallet.deleted.length === deleted + 1);
     await pair(page, 'exact');
     await connected(page, secondChain);
     await client.disconnect({ topic: wallet.topic, reason: { code: 6000, message: 'User disconnected.' } });
@@ -525,7 +572,21 @@ try {
     await settle(secondChain);
     await delay(15_000);
     const text = await page.flat();
-    check('a hash that is on no chain is never shown as mined: the page looked it up on its own endpoints, keeps the swap held and Swap disabled', invented.invented && !new RegExp(`Swap 0\\.01 ${secondChain.native} for [^:]{1,30}: mined`).test(text.slice(text.lastIndexOf('Do not resend'))) && text.includes('Do not resend with a new nonce') && wallet.sent.length === 6 && (await rpc(secondChain, 'eth_getTransactionReceipt', [invented.invented])) === null, { invented: invented.invented });
+    check('a hash that is on no chain is never shown as mined: the page looked it up on its own endpoints, keeps the swap held and Swap disabled', invented.invented && !new RegExp(`Swap 0\\.01 ${secondChain.native} for [^:]{1,30}: mined`).test(text.slice(text.lastIndexOf('Do not resend'))) && text.includes('Do not resend with a new nonce') && wallet.sent.length === 7 && (await rpc(secondChain, 'eth_getTransactionReceipt', [invented.invented])) === null, { invented: invented.invented });
+    wallet.answer = 'sign';
+  }
+  say('== code 5000 that is not a rejection');
+  {
+    await select(page, first);
+    wallet.answer = 'fail-5000';
+    const requests = wallet.requests.length;
+    await quote(page, first, first.native, first.token.shown, '0.01');
+    await page.click('Swap');
+    await waitRequest(requests + 1);
+    await page.waitText('/no transaction hash was returned/', 60_000);
+    const text = await page.flat();
+    await quote(page, first, first.native, first.token.shown, '0.01').catch(() => {});
+    check('code 5000 with a failure text (MetaMask Mobile answers every failure so) is NOT read as a rejection: the page does not say "rejected by you", keeps the request held as outcome unknown, and Swap stays disabled', !text.slice(text.lastIndexOf('no transaction hash was returned') - 600).includes('rejected by you') && (await page.button('Swap'))?.disabled === true && wallet.sent.length === 7, { tail: text.slice(text.lastIndexOf('no transaction hash was returned') - 200, text.lastIndexOf('no transaction hash was returned') + 120) });
     wallet.answer = 'sign';
   }
   evidence.console = page.console.filter((l) => /pageerror|Content Security Policy/i.test(l)).slice(0, 10);
@@ -551,13 +612,12 @@ try {
     await phone.shot('phone-connect-dialog--390.png');
     const encoded = encodeURIComponent(link);
     check(
-      'phone: the dialog offers the wc: link first, then MetaMask, Trust Wallet and Rainbow by their own link hosts, each carrying only the pairing URI',
+      'phone: the dialog offers the wc: link first, then MetaMask and Rainbow by the link hosts read in their own code, each carrying only the pairing URI, and no other host',
       /^wc:[0-9a-f]{64}@2\?/.test(link) &&
         JSON.stringify(links.map((l) => [l.text, l.href, l.target])) ===
           JSON.stringify([
             ['Open in a wallet app', link, null],
             ['MetaMask', `https://metamask.app.link/wc?uri=${encoded}`, '_blank'],
-            ['Trust Wallet', `https://link.trustwallet.com/wc?uri=${encoded}`, '_blank'],
             ['Rainbow', `https://rnbwapp.com/wc?uri=${encoded}`, '_blank'],
           ]) &&
         links.every((l) => l.rel === 'noopener noreferrer'),
@@ -568,14 +628,16 @@ try {
     await phone.evaluate(`document.querySelector('[data-testid="mobile-session"]')?.scrollIntoView({ block: 'start' })`);
     await delay(400);
     await phone.shot('phone-connected--390.png');
-    // Not this change's: how the header's own popovers lie at phone width (recorded, not asserted).
-    await phone.evaluate(`window.scrollTo(0, 0)`);
+    // The header's own popover at phone width (R410-O3): a sheet at the bottom of the screen, whole. This build
+    // has a banner above the header, so the page is scrolled first: the header is then at the top, as on the
+    // published site, where nothing is above it.
+    await phone.evaluate(`window.scrollTo(0, 400)`);
+    await delay(300);
     await phone.evaluate(`document.querySelector('.header-actions .wallet-button').click()`);
-    await delay(500);
-    evidence.observations = {
-      phoneHeaderPopover: await phone.evaluate(`(() => { const el = document.querySelector('.wallet-status .popover-panel'); if (!el) return null; const b = el.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), height: Math.round(b.height), viewport: innerHeight, aboveTheScreen: b.top < 0 }; })()`),
-    };
-    await phone.shot('observation-phone-connected-wallet-popover--390.png');
+    await delay(600);
+    const sheet = await phone.evaluate(`(() => { const el = document.querySelector('.wallet-status .popover-panel'); if (!el) return null; const b = el.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), viewport: innerHeight, text: el.innerText.replace(/\\s+/g, ' ').slice(0, 80) }; })()`);
+    check('phone: the connected-wallet popover is a sheet at the bottom of the screen, wholly on screen', !!sheet && sheet.top >= 0 && Math.abs(sheet.bottom - sheet.viewport) <= 1 && sheet.text.includes('Rehearsal wallet'), sheet);
+    await phone.shot('phone-connected-wallet-popover--390.png');
     const consoleLines = phone.console.filter((l) => /pageerror|Content Security Policy/i.test(l));
     check('phone: no page error and no Content-Security-Policy refusal', consoleLines.length === 0, consoleLines);
     await phone.close();

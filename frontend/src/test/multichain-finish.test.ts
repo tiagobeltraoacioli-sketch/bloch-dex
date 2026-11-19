@@ -1,6 +1,15 @@
 // scripts/multichain-finish.mjs, the second step of the multichain build: it must finish the directory it is given.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -13,6 +22,13 @@ const built = () => {
   const dir = mkdtempSync(join(tmpdir(), 'postern-multichain-finish-'));
   made.push(dir);
   writeFileSync(join(dir, 'multichain.html'), '<!doctype html><title>built page</title>');
+  // What a build copies from public/, shared with the Bloch L2 site.
+  for (const file of ['404.html', 'social-preview.png'])
+    copyFileSync(join(FRONTEND, 'public', file), join(dir, file));
+  writeFileSync(
+    join(dir, 'THIRD-PARTY-NOTICES.txt'),
+    readFileSync(join(FRONTEND, 'public/THIRD-PARTY-NOTICES.txt'), 'utf8').slice(0, 2000),
+  );
   return dir;
 };
 const finish = (...args: string[]) =>
@@ -65,5 +81,58 @@ describe('multichain-finish.mjs', () => {
       expect(headers).not.toContain('upgrade-insecure-requests');
       expect(existsSync(join(dir, 'index.html'))).toBe(true);
     }
+  });
+
+  // Review R412-7: three files of public/ name the site, and the multichain site is "Bloch DEX".
+  it('names the multichain site in the 404 title, the notices and the preview image, in the output only', () => {
+    const sha = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
+    const shared = ['404.html', 'social-preview.png', 'THIRD-PARTY-NOTICES.txt'].map((f) =>
+      sha(join(FRONTEND, 'public', f)),
+    );
+    const dir = built();
+    expect(readFileSync(join(dir, '404.html'), 'utf8')).toContain(
+      '<title>Postern: no gate here</title>',
+    );
+    expect(finish(dir).status).toBe(0);
+    const page = readFileSync(join(dir, '404.html'), 'utf8');
+    expect(page).toContain('<title>Bloch DEX: no gate here</title>');
+    expect(page).not.toMatch(/Postern:/);
+    const notices = readFileSync(join(dir, 'THIRD-PARTY-NOTICES.txt'), 'utf8');
+    expect(notices.split('\n')[2]).toBe(
+      "This page is built from Bloch DEX's own code (MIT License, see the repository's LICENSE) and from the",
+    );
+    expect(notices).not.toContain('PosternDEX');
+    // The image is the one rendered from the committed source, and the record of that rendering holds.
+    const record = JSON.parse(
+      readFileSync(join(FRONTEND, 'multichain-public/social-preview.json'), 'utf8'),
+    );
+    expect(sha(join(dir, 'social-preview.png'))).toBe(record.image.sha256);
+    expect(sha(join(FRONTEND, 'multichain-public/social-preview.png'))).toBe(record.image.sha256);
+    expect(sha(join(FRONTEND, 'multichain-public/social-preview.svg'))).toBe(record.source.sha256);
+    const png = readFileSync(join(dir, 'social-preview.png'));
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([1200, 630]);
+    const source = readFileSync(join(FRONTEND, 'multichain-public/social-preview.svg'), 'utf8');
+    expect(source).toContain('>Bloch DEX</text>');
+    expect(source).not.toMatch(/Postern(?!\.svg)/i);
+    // Running it again changes nothing and does not fail.
+    expect(finish(dir).status).toBe(0);
+    expect(readFileSync(join(dir, '404.html'), 'utf8')).toBe(page);
+    // The Bloch L2 site's own files are as they were.
+    expect(
+      ['404.html', 'social-preview.png', 'THIRD-PARTY-NOTICES.txt'].map((f) =>
+        sha(join(FRONTEND, 'public', f)),
+      ),
+    ).toEqual(shared);
+    expect(readFileSync(join(FRONTEND, 'public/404.html'), 'utf8')).toContain(
+      '<title>Postern: no gate here</title>',
+    );
+  });
+
+  it('refuses to finish when a sentence it must put right is gone, or the image is not its source’s', () => {
+    const dir = built();
+    writeFileSync(join(dir, '404.html'), '<title>Something else</title>');
+    const run = finish(dir);
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain('404.html: expected exactly one');
   });
 });

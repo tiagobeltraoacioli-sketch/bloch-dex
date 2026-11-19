@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
+  <!-- Source of multichain-public/social-preview.png (the multichain site, "Bloch DEX").
+       Rendered by scripts/render-social-preview.mjs; do not edit the PNG by hand. -->
+  <defs>
+    <radialGradient id="g" cx="16" cy="7" r="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c8fa72" stop-opacity=".5" />
+      <stop offset="1" stop-color="#c8fa72" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#0b0e0f" />
+  <rect width="1200" height="6" fill="#c8fa72" />
+  <!-- The brand mark of public/postern.svg, 68 px. -->
+  <g transform="translate(96 84) scale(2.125)">
+    <rect x=".5" y=".5" width="31" height="31" rx="6.5" fill="#14191a" stroke="#364145" />
+    <rect x="1" y="1" width="30" height="30" rx="6" fill="url(#g)" />
+    <path d="M10.5 26V16.5a5.5 5.5 0 0 1 11 0V26Z" fill="#eceae3" />
+    <rect x="6" y="26" width="20" height="1.5" rx=".75" fill="#eceae3" opacity=".55" />
+    <circle cx="16" cy="6.75" r="1.9" fill="#c8fa72" />
+  </g>
+  <text x="188" y="138" fill="#eceae3" font-family="'Fraunces Variable', Georgia, serif" font-size="52" font-weight="450" letter-spacing="-0.8">Bloch DEX</text>
+  <text fill="#eceae3" font-family="'Fraunces Variable', Georgia, serif" font-size="88" font-weight="400" letter-spacing="-2.4">
+    <tspan x="96" y="312">A guarded gate for</tspan>
+    <tspan x="96" y="412">swaps.</tspan>
+  </text>
+  <text x="96" y="538" fill="#a8b0ae" font-family="'Inter Variable', system-ui, sans-serif" font-size="23" font-weight="400">Ethereum · Base · Arbitrum One · OP Mainnet · Linea · BNB Smart Chain</text>
+  <!-- The gate and its lamp. -->
+  <circle cx="1040" cy="192" r="11" fill="#c8fa72" />
+  <path d="M916 543V356a124 124 0 0 1 248 0v187" fill="none" stroke="#364145" stroke-width="2.5" />
+  <path d="M944 543V356a96 96 0 0 1 192 0v187Z" fill="#121617" stroke="#1c2224" stroke-width="1.5" />
+</svg>
