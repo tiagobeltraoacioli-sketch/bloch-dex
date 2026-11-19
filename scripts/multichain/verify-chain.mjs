@@ -86,6 +86,14 @@ export async function verifyChain({ chain, requests, candidates = [], rehearsal 
     check("block 0 is the pinned genesis on every endpoint that serves it, and at least one serves it", genesis.length > 0 && genesis.every((h) => h === chain.chain.genesisHash), genesis);
   }
   const at = await pinnedBlock(requests);
+  // Each planned pair's market is read FIRST, at the block everything below is read at, and reported in its place:
+  // some reviewed endpoints keep the state of a block for about a minute only (BNB Smart Chain's dataseed), and a
+  // market read made after the other checks found them silent and said TRY AGAIN every time.
+  const marketOf = new Map();
+  for (const pair of chain.initialPairs) {
+    const token = chain.tokens.find((t) => t.symbol === (pair.tokenA === chain.wrappedNative.symbol ? pair.tokenB : pair.tokenA));
+    marketOf.set(pair, await readMarket({ chain, token, requests, at, names }));
+  }
   const state = pinnedStateReader(requests, at.hash);
   const codeOf = (address) => state("eth_getCode", [address, "pinned"]);
   const hashOf = (code) => (code === "0x" ? EMPTY_CODE_HASH : keccak256(code));
@@ -130,8 +138,7 @@ export async function verifyChain({ chain, requests, candidates = [], rehearsal 
   const markets = [];
   for (const pair of chain.initialPairs) {
     const name = `${pair.tokenA}/${pair.tokenB}`;
-    const token = chain.tokens.find((t) => t.symbol === (pair.tokenA === chain.wrappedNative.symbol ? pair.tokenB : pair.tokenA));
-    const market = await readMarket({ chain, token, requests, at, names });
+    const market = marketOf.get(pair);
     check(`${name}: its two price references hold their pinned code, are the publisher's, and agree`, market.ok, market.problems);
     markets.push({ pair: name, answeredLine: answeredLine(market), ...marketRecord(market) });
   }

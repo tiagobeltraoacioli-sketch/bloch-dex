@@ -281,6 +281,12 @@ export async function main(argv, print = console.log, toolsCheck = null) {
   const pinned = pinnedStateReader([request, ...others], head.hash);
   const call = async (target, functionName, args = []) => decodeFunctionResult({ abi: ABI, functionName, data: await pinned("eth_call", [{ to: target, data: encodeFunctionData({ abi: ABI, functionName, args }) }, "pinned"]) });
   const codeAt = async (address) => codeHashOf(await pinned("eth_getCode", [address, "pinned"]));
+  // The market is read FIRST, at the same block as everything below, and reported where it always was. Some
+  // reviewed endpoints keep the state of a block for about a minute only (seen on BNB Smart Chain's dataseed:
+  // "missing trie node" at 90 s); read last, after the other checks, the market found them silent and said
+  // TRY AGAIN every time. Every reviewed endpoint is asked; all but one must answer each read, at least two, and
+  // all that answer must agree (finding F409-1, review R414-1). Who answered is printed and recorded.
+  const marketRead = o.mode === "prepare" ? await readMarket({ chain, token, requests: [request, ...others], at: head, names: urls.map((u) => new URL(u).host) }) : null;
 
   if (o["gate-report"]) {
     const report = JSON.parse(readFileSync(o["gate-report"], "utf8"));
@@ -324,9 +330,7 @@ export async function main(argv, print = console.log, toolsCheck = null) {
     // The opening price is the chain's market price, read here and now, at the same block as everything else and
     // from the reviewed endpoints, by the rule of every other state read.
     const rule = openingPriceFor(chain, token);
-    // Every reviewed endpoint is asked; all but one must answer each read, at least two, and all that answer must
-    // agree (finding F409-1, review R414-1). Who answered is printed and recorded.
-    const market = await readMarket({ chain, token, requests: [request, ...others], at: head, names: urls.map((u) => new URL(u).host) });
+    const market = marketRead;
     result.market = marketRecord(market);
     for (const r of market.references) print(`     ${r.name}: ${r.problem ?? `1 ${chain.nativeCurrency.symbol} = ${formatUnits(r.price, token.decimals)} ${token.symbol}`}`);
     print(`     ${answeredLine(market)}`);

@@ -764,6 +764,35 @@ test("verify-chain: the functions a runtime dispatches on are found by walking i
   assert.deepEqual(good.tokens[1].proxy, { kind: "zeppelinos", implementation: chain.tokens[0].proxy.implementation, implementationCodeHash: chain.tokens[0].proxy.implementationCodeHash, implementationBytes: 14, admin: null });
   assert.deepEqual(good.markets.map((m) => [m.pair, m.ok]), [["WETH/USDC", true], ["WETH/USDT", true]]);
   assert.deepEqual(good.tokens.map((t) => [t.key, t.symbol, t.decimals]), [["WETH", "WETH", 18], ["USDC", "USDC", 6], ["USDT", "USDT", 6]]);
+  // An endpoint that keeps the state of a block for a short while only (BNB Smart Chain's dataseed: "missing trie
+  // node" after about a minute), beside one that refuses eth_call altogether: four endpoints, three must answer a
+  // market read. The short-lived one answers exactly as many state reads as the two markets need and no more. The
+  // markets are read first, so they are answered by three; read after the other checks they found two and said
+  // TRY AGAIN on every run (seen on the real chain, 2026-11-19).
+  const stateRead = (method) => method === "eth_call" || method === "eth_getCode" || method === "eth_getStorageAt";
+  let marketReads = 0;
+  const counting = node(TETHER_OFF);
+  const counted = (method, params) => ((marketReads += stateRead(method) ? 1 : 0), counting(method, params));
+  for (const token of chain.tokens) await readMarket({ chain, token, requests: [counted, node(TETHER_OFF)], at: market.at });
+  assert.ok(marketReads > 0);
+  const shortLived = () => {
+    const inner = node(TETHER_OFF);
+    let served = 0;
+    return async (method, params) => {
+      if (stateRead(method) && ++served > marketReads) throw new Error(`${method}: missing trie node`);
+      return inner(method, params);
+    };
+  };
+  const refusing = () => {
+    const inner = node(TETHER_OFF);
+    return async (method, params) => {
+      if (method === "eth_call") throw new Error("eth_call returned HTTP 403");
+      return inner(method, params);
+    };
+  };
+  const aged = await verifyChain({ chain, requests: [node(TETHER_OFF), refusing(), node(TETHER_OFF), shortLived()], names: ["one", "refusing", "three", "short-lived"] });
+  assert.deepEqual(aged.markets.map((m) => [m.pair, m.ok, m.tryAgain, m.answered.fewestAnswered, m.answered.mustAnswer]), [["WETH/USDC", true, false, 3, 3], ["WETH/USDT", true, false, 3, 3]]);
+  assert.deepEqual(aged.failed, good.failed);
   const feeOn = await verifyChain({ chain, requests: [node({ USDT: { ...TETHER_OFF.USDT, basisPointsRate: 5n } }), node({ USDT: { ...TETHER_OFF.USDT, basisPointsRate: 5n } })] });
   assert.ok(feeOn.failed.includes("USDT takes no fee on transfer and none of its declared switches is on"));
   // Two endpoints that disagree on a token's fee state decide nothing: the read is refused, not averaged.
