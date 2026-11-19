@@ -344,9 +344,21 @@ async function main() {
     if (opt.pt) {
       // The owner's Portuguese copy (kept outside this English-only repository) must carry the same blocks.
       const pt = blocksOf(readFileSync(resolve(opt.pt), "utf8"));
-      const diff = [...new Set([...Object.keys(pt), ...Object.keys(blocks)])].filter((k) => pt[k] !== blocks[k]);
-      evidence.ptCopy = { blocks: Object.keys(pt).length, differing: diff };
-      check(`the Portuguese copy has the same ${Object.keys(blocks).length} marked command blocks, byte for byte`, diff.length === 0, diff.join(", "));
+      // The owner's copy carries the reviewed commit id, pasted over the placeholder in the two commit-comparison
+      // blocks (review R402-4: he receives the 40 digits outside the repository, and his own copy is where they are
+      // written). That, and nothing else, may differ: the id must be 40 hexadecimal digits, the same in both.
+      const ids = new Set();
+      const same = (k) => {
+        if (pt[k] === blocks[k]) return true;
+        if (!["once clone-commit", "once reviewed-commit"].includes(k) || typeof pt[k] !== "string") return false;
+        const id = pt[k].match(/(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])/)?.[0];
+        if (!id || pt[k].replaceAll(id, COMMIT_PLACEHOLDER) !== blocks[k]) return false;
+        ids.add(id);
+        return true;
+      };
+      const diff = [...new Set([...Object.keys(pt), ...Object.keys(blocks)])].filter((k) => !same(k));
+      evidence.ptCopy = { blocks: Object.keys(pt).length, differing: diff, pastedCommitId: [...ids] };
+      check(`the Portuguese copy has the same ${Object.keys(blocks).length} marked command blocks, byte for byte${ids.size ? ` (its two commit-comparison blocks carry one pasted commit id, ${[...ids].map((i) => i.slice(0, 7)).join(", ")}…, in place of the placeholder)` : ""}`, diff.length === 0 && ids.size <= 1, diff.join(", "));
     }
     r = run("plan");
     const want = ["0x47D4ae3D6d8e2d8261Ee7beEF510a217Bf4a4C50", "0x5709FF514a909aD0D994eC73D6128F38bF4F1Ca6", "0xc1D01eF14c0Cfe961f548398f9b12CfDC71172C9", "0xFf5f74c4Ca90Ae6024a29175c6d9d92CbD51C5E1", "0xf6046184F7267f0872BaB182C661f1C85695cAE2", "0x605E6b76402FF050BddC903Ea2326451272f7e32", "0x8A1DdC0BAE18A038D4E5Bb088eeDcdE10b61db53"];
@@ -518,7 +530,11 @@ async function main() {
     }
     // M4: the post gate before finality says WAIT, then PASS after the wait.
     r = run("post-gate-deployed", "M4-post-gate-too-early");
-    check(`M4 ${key}-5 before finality: a WAIT line, no PASS`, /WAIT/.test(r.output) && !/post: PASS/.test(r.output), r.output.slice(-400));
+    // On a chain the owner has deployed, the fork's finalized block is a block of the REAL chain, where the three
+    // contracts already are (clearing them on the fork changes the fork's own blocks only): the gate reads them there
+    // and has nothing to wait for. The WAIT drill is shown by the run of a chain that is not deployed yet (Linea).
+    if (evidence.ownerDeploymentCleared) check(`M4 ${key}-5 right after the deployment: PASS without a WAIT, because the fork's finalized block is the real chain's and already holds the owner's contracts (the WAIT drill needs a chain that is not deployed)`, /post: PASS/.test(r.output) && !/^WAIT/m.test(r.output), r.output.slice(-400));
+    else check(`M4 ${key}-5 before finality: a WAIT line, no PASS`, /WAIT/.test(r.output) && !/post: PASS/.test(r.output), r.output.slice(-400));
     await mine();
     r = run("post-gate-deployed");
     const deployedReport = existsSync(reportFile) ? JSON.parse(readFileSync(reportFile, "utf8")) : null;
