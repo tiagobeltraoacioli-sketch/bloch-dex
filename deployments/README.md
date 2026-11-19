@@ -10,6 +10,7 @@ plan, dry run, broadcast, on-chain record, schema-2 finality gate) is in
 | `mainnet/dex-mainnet.config.json` | The reviewed mainnet input. Pending decisions are `null` and the tooling refuses them. |
 | `mainnet/frontend.network.json` | Wallet network parameters for the frontend's `#/mainnet` route: RPC URL and status (`placeholder` until published), explorer, pinned L2 genesis (`null` until reviewed), bridge links (`null` until live). |
 | `mainnet/dex-mainnet.record.json` | The frontend's deployment record. `status: "not-deployed"` keeps the route "not yet live"; after the deployment it holds the plan, config and gate report (`scripts/staging/frontend-record.mjs`). |
+| `mainnet/l2-phase.json` | Whether the L2 release in production accepts user transactions (`userTransactions`: `not-enabled` or `enabled`). Read only by the multichain site ("Bloch DEX"), whose Bloch L2 route states it as the first reason while that route is not live. It configures nothing. The network file and the record above are read by both sites, through the same parsers. |
 
 No verified mainnet deployment exists. The frontend must remain in preview mode.
 

@@ -800,7 +800,7 @@ A second run of step 2 is safe: steps that already have code are skipped.
 
 The multichain site is its own build with its own entry (`frontend/multichain.html`) and output
 (`frontend/dist-multichain`); the Bloch L2 site does not contain it. It shows a network selector over the six
-chains. A chain whose record says "not-deployed" shows "Not yet live" and makes no request. After step 6 for a
+chains and, as a seventh entry of its own kind, the Bloch L2 (the last part of this section). A chain whose record says "not-deployed" shows "Not yet live" and makes no request. After step 6 for a
 chain, build and publish:
 
 ```
@@ -808,7 +808,8 @@ npm --prefix frontend run build:multichain
 ```
 
 The build writes `dist-multichain/_headers` with a Content-Security-Policy that names the seventeen reviewed
-endpoints (two on OP Mainnet, Base and Ethereum, three on Linea, four on Arbitrum One and BNB Smart Chain). Hosting is the owner's step and follows `docs/FRONTEND-HOSTING-CHECKLIST.md`.
+endpoints (two on OP Mainnet, Base and Ethereum, three on Linea, four on Arbitrum One and BNB Smart Chain), and the
+Bloch L2's endpoints once its route is live (below). Hosting is the owner's step and follows `docs/FRONTEND-HOSTING-CHECKLIST.md`.
 
 What the page does on these chains, by configuration and not by deleted code:
 
@@ -820,6 +821,57 @@ What the page does on these chains, by configuration and not by deleted code:
 | Reads and settlement at `finalized` | **replaced by each chain's confirmation rule** (below); on the Bloch L2 nothing changed |
 | Default swap deadline of 60 minutes | 20 minutes (`swap.deadlineMinutes` in the network file; the user can set 10 to 180) |
 | Code-hash check of every contract and token, same-nonce hold, no second swap request, explicit gas limits, slippage bounds | unchanged |
+
+### The Bloch L2 as the seventh network of the site (round 20)
+
+Since the owner's instruction of 2026-11-19 the site's selector has a seventh entry, "Bloch L2" (chain 700770,
+route `#/bloch-l2`, heading "Bloch DEX on Bloch L2"). **It is not a seventh chain of this package.** Nothing in
+`deployments/multichain.json`, in `scripts/multichain/` or in sections 1 to 8 applies to it; the tools of this
+package still refuse the Bloch L2 chain ids, and `frontend/src/multichain/config.ts` still refuses a network file
+for chain 700770 or one that turns a Bloch-L2-only rule on. The Bloch L2 keeps its own contracts, deployment
+procedure and files (`docs/MAINNET-700770-PACKAGE.md`, `docs/MAINNET-READINESS.md`):
+
+| What the route uses | Where it comes from |
+|---|---|
+| Network parameters, RPC and its status, pinned genesis, new-slot fee, idle-block policy, bridged assets and bridge-hold status | `deployments/mainnet/frontend.network.json`, parsed by `frontend/src/mainnet/config.ts` `parseNetwork` |
+| Deployment record (plan, config, mainnet gate report, infra plan) | `deployments/mainnet/dex-mainnet.record.json`, verified by `loadMainnetState` (record domain `postern.dex.frontend-record.v1`) |
+| Planned reserve caps and pairs shown before deployment | `deployments/mainnet/dex-mainnet.config.json` |
+| Reads | one endpoint (the L2's public RPC), every read at the chain's own `finalized` block; not two endpoints that must agree, and no confirmation depth |
+| Rules on the page | the Bloch L2 route's own: reserve caps and the k ceiling, the new-slot priority fee, the idle-chain deadline, the bridged-assets card and the bridge-exit hold, the fee recipient pinned by the mainnet gate report |
+
+These are the same files, parsers and route component as the Bloch L2 site's `#/mainnet`
+(`frontend/src/multichain/bloch-l2.ts`, `BlochL2Route.tsx`); `src/test/multichain-bloch-l2-seam.test.tsx` compares
+what the two sites pass to the route, prop by prop. So the L2 deployment procedure needs no step for this site:
+the commit that carries the L2 record and the network file with `rpc.status: "live"` and the pinned genesis makes
+the route live on both sites at their next build.
+
+While the route is not live it shows "Not yet live", sends no request and loads nothing. Its first reason is read
+from `deployments/mainnet/l2-phase.json` (`userTransactions`: `not-enabled` while the L2 runs its deposit-only
+launch release; set `enabled` in a reviewed change when an L2 release that accepts user transactions is the one in
+production). That file configures nothing: the route goes live by the record and the network file alone.
+
+Three decisions of round 20, each stated on the route while it is live:
+
+- **Swaps only.** The Trade, Pools and Portfolio screens and the liquidity dialog of the public networks are not
+  mounted on the Bloch L2 route: their arithmetic models reserve caps and the k ceiling, but no run has shown them
+  refusing on a chain that has caps. Until one has, the route is the reviewed swap page alone.
+- **Browser wallets only.** A browser wallet is asked to switch and, when it answers 4902, to add the network
+  (`wallet_addEthereumChain` with the L2 network file's parameters). The mobile-wallet (WalletConnect) session is
+  never asked for chain 700770 and its button is not offered on this route: wallet apps do not list the chain, and
+  a network cannot be added inside an open session. A session opened on another network's page is told so here;
+  its switch is refused inside the page and nothing reaches the wallet.
+- **Content-Security-Policy.** `connect-src` names the L2 RPC origin (and the Ethereum RPC of a bridge-hold status
+  block) only when the committed L2 files make the route live (`frontend/src/multichain/headers.ts`
+  `blochL2PolicyUrls`). With the present files the published `_headers` is byte for byte what it was. **The
+  published policy changes with the build that makes the L2 route live**: it then gains exactly those origins.
+  `scripts/check-production-bundle.mjs --multichain` refuses the L2 RPC in the policy while the route cannot be
+  live, refuses its absence once it can, and refuses any `_headers` that is not the one the committed files give.
+
+Rehearsal (loopback only, throwaway keys): `frontend/integration/browser/bloch-l2-network-hook.sh` as the
+`RENDER_HOOK` of `scripts/staging/rehearse-mainnet-package.sh anvil` builds both sites from the one record and
+network file of a chain that carries the L2 exchange with its real constructor rules;
+`frontend/integration/browser/bloch-l2-network.mjs live` compares the two routes screen by screen, and the Bloch L2
+site's wallet scenarios (`scenarios.mjs`) run unchanged against either site's harness file.
 
 ### Confirmation rule per chain (review R309-MC-2)
 

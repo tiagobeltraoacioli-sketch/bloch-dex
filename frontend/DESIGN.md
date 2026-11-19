@@ -150,6 +150,18 @@ them: where the preview drew a figure this page has no source for (price chart, 
 in a currency, value history), the place says "Not available" with the reason, or is left out; nothing of the
 preview's sample data is in the multichain bundle. Their styles are `src/styles/live-screens.css`.
 
+## The Bloch L2 on the multichain site (round 20)
+
+The Bloch L2 is the seventh name of the multichain site's header list and switcher, with its own lamp and glyph
+(the gate's opening). Its route is the Bloch L2 route itself, as on the Bloch L2 site: one page, the gate with the
+trust strip and the reference layer (pools with reserve caps, network, deployment record, bridged assets); it has
+no tab row and none of the three screens above, no confirmation-rule course and no token note. While it is live
+two lines stand above it in the page column, in the muted reading style of a token note: that the site offers
+swaps only on this network, and which wallet connection works there; when the page's wallet is a mobile session,
+the second line is a rail notice instead. The footer carries the Bloch L2's own line. On a narrow window the
+header list scrolls sideways and the selected network's name is brought into its view; the list never moves the
+page.
+
 ## What the design may not do
 
 It may not change what is sent to a wallet or an RPC, weaken or hide a safety message, or show a number the page did

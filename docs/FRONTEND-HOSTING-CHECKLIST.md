@@ -50,6 +50,13 @@ site) equal to the generator.
 - When the Ethereum RPC URL or the L2 RPC URL changes, regenerate the files
   (`npm test` shows the expected text) before building. The gate refuses a
   bundle whose published RPC is missing from `connect-src`.
+- The multichain site ("Bloch DEX") has its own `_headers`, written by its build
+  (`scripts/multichain-finish.mjs`) and not committed. It lists the Bloch L2 as a
+  seventh network: its policy names the L2 RPC origin (and the Ethereum RPC of a
+  bridge-hold status block) only from the build in which the committed L2 record
+  and network file make that route live, and not before. Publishing that build
+  changes the site's published policy; compare the new `_headers` with the
+  previous one before publishing (docs/MULTICHAIN-DEPLOY.md, section 9).
 - `style-src 'unsafe-inline'` stays: React style attributes and the Reown
   modal need it. It does not allow script execution.
 - Open option (not applied): `require-trusted-types-for 'script'` on the

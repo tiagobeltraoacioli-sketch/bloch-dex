@@ -23,6 +23,7 @@ import { ConnectSlotContext } from './shell/connect-slot';
 import { useMobileWalletConnect } from './multichain/MobileWalletConnect';
 import { blochL2Entry, isBlochL2, type BlochL2Entry } from './multichain/bloch-l2';
 import { BlochL2Route } from './multichain/BlochL2Route';
+import { showCurrentNetwork } from './multichain/nav-scroll';
 
 const CHAINS = bundledChains();
 /**
@@ -106,6 +107,8 @@ export function MultichainApplication({
   );
   useEffect(() => {
     document.title = `${MULTICHAIN_SITE_NAME} — ${chain.network.chainName}`;
+    // Seven names do not fit a phone's header list: the selected one is scrolled into the list's view.
+    showCurrentNetwork();
   }, [chain]);
   // Header status of each network, from its bundled record (no RPC request: `load` reads the bundle).
   const [live, setLive] = useState<Record<string, boolean>>({});

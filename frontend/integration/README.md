@@ -155,3 +155,39 @@ endpoints and the relay traffic of the page and of the scripted wallet.
 What it is not: a wallet app, a phone, Safari, or the production domain. The relay accepted the loopback origin;
 whether the project accepts the production domain is set in the Reown dashboard. Real devices:
 [test 12 of the manual script](../../docs/WALLET-MANUAL-TEST.md).
+
+# The Bloch L2 route of the multichain site, in a browser
+
+`browser/bloch-l2-network.mjs` checks the Bloch L2 as the seventh network of the multichain site ("Bloch DEX") in a
+real browser engine, loopback only, with a simulated wallet and throwaway keys.
+
+Not live, on the committed production build (from `frontend/`):
+
+```sh
+npm run build:multichain
+node integration/browser/bloch-l2-network.mjs not-live dist-multichain 48550 /absolute/output-dir
+```
+
+For each of the seven routes it asserts that the page asked nothing of anyone (every loaded resource is the site's
+own; no fetch, XHR, WebSocket, EventSource or beacon; the injected wallet got no request; the policy blocked
+nothing), that the six public routes say nothing of the Bloch L2 beyond the site's name and the link to the
+seventh network, and that the Bloch L2 route says why it is not live. Then the header, the switcher and the route
+at 1440, 1000, 390 and 360 px, dark and light, with screenshots.
+
+Live, against a chain that carries the L2 exchange with its real constructor rules (from the repository root):
+
+```sh
+CHROME_EXE=/path/to/chrome SAFE_ARTIFACTS=/path/to/safe-contracts-1.4.1/build/artifacts \
+RENDER_HOOK=$PWD/frontend/integration/browser/bloch-l2-network-hook.sh WALLET_HOOK_HOLD=/absolute/work/hold \
+bash scripts/staging/rehearse-mainnet-package.sh anvil <40-hex revision> <port> /absolute/work
+node frontend/integration/browser/bloch-l2-network.mjs live /absolute/work/multichain-harness.json /absolute/work/wallet-harness.json /absolute/output-dir
+node frontend/integration/browser/scenarios.mjs /absolute/work/multichain-harness.json
+rm /absolute/work/hold
+```
+
+The hook builds the Bloch L2 site and the multichain site from the same frontend record and network file of that
+chain and holds the chain while the hold file exists. The `live` command compares the multichain site's `#/bloch-l2`
+with the Bloch L2 site's `#/mainnet` screen by screen (the route before a wallet, a wallet that must add the
+network, a quote, an amount above the reserve cap, a swap) and checks what only the multichain shell adds.
+`scenarios.mjs` is the Bloch L2 site's wallet suite, unchanged: it takes either harness file. Finality here is
+anvil's `finalized` tag, not Bloch settled finality; the wallet is simulated, not a wallet extension.

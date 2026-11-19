@@ -104,7 +104,17 @@ account lists. Expired, excessively long-lived or mixed-chain approvals are
 closed before a provider is exposed. Approved sessions also expire locally on
 their bounded deadline even if a remote expiry event is missed. Hardware-wallet-specific flows are not included.
 
-The multichain site ("Bloch DEX", `MultichainApp.tsx`) has a second, separate WalletConnect session
+The multichain site ("Bloch DEX", `MultichainApp.tsx`) lists the Bloch L2 as its seventh network, route
+`#/bloch-l2` (`src/multichain/bloch-l2.ts`, `BlochL2Route.tsx`). It is not a chain of
+`deployments/multichain.json`: the route is this site's `#/mainnet` route, mounted with the same network file,
+record, parsers, one-endpoint reader and planned caps and with none of the public chains' props, so every Bloch L2
+rule is on there and no public-chain rule is. Not offered on that route: the Trade / Pools / Portfolio screens and
+the liquidity dialog, and the mobile-wallet session below (chain 700770 is never among the session's networks; a
+browser wallet is asked to add the network). The multichain build takes `POSTERN_MAINNET_NETWORK` and
+`POSTERN_MAINNET_RECORD` like this site's build, for a local rehearsal. Details and decisions:
+docs/MULTICHAIN-DEPLOY.md, section 9; browser rehearsal: `integration/README.md`.
+
+The multichain site has a second, separate WalletConnect session
 (`src/multichain/walletconnect.ts`) for a wallet on a phone: a QR code on a desktop, links that open the wallet
 app on the phone itself. It is offered inside the route's own connect step, only on a network whose bundled
 record is live, and its client is loaded only when the user presses the button. The session asks for one method,
