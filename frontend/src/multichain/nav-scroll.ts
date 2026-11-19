@@ -9,3 +9,13 @@ export function showCurrentNetwork(root: ParentNode = document): void {
   if (own.left >= box.left && own.right <= box.right) return;
   nav.scrollLeft += own.left - box.left - (box.width - own.width) / 2;
 }
+
+/** Now, and once more when the page's fonts are in: the names change width then, and with them the list. */
+export function keepCurrentNetworkInView(): void {
+  showCurrentNetwork();
+  try {
+    void document.fonts?.ready.then(() => showCurrentNetwork());
+  } catch {
+    /* No font loading interface: the first placement stands. */
+  }
+}
