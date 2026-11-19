@@ -208,7 +208,16 @@ try {
     const tokenFirst = chain.token.address.toLowerCase() < chain.wrapped.address.toLowerCase();
     const T = chain.token.shown ?? chain.token.symbol;
     const N = chain.native;
-    const units = { [N]: 18, [T]: chain.token.decimals };
+    // The token's decimals: the harness's, or the token's own answer (the stage of walletconnect-rehearsal.mjs does
+    // not name them; without them the page's figures would be read as whole units).
+    const tokenDecimals =
+      chain.token.decimals ??
+      Number(
+        BigInt(
+          await rpc(chain, 'eth_call', [{ to: chain.token.address, data: '0x313ce567' }, 'latest']),
+        ),
+      );
+    const units = { [N]: 18, [T]: tokenDecimals };
     const far = BigInt(Math.floor(Date.now() / 1000) + 86_400);
     // LIQUIDITY_RESTORE=1 puts the fork back as it was found when this file ends (the last scenario moves the
     // chain's clock). Off by default: after `evm_revert` anvil no longer serves token contracts at older blocks
@@ -631,7 +640,7 @@ try {
       ...shownAmounts.map(([symbol, value]) =>
         row(
           `${symbol} behind the position`,
-          parseUnits(value, symbol === T ? chain.token.decimals : 18),
+          parseUnits(value, symbol === T ? tokenDecimals : 18),
           underlying[symbol] ?? -1n,
         ),
       ),

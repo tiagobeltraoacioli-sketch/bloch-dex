@@ -441,7 +441,7 @@ try {
   await client.pair({ uri });
   await page.waitFor(
     'the connected account on the Pools screen',
-    `/0%|<0\\.0001%/.test((document.querySelector('[data-view="pools"] table')?.innerText ?? ''))`,
+    `(() => { const cell = document.querySelector('[data-view="pools"] td[data-label="Your share"]'); return !!cell && /^(0%|<0\\.0001%|[0-9.]+%)$/.test(cell.innerText.trim()); })()`,
     90_000,
   );
   check(
