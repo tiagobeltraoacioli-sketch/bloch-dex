@@ -3,7 +3,7 @@
 // page's pinned block (mainnet/liquidity.ts) and every button is one explicit wallet step through the route's
 // one tracker (mainnet/submit.ts): approve exactly the amount, then the deposit or the removal, with explicit
 // minimums, the chain's deadline and a comparison with the latest block right before the wallet is asked.
-import { useEffect, useRef, useState, type MutableRefObject } from 'react';
+import { useContext, useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import type { Address, Hex } from 'viem';
 import { formatAmount, parseAmount } from '../amm';
@@ -38,6 +38,7 @@ import type { usePendingSwap } from '../mainnet/pendingswap';
 import { submitTracked, type TrackedRequest } from '../mainnet/submit';
 import { settledCapital, wording } from '../mainnet/wording';
 import { TokenMark } from '../marks/TokenMark';
+import { NetworkKeyContext } from '../shell/network-context';
 import type { TokenFact } from '../multichain/token-facts';
 import { isAllowedSlippageBps } from '../slippage';
 import { Disclosure } from '../ui/Disclosure';
@@ -160,6 +161,8 @@ export function LiveLiquidityDialog({
   const [note, setNote] = useState<{ tone: 'error' | 'info'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   // Bumped on every change of the form: a send that started under an older value is dropped.
+  // The lamp of the route's network, for the dialog (it is rendered outside the shell).
+  const networkKey = useContext(NetworkKeyContext);
   const formGeneration = useRef(0);
   const currentWallet = useRef(wallet);
   currentWallet.current = wallet;
@@ -190,7 +193,7 @@ export function LiveLiquidityDialog({
   const title = mode === 'add' ? 'Add liquidity' : 'Remove liquidity';
   if (!item)
     return (
-      <Modal title={title} onClose={onClose}>
+      <Modal title={title} onClose={onClose} network={networkKey}>
         <p className="muted" role="status">
           <LoaderCircle size={16} className="spin" aria-hidden="true" /> Reading the pool at the{' '}
           {wording.settled} block…
@@ -553,7 +556,7 @@ export function LiveLiquidityDialog({
   );
 
   return (
-    <Modal title={title} onClose={onClose}>
+    <Modal title={title} onClose={onClose} network={networkKey}>
       <div className="liquidity-pair">
         <span className="pair-icons">
           <TokenMark symbol={pool.token0.symbol} size={0} className="token-icon" />

@@ -10,6 +10,7 @@ import type { Rpc } from '../devnet4/chain';
 import { ERC20_ABI } from '../devnet4/chain';
 import { LiquidityRisks } from '../live/LiquidityRisks';
 import { historyKey } from '../mainnet/txhistory';
+import { NetworkKeyContext } from '../shell/network-context';
 import { pendingSwapKey } from '../mainnet/pendingswap';
 import { renewalClock } from '../ui/snapshot-renewal';
 import {
@@ -525,6 +526,30 @@ describe('a read that fails while the dialog is open', () => {
     );
     await user.click(await screen.findByRole('button', { name: 'Add liquidity to USDC/WETH' }));
     await waitFor(() => expect(field(/^Amount of ETH/).value).toBe(''));
+  });
+});
+
+describe('the dialog carries the lamp of its network', () => {
+  it('is drawn with the network key of the route, although it is rendered outside the shell', async () => {
+    const { rpc } = fakeChain();
+    render(
+      <NetworkKeyContext.Provider value="ethereum">
+        <MainnetLive
+          network={chain.network}
+          load={() => Promise.resolve({ status: 'live', deployment })}
+          rpc={rpc}
+          wallet={fakeWallet().wallet}
+          planned={{ caps: [], pairs: [['WETH', 'USDC']] }}
+          now={() => NOW_MS}
+          screens={{ base: '#/ethereum' }}
+        />
+      </NetworkKeyContext.Provider>,
+    );
+    await openAdd();
+    const dialog = screen.getByRole('dialog');
+    const primary = dialog.querySelector('button.primary')!;
+    expect(primary.closest('[data-network]')?.getAttribute('data-network')).toBe('ethereum');
+    expect(dialog.querySelector('.token-icon')!.closest('[data-network]')).not.toBeNull();
   });
 });
 
